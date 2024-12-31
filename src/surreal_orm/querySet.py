@@ -1,8 +1,7 @@
 from .constants import LOOKUP_OPERATORS
-from .connection_manager import SurrealDBConnectionManager
-from surrealdb import Table
-from .modelBase import BaseSurrealModel
-from typing import Self
+from surrealdb import QueryResponse, Table, AsyncSurrealDB
+from . import BaseSurrealModel, SurrealDBConnectionManager
+from typing import Self, Any, cast
 
 
 class QuerySet:
@@ -10,22 +9,22 @@ class QuerySet:
     A class used to build and execute queries on a SurrealDB table.
     """
 
-    def __init__(self, model: BaseSurrealModel):
+    def __init__(self, model: type[BaseSurrealModel]) -> None:
         """
         Initialize the QuerySet with a model.
 
         :param model: The model class associated with the table.
         """
         self.model = model
-        self._filters = []
-        self.select_item = []
-        self._limit = None
-        self._offset = None
-        self._order_by = None
-        self._model_table = getattr(model, "_table_name", model.__name__)
-        self._variables = None
+        self._filters: list[Any] = []
+        self.select_item: list[str] = []
+        self._limit: int | None = None
+        self._offset: int | None = None
+        self._order_by: str | None = None
+        self._model_table: str = getattr(model, "_table_name", model.__name__)
+        self._variables: dict | None = None
 
-    def select(self, *fields) -> Self:
+    def select(self, *fields: str) -> Self:
         """
         Specify the fields to retrieve in the query.
 
@@ -36,7 +35,7 @@ class QuerySet:
         self.select_item = list(fields)
         return self
 
-    def variables(self, **kwargs) -> Self:
+    def variables(self, **kwargs: Any) -> Self:
         """
         Set variables for the query.
 
@@ -46,7 +45,7 @@ class QuerySet:
         self._variables = {key: value for key, value in kwargs.items()}
         return self
 
-    def filter(self, **kwargs) -> Self:
+    def filter(self, **kwargs: Any) -> Self:
         """
         Add filter conditions to the query.
 
@@ -58,7 +57,7 @@ class QuerySet:
             self._filters.append((field_name, lookup, value))
         return self
 
-    def _parse_lookup(self, key):
+    def _parse_lookup(self, key: str) -> tuple[str, str]:
         """
         Parse the lookup type from the filter key.
 
@@ -71,7 +70,7 @@ class QuerySet:
             field_name, lookup_name = key, "exact"
         return field_name, lookup_name
 
-    def limit(self, value) -> Self:
+    def limit(self, value: int) -> Self:
         """
         Set a limit on the number of results.
 
@@ -81,7 +80,7 @@ class QuerySet:
         self._limit = value
         return self
 
-    def offset(self, value) -> Self:
+    def offset(self, value: int) -> Self:
         """
         Set an offset for the results.
 
@@ -91,7 +90,7 @@ class QuerySet:
         self._offset = value
         return self
 
-    def order_by(self, field_name) -> Self:
+    def order_by(self, field_name: str) -> Self:
         """
         Set the field to order the results by.
 
@@ -101,7 +100,7 @@ class QuerySet:
         self._order_by = field_name
         return self
 
-    def _compile_query(self):
+    def _compile_query(self) -> str:
         """
         Compile the query into a SQL string.
 
@@ -146,7 +145,8 @@ class QuerySet:
         """
         query = self._compile_query()
         results = await self._execute_query(query)
-        return [self.model.from_db(r) for r in results[0]["result"]]
+        data = cast(dict, results[0])
+        return [self.model.from_db(r) for r in data["result"]]
 
     async def fletch_table(self) -> list[BaseSurrealModel]:
         """
@@ -158,17 +158,17 @@ class QuerySet:
         results = await client.select(Table(self._model_table))
         return [self.model.from_db(r) for r in results]
 
-    async def _execute_query(self, query: str) -> list[dict]:
+    async def _execute_query(self, query: str) -> list[QueryResponse]:
         """
         Execute the query on the SurrealDB client.
 
         :param query: The SQL query string.
         :return: The query results.
         """
-        client = await SurrealDBConnectionManager().get_client()
+        client: AsyncSurrealDB = await SurrealDBConnectionManager().get_client()
         return await self._run_query_on_client(client, query)
 
-    async def _run_query_on_client(self, client, query: str) -> list[dict]:
+    async def _run_query_on_client(self, client: AsyncSurrealDB, query: str) -> list[QueryResponse]:
         """
         Run the query on the provided client.
 
@@ -176,7 +176,9 @@ class QuerySet:
         :param query: The SQL query string.
         :return: The query results.
         """
-        return await client.query(query, self._variables)
+        if self._variables is not None:
+            return await client.query(query, self._variables)  # type: ignore
+        return await client.query(query)  # type: ignore
 
     async def delete_table(self) -> bool:
         """
@@ -184,8 +186,7 @@ class QuerySet:
         """
         try:
             client = await SurrealDBConnectionManager().get_client()
-            result = await client.delete(Table(self._model_table))
-            print(result)
+            await client.delete(Table(self._model_table))
             return True
         except Exception as e:
             print(f"Error deleting table: {e}")

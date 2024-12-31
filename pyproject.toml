@@ -12,6 +12,8 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Topic :: Database",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -19,6 +21,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "pydantic>=2.10.4",
     "surrealdb>=0.4.1",
 ]
 
@@ -37,7 +40,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.ruff]
-line-length = 120
+line-length = 128
 target-version = "py311"
 
 [tool.mypy]
@@ -47,11 +50,17 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 check_untyped_defs = true
 
+[[tool.mypy.overrides]]
+module = ["surrealdb.*"]
+ignore_missing_imports = true
+no_implicit_reexport = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-ra -q --cov=src"
+addopts = "-ra -q --cov=src.surreal_orm --cov-branch --cov-report=xml"
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "module"
 
 
 [dependency-groups]
@@ -63,9 +72,17 @@ dev = [
     "pytest-cov>=6.0.0",
     "black>=24.10.0",
     "pydantic>=2.10.4",
-    "docker>=7.1.0"
+    "docker>=7.1.0",
+    "isort>=5.13.2",
+    "flake8>=7.1.1",
+]
+lint = [
+    "ruff>=0.8.4",
 ]
 
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/README.md", "/Makefile", "/src", "/tests"]

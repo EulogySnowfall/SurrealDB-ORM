@@ -7,19 +7,19 @@ class BaseSurrealModel:
     Base class for models interacting with SurrealDB.
     """
 
-    def __init__(self, **data):
+    def __init__(self, **data: Any) -> None:
         pyd_model = self._pydantic_model()
-        instance = pyd_model(**data)
+        instance = pyd_model(**data)  # type: ignore
         self._data = instance.model_dump()
         self._table_name = self._data.get("_table_name", self.__class__.__name__)
 
-    def __getattr__(self, item):
+    def __getattr__(self, item: str) -> Any:
         """
         Access fields like self.name, self.age, etc.
         """
         return self._data.get(item)
 
-    def __setattr__(self, key, value):
+    def __setattr__(self, key: str, value: Any) -> None:
         """
         Set attributes for the model. If the attribute is in the allowed list, set it directly.
         Otherwise, update the Pydantic model instance and set the attribute.
@@ -29,23 +29,21 @@ class BaseSurrealModel:
             super().__setattr__(key, value)
         else:
             pyd_cls = self._pydantic_model()
-            instance = pyd_cls(**{**self._data, key: value})
+            instance = pyd_cls(**{**self._data, key: value})  # type: ignore
             self._data = instance.model_dump()
 
     @classmethod
-    def from_db(cls, record: dict):
+    def from_db(cls, record: dict) -> Any:
         """
         Create an instance from a SurrealDB record.
         """
         return cls(**record)
 
-    def to_db_dict(self):
+    def to_db_dict(self) -> dict[str, Any]:
         """
         Return a dictionary ready to be inserted into the database.
         """
-        data_set = {
-            key: value for key, value in self._data.items() if not key.startswith("_")
-        }
+        data_set = {key: value for key, value in self._data.items() if not key.startswith("_")}
         return data_set
 
     def get_id(self) -> str | None:
@@ -72,14 +70,14 @@ class BaseSurrealModel:
             return await client.create(self._table_name, data)
 
     @classmethod
-    def _pydantic_model(cls):
+    def _pydantic_model(cls) -> Any:
         """
         To be overridden in subclasses to return the desired Pydantic model.
         """
         raise NotImplementedError
 
     @classmethod
-    def objects(cls):
+    def objects(cls) -> Any:
         """
         Return a QuerySet for the model class.
         """

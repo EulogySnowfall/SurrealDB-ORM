@@ -24,6 +24,7 @@ htmlcov/
 .coverage
 .coverage.*
 coverage.xml
+junit.xml
 *.cover
 *.py,cover
 .pytest_cache/

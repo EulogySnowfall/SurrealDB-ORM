@@ -1,0 +1,85 @@
+name: CI SurrealDB-ORM
+
+on: 
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - '*'  
+    paths:
+      - 'src/**'
+      - 'tests/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Start SurrealDB
+        run: |
+          # Ici tu peux builder ou puller ton image custom, ou bien
+          # prendre l'image official SurrealDB:
+          docker run -d \
+            --name surreal \
+            -p 8000:8000 \
+            surrealdb/surrealdb:latest \
+            start --user root --pass root memory
+
+          # Attendre que SurrealDB soit prêt
+          echo "Waiting SurrealDB to be healthy..."
+          for i in {1..10}; do
+            if curl -s http://localhost:8000/health | grep -q "OK"; then
+              echo "SurrealDB is up!"
+              break
+            fi
+            echo "SurrealDB not up yet. Retrying..."
+            sleep 3
+          done
+      
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: |
+            3.11
+            3.12
+            3.13
+      
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      
+      - name: Create virtual environment
+        run: |
+
+          uv tool install ruff
+          uv tool install pyright
+          uv tool install lint
+          uv run python -m mypy .
+
+      - name: Run tests
+        env:
+          SURREALDB_HOST: localhost
+          SURREALDB_PORT: 8000
+        run: |
+          uv run make all
+          uv run coverage report
+
+      - name: Upload results to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: EulogySnowfall/SurrealDB-ORM
+          verbose: true
+          
+      - name: Upload test results to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+

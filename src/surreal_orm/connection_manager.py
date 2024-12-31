@@ -1,13 +1,15 @@
 from surrealdb import AsyncSurrealDB
+from typing import Any
 
 
 class SurrealDBConnectionManager:
     """
     A singleton class to manage connections to a SurrealDB instance.
     """
+
     _instance = None
 
-    def __new__(cls, *args, **kwargs):
+    def __new__(cls, *args: Any, **kwargs: Any) -> "SurrealDBConnectionManager":
         """
         Create a new instance if one does not exist, otherwise return the existing instance.
         """
@@ -15,7 +17,14 @@ class SurrealDBConnectionManager:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, url=None, user=None, password=None, namespace=None, database=None):
+    def __init__(
+        self,
+        url: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
+        namespace: str | None = None,
+        database: str | None = None,
+    ):
         """
         Initialize the connection manager with connection parameters.
 
@@ -41,21 +50,26 @@ class SurrealDBConnectionManager:
         :return: The SurrealDB client.
         """
         if self._client is None:
-            await self._create_client()
-        return self._client
+            self._client = await self._create_client()
 
-    async def _create_client(self):
+        if isinstance(self._client, AsyncSurrealDB):
+            return self._client
+
+        return await self._create_client()
+
+    async def _create_client(self) -> AsyncSurrealDB:
         """
         Create and initialize the SurrealDB client.
         """
         # Établir la connexion
-        self._client = AsyncSurrealDB(self.url)
-        await self._client.connect()
-        await self._client.use(self.namespace, self.database)
-        await self._client.sign_in(self.user, self.password)
-        return self._client
+        _client = AsyncSurrealDB(self.url)
+        await _client.connect()  # type: ignore
+        await _client.use(self.namespace, self.database)  # type: ignore
+        await _client.sign_in(self.user, self.password)  # type: ignore
 
-    async def close(self):
+        return _client
+
+    async def close(self) -> None:
         """
         Close the SurrealDB client connection.
         """
