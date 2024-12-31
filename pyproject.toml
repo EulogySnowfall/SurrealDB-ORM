@@ -1,0 +1,71 @@
+[project]
+name = "surrealdb-orm"
+version = "0.1.0"
+description = "SurrealDB ORM as 'DJango style' for Python with async support. Compatible with pydantic validation."  
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+authors = [
+    { name = "Yannick Croteau", email = "yannick.croteau@gmail.com" }
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "surrealdb>=0.4.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/EulogySnowfall/SurrealDB-ORM"
+Documentation = "https://github.com/EulogySnowfall/SurrealDB-ORM"
+Repository = "https://github.com/EulogySnowfall/SurrealDB-ORM.git"
+Issues = "https://github.com/EulogySnowfall/SurrealDB-ORM/issues"
+
+[tool.setuptools]
+packages = ["src/surrealdb_orm"]
+
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra -q --cov=src"
+asyncio_mode = "auto"
+
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+    "mypy>=1.14.0",
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "black>=24.10.0",
+    "pydantic>=2.10.4",
+    "docker>=7.1.0"
+]
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
