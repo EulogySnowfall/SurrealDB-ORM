@@ -32,7 +32,7 @@ Repository = "https://github.com/EulogySnowfall/SurrealDB-ORM.git"
 Issues = "https://github.com/EulogySnowfall/SurrealDB-ORM/issues"
 
 [tool.setuptools]
-packages = ["src/surrealdb_orm"]
+packages = ["src.surrealdb_orm"]
 
 
 [build-system]

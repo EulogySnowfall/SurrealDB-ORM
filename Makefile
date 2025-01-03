@@ -34,6 +34,8 @@ test-all-python:
 	uv run --python 3.12 coverage run -p -m pytest
 	uv run --python 3.13 coverage run -p -m pytest
 	@uv run coverage combine
+	@uv run coverage xml -o coverage.xml
+	@uv run coverage report
 
 .PHONY: all
 all: format lint typecheck test-all-python
