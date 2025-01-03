@@ -58,7 +58,7 @@ no_implicit_reexport = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-ra -q --cov=src.surreal_orm --cov-branch --cov-report=xml"
+addopts = "-ra -q --cov=src.surreal_orm --cov-branch --cov-report=xml --cov-report=html --cov-report=term-missing --cov-fail-under=70 --cov-context=test"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "module"
 

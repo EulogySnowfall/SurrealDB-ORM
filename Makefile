@@ -37,5 +37,9 @@ test-all-python:
 	@uv run coverage xml -o coverage.xml
 	@uv run coverage report
 
+.PHONY: html  # Generate HTML coverage report
+html: test-all-python
+	uv run coverage html -d htmlcov
+
 .PHONY: all
 all: format lint typecheck test-all-python
