@@ -1,7 +1,7 @@
 [project]
 name = "surrealdb-orm"
 version = "0.1.0"
-description = "SurrealDB ORM as 'DJango style' for Python with async support. Compatible with pydantic validation."  
+description = "SurrealDB ORM as 'DJango style' for Python with async support. Works with pydantic validation."  
 readme = "README.md"
 requires-python = ">=3.11"
 license = {file = "LICENSE"}
@@ -49,6 +49,7 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 check_untyped_defs = true
+exclude = "^(tests|examples)/"
 
 [[tool.mypy.overrides]]
 module = ["surrealdb.*"]
@@ -58,10 +59,13 @@ no_implicit_reexport = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-ra -q --cov=src.surreal_orm --cov-branch --cov-report=xml"
+addopts = "-ra -q --cov=src.surreal_orm --cov-branch --cov-report=xml --cov-report=html --cov-report=term-missing --cov-fail-under=70 --cov-context=test"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "module"
+# log_cli = true
 
+[tool.pyright]
+include = ["src"]
 
 [dependency-groups]
 dev = [
@@ -75,6 +79,7 @@ dev = [
     "docker>=7.1.0",
     "isort>=5.13.2",
     "flake8>=7.1.1",
+    "python-dotenv>=1.0.1",
 ]
 lint = [
     "ruff>=0.8.4",

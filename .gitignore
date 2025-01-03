@@ -38,6 +38,7 @@ junit.xml
 .env
 .dev-venv
 .venv
+.venv*/
 env/
 venv/
 ENV/

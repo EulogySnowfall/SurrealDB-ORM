@@ -1,3 +1,3 @@
-from .surreal_orm import BaseSurrealModel, SurrealDBConnectionManager, RecordID
+from .surreal_orm import BaseSurrealModel, SurrealDBConnectionManager, QuerySet
 
-__all__ = ["BaseSurrealModel", "SurrealDBConnectionManager", "RecordID"]
+__all__ = ["BaseSurrealModel", "SurrealDBConnectionManager", "QuerySet"]

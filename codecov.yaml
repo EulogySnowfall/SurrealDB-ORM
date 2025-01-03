@@ -5,18 +5,18 @@ codecov:
 coverage:
   precision: 2
   round: down
-  range: "70...100"
+  range: "80...100"
 
   status:
     project:
       default:
         target: auto
-        threshold: 30%
+        threshold: 10%
         base: auto 
     patch:
       default:
         target: auto
-        threshold: 30%
+        threshold: 10%
         base: auto 
 
 parsers:
@@ -38,4 +38,3 @@ comment:                  #this is a top-level key
 ignore:
   - "tests/**/*"
   - "**/*.test.*"
-  - "**/vendor/**/*"
