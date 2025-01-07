@@ -67,7 +67,6 @@ jobs:
           SURREALDB_PORT: 8000
         run: |
           uv run make all
-          uv run coverage report
 
       - name: Upload results to Codecov
         uses: codecov/codecov-action@v5

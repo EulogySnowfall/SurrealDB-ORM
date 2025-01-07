@@ -1,6 +1,6 @@
-from surrealdb import RecordID  # type: ignore
-from .modelBase import BaseSurrealModel
+from .model_base import BaseSurrealModel
 from .connection_manager import SurrealDBConnectionManager
-from .querySet import QuerySet
+from .query_set import QuerySet
+from .enum import OrderBy
 
-__all__ = ["SurrealDBConnectionManager", "BaseSurrealModel", "RecordID", "QuerySet"]
+__all__ = ["SurrealDBConnectionManager", "BaseSurrealModel", "QuerySet", "OrderBy"]

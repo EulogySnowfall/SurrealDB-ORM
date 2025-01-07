@@ -1,0 +1,15 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.  
+This file follows the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format  
+and adheres to [SemVer](https://semver.org/) versioning.
+
+## [0.1.0] - 2025-01-07
+
+### Added
+
+- Init version with basic "Django" like ORM.
+- Basic test and standard form has been set.
+
+---
+*Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and compliant with [SemVer](https://semver.org/).*
