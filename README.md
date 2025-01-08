@@ -23,9 +23,9 @@
 
 ---
 
-## :white_check_mark: Version
+## ✅ Version
 
-Alpha 0.1.0
+Alpha 0.1.3
 
 ---
 

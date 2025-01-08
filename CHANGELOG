@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 This file follows the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format  
 and adheres to [SemVer](https://semver.org/) versioning.
 
+## [0.1.3] - 2025-01-07
+
+### Fixed
+
+- Packaging fix.
+
+---
+
 ## [0.1.0] - 2025-01-07
 
 ### Added
