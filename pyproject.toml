@@ -1,6 +1,6 @@
 [project]
 name = "surrealdb-orm"
-version = "0.1.3"
+version = "0.1.4"
 description = "SurrealDB ORM as 'DJango style' for Python with async support. Works with pydantic validation."  
 readme = "README.md"
 requires-python = ">=3.11"
@@ -90,4 +90,4 @@ lint = [
 packages = ["src/surreal_orm"]
 
 [tool.hatch.build.targets.sdist]
-include = ["/README.md", "/Makefile", "/src", "/tests"]
+include = ["README.md", "Makefile", "/src"]
