@@ -32,7 +32,6 @@ junit.xml
 
 # Jupyter Notebook
 .ipynb_checkpoints
-*.ipynb
 
 # Environment directories
 .env

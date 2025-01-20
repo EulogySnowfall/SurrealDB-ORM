@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := all
-sources = src tests
+sources = src
 
 .PHONY: .uv  # Check that uv is installed
 .uv:
@@ -19,6 +19,10 @@ format:
 lint:
 	uv run ruff format --check
 	uv run ruff check
+
+.PHONY: mypy
+mypy:
+	uv run python -m mypy $(sources)
 
 .PHONY: typecheck
 typecheck:
@@ -41,4 +45,4 @@ html: test-all-python
 	uv run coverage html -d htmlcov
 
 .PHONY: all
-all: format lint typecheck test-all-python
+all: format mypy lint typecheck test-all-python
