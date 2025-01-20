@@ -330,7 +330,7 @@ class QuerySet:
         if results:
             return results[0]
 
-        raise SurrealDbError("No result found.")
+        raise self.model.DoesNotExist("Query returned no results.")
 
     async def get(self, id_item: Any = None) -> Any:
         """
@@ -364,7 +364,7 @@ class QuerySet:
                 raise SurrealDbError("More than one result found.")
 
             if len(result) == 0:
-                raise SurrealDbError("No result found.")
+                raise self.model.DoesNotExist("Record not found.")
             return result[0]
 
     async def all(self) -> Any:

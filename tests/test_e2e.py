@@ -95,6 +95,11 @@ async def test_update_model() -> None:
 
     assert str(exc2.value) == "No Id for the data to merge: {'age': 19}"
 
+    with pytest.raises(ModelTest.DoesNotExist) as exc3:
+        await ModelTest.objects().get("NotExist")
+
+    assert str(exc3.value) == "Record not found."
+
 
 async def test_first_model() -> None:
     model = await ModelTest.objects().filter(name="Test Man").first()
@@ -105,10 +110,11 @@ async def test_first_model() -> None:
     else:
         assert False
 
-    with pytest.raises(SurrealDbError) as exc1:
-        await ModelTest.objects().filter(name="NotExist").first()
+    with pytest.raises(ModelTest.DoesNotExist) as exc1:
+        result = await ModelTest.objects().filter(name="NotExist").first()
 
-    assert str(exc1.value) == "No result found."
+        print(result)
+    assert str(exc1.value) == "Query returned no results."
 
 
 async def test_filter_model() -> None:
@@ -217,10 +223,10 @@ async def test_error_on_get_multi() -> None:
 
     assert str(exc1.value) == "More than one result found."
 
-    with pytest.raises(SurrealDbError) as exc2:
+    with pytest.raises(ModelTestEmpty.DoesNotExist) as exc2:
         await ModelTestEmpty.objects().get()
 
-    assert str(exc2.value) == "No result found."
+    assert str(exc2.value) == "Record not found."
 
 
 async def test_with_primary_key() -> None:

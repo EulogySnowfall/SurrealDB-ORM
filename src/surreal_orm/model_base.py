@@ -62,10 +62,13 @@ class BaseSurrealModel(BaseModel):
         return None  # pragma: no cover
 
     @classmethod
-    def from_db(cls, record: dict | list) -> Self | list[Self]:
+    def from_db(cls, record: dict | list | None) -> Self | list[Self]:
         """
         Create an instance from a SurrealDB record.
         """
+        if record is None:
+            raise cls.DoesNotExist("Record not found.")
+
         if isinstance(record, list):
             return [cls.from_db(rs) for rs in record]  # type: ignore
 
@@ -200,3 +203,10 @@ class BaseSurrealModel(BaseModel):
         from .query_set import QuerySet
 
         return QuerySet(cls)
+
+    class DoesNotExist(Exception):
+        """
+        Exception raised when a model instance does not exist.
+        """
+
+        pass
