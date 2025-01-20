@@ -301,7 +301,6 @@ class QuerySet:
         results = await self._execute_query(query)
         try:
             data = cast(dict, results[0])
-
             return self.model.from_db(data["result"])
         except ValidationError as e:
             logger.info(f"Pydantic invalid format for the class, returning dict value: {e}")

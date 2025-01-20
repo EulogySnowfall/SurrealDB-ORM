@@ -1,8 +1,8 @@
 import pytest
-from pydantic import ConfigDict, Field
+from pydantic import Field
 from src import surreal_orm
 from surrealdb import RecordID
-from surrealdb.errors import SurrealDbError
+from surrealdb.errors import SurrealDbError, SurrealDbConnectionError
 
 
 SURREALDB_URL = "http://localhost:8000"
@@ -13,14 +13,12 @@ SURREALDB_DATABASE = "db"
 
 
 class ModelTest(surreal_orm.BaseSurrealModel):
-    model_config = ConfigDict(extra="allow")
-    id: str | RecordID | None = Field(default=None)
+    id: str | RecordID | None = None
     name: str = Field(..., max_length=100)
     age: int = Field(..., ge=0, le=125)
 
 
 class ModelTestEmpty(surreal_orm.BaseSurrealModel):
-    model_config = ConfigDict(extra="allow")
     id: str | RecordID | None = Field(default=None)
     name: str = Field(..., max_length=100)
     age: int = Field(..., ge=0, le=125)
@@ -38,9 +36,8 @@ def setup_surrealdb() -> None:
     )
 
 
-@pytest.mark.filterwarnings("ignore:fields may not")
 async def test_save_model() -> None:
-    model = ModelTest(id="1", name="Test", age=32)
+    model = ModelTest(id="1", name="Test Man", age=42)
     await model.save()
 
     # Vérification de l'insertion
@@ -49,44 +46,49 @@ async def test_save_model() -> None:
     test_id = RecordID(table_name="ModelTest", identifier=1)
     assert len(result) == 1
 
-    assert result[0] == {"id": test_id, "name": "Test", "age": 32}
+    assert result[0] == {"id": test_id, "name": "Test Man", "age": 42}
 
 
 async def test_merge_model() -> None:
-    item = await ModelTest.objects().get(1)
-    assert item.name == "Test"
-    assert item.age == 32
-    await item.merge(age=23)  # Also test whole refresh() method
-    item.age = 23
-    item.name = "Test"
+    item = await ModelTest.objects().get("1")
+    assert item.name == "Test Man"
+    assert item.age == 42
+    await item.merge(age=32)  # Also test whole refresh() method
+    item.age = 32
+    item.name = "Test Man"
     item.id = "1"
 
-    item2 = await ModelTest.objects().filter(name="Test").get()
-    assert item2.age == 23
-    assert item2.name == "Test"
+    item2 = await ModelTest.objects().filter(name="Test Man").get()
+    assert item2.age == 32
+    assert item2.name == "Test Man"
     assert item2.id == "1"
 
 
 async def test_update_model() -> None:
-    item = await ModelTest.objects().get(1)
-    assert item.name == "Test"
-    assert item.age == 23
+    item = await ModelTest.objects().get("1")
+    assert item.name == "Test Man"
+    assert item.age == 32
     item.age = 25
     await item.update()
-    item2 = await ModelTest.objects().get(1)
+    item2 = await ModelTest.objects().get("1")
     assert item2.age == 25
 
-    item2 = await ModelTest.objects().filter(name="Test").get()
+    item2 = await ModelTest.objects().filter(name="Test Man").get()
     assert item2.age == 25
-    assert item2.name == "Test"
+    assert item2.name == "Test Man"
     assert item2.id == "1"
 
-    item3 = ModelTest(id=None, name="TestNone", age=17)
+    item3 = ModelTest(name="TestNone", age=17)
 
     with pytest.raises(SurrealDbError) as exc1:
         await item3.update()
 
     assert str(exc1.value) == "Can't update data, no id found."
+
+    with pytest.raises(SurrealDbError) as exc2:
+        await item3.refresh()
+
+    assert str(exc2.value) == "Can't refresh data, not recorded yet."  # test Error in refresh()
 
     with pytest.raises(SurrealDbError) as exc2:
         await item3.merge(age=19)
@@ -95,9 +97,9 @@ async def test_update_model() -> None:
 
 
 async def test_first_model() -> None:
-    model = await ModelTest.objects().filter(name="Test").first()
+    model = await ModelTest.objects().filter(name="Test Man").first()
     if isinstance(model, ModelTest):
-        assert model.name == "Test"
+        assert model.name == "Test Man"
         assert model.age == 25
         assert model.id == "1"
     else:
@@ -110,7 +112,7 @@ async def test_first_model() -> None:
 
 
 async def test_filter_model() -> None:
-    item3 = ModelTest(id=None, name="Test2", age=17)
+    item3 = ModelTest(name="Test2", age=17)
     await item3.save()
 
     models = await ModelTest.objects().filter(age__lt=30).exec()  # Test from_db isinstance(record["id"], RecordID)
@@ -119,8 +121,16 @@ async def test_filter_model() -> None:
         assert model.age < 30
 
 
+async def test_save_model_already_exist() -> None:
+    model = ModelTest(id="1", name="Test2", age=34)
+    with pytest.raises(SurrealDbError) as exc:
+        await model.save()
+
+    assert str(exc.value) == "There was a problem with the database: Database record `ModelTest:⟨1⟩` already exists"
+
+
 async def test_delete_model() -> None:
-    model = ModelTest(id="2", name="Test2", age=34)
+    model = ModelTest(id="4", name="Test2", age=34)
     await model.save()
     client = await surreal_orm.SurrealDBConnectionManager.get_client()
     result = await client.select("ModelTest")
@@ -140,68 +150,60 @@ async def test_delete_model() -> None:
 
 async def test_query_model() -> None:
     # Utiliser test_model pour exécuter la requête
-    results = await ModelTest.objects().filter(name="Test").exec()
+    results = await ModelTest.objects().filter(name="Test Man").exec()
     assert len(results) == 1
-    assert results[0].name == "Test"
+    assert results[0].name == "Test Man"
 
 
 async def test_multi_select() -> None:
-    await ModelTest(id=None, name="Ian", age=23).save()
-    await ModelTest(id=None, name="Yan", age=32).save()
-    await ModelTest(id=None, name="Isa", age=32).save()
+    await ModelTest(name="Ian", age=23).save()
+    await ModelTest(name="Yan", age=32).save()
+    await ModelTest(name="Isa", age=32).save()
 
     result = await ModelTest.objects().all()
 
     assert len(result) == 5
 
-    result2 = await ModelTest.objects().filter(name__in=["Ian", "Yan"]).exec()
+    result1 = await ModelTest.objects().filter(name__in=["Ian", "Yan"]).exec()
 
-    assert len(result2) == 2
-    for item in result2:
+    assert len(result1) == 2
+    for item in result1:
         assert item.name in ["Yan", "Ian"]
 
-
-async def test_order_by() -> None:
-    result1 = await ModelTest.objects().order_by("name").exec()
-    assert len(result1) == 5
-    assert result1[0].name == "Ian"
-
-    result2 = await ModelTest.objects().order_by("name", surreal_orm.OrderBy.DESC).exec()
+    # Test order_by
+    result2 = await ModelTest.objects().order_by("name").exec()
     assert len(result2) == 5
-    assert result2[0].name == "Yan"
+    assert result2[0].name == "Ian"
 
+    # Test order_by DESC
+    result3 = await ModelTest.objects().order_by("name", surreal_orm.OrderBy.DESC).exec()
+    assert len(result3) == 5
+    assert result3[0].name == "Yan"
 
-async def test_offset() -> None:
-    result = await ModelTest.objects().offset(2).exec()
-    assert len(result) == 3
+    # Test offset and limit
+    result4 = await ModelTest.objects().offset(2).exec()
+    assert len(result4) == 3
 
+    result5 = await ModelTest.objects().limit(2).exec()
+    assert len(result5) == 2
 
-async def test_limit() -> None:
-    result = await ModelTest.objects().limit(2).exec()
-    assert len(result) == 2
+    # Select only age
+    result6 = await ModelTest.objects().select("age").exec()
+    assert len(result6) == 5
+    assert isinstance(result6[0], dict)
 
-
-async def test_select_field() -> None:
-    result = await ModelTest.objects().select("name", "age").exec()
-    assert len(result) == 5
-    assert isinstance(result[0], dict)
-
-
-async def test_select_with_variable() -> None:
-    result = await ModelTest.objects().filter(age__lte="$max_age").variables(max_age=25).exec()
-    assert len(result) == 3
-    for res in result:
+    result7 = await ModelTest.objects().filter(age__lte="$max_age").variables(max_age=25).exec()
+    assert len(result7) == 3
+    for res in result7:
         assert res.age <= 25
 
-
-async def test_query() -> None:
-    result = await ModelTest.objects().query("SELECT * FROM ModelTest WHERE age > 25")
-    assert len(result) == 2
-    for res in result:
+    result8 = await ModelTest.objects().query("SELECT * FROM ModelTest WHERE age > 25")
+    assert len(result8) == 2
+    for res in result8:
         assert res.age > 25
 
-    result2 = await ModelTest.objects().query("SELECT * FROM ModelTest WHERE age > $age", {"age": 19})
-    assert len(result2) == 4
+    result9 = await ModelTest.objects().query("SELECT * FROM ModelTest WHERE age > $age", {"age": 19})
+    assert len(result9) == 4
 
     with pytest.raises(SurrealDbError) as exc:
         await ModelTest.objects().query("SELECT * FROM NoTable WHERE age > 34")
@@ -221,16 +223,23 @@ async def test_error_on_get_multi() -> None:
     assert str(exc2.value) == "No result found."
 
 
-@pytest.mark.filterwarnings("ignore:fields may not")
 async def test_with_primary_key() -> None:
     class ModelTest2(surreal_orm.BaseSurrealModel):
-        model_config = ConfigDict(extra="allow", primary_key="email")  # type: ignore
+        model_config = surreal_orm.SurrealConfigDict(primary_key="email")
         name: str = Field(..., max_length=100)
         age: int = Field(..., ge=0, le=125)
         email: str = Field(..., max_length=100)
 
     model = ModelTest2(name="Test", age=32, email="test@test.com")
     await model.save()
+
+    # Error on duplicate primary key
+    with pytest.raises(SurrealDbConnectionError) as exc:
+        await ModelTest2(name="Test3", age=35, email="test@test.com").save()
+
+    assert (
+        str(exc.value) == "There was a problem with the database: Database record `ModelTest2:⟨test@test.com⟩` already exists"
+    )
 
     fletch = await ModelTest2.objects().get("test@test.com")
     if isinstance(fletch, ModelTest2):

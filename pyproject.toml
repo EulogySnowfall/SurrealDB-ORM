@@ -42,6 +42,7 @@ build-backend = "hatchling.build"
 [tool.ruff]
 line-length = 128
 target-version = "py311"
+exclude = ["examples"]
 
 [tool.mypy]
 python_version = "3.11"
