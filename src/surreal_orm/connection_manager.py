@@ -1,9 +1,19 @@
-from typing import Any
-from surrealdb import AsyncSurrealDB
-from surrealdb.errors import SurrealDbConnectionError
+from typing import Any, Union
+from surrealdb import AsyncSurreal
+from surrealdb.connections.async_ws import AsyncWsSurrealConnection
+from surrealdb.connections.async_http import AsyncHttpSurrealConnection
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Type alias for async surreal connections
+AsyncSurrealConnection = Union[AsyncWsSurrealConnection, AsyncHttpSurrealConnection, Any]
+
+
+class SurrealDbConnectionError(Exception):
+    """Connection error for SurrealDB."""
+
+    pass
 
 
 class SurrealDBConnectionManager:
@@ -12,12 +22,12 @@ class SurrealDBConnectionManager:
     __password: str | None = None
     __namespace: str | None = None
     __database: str | None = None
-    __client: AsyncSurrealDB | None = None
+    __client: AsyncSurrealConnection | None = None
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await SurrealDBConnectionManager.close_connection()
 
-    async def __aenter__(self) -> AsyncSurrealDB:
+    async def __aenter__(self) -> AsyncSurrealConnection:
         return await SurrealDBConnectionManager.get_client()
 
     @classmethod
@@ -57,7 +67,7 @@ class SurrealDBConnectionManager:
         return all([cls.__url, cls.__user, cls.__password, cls.__namespace, cls.__database])
 
     @classmethod
-    async def get_client(cls) -> AsyncSurrealDB:
+    async def get_client(cls) -> AsyncSurrealConnection:
         """
         Connect to the SurrealDB instance.
 
@@ -70,18 +80,25 @@ class SurrealDBConnectionManager:
         if not cls.is_connection_set():
             raise ValueError("Connection not been set.")
 
-        # Établir la connexion
+        # Establish connection
         try:
-            _client = AsyncSurrealDB(cls.get_connection_string())
-            await _client.connect()  # type: ignore
-            await _client.use(cls.__namespace, cls.__database)  # type: ignore
-            await _client.sign_in(cls.__user, cls.__password)  # type: ignore
+            url = cls.get_connection_string()
+            assert url is not None  # Already validated by is_connection_set()
+            assert cls.__namespace is not None
+            assert cls.__database is not None
+
+            _client = AsyncSurreal(url)
+            # connect() is only implemented for WebSocket connections
+            if url.startswith(("ws://", "wss://")):
+                await _client.connect()  # type: ignore[call-arg]
+            await _client.use(cls.__namespace, cls.__database)
+            await _client.signin({"username": cls.__user, "password": cls.__password})
 
             cls.__client = _client
             return cls.__client
         except Exception as e:
             logger.warning(f"Can't get connection: {e}")
-            if isinstance(cls.__client, AsyncSurrealDB):  # pragma: no cover
+            if cls.__client is not None:  # pragma: no cover
                 await cls.__client.close()
                 cls.__client = None
             raise SurrealDbConnectionError("Can't connect to the database.")
@@ -96,17 +113,19 @@ class SurrealDBConnectionManager:
         if cls.__client is None:
             return
 
-        await cls.__client.close()
+        try:
+            await cls.__client.close()
+        except NotImplementedError:
+            # close() is not implemented for HTTP connections in surrealdb SDK 1.0.8
+            pass
         cls.__client = None
 
     @classmethod
-    async def reconnect(cls) -> AsyncSurrealDB | None:
+    async def reconnect(cls) -> AsyncSurrealConnection | None:
         """
         Reconnect to the SurrealDB instance.
         """
-        # Fermer la connexion
         await cls.close_connection()
-        # Établir la connexion
         return await cls.get_client()
 
     @classmethod

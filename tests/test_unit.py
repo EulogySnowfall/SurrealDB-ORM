@@ -1,8 +1,7 @@
 import pytest
 from pydantic import Field
-from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
+from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict, SurrealDbError
 from src.surreal_orm.query_set import QuerySet
-from surrealdb import SurrealDbError
 
 
 class ModelTest(BaseSurrealModel):

@@ -76,3 +76,6 @@ external_pkg_ref/
 .ruff_cache/
 .dmypy.json
 dmypy.json
+
+# Claude
+.claude/

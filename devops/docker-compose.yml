@@ -1,0 +1,125 @@
+# SurrealDB Docker Compose for development and CI testing
+# Usage:
+#   make db-up          # Start test instance
+#   make db-dev         # Start dev instance (persistent)
+#   make db-cluster     # Start multi-node cluster
+
+services:
+  # =============================================================================
+  # Development instance (persistent data)
+  # =============================================================================
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    container_name: surrealdb-dev
+    ports:
+      - "8000:8000"
+    command: start --log trace --user root --pass root file:/data/database.db
+    environment:
+      - SURREAL_LOG=trace
+    volumes:
+      - surrealdb_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - surrealdb-net
+
+  # =============================================================================
+  # Test instance (in-memory, ephemeral) - Used for CI and local tests
+  # =============================================================================
+  surrealdb-test:
+    image: surrealdb/surrealdb:latest
+    container_name: surrealdb-test
+    ports:
+      - "8001:8000"
+    command: start --log warn --user root --pass root memory
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    networks:
+      - surrealdb-net
+
+  # =============================================================================
+  # CI instance - Optimized for GitHub Actions
+  # =============================================================================
+  surrealdb-ci:
+    image: surrealdb/surrealdb:latest
+    container_name: surrealdb-ci
+    ports:
+      - "8000:8000"
+    command: start --log error --user root --pass root memory
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 3s
+    networks:
+      - surrealdb-net
+
+  # =============================================================================
+  # Multi-node cluster for K8s simulation / distributed testing
+  # Activated with: docker compose --profile cluster up -d
+  # =============================================================================
+  surrealdb-node1:
+    image: surrealdb/surrealdb:latest
+    container_name: surrealdb-node1
+    ports:
+      - "8002:8000"
+    command: start --log info --user root --pass root memory
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    profiles:
+      - cluster
+    networks:
+      - surrealdb-net
+
+  surrealdb-node2:
+    image: surrealdb/surrealdb:latest
+    container_name: surrealdb-node2
+    ports:
+      - "8003:8000"
+    command: start --log info --user root --pass root memory
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    profiles:
+      - cluster
+    networks:
+      - surrealdb-net
+
+  surrealdb-node3:
+    image: surrealdb/surrealdb:latest
+    container_name: surrealdb-node3
+    ports:
+      - "8004:8000"
+    command: start --log info --user root --pass root memory
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    profiles:
+      - cluster
+    networks:
+      - surrealdb-net
+
+networks:
+  surrealdb-net:
+    driver: bridge
+
+volumes:
+  surrealdb_data:
+    driver: local

@@ -1,13 +1,19 @@
 from .constants import LOOKUP_OPERATORS
 from .enum import OrderBy
 from .utils import remove_quotes_for_variables
-from surrealdb import QueryResponse, Table, AsyncSurrealDB
-from surrealdb.errors import SurrealDbError
+from surrealdb import Table
 from . import BaseSurrealModel, SurrealDBConnectionManager
 from typing import Self, Any, cast
 from pydantic_core import ValidationError
 
 import logging
+
+
+class SurrealDbError(Exception):
+    """Error from SurrealDB operations."""
+
+    pass
+
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +61,7 @@ class QuerySet:
         self._limit: int | None = None
         self._offset: int | None = None
         self._order_by: str | None = None
-        self._model_table: str = getattr(model, "_table_name", model.__name__)
+        self._model_table: str = model.__name__
         self._variables: dict = {}
 
     def select(self, *fields: str) -> Self:
@@ -201,7 +207,7 @@ class QuerySet:
         self._offset = value
         return self
 
-    def order_by(self, field_name: str, type: OrderBy = OrderBy.ASC) -> Self:
+    def order_by(self, field_name: str, order_type: OrderBy = OrderBy.ASC) -> Self:
         """
         Set the field and direction to order the results by.
 
@@ -220,7 +226,7 @@ class QuerySet:
             queryset.order_by('name', OrderBy.DESC)
             ```
         """
-        self._order_by = f"{field_name} {type}"
+        self._order_by = f"{field_name} {order_type}"
         return self
 
     def _compile_query(self) -> str:
@@ -296,15 +302,14 @@ class QuerySet:
             results = await queryset.exec()
             ```
         """
-        data: dict[str, Any] = {"result": []}
         query = self._compile_query()
         results = await self._execute_query(query)
         try:
-            data = cast(dict, results[0])
-            return self.model.from_db(data["result"])
+            # surrealdb SDK 1.0.8 returns records directly, not wrapped in {"result": ...}
+            return self.model.from_db(cast(dict | list | None, results))
         except ValidationError as e:
             logger.info(f"Pydantic invalid format for the class, returning dict value: {e}")
-            return data["result"]
+            return results
 
     async def first(self) -> Any:
         """
@@ -330,7 +335,7 @@ class QuerySet:
         if results:
             return results[0]
 
-        raise SurrealDbError("No result found.")
+        raise self.model.DoesNotExist("Query returned no results.")
 
     async def get(self, id_item: Any = None) -> Any:
         """
@@ -357,14 +362,19 @@ class QuerySet:
         if id_item:
             client = await SurrealDBConnectionManager.get_client()
             data = await client.select(f"{self._model_table}:{id_item}")
-            return self.model.from_db(data)
+            # surrealdb SDK 1.0.8 always returns a list from select()
+            if isinstance(data, list):
+                if len(data) == 0:
+                    raise self.model.DoesNotExist("Record not found.")
+                data = data[0]
+            return self.model.from_db(cast(dict | list | None, data))
         else:
             result = await self.exec()
             if len(result) > 1:
                 raise SurrealDbError("More than one result found.")
 
             if len(result) == 0:
-                raise SurrealDbError("No result found.")
+                raise self.model.DoesNotExist("Record not found.")
             return result[0]
 
     async def all(self) -> Any:
@@ -386,9 +396,9 @@ class QuerySet:
         """
         client = await SurrealDBConnectionManager.get_client()
         results = await client.select(Table(self._model_table))
-        return self.model.from_db(results)
+        return self.model.from_db(cast(dict | list | None, results))
 
-    async def _execute_query(self, query: str) -> list[QueryResponse]:
+    async def _execute_query(self, query: str) -> list[Any]:
         """
         Execute the given SQL query using the SurrealDB client.
 
@@ -399,7 +409,7 @@ class QuerySet:
             query (str): The SQL query string to execute.
 
         Returns:
-            list[QueryResponse]: A list of `QueryResponse` objects containing the query results.
+            list[Any]: A list of query response objects containing the query results.
 
         Raises:
             SurrealDbError: If there is an issue executing the query.
@@ -412,7 +422,7 @@ class QuerySet:
         client = await SurrealDBConnectionManager.get_client()
         return await self._run_query_on_client(client, query)
 
-    async def _run_query_on_client(self, client: AsyncSurrealDB, query: str) -> list[QueryResponse]:
+    async def _run_query_on_client(self, client: Any, query: str) -> list[Any]:
         """
         Run the SQL query on the provided SurrealDB client.
 
@@ -420,11 +430,11 @@ class QuerySet:
         and returns the raw query responses.
 
         Args:
-            client (AsyncSurrealDB): The active SurrealDB client instance.
+            client: The active SurrealDB client instance.
             query (str): The SQL query string to execute.
 
         Returns:
-            list[QueryResponse]: A list of `QueryResponse` objects containing the query results.
+            list[Any]: A list of query response objects containing the query results.
 
         Raises:
             SurrealDbError: If there is an issue executing the query.
@@ -483,9 +493,9 @@ class QuerySet:
             results = await queryset.query(custom_query, variables={'status': 'active'})
             ```
         """
-        if f"FROM {self.model.__name__}" not in query:
-            raise SurrealDbError(f"The query must include 'FROM {self.model.__name__}' to reference the correct table.")
+        if f"FROM {self._model_table}" not in query:
+            raise SurrealDbError(f"The query must include 'FROM {self._model_table}' to reference the correct table.")
         client = await SurrealDBConnectionManager.get_client()
         results = await client.query(remove_quotes_for_variables(query), variables)
-        data = cast(dict, results[0])
-        return self.model.from_db(data["result"])
+        # surrealdb SDK 1.0.8 returns records directly, not wrapped in {"result": ...}
+        return self.model.from_db(cast(dict | list | None, results))

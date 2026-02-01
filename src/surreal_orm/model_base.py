@@ -1,9 +1,15 @@
-from typing import Any, Self
+from typing import Any, Self, cast
 from pydantic import BaseModel, ConfigDict, model_validator
 from .connection_manager import SurrealDBConnectionManager
-from surrealdb import RecordID, SurrealDbError
+from surrealdb import RecordID
 
 import logging
+
+
+class SurrealDbError(Exception):
+    """Error from SurrealDB operations."""
+
+    pass
 
 
 logger = logging.getLogger(__name__)
@@ -62,10 +68,13 @@ class BaseSurrealModel(BaseModel):
         return None  # pragma: no cover
 
     @classmethod
-    def from_db(cls, record: dict | list) -> Self | list[Self]:
+    def from_db(cls, record: dict | list | None) -> Self | list[Self]:
         """
         Create an instance from a SurrealDB record.
         """
+        if record is None:
+            raise cls.DoesNotExist("Record not found.")
+
         if isinstance(record, list):
             return [cls.from_db(rs) for rs in record]  # type: ignore
 
@@ -90,12 +99,24 @@ class BaseSurrealModel(BaseModel):
             raise SurrealDbError("Can't refresh data, not recorded yet.")  # pragma: no cover
 
         client = await SurrealDBConnectionManager.get_client()
-        record = await client.select(f"{self.get_table_name()}:{self.get_id()}")
+        result = await client.select(f"{self.get_table_name()}:{self.get_id()}")
+
+        # surrealdb SDK 1.0.8 always returns a list from select()
+        if isinstance(result, list):
+            if len(result) == 0:
+                raise SurrealDbError("Can't refresh data, no record found.")  # pragma: no cover
+            record = result[0]
+        else:
+            record = result
 
         if record is None:
             raise SurrealDbError("Can't refresh data, no record found.")  # pragma: no cover
 
-        self.from_db(record)
+        # Update instance fields from the record
+        if isinstance(record, dict):
+            for key, value in record.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
         return None
 
     async def save(self) -> Self:
@@ -121,7 +142,7 @@ class BaseSurrealModel(BaseModel):
         if record is None:
             raise SurrealDbError("Can't save data, no record returned.")  # pragma: no cover
 
-        obj = self.from_db(record)
+        obj = self.from_db(cast(dict | list | None, record))
         if isinstance(obj, type(self)):
             self = obj
             return self
@@ -141,6 +162,13 @@ class BaseSurrealModel(BaseModel):
             test = await client.update(thing, data)
             return test
         raise SurrealDbError("Can't update data, no id found.")
+
+    @classmethod
+    def get(cls, item: str) -> str:
+        """
+        Get the table name for the model.
+        """
+        return f"{cls.__name__}:{item}"
 
     async def merge(self, **data: Any) -> Any:
         """
@@ -176,7 +204,7 @@ class BaseSurrealModel(BaseModel):
         if not deleted:
             raise SurrealDbError(f"Can't delete Record id -> '{id}' not found!")
 
-        logger.info(f"Record deleted -> {deleted}.")
+        logger.info(f"Record deleted -> {deleted!r}.")
         del self
 
     @model_validator(mode="after")
@@ -200,3 +228,10 @@ class BaseSurrealModel(BaseModel):
         from .query_set import QuerySet
 
         return QuerySet(cls)
+
+    class DoesNotExist(Exception):
+        """
+        Exception raised when a model instance does not exist.
+        """
+
+        pass
