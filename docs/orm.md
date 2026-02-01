@@ -12,6 +12,10 @@ A Django-style ORM for SurrealDB with async support and Pydantic validation.
 - [QuerySet API](#queryset-api)
 - [Filtering](#filtering)
 - [Ordering, Limit & Offset](#ordering-limit--offset)
+- [Transactions](#transactions)
+- [Aggregations](#aggregations)
+- [Bulk Operations](#bulk-operations)
+- [Relations & Graph Traversal](#relations--graph-traversal)
 - [Custom Queries](#custom-queries)
 - [Error Handling](#error-handling)
 
@@ -374,6 +378,231 @@ users = await (
     .offset(0)
     .exec()
 )
+```
+
+---
+
+## Transactions
+
+All CRUD operations support transactions via the `tx` parameter.
+
+### Using Transactions
+
+```python
+from surreal_orm import SurrealDBConnectionManager
+
+# Via ConnectionManager
+async with await SurrealDBConnectionManager.transaction() as tx:
+    user = User(name="Alice", balance=1000)
+    await user.save(tx=tx)
+
+    order = Order(user_id=user.id, total=100)
+    await order.save(tx=tx)
+
+    user.balance -= 100
+    await user.update(tx=tx)
+    # All-or-nothing: commit on success, rollback on exception
+```
+
+### Model Transaction Shortcut
+
+```python
+# Via Model class method
+async with User.transaction() as tx:
+    await user1.save(tx=tx)
+    await user2.delete(tx=tx)
+```
+
+### Transaction Methods
+
+All model methods accept a `tx` parameter:
+
+```python
+await model.save(tx=tx)
+await model.update(tx=tx)
+await model.merge(tx=tx, **data)
+await model.delete(tx=tx)
+```
+
+---
+
+## Aggregations
+
+Django-style aggregation methods for computing values across records.
+
+### Simple Aggregations
+
+```python
+# Count all records
+count = await User.objects().count()
+
+# Count with filter
+active_count = await User.objects().filter(active=True).count()
+
+# Field aggregations
+avg_age = await User.objects().avg("age")
+total = await Order.objects().filter(status="paid").sum("amount")
+min_val = await Product.objects().min("price")
+max_val = await Product.objects().max("price")
+```
+
+### GROUP BY with values() and annotate()
+
+```python
+from surreal_orm import Count, Sum, Avg, Min, Max
+
+# Group by single field
+stats = await Order.objects().values("status").annotate(
+    count=Count(),
+    total=Sum("amount"),
+)
+# Result: [{"status": "paid", "count": 42, "total": 5000}, ...]
+
+# Group by multiple fields
+monthly = await Order.objects().values("status", "month").annotate(
+    count=Count(),
+)
+```
+
+---
+
+## Bulk Operations
+
+Efficient batch operations with optional transaction support.
+
+### Bulk Create
+
+```python
+users = [User(name=f"User{i}") for i in range(1000)]
+
+# Simple bulk create
+created = await User.objects().bulk_create(users)
+
+# Atomic bulk create (all-or-nothing)
+created = await User.objects().bulk_create(users, atomic=True)
+
+# With batch size (for large datasets)
+created = await User.objects().bulk_create(users, batch_size=100)
+```
+
+### Bulk Update
+
+```python
+# Update all matching records
+updated = await User.objects().filter(
+    last_login__lt="2025-01-01"
+).bulk_update({"status": "inactive"})
+
+# Atomic update
+updated = await User.objects().filter(role="guest").bulk_update(
+    {"verified": True},
+    atomic=True
+)
+```
+
+### Bulk Delete
+
+```python
+# Delete all matching records
+deleted = await User.objects().filter(status="deleted").bulk_delete()
+
+# Atomic delete
+deleted = await Order.objects().filter(
+    created_at__lt="2024-01-01"
+).bulk_delete(atomic=True)
+```
+
+---
+
+## Relations & Graph Traversal
+
+SurrealDB is a graph database. The ORM provides declarative relation definitions and graph traversal.
+
+### Relation Field Types
+
+```python
+from surreal_orm import BaseSurrealModel, ForeignKey, ManyToMany, Relation
+
+class User(BaseSurrealModel):
+    id: str | None = None
+    name: str
+
+    # Graph relations (SurrealDB edges)
+    followers: Relation("follows", "User", reverse=True)
+    following: Relation("follows", "User")
+
+    # Traditional relations
+    profile: ForeignKey("Profile", on_delete="CASCADE")
+    groups: ManyToMany("Group", through="membership")
+
+class Post(BaseSurrealModel):
+    id: str | None = None
+    title: str
+    author: ForeignKey("User", related_name="posts")
+```
+
+### Creating Relations with relate()
+
+```python
+# Create a graph edge
+await alice.relate("follows", bob)
+
+# With edge data
+await alice.relate("follows", bob, since="2025-01-01", strength="strong")
+
+# Within a transaction
+async with await SurrealDBConnectionManager.transaction() as tx:
+    await alice.relate("follows", bob, tx=tx)
+    await alice.relate("follows", charlie, tx=tx)
+```
+
+### Querying Relations with get_related()
+
+```python
+# Get outgoing relations (who alice follows)
+following = await alice.get_related("follows", direction="out", model_class=User)
+
+# Get incoming relations (who follows alice)
+followers = await alice.get_related("follows", direction="in", model_class=User)
+
+# Without model_class (returns dicts)
+following_data = await alice.get_related("follows", direction="out")
+```
+
+### Removing Relations
+
+```python
+# Remove a relation
+await alice.remove_relation("follows", bob)
+
+# Within a transaction
+async with await SurrealDBConnectionManager.transaction() as tx:
+    await alice.remove_relation("follows", bob, tx=tx)
+```
+
+### Graph Traversal with QuerySet
+
+```python
+# Raw graph query
+result = await User.objects().filter(id="alice").graph_query(
+    "->follows->User WHERE active = true"
+)
+
+# Using traverse()
+qs = User.objects().filter(id="alice").traverse("->follows->User")
+```
+
+### Eager Loading (N+1 Prevention)
+
+```python
+# Select related - loads in same query
+users = await User.objects().select_related("profile").all()
+
+# Prefetch related - separate optimized queries
+users = await User.objects().prefetch_related("followers", "posts").all()
+
+for user in users:
+    print(user.followers)  # Already loaded, no extra query
 ```
 
 ---

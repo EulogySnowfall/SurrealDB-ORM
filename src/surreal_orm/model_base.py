@@ -1,4 +1,4 @@
-from typing import Any, Self, cast, TYPE_CHECKING
+from typing import Any, Literal, Self, cast, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -476,6 +476,209 @@ class BaseSurrealModel(BaseModel):
             HTTPTransaction context manager
         """
         return await SurrealDBConnectionManager.transaction()
+
+    # ==================== Graph Relation Methods ====================
+
+    async def relate(
+        self,
+        relation: str,
+        to: "BaseSurrealModel",
+        tx: "BaseTransaction | None" = None,
+        **edge_data: Any,
+    ) -> dict[str, Any]:
+        """
+        Create a graph relation (edge) to another record.
+
+        This method creates a SurrealDB RELATE edge between this record
+        and the target record. Optional edge data can be stored on the relation.
+
+        Args:
+            relation: Name of the edge table (e.g., "follows", "likes")
+            to: Target model instance to relate to
+            tx: Optional transaction to use for this operation
+            **edge_data: Additional data to store on the edge record
+
+        Returns:
+            dict: The created edge record
+
+        Example:
+            # Simple relation
+            await alice.relate("follows", bob)
+
+            # With edge data
+            await alice.relate("follows", bob, since="2025-01-01", strength="strong")
+
+            # In a transaction
+            async with User.transaction() as tx:
+                await alice.relate("follows", bob, tx=tx)
+                await alice.relate("follows", charlie, tx=tx)
+
+        SurrealQL equivalent:
+            RELATE users:alice->follows->users:bob SET since = '2025-01-01';
+        """
+        source_id = self.get_id()
+        target_id = to.get_id()
+
+        if not source_id:
+            raise SurrealDbError("Cannot create relation from unsaved instance")
+        if not target_id:
+            raise SurrealDbError("Cannot create relation to unsaved instance")
+
+        source_table = self.get_table_name()
+        target_table = to.get_table_name()
+
+        from_thing = f"{source_table}:{source_id}"
+        to_thing = f"{target_table}:{target_id}"
+
+        if tx is not None:
+            await tx.relate(from_thing, relation, to_thing, edge_data if edge_data else None)
+            return {"in": from_thing, "out": to_thing, **edge_data}
+
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.relate(
+            from_thing,
+            relation,
+            to_thing,
+            edge_data if edge_data else None,
+        )
+
+        if result.exists and result.record:
+            return dict(result.record)
+        return {"in": from_thing, "out": to_thing, **edge_data}
+
+    async def remove_relation(
+        self,
+        relation: str,
+        to: "BaseSurrealModel",
+        tx: "BaseTransaction | None" = None,
+    ) -> None:
+        """
+        Remove a graph relation (edge) to another record.
+
+        This method deletes the edge record(s) between this record
+        and the target record.
+
+        Args:
+            relation: Name of the edge table (e.g., "follows", "likes")
+            to: Target model instance to unrelate
+            tx: Optional transaction to use for this operation
+
+        Example:
+            # Remove relation
+            await alice.remove_relation("follows", bob)
+
+            # In a transaction
+            async with User.transaction() as tx:
+                await alice.remove_relation("follows", bob, tx=tx)
+                await alice.remove_relation("follows", charlie, tx=tx)
+        """
+        source_id = self.get_id()
+        target_id = to.get_id()
+
+        if not source_id:
+            raise SurrealDbError("Cannot remove relation from unsaved instance")
+        if not target_id:
+            raise SurrealDbError("Cannot remove relation to unsaved instance")
+
+        source_table = self.get_table_name()
+        target_table = to.get_table_name()
+
+        # Delete edge where in=source and out=target
+        query = f"DELETE {relation} WHERE in = {source_table}:{source_id} AND out = {target_table}:{target_id};"
+
+        if tx is not None:
+            await tx.query(query)
+            return
+
+        client = await SurrealDBConnectionManager.get_client()
+        await client.query(query)
+
+    async def get_related(
+        self,
+        relation: str,
+        direction: Literal["out", "in", "both"] = "out",
+        model_class: type["BaseSurrealModel"] | None = None,
+    ) -> list["BaseSurrealModel"] | list[dict[str, Any]]:
+        """
+        Get records related through a graph relation.
+
+        This method queries SurrealDB's graph traversal capabilities
+        to find related records.
+
+        Args:
+            relation: Name of the edge table (e.g., "follows", "likes")
+            direction: Traversal direction
+                - "out": Outgoing edges (this record -> relation -> target)
+                - "in": Incoming edges (source -> relation -> this record)
+                - "both": Both directions
+            model_class: Optional model class to convert results to instances
+
+        Returns:
+            List of related model instances or dicts if model_class is None
+
+        Example:
+            # Get users this user follows
+            following = await alice.get_related("follows", direction="out")
+
+            # Get users who follow this user
+            followers = await alice.get_related("follows", direction="in")
+
+            # With model class for typed results
+            followers = await alice.get_related("follows", direction="in", model_class=User)
+
+        SurrealQL equivalent:
+            - out: SELECT out FROM follows WHERE in = users:alice FETCH out;
+            - in: SELECT in FROM follows WHERE out = users:alice FETCH in;
+        """
+        source_id = self.get_id()
+        if not source_id:
+            raise SurrealDbError("Cannot query relations from unsaved instance")
+
+        source_table = self.get_table_name()
+        source_thing = f"{source_table}:{source_id}"
+
+        client = await SurrealDBConnectionManager.get_client()
+        records: list[dict[str, Any]] = []
+
+        # Query edge table and fetch related records
+        # For outgoing: get 'out' field where 'in' matches source
+        # For incoming: get 'in' field where 'out' matches source
+        if direction == "out":
+            query = f"SELECT out FROM {relation} WHERE in = {source_thing} FETCH out;"
+            result = await client.query(query)
+            for row in result.all_records or []:
+                if isinstance(row.get("out"), dict):
+                    records.append(row["out"])
+        elif direction == "in":
+            query = f"SELECT in FROM {relation} WHERE out = {source_thing} FETCH in;"
+            result = await client.query(query)
+            for row in result.all_records or []:
+                if isinstance(row.get("in"), dict):
+                    records.append(row["in"])
+        else:  # both
+            # Get both outgoing and incoming relations
+            query_out = f"SELECT out FROM {relation} WHERE in = {source_thing} FETCH out;"
+            query_in = f"SELECT in FROM {relation} WHERE out = {source_thing} FETCH in;"
+            result_out = await client.query(query_out)
+            result_in = await client.query(query_in)
+            for row in result_out.all_records or []:
+                if isinstance(row.get("out"), dict):
+                    records.append(row["out"])
+            for row in result_in.all_records or []:
+                if isinstance(row.get("in"), dict):
+                    records.append(row["in"])
+
+        if model_class is not None:
+            instances: list[BaseSurrealModel] = []
+            for record in records:
+                instance = model_class.from_db(record)
+                if isinstance(instance, list):
+                    instances.extend(instance)
+                else:
+                    instances.append(instance)
+            return instances
+
+        return records
 
     class DoesNotExist(Exception):
         """

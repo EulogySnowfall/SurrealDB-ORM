@@ -25,6 +25,17 @@ from .types import (
     TableType,
 )
 from .fields import Encrypted
+from .fields import (
+    ForeignKey,
+    ManyToMany,
+    Relation,
+    RelationInfo,
+    get_relation_info,
+    is_foreign_key,
+    is_graph_relation,
+    is_many_to_many,
+    is_relation_field,
+)
 from .auth import AuthenticatedUserMixin
 from .aggregations import Aggregation, Count, Sum, Avg, Min, Max
 
@@ -53,8 +64,18 @@ __all__ = [
     "EncryptionAlgorithm",
     # Fields
     "Encrypted",
+    # Relations
+    "ForeignKey",
+    "ManyToMany",
+    "Relation",
+    "RelationInfo",
+    "get_relation_info",
+    "is_foreign_key",
+    "is_graph_relation",
+    "is_many_to_many",
+    "is_relation_field",
     # Auth
     "AuthenticatedUserMixin",
 ]
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"

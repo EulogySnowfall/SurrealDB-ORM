@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = {file = "LICENSE"}
 authors = [
-    { name = "Yannick Croteau", email = "yannick.croteau@gmail.com" }
+    { name = "Yannick Croteau", email = "croteau.yannick@gmail.com" }
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

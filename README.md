@@ -13,10 +13,13 @@
 
 ---
 
-## What's New in 0.3.1
+## What's New in 0.4.0
 
-- **Bulk Operations** - `bulk_create()`, `bulk_update()`, `bulk_delete()` for efficient batch operations
-- **Bug Fixes** - Fixed ORDER BY position in queries, typos in error messages
+- **Relations & Graph Traversal** - Django-style relation definitions with SurrealDB graph support
+  - `ForeignKey`, `ManyToMany`, `Relation` field types
+  - Relation operations: `add()`, `remove()`, `set()`, `clear()`, `all()`, `filter()`, `count()`
+  - Model methods: `relate()`, `remove_relation()`, `get_related()`
+  - QuerySet extensions: `select_related()`, `prefetch_related()`, `traverse()`, `graph_query()`
 
 ---
 

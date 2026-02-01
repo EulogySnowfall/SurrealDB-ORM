@@ -10,9 +10,24 @@
 
 ---
 
-## Current Version: 0.2.2 (Alpha)
+## Current Version: 0.4.0 (Alpha)
 
-### What's New
+### What's New in 0.4.0
+
+- **Relations & Graph Traversal** - Declarative relation definitions
+  - `ForeignKey`, `ManyToMany`, `Relation` field types
+  - `RelationManager` for lazy loading and operations (add, remove, set, clear)
+  - Graph traversal with `traverse()` and `graph_query()`
+  - `select_related()` and `prefetch_related()` for N+1 prevention
+  - Model methods: `relate()`, `remove_relation()`, `get_related()`
+
+### What's New in 0.3.x
+
+- **ORM Transactions** (v0.3.0) - `tx` parameter on save/update/delete, `Model.transaction()` shortcut
+- **Aggregations** (v0.3.0) - `Count`, `Sum`, `Avg`, `Min`, `Max` + GROUP BY with `values()`/`annotate()`
+- **Bulk Operations** (v0.3.1) - `bulk_create()`, `bulk_update()`, `bulk_delete()` with atomic support
+
+### What's New in 0.2.x
 
 - **Atomic Transactions** - Context manager for atomic operations with auto-commit/rollback
 - **Typed Functions API** - Fluent API for SurrealDB built-in and custom functions
@@ -29,10 +44,14 @@ src/
 ├── surreal_orm/                 # Django-style ORM
 │   ├── __init__.py              # Public API exports
 │   ├── connection_manager.py    # Connection singleton (uses surreal_sdk)
-│   ├── model_base.py            # BaseSurrealModel with CRUD methods
-│   ├── query_set.py             # Fluent query builder
+│   ├── model_base.py            # BaseSurrealModel with CRUD + relation methods
+│   ├── query_set.py             # Fluent query builder + graph traversal
+│   ├── relations.py             # RelationManager, RelationQuerySet, RelationDescriptor
+│   ├── aggregations.py          # Count, Sum, Avg, Min, Max
 │   ├── auth.py                  # JWT authentication mixin
-│   ├── fields.py                # Encrypted field type
+│   ├── fields/                  # Field types
+│   │   ├── encrypted.py         # Encrypted field type
+│   │   └── relation.py          # ForeignKey, ManyToMany, Relation
 │   ├── types.py                 # TableType enum, SurrealConfigDict
 │   └── migrations/              # Migration system
 │       ├── operations.py        # CreateTable, AddField, etc.
@@ -268,26 +287,27 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] Live Queries
 - [x] Change Feeds
 
-### v0.3.0 (Next) - ORM Transactions & Aggregations
+### Completed (0.3.0) - ORM Transactions & Aggregations
 
-- [ ] Model-level transactions (`user.save(tx=tx)`)
-- [ ] QuerySet aggregations (`count()`, `sum()`, `avg()`, `min()`, `max()`)
-- [ ] GROUP BY with `values()` and `annotate()`
+- [x] Model-level transactions (`user.save(tx=tx)`)
+- [x] QuerySet aggregations (`count()`, `sum()`, `avg()`, `min()`, `max()`)
+- [x] GROUP BY with `values()` and `annotate()`
 
-### v0.3.1 - Bulk Operations
+### Completed (0.3.1) - Bulk Operations
 
-- [ ] `bulk_create()` with atomic option
-- [ ] `bulk_update()` for filtered querysets
-- [ ] `bulk_delete()` with transaction support
+- [x] `bulk_create()` with atomic option
+- [x] `bulk_update()` for filtered querysets
+- [x] `bulk_delete()` with transaction support
 
-### v0.4.x - Relations & Graph
+### Completed (0.4.0) - Relations & Graph
 
-- [ ] `ForeignKey`, `ManyToMany` fields
-- [ ] `Relation` for graph edges (SurrealDB's `->edge->`)
-- [ ] Graph traversal queries
-- [ ] `prefetch_related()` for eager loading
+- [x] `ForeignKey`, `ManyToMany` fields
+- [x] `Relation` for graph edges (SurrealDB's `->edge->`)
+- [x] Graph traversal queries (`traverse()`, `graph_query()`)
+- [x] `select_related()` and `prefetch_related()` for eager loading
+- [x] Model methods: `relate()`, `remove_relation()`, `get_related()`
 
-### v0.5.x - Real-time
+### v0.5.x (Next) - Real-time
 
 - [ ] Live Models (real-time sync)
 - [ ] Model signals (pre_save, post_save, etc.)
