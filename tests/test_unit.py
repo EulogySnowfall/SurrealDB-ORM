@@ -83,11 +83,7 @@ async def failed_model_validation() -> None:
         model = ModelTestInvalide(name="Test", age=45)
         await model.save()
 
-    assert (
-        str(exc.value)
-        == "Can't create model, the model need either 'id' field "
-        + "or primirary_key in 'model_config'."  # test check config with error
-    )
+    assert str(exc.value) == "Can't create model, the model needs either 'id' field " + "or primary_key in 'model_config'."
 
 
 def test_class_with_key_specify() -> None:

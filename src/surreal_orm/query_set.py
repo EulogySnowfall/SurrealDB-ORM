@@ -3,7 +3,7 @@ from .enum import OrderBy
 from .utils import remove_quotes_for_variables
 from . import BaseSurrealModel, SurrealDBConnectionManager
 from .aggregations import Aggregation
-from typing import Self, Any, cast
+from typing import Self, Any, Sequence, cast
 from pydantic_core import ValidationError
 
 import logging
@@ -356,6 +356,10 @@ class QuerySet:
         if where_clauses:
             query += " WHERE " + " AND ".join(where_clauses)
 
+        # Append ORDER BY if set (must come before LIMIT/START in SurrealQL)
+        if self._order_by:
+            query += f" ORDER BY {self._order_by}"
+
         # Append LIMIT if set
         if self._limit is not None:
             query += f" LIMIT {self._limit}"
@@ -363,10 +367,6 @@ class QuerySet:
         # Append OFFSET (START) if set
         if self._offset is not None:
             query += f" START {self._offset}"
-
-        # Append ORDER BY if set
-        if self._order_by:
-            query += f" ORDER BY {self._order_by}"
 
         query += ";"
         return query
@@ -761,3 +761,151 @@ class QuerySet:
         result = await client.query(remove_quotes_for_variables(query), variables)
         # SDK returns QueryResponse, extract all records
         return self.model.from_db(cast(dict | list | None, result.all_records))
+
+    # ==================== Bulk Operations ====================
+
+    async def bulk_create(
+        self,
+        instances: Sequence[BaseSurrealModel],
+        atomic: bool = False,
+        batch_size: int | None = None,
+    ) -> list[BaseSurrealModel]:
+        """
+        Create multiple model instances in the database efficiently.
+
+        Args:
+            instances: A sequence of model instances to create.
+            atomic: If True, all creates are wrapped in a transaction.
+                    If any fails, all are rolled back.
+            batch_size: If specified, instances are created in batches of this size.
+                        Useful for very large datasets to avoid memory issues.
+
+        Returns:
+            list[BaseSurrealModel]: The created instances.
+
+        Example:
+            ```python
+            users = [User(name=f"User{i}") for i in range(1000)]
+
+            # Simple bulk create
+            created = await User.objects().bulk_create(users)
+
+            # Atomic bulk create
+            created = await User.objects().bulk_create(users, atomic=True)
+
+            # With batch size
+            created = await User.objects().bulk_create(users, batch_size=100)
+            ```
+        """
+        if not instances:
+            return []
+
+        created: list[BaseSurrealModel] = []
+
+        if atomic:
+            # Use transaction for atomicity
+            async with await SurrealDBConnectionManager.transaction() as tx:
+                for instance in instances:
+                    await instance.save(tx=tx)
+                    created.append(instance)
+        elif batch_size:
+            # Process in batches
+            for i in range(0, len(instances), batch_size):
+                batch = instances[i : i + batch_size]
+                for instance in batch:
+                    await instance.save()
+                    created.append(instance)
+        else:
+            # Simple sequential create
+            for instance in instances:
+                await instance.save()
+                created.append(instance)
+
+        return created
+
+    async def bulk_update(
+        self,
+        data: dict[str, Any],
+        atomic: bool = False,
+    ) -> int:
+        """
+        Update all records matching the current filters.
+
+        Args:
+            data: A dictionary of field names and values to update.
+            atomic: If True, all updates are wrapped in a transaction.
+
+        Returns:
+            int: The number of records updated.
+
+        Example:
+            ```python
+            # Update all matching records
+            updated = await User.objects().filter(
+                last_login__lt="2025-01-01"
+            ).bulk_update({"status": "inactive"})
+
+            # Atomic update
+            updated = await User.objects().filter(role="guest").bulk_update(
+                {"verified": True},
+                atomic=True
+            )
+            ```
+        """
+        where_clause = self._compile_where_clause()
+
+        # Build SET clause
+        set_parts = []
+        for field, value in data.items():
+            set_parts.append(f"{field} = {repr(value)}")
+        set_clause = ", ".join(set_parts)
+
+        query = f"UPDATE {self._model_table} SET {set_clause}{where_clause};"
+
+        if atomic:
+            # For atomic operations, count first then update in transaction
+            current_count = await self.count()
+            async with await SurrealDBConnectionManager.transaction() as tx:
+                await tx.query(remove_quotes_for_variables(query), self._variables)
+            return current_count
+
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        return len(result.all_records)
+
+    async def bulk_delete(self, atomic: bool = False) -> int:
+        """
+        Delete all records matching the current filters.
+
+        Args:
+            atomic: If True, all deletes are wrapped in a transaction.
+
+        Returns:
+            int: The number of records deleted.
+
+        Example:
+            ```python
+            # Delete all matching records
+            deleted = await User.objects().filter(status="deleted").bulk_delete()
+
+            # Atomic delete
+            deleted = await Order.objects().filter(
+                created_at__lt="2024-01-01"
+            ).bulk_delete(atomic=True)
+            ```
+        """
+        where_clause = self._compile_where_clause()
+        # Use RETURN BEFORE to get deleted records count
+        query = f"DELETE FROM {self._model_table}{where_clause} RETURN BEFORE;"
+
+        if atomic:
+            # For atomic operations, count first then delete in transaction
+            current_count = await self.count()
+            delete_query = f"DELETE FROM {self._model_table}{where_clause};"
+            async with await SurrealDBConnectionManager.transaction() as tx:
+                await tx.query(remove_quotes_for_variables(delete_query), self._variables)
+            return current_count
+
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        return len(result.all_records)

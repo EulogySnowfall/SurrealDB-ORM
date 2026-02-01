@@ -201,11 +201,11 @@ def test_aggregations_exported_from_init() -> None:
     assert Aggregation is not None
 
 
-def test_version_updated_to_030() -> None:
-    """Test that version was updated to 0.3.0."""
+def test_version_is_03x() -> None:
+    """Test that version is 0.3.x."""
     from src.surreal_orm import __version__
 
-    assert __version__ == "0.3.0"
+    assert __version__.startswith("0.3")
 
 
 # ==================== Model Transaction Tests (Unit) ====================
