@@ -6,14 +6,16 @@
 
 ## Version History
 
-| Version       | Status       | Focus                                 |
-| ------------- | ------------ | ------------------------------------- |
-| 0.1.x         | Released     | Basic ORM (Models, QuerySet, CRUD)    |
-| 0.2.x         | Released     | Custom SDK, Migrations, JWT Auth, CLI |
-| 0.3.0         | Released     | ORM Transactions + Aggregations       |
-| 0.3.1         | Released     | Bulk Operations + Bug Fixes           |
-| **0.4.0**     | **Released** | **Relations & Graph Traversal**       |
-| 0.5.x         | Planned      | Real-time Features (Live Models)      |
+| Version       | Status       | Focus                                     |
+| ------------- | ------------ | ----------------------------------------- |
+| 0.1.x         | Released     | Basic ORM (Models, QuerySet, CRUD)        |
+| 0.2.x         | Released     | Custom SDK, Migrations, JWT Auth, CLI     |
+| 0.3.0         | Released     | ORM Transactions + Aggregations           |
+| 0.3.1         | Released     | Bulk Operations + Bug Fixes               |
+| 0.4.0         | Released     | Relations & Graph Traversal               |
+| **0.5.0**     | **Released** | **SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls** |
+| 0.5.1         | Planned      | Computed Fields                           |
+| 0.6.x         | Planned      | ORM Live Models + Signals                 |
 
 ---
 
@@ -226,7 +228,86 @@ for user in users:
 
 ---
 
-## v0.4.1 - Computed Fields
+## v0.5.0 - SDK Real-time Enhancements (Released)
+
+**Goal:** Enhanced real-time capabilities at the SDK level for game backends and real-time apps.
+
+**Status:** Implemented and released.
+
+### Live Select Stream
+
+Async iterator pattern for consuming Live Query changes:
+
+```python
+from surreal_sdk import SurrealDB, LiveAction
+
+async with SurrealDB.ws("ws://localhost:8000", "ns", "db") as db:
+    await db.signin("root", "root")
+
+    # Async context manager + async iterator
+    async with db.live_select(
+        "players",
+        where="table_id = $id",
+        params={"id": "game_tables:xyz"}
+    ) as stream:
+        async for change in stream:
+            match change.action:
+                case LiveAction.CREATE:
+                    print(f"Player joined: {change.result['name']}")
+                case LiveAction.UPDATE:
+                    print(f"Player updated: {change.record_id}")
+                case LiveAction.DELETE:
+                    print(f"Player left: {change.record_id}")
+```
+
+### Auto-Resubscribe
+
+Automatic reconnection after WebSocket disconnect (K8s pod restarts, network issues):
+
+```python
+async with db.live_select(
+    "players",
+    where="table_id = $id",
+    params={"id": table_id},
+    auto_resubscribe=True,
+    on_reconnect=lambda old, new: print(f"Reconnected: {old} -> {new}")
+) as stream:
+    async for change in stream:
+        process_change(change)  # Stream resumes after reconnect
+```
+
+### Typed Function Calls
+
+Pydantic/dataclass return type support for SurrealDB functions:
+
+```python
+from pydantic import BaseModel
+
+class VoteResult(BaseModel):
+    success: bool
+    new_count: int
+    total_votes: int
+
+result = await db.call(
+    "cast_vote",
+    params={"user_id": "alice", "table_id": "game:123"},
+    return_type=VoteResult
+)
+# result is VoteResult instance, not dict
+```
+
+### LiveChange Dataclass
+
+Rich change notification with:
+
+- `record_id` - Affected record ID
+- `action` - CREATE, UPDATE, DELETE
+- `result` - Full record after change
+- `changed_fields` - List of modified fields (DIFF mode)
+
+---
+
+## v0.5.1 - Computed Fields (Planned)
 
 **Goal:** Server-side computed fields using SurrealDB functions.
 
@@ -250,38 +331,20 @@ class User(BaseSurrealModel):
 
     # String computation
     full_name: Computed[str] = Computed("string::concat(first_name, ' ', last_name)")
-
-    # Using meta functions
-    created_date: Computed[str] = Computed("time::format(meta::created(), '%Y-%m-%d')")
-```
-
-### Computed with Functions API
-
-```python
-from surreal_orm.functions import fn
-
-class Product(BaseSurrealModel):
-    name: str
-    price: float
-
-    # Using typed function builders
-    price_formatted: Computed[str] = Computed(
-        fn.string.concat("$", fn.string.format(price, "%.2f"))
-    )
 ```
 
 ---
 
-## v0.5.0 - Real-time Features
+## v0.6.0 - ORM Real-time Features (Planned)
 
-**Goal:** Live model synchronization and event-driven architecture.
+**Goal:** Live model synchronization and event-driven architecture at the ORM level.
 
 ### Live Models
 
 ```python
 from surreal_orm import LiveAction
 
-# Async iterator for changes
+# Async iterator for model changes
 async for event in User.objects().filter(role="admin").live():
     if event.action == LiveAction.CREATE:
         print(f"New admin: {event.instance.name}")
@@ -289,14 +352,6 @@ async for event in User.objects().filter(role="admin").live():
         print(f"Admin updated: {event.instance}")
     elif event.action == LiveAction.DELETE:
         print(f"Admin removed: {event.instance.id}")
-
-# Callback style
-async def on_user_change(event):
-    await notify_admin(event)
-
-subscription = await User.objects().live(callback=on_user_change)
-# ... later
-await subscription.unsubscribe()
 ```
 
 ### Model Signals
@@ -313,10 +368,6 @@ async def on_user_saved(sender, instance, created):
 @pre_delete.connect(Order)
 async def on_order_deleting(sender, instance):
     await archive_order(instance)
-
-@post_delete.connect(User)
-async def on_user_deleted(sender, instance):
-    await cleanup_user_data(instance.id)
 ```
 
 ### Change Feed Integration
@@ -334,7 +385,7 @@ async for change in User.objects().changes(since="2026-01-01"):
 
 ---
 
-## v0.6.0 - Advanced Features (Future)
+## v0.7.0 - Advanced Features (Future)
 
 ### Schema Introspection
 
@@ -378,17 +429,20 @@ users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
 
 ## Implementation Priority
 
-| Feature                      | Version | Priority | Complexity | Dependencies     |
-| ---------------------------- | ------- | -------- | ---------- | ---------------- |
-| Model Transactions           | 0.3.0   | Critical | Medium     | SDK transactions |
-| Aggregations (count/sum/avg) | 0.3.0   | High     | Low        | SDK functions    |
-| GROUP BY                     | 0.3.0   | High     | Medium     | Aggregations     |
-| Bulk Operations              | 0.3.1   | Medium   | Low        | Transactions     |
-| Relations (ForeignKey)       | 0.4.0   | High     | High       | -                |
-| Graph Traversal              | 0.4.0   | High     | High       | Relations        |
-| Computed Fields              | 0.4.1   | Medium   | Low        | SDK functions    |
-| Live Models                  | 0.5.0   | Medium   | Medium     | SDK live queries |
-| Signals                      | 0.5.0   | Low      | Medium     | Live Models      |
+| Feature                      | Version | Priority | Status   | Dependencies     |
+| ---------------------------- | ------- | -------- | -------- | ---------------- |
+| Model Transactions           | 0.3.0   | Critical | Done     | SDK transactions |
+| Aggregations (count/sum/avg) | 0.3.0   | High     | Done     | SDK functions    |
+| GROUP BY                     | 0.3.0   | High     | Done     | Aggregations     |
+| Bulk Operations              | 0.3.1   | Medium   | Done     | Transactions     |
+| Relations (ForeignKey)       | 0.4.0   | High     | Done     | -                |
+| Graph Traversal              | 0.4.0   | High     | Done     | Relations        |
+| Live Select Stream           | 0.5.0   | High     | Done     | SDK WebSocket    |
+| Auto-Resubscribe             | 0.5.0   | High     | Done     | Live Select      |
+| Typed Function Calls         | 0.5.0   | Medium   | Done     | SDK functions    |
+| Computed Fields              | 0.5.1   | Medium   | Planned  | SDK functions    |
+| ORM Live Models              | 0.6.0   | Medium   | Planned  | SDK live queries |
+| Model Signals                | 0.6.0   | Low      | Planned  | Live Models      |
 
 ---
 

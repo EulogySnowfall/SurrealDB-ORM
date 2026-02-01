@@ -6,6 +6,42 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.5.0] - 2026-02-01
+
+### Added
+
+- **Live Select Stream** - Async iterator pattern for real-time change notifications
+  - `LiveSelectStream` class with `async with` context manager and `async for` iteration
+  - `LiveChange` dataclass with `record_id`, `action`, `result`, `changed_fields`
+  - `LiveAction` enum: `CREATE`, `UPDATE`, `DELETE`
+  - WHERE clause support with parameterized queries
+  - DIFF mode support for receiving only changed fields
+
+- **Live Select Manager** - Callback-based multi-stream management
+  - `LiveSelectManager` for managing multiple concurrent subscriptions
+  - `watch(table, callback, where, params)` method for callback-based watching
+  - `stop(live_id)` and `stop_all()` for subscription management
+  - `active_streams` and `count` properties
+
+- **Auto-Resubscribe** - Automatic Live Query reconnection
+  - `auto_resubscribe` parameter for automatic reconnection after WebSocket disconnect
+  - `LiveSubscriptionParams` dataclass for storing subscription state
+  - `on_reconnect(old_id, new_id)` callback for resubscription notifications
+  - Seamless recovery on K8s pod restarts and network interruptions
+
+- **Typed Function Calls** - Pydantic/dataclass return type support
+  - `call(function, params, return_type)` method on connections
+  - Automatic conversion to Pydantic models and dataclasses
+  - `fn::` prefix auto-normalization for user-defined functions
+  - Support for built-in function namespaces (math::, time::, etc.)
+
+### Changed
+
+- Version bump to 0.5.0
+- SDK `__init__.py` updated with new exports
+
+---
+
 ## [0.4.0] - 2026-02-01
 
 ### Added

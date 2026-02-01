@@ -298,7 +298,7 @@ class WebSocketConnection(BaseSurrealConnection):
 
                 # Re-register callback if provided
                 if params.callback:
-                    self._live_callbacks[new_id] = params.callback
+                    self._live_callbacks[new_id] = params.callback  # type: ignore[assignment]
 
                 # Store subscription params for future reconnects
                 self._live_subscriptions[new_id] = params

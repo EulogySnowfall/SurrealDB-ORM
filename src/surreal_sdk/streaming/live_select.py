@@ -4,7 +4,7 @@ Live Select Stream Implementation.
 Provides async iterator pattern for real-time change notifications via WebSocket Live Queries.
 """
 
-from typing import Any, Callable, Awaitable, Self
+from typing import Any, Callable, Awaitable, Coroutine, Self
 from dataclasses import dataclass, field
 from enum import StrEnum
 import asyncio
@@ -75,7 +75,7 @@ class LiveChange:
 
 # Type alias for callbacks
 LiveCallback = Callable[[LiveChange], Awaitable[None]]
-ReconnectCallback = Callable[[str, str], Awaitable[None]]  # (old_id, new_id)
+ReconnectCallback = Callable[[str, str], Coroutine[Any, Any, None]]  # (old_id, new_id)
 
 
 @dataclass
