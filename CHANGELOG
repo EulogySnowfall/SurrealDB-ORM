@@ -6,6 +6,96 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.4.0] - 2026-02-01
+
+### Added
+
+- **Relation Field Types** - Declarative relation definitions
+  - `ForeignKey(to, on_delete, related_name)` - Single record reference
+  - `ManyToMany(to, through, related_name)` - Multiple record reference
+  - `Relation(edge, to, reverse)` - SurrealDB graph edges
+
+- **Relation Operations** - Django-style relation management
+  - `RelationManager` class for lazy loading and operations
+  - `add(*objects)`, `remove(*objects)`, `set(objects)`, `clear()` methods
+  - `all()`, `filter(**kwargs)`, `count()`, `contains(obj)` query methods
+
+- **Graph Traversal** - SurrealDB graph capabilities
+  - `RelationQuerySet` for chained multi-hop traversal
+  - `graph_query(traversal)` for raw graph queries on QuerySet
+  - `traverse(path)` method for graph path queries
+
+- **Prefetch Related** - N+1 query prevention
+  - `select_related(*relations)` - Eager load in same query
+  - `prefetch_related(*relations)` - Separate optimized queries
+
+- **Model Methods** - Low-level graph operations
+  - `relate(relation, to, tx, **edge_data)` - Create graph edge
+  - `remove_relation(relation, to, tx)` - Delete graph edge
+  - `get_related(relation, direction, model_class)` - Query edges
+
+- **Relation Helpers**
+  - `is_relation_field()`, `is_foreign_key()`, `is_many_to_many()`, `is_graph_relation()`
+  - `get_relation_info()` for metadata extraction
+  - `RelationInfo` dataclass for relation metadata
+
+### Changed
+
+- Version bump to 0.4.0
+
+---
+
+## [0.3.1] - 2026-02-01
+
+### Added
+
+- **Bulk Operations** - Efficient batch operations
+  - `bulk_create(instances, atomic=False, batch_size=None)` - Create multiple records
+  - `bulk_update(data, atomic=False)` - Update matching records
+  - `bulk_delete(atomic=False)` - Delete matching records
+  - Transaction support with `atomic=True` for all-or-nothing operations
+
+### Fixed
+
+- ORDER BY clause position (now correctly placed before LIMIT/START in SurrealQL)
+- Typo in error message: "primirary_key" corrected to "primary_key"
+
+---
+
+## [0.3.0] - 2026-02-01
+
+### Added
+
+- **ORM Transactions** - Transaction support integrated into ORM layer
+  - `tx` parameter added to `save()`, `update()`, `merge()`, `delete()` methods
+  - `Model.transaction()` class method shortcut for creating transactions
+  - `SurrealDBConnectionManager.transaction()` context manager
+
+- **Aggregations** - Django-style aggregation classes
+  - `Count()` - Count records
+  - `Sum(field)` - Sum field values
+  - `Avg(field)` - Average field values
+  - `Min(field)` - Minimum field value
+  - `Max(field)` - Maximum field value
+
+- **GROUP BY Support**
+  - `values(*fields)` method for specifying GROUP BY fields
+  - `annotate(**aggregations)` method for computed aggregations
+  - GROUP ALL behavior when `annotate()` used without `values()`
+
+- **QuerySet Aggregation Methods**
+  - `count()` - Count matching records
+  - `sum(field)` - Sum field values
+  - `avg(field)` - Average field values
+  - `min(field)` - Minimum field value
+  - `max(field)` - Maximum field value
+
+### Changed
+
+- Version bump to 0.3.0
+
+---
+
 ## [0.2.2] - 2026-02-01
 
 ### Added

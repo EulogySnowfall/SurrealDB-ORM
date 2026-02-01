@@ -201,11 +201,15 @@ def test_aggregations_exported_from_init() -> None:
     assert Aggregation is not None
 
 
-def test_version_is_03x() -> None:
-    """Test that version is 0.3.x."""
+def test_version_exists() -> None:
+    """Test that version string exists and is valid."""
     from src.surreal_orm import __version__
 
-    assert __version__.startswith("0.3")
+    assert __version__ is not None
+    assert len(__version__) > 0
+    # Version should be in semver format
+    parts = __version__.split(".")
+    assert len(parts) >= 2
 
 
 # ==================== Model Transaction Tests (Unit) ====================

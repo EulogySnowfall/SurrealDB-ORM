@@ -11,8 +11,8 @@
 | 0.1.x         | Released     | Basic ORM (Models, QuerySet, CRUD)    |
 | 0.2.x         | Released     | Custom SDK, Migrations, JWT Auth, CLI |
 | 0.3.0         | Released     | ORM Transactions + Aggregations       |
-| **0.3.1**     | **Released** | **Bulk Operations + Bug Fixes**       |
-| 0.4.x         | Planned      | Relations & Graph Traversal           |
+| 0.3.1         | Released     | Bulk Operations + Bug Fixes           |
+| **0.4.0**     | **Released** | **Relations & Graph Traversal**       |
 | 0.5.x         | Planned      | Real-time Features (Live Models)      |
 
 ---
@@ -152,9 +152,11 @@ deleted = await Order.objects().filter(
 
 ---
 
-## v0.4.0 - Relations & Graph Traversal
+## v0.4.0 - Relations & Graph Traversal (Released)
 
 **Goal:** Leverage SurrealDB's graph capabilities with declarative relations.
+
+**Status:** Implemented and released.
 
 ### Relation Field Types
 

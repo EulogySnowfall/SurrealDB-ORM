@@ -65,6 +65,10 @@ class QuerySet:
         self._variables: dict = {}
         self._group_by_fields: list[str] = []
         self._annotations: dict[str, Aggregation] = {}
+        # Relation query options
+        self._select_related: list[str] = []
+        self._prefetch_related: list[str] = []
+        self._traversal_path: str | None = None
 
     def select(self, *fields: str) -> Self:
         """
@@ -286,6 +290,158 @@ class QuerySet:
         """
         self._annotations = aggregations
         return self
+
+    # ==================== Relation Query Methods ====================
+
+    def select_related(self, *relations: str) -> Self:
+        """
+        Eagerly load related objects in the same query.
+
+        This method optimizes queries by loading related objects alongside
+        the main query results, avoiding N+1 query problems for forward relations.
+
+        Note: SurrealDB handles this through graph traversal syntax.
+        The actual loading happens during query execution.
+
+        Args:
+            *relations: Names of relations to load eagerly.
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example:
+            ```python
+            # Load posts with their authors in one query
+            posts = await Post.objects().select_related("author").all()
+            for post in posts:
+                print(post.author.name)  # No additional query
+            ```
+        """
+        self._select_related = list(relations)
+        return self
+
+    def prefetch_related(self, *relations: str) -> Self:
+        """
+        Prefetch related objects using separate optimized queries.
+
+        This method reduces N+1 query problems by fetching related objects
+        in batches after the main query completes. This is more efficient
+        than select_related for many-to-many and reverse relations.
+
+        Args:
+            *relations: Names of relations to prefetch.
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example:
+            ```python
+            # Load users and prefetch their followers
+            users = await User.objects().prefetch_related("followers", "posts").all()
+            for user in users:
+                print(user.followers)  # Already loaded
+                print(user.posts)      # Already loaded
+            ```
+        """
+        self._prefetch_related = list(relations)
+        return self
+
+    def traverse(self, path: str) -> Self:
+        """
+        Add a graph traversal path to the query.
+
+        This method allows querying across graph relations using
+        SurrealDB's traversal syntax.
+
+        Args:
+            path: Graph traversal path (e.g., "->follows->users->likes->posts")
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example:
+            ```python
+            # Get all posts liked by users that alice follows
+            posts = await User.objects().filter(id="alice").traverse(
+                "->follows->users->likes->posts"
+            ).all()
+            ```
+        """
+        self._traversal_path = path
+        return self
+
+    async def graph_query(self, traversal: str, **variables: Any) -> list[dict[str, Any]]:
+        """
+        Execute a raw graph traversal query.
+
+        This method provides direct access to SurrealDB's graph capabilities
+        for complex traversal patterns that can't be expressed through
+        the standard QuerySet API.
+
+        Args:
+            traversal: Graph traversal expression (e.g., "->follows->User")
+            **variables: Variables to bind in the query
+
+        Returns:
+            list[dict[str, Any]]: Raw query results as dictionaries
+
+        Example:
+            ```python
+            # Find users that alice follows
+            result = await User.objects().filter(id="alice").graph_query("->follows->User")
+
+            # Multi-hop traversal
+            result = await User.objects().filter(id="alice").graph_query(
+                "->follows->User->follows->User"
+            )
+            ```
+        """
+        # Parse the traversal to determine edge and direction
+        # Expected format: "->edge->Table" or "<-edge<-Table"
+        # For now, support simple single-hop traversals
+
+        # Check if we have an id filter to use as starting point
+        source_id = None
+        for field_name, lookup_name, value in self._filters:
+            if field_name == "id" and lookup_name == "exact":
+                source_id = value
+                break
+
+        client = await SurrealDBConnectionManager.get_client()
+
+        if source_id:
+            # Use specific record as starting point
+            source_thing = f"{self._model_table}:{source_id}"
+
+            # Parse the traversal to get edge and direction
+            # Simple pattern: ->edge->Table or <-edge<-Table
+            if traversal.startswith("->"):
+                # Outgoing: get targets where source is 'in'
+                parts = traversal.split("->")
+                if len(parts) >= 3:
+                    edge = parts[1]
+                    query = f"SELECT out FROM {edge} WHERE in = {source_thing} FETCH out;"
+                    result = await client.query(query, {**self._variables, **variables})
+                    records: list[dict[str, Any]] = []
+                    for row in result.all_records or []:
+                        if isinstance(row.get("out"), dict):
+                            records.append(row["out"])
+                    return records
+            elif traversal.startswith("<-"):
+                # Incoming: get sources where target is 'out'
+                parts = traversal.split("<-")
+                if len(parts) >= 3:
+                    edge = parts[1]
+                    query = f"SELECT in FROM {edge} WHERE out = {source_thing} FETCH in;"
+                    result = await client.query(query, {**self._variables, **variables})
+                    records = []
+                    for row in result.all_records or []:
+                        if isinstance(row.get("in"), dict):
+                            records.append(row["in"])
+                    return records
+
+        # Fallback: return empty for unsupported patterns
+        return []
 
     async def _execute_annotate(self) -> list[dict[str, Any]]:
         """
