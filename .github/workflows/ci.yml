@@ -1,84 +1,172 @@
 name: CI SurrealDB-ORM
 
-on: 
+on:
   push:
     branches:
       - main
   pull_request:
     branches:
-      - '*'  
+      - '*'
     paths:
       - 'src/**'
       - 'tests/**'
+      - 'devops/**'
+      - 'pyproject.toml'
+      - 'Makefile'
+
+env:
+  SURREALDB_URL: http://localhost:8000
+  SURREALDB_USER: root
+  SURREALDB_PASS: root
+  SURREALDB_NAMESPACE: test
+  SURREALDB_DATABASE: test
 
 jobs:
-  test:
+  lint:
+    name: Lint & Type Check
     runs-on: ubuntu-latest
-
     steps:
-      - name: Start SurrealDB
-        run: |
-          # Ici tu peux builder ou puller ton image custom, ou bien
-          # prendre l'image official SurrealDB:
-          docker run -d \
-            --name surreal \
-            -p 8000:8000 \
-            surrealdb/surrealdb:latest \
-            start --user root --pass root memory
-
-          # Attendre que SurrealDB soit prêt
-          echo "Waiting SurrealDB to be healthy..."
-          for i in {1..10}; do
-            if curl -s http://localhost:8000/health | grep -q "OK"; then
-              echo "SurrealDB is up!"
-              break
-            fi
-            echo "SurrealDB not up yet. Retrying..."
-            sleep 3
-          done
-      
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: |
-            3.11
-            3.12
-            3.13
-      
+          python-version: "3.13"
+
       - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-      
-      - name: Create virtual environment
-        run: |
+        uses: astral-sh/setup-uv@v5
 
-          uv tool install ruff
-          uv tool install pyright
-          uv tool install lint
-          uv run python -m mypy .
+      - name: Install dependencies
+        run: uv sync --group lint
 
-      - name: Run tests
-        env:
-          SURREALDB_HOST: localhost
-          SURREALDB_PORT: 8000
+      - name: Run linting
         run: |
-          uv run make all
+          uv run ruff format --check
+          uv run ruff check
 
-      - name: Upload results to Codecov
+      - name: Run type checking
+        run: uv run python -m mypy src/
+
+  test-unit:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run unit tests
+        run: |
+          uv run pytest tests/ -m "not integration" \
+            --junitxml=junit-${{ matrix.python-version }}.xml \
+            --cov=src \
+            --cov-branch \
+            --cov-report=xml:coverage-${{ matrix.python-version }}.xml \
+            --cov-report=term-missing
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.python-version }}
+          path: |
+            junit-${{ matrix.python-version }}.xml
+            coverage-${{ matrix.python-version }}.xml
+
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: [lint, test-unit]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Start SurrealDB
+        run: |
+          docker compose -f devops/docker-compose.yml up -d surrealdb-ci
+          ./devops/wait-for-healthy.sh localhost 8000 60
+
+      - name: Run integration tests
+        run: |
+          uv run pytest tests/ -m integration \
+            --junitxml=junit-integration.xml \
+            --cov=src \
+            --cov-branch \
+            --cov-report=xml:coverage-integration.xml \
+            --cov-report=term-missing
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-integration
+          path: |
+            junit-integration.xml
+            coverage-integration.xml
+
+      - name: Stop SurrealDB
+        if: always()
+        run: docker compose -f devops/docker-compose.yml down
+
+  coverage:
+    name: Upload Coverage
+    runs-on: ubuntu-latest
+    needs: [test-unit, test-integration]
+    # Run on both PRs and pushes to main
+    if: always() && !cancelled()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-results-*
+          merge-multiple: true
+
+      - name: Upload to Codecov
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          slug: EulogySnowfall/SurrealDB-ORM
+          files: coverage-*.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
           verbose: true
-          
+
       - name: Upload test results to Codecov
+        uses: codecov/codecov-action@v5
         if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-
-
+          files: junit-*.xml
+          report_type: test_results

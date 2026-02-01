@@ -1,11 +1,18 @@
 # SurrealDB-ORM
 
-![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![Python](https://img.shields.io/badge/python-3.12%2B-blue)
 ![CI](https://github.com/EulogySnowfall/SurrealDB-ORM/actions/workflows/ci.yml/badge.svg)
 [![codecov](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM/graph/badge.svg?token=XUONTG2M6Z)](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM)
 ![GitHub License](https://img.shields.io/github/license/EulogySnowfall/SurrealDB-ORM)
 
+> **⚠️ ALPHA SOFTWARE - NOT READY FOR PRODUCTION**
+>
+> This project is in active development and is not yet stable. APIs may change without notice.
+> Use at your own risk in non-production environments only.
+
 🚀 **SurrealDB-ORM** is a lightweight ORM (Object-Relational Mapping) inspired by Django ORM, designed to simplify interactions with **SurrealDB** in Python projects. It provides an intuitive way to manage models, perform queries, and execute CRUD (Create, Read, Update, Delete) operations.
+
+**Now includes a custom SDK (`surreal_sdk`)** - No dependency on the official `surrealdb` package!
 
 ---
 
@@ -25,23 +32,23 @@
 
 ## ✅ Version
 
-Alpha 0.1.4
+**Alpha 0.2.0**
 
 ---
 
 ## 📝 Description
 
-SurrealDB-ORM offers a clean abstraction for handling SurrealDB through Python models.  
+SurrealDB-ORM offers a clean abstraction for handling SurrealDB through Python models.
 The goal is to simplify writing complex queries while providing an intuitive interface similar to modern ORMs like Django or SQLAlchemy.
 
 ---
 
 ## 📝 Requirements and tested based
 
-- Python : 3.11~3.13
-- Pydantic : 2.10.4
-- SurrealDB Database Version : 2.1.4
-- You need to set a SurrealDB to connect to.  
+- Python : 3.12+
+- Pydantic : 2.10.5+
+- SurrealDB Database Version : 2.1.4+
+- You need to set a SurrealDB to connect to.
 
 ---
 
@@ -90,12 +97,12 @@ for user in users:
 
 ## 🌟 Features
 
-- 🔧 **Model definition** using Pydantic  
-- 📄 **QuerySet** with filter methods like `filter()`, `limit()`, and `order_by()`  
-- 🔄 **CRUD** operations (Create, Read, Update, Delete)  
-- ⚙️ **Asynchronous connection** to SurrealDB  
-- 🔍 **Automatic validation** with Pydantic  
-- 📊 **Complex queries** with conditional filters (`age__gte`, `name__in`, etc.)  
+- 🔧 **Model definition** using Pydantic
+- 📄 **QuerySet** with filter methods like `filter()`, `limit()`, and `order_by()`
+- 🔄 **CRUD** operations (Create, Read, Update, Delete)
+- ⚙️ **Asynchronous connection** to SurrealDB
+- 🔍 **Automatic validation** with Pydantic
+- 📊 **Complex queries** with conditional filters (`age__gte`, `name__in`, etc.)
 
 ---
 
@@ -104,20 +111,20 @@ for user in users:
 Contributions are welcome!  
 If you'd like to improve this project:
 
-1. Fork the repository.  
-2. Create a branch (`git checkout -b feature/new-feature`).  
-3. Make your changes and commit them (`git commit -m "Add new feature"`).  
-4. Push to your branch (`git push origin feature/new-feature`).  
-5. Create a Pull Request.  
+1. Fork the repository.
+2. Create a branch (`git checkout -b feature/new-feature`).
+3. Make your changes and commit them (`git commit -m "Add new feature"`).
+4. Push to your branch (`git push origin feature/new-feature`).
+5. Create a Pull Request.
 
 ---
 
 ## 📌 TODO
 
 - [ ] Implement relationships
-- [ ] Add transaction support  
-- [ ] Optimize complex queries  
-- [ ] Expand documentation with advanced examples  
+- [ ] Add transaction support
+- [ ] Optimize complex queries
+- [ ] Expand documentation with advanced examples
 - [ ] Better SurrealQL Integration
 
 ---
@@ -132,7 +139,7 @@ This project is licensed under the **MIT License**. See the `LICENSE` file for m
 
 **Author:** Yannick Croteau  
 **Email:** <croteau.yannick@gmail.com>  
-**GitHub:** [EulogySnowfall](https://github.com/EulogySnowfall)  
+**GitHub:** [EulogySnowfall](https://github.com/EulogySnowfall)
 
 ---
 

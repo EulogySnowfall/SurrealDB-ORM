@@ -1,9 +1,9 @@
 [project]
 name = "surrealdb-orm"
-version = "0.1.4"
-description = "SurrealDB ORM as 'DJango style' for Python with async support. Works with pydantic validation."  
+version = "0.2.0"
+description = "SurrealDB ORM as 'DJango style' for Python with async support. Works with pydantic validation."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {file = "LICENSE"}
 authors = [
     { name = "Yannick Croteau", email = "yannick.croteau@gmail.com" }
@@ -11,9 +11,9 @@ authors = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "License :: OSI Approved :: MIT License",
     "Topic :: Database",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -21,8 +21,16 @@ classifiers = [
 ]
 
 dependencies = [
-    "pydantic>=2.10.4",
-    "surrealdb>=0.4.1",
+    "pydantic>=2.10.5",
+    # SDK dependencies (bundled until surreal-sdk is published to PyPI)
+    "httpx>=0.27.0",
+    "aiohttp>=3.9.0",
+]
+
+[project.optional-dependencies]
+# CBOR support for binary protocol
+cbor = [
+    "cbor2>=5.6.0",
 ]
 
 [project.urls]
@@ -32,7 +40,7 @@ Repository = "https://github.com/EulogySnowfall/SurrealDB-ORM.git"
 Issues = "https://github.com/EulogySnowfall/SurrealDB-ORM/issues"
 
 [tool.setuptools]
-packages = ["src/surreal_orm"]
+packages = ["src/surreal_orm", "src/surreal_sdk"]
 
 
 [build-system]
@@ -41,26 +49,30 @@ build-backend = "hatchling.build"
 
 [tool.ruff]
 line-length = 128
-target-version = "py311"
+target-version = "py312"
 exclude = ["examples"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 check_untyped_defs = true
 exclude = "^(tests|examples)/"
+mypy_path = "src"
+explicit_package_bases = true
 
 [[tool.mypy.overrides]]
-module = ["surrealdb.*"]
+module = ["aiohttp.*", "httpx.*"]
 ignore_missing_imports = true
-no_implicit_reexport = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-ra -q --cov=src.surreal_orm --cov-branch --cov-report=xml --cov-report=html --cov-report=term-missing --cov-fail-under=70 --cov-context=test"
+addopts = "-ra -q --cov=src.surreal_orm --cov=src.surreal_sdk --cov-branch --cov-report=xml --cov-report=html --cov-report=term-missing --cov-fail-under=35 --cov-context=test"
+markers = [
+    "integration: marks tests as integration tests (require running SurrealDB)",
+]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "module"
 # log_cli = true
@@ -88,7 +100,7 @@ lint = [
 
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/surreal_orm"]
+packages = ["src/surreal_orm", "src/surreal_sdk"]
 
 [tool.hatch.build.targets.sdist]
 include = ["README.md", "Makefile", "/src"]

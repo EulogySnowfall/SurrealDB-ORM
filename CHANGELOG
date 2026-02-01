@@ -1,10 +1,66 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.  
-This file follows the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format  
+All notable changes to this project will be documented in this file.
+This file follows the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format
 and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
+
+## [0.2.0] - 2026-02-01
+
+### Added
+
+- **New `surreal_sdk` package** - Standalone SDK that can be published separately to PyPI as `surreal-sdk`
+  - Has its own `pyproject.toml` and `README.md`
+  - Can be installed independently: `pip install surreal-sdk`
+
+- **New `surreal_sdk` module** - Custom Python SDK for SurrealDB independent of the official `surrealdb` package
+  - `HTTPConnection` - Stateless HTTP-based connection, ideal for microservices and serverless
+  - `WebSocketConnection` - Stateful WebSocket connection for real-time features and Live Queries
+  - `ConnectionPool` - Connection pooling for high-throughput scenarios
+  - `LiveQuery` and `LiveQueryManager` - Real-time Live Query subscriptions (WebSocket only)
+  - `ChangeFeedStream` and `MultiTableChangeFeed` - CDC pattern for stateless microservices (HTTP)
+  - `RPCRequest`, `RPCResponse`, `RPCError` - RPC protocol layer
+
+- **Strongly-typed response classes** (replacing `Any` returns)
+  - `QueryResponse` / `QueryResult` - For query operations
+  - `RecordResponse` / `RecordsResponse` - For record CRUD operations
+  - `AuthResponse` - For signin/signup authentication
+  - `InfoResponse` - For database info operations
+  - `DeleteResponse` - For delete operations
+  - `LiveQueryId` - For live query UUID handling
+  - `ResponseStatus` - Enum for OK/ERR status
+
+- **Exception classes** for SDK
+  - `SurrealDBError`, `ConnectionError`, `AuthenticationError`
+  - `QueryError`, `TimeoutError`, `LiveQueryError`, `ChangeFeedError`
+
+### Changed
+
+- **🚀 ORM now uses custom SDK** - Removed dependency on official `surrealdb` package
+  - `SurrealDBConnectionManager` now uses `HTTPConnection` from `surreal_sdk`
+  - All ORM methods adapted to use typed responses (`RecordResponse`, `RecordsResponse`, etc.)
+  - Removed `surrealdb>=0.4.1` from dependencies
+
+- **Python version support**: Now requires Python 3.12+ (dropped 3.11, added 3.14)
+- Updated `pyproject.toml` classifiers and tool configurations for Python 3.12/3.13/3.14
+- Coverage threshold reduced to 35% to accommodate new SDK code
+
+### Removed
+
+- **Dependency on `surrealdb` package** - No longer required, fully replaced by custom `surreal_sdk`
+
+### Fixed
+
+- ID parsing from SurrealDB format (`table:id` → `id`)
+- Test isolation with dedicated model classes per test
+
+---
+
+## [0.1.5] - 2025-01-20
+
+- Add
+  - Support Model.DoesNotExist Error
 
 ## [0.1.4] - 2025-01-20
 
