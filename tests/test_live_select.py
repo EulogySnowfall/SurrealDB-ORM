@@ -1,10 +1,6 @@
 """Tests for LiveSelectStream and related classes."""
 
-import pytest
-from dataclasses import dataclass
 from surreal_sdk.streaming.live_select import (
-    LiveSelectStream,
-    LiveSelectManager,
     LiveChange,
     LiveAction,
     LiveSubscriptionParams,

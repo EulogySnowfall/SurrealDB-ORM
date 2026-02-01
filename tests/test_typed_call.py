@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock
 from pydantic import BaseModel
 
 from surreal_sdk.connection.base import BaseSurrealConnection
-from surreal_sdk.types import QueryResponse, QueryResult
 
 
 class VoteResultPydantic(BaseModel):
@@ -82,11 +81,7 @@ class TestCallFunctionNameNormalization:
         """Test that fn:: prefix is added when missing."""
         # Create a mock connection with async query
         conn = MagicMock(spec=BaseSurrealConnection)
-        conn.query = AsyncMock(
-            return_value=MagicMock(
-                first_result=MagicMock(result={"success": True})
-            )
-        )
+        conn.query = AsyncMock(return_value=MagicMock(first_result=MagicMock(result={"success": True})))
 
         # Use the actual call implementation
         conn.call = BaseSurrealConnection.call.__get__(conn, BaseSurrealConnection)
@@ -102,11 +97,7 @@ class TestCallFunctionNameNormalization:
     async def test_call_keeps_existing_prefix(self) -> None:
         """Test that existing fn:: prefix is kept."""
         conn = MagicMock(spec=BaseSurrealConnection)
-        conn.query = AsyncMock(
-            return_value=MagicMock(
-                first_result=MagicMock(result={"success": True})
-            )
-        )
+        conn.query = AsyncMock(return_value=MagicMock(first_result=MagicMock(result={"success": True})))
         conn.call = BaseSurrealConnection.call.__get__(conn, BaseSurrealConnection)
 
         await conn.call("fn::cast_vote", params={"user": "alice"})
@@ -120,11 +111,7 @@ class TestCallFunctionNameNormalization:
     async def test_call_keeps_other_namespaces(self) -> None:
         """Test that other namespaces like math:: are kept."""
         conn = MagicMock(spec=BaseSurrealConnection)
-        conn.query = AsyncMock(
-            return_value=MagicMock(
-                first_result=MagicMock(result=4.0)
-            )
-        )
+        conn.query = AsyncMock(return_value=MagicMock(first_result=MagicMock(result=4.0)))
         conn.call = BaseSurrealConnection.call.__get__(conn, BaseSurrealConnection)
 
         await conn.call("math::sqrt", params={"value": 16})
