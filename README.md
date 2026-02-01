@@ -13,11 +13,10 @@
 
 ---
 
-## What's New in 0.3.0
+## What's New in 0.3.1
 
-- **ORM Transactions** - Transaction support for Model CRUD operations (`save()`, `update()`, `merge()`, `delete()`)
-- **QuerySet Aggregations** - `count()`, `sum()`, `avg()`, `min()`, `max()` methods
-- **GROUP BY Support** - Django-style `values()` and `annotate()` for grouped aggregations
+- **Bulk Operations** - `bulk_create()`, `bulk_update()`, `bulk_delete()` for efficient batch operations
+- **Bug Fixes** - Fixed ORDER BY position in queries, typos in error messages
 
 ---
 
@@ -276,6 +275,25 @@ stats = await Order.objects().values("status").annotate(
 monthly = await Order.objects().values("status", "month").annotate(
     count=Count(),
 ).exec()
+```
+
+### Bulk Operations
+
+```python
+# Bulk create
+users = [User(name=f"User{i}") for i in range(100)]
+created = await User.objects().bulk_create(users)
+
+# Atomic bulk create (all-or-nothing)
+created = await User.objects().bulk_create(users, atomic=True)
+
+# Bulk update
+updated = await User.objects().filter(status="pending").bulk_update(
+    {"status": "active"}
+)
+
+# Bulk delete
+deleted = await User.objects().filter(status="deleted").bulk_delete()
 ```
 
 ### Table Types

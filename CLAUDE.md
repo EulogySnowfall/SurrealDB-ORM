@@ -297,8 +297,11 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 
 ## Known Issues
 
-1. `refresh()` in model_base.py doesn't reassign data to instance
-2. ORDER BY positioned after LIMIT/START in generated SQL
+*All previously documented issues have been fixed in v0.3.1:*
+
+- ~~`refresh()` in model_base.py doesn't reassign data to instance~~ (Fixed)
+- ~~ORDER BY positioned after LIMIT/START in generated SQL~~ (Fixed in v0.3.1)
+- ~~Typo "primirary_key" in error message~~ (Fixed in v0.3.1)
 
 ---
 

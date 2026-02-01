@@ -443,7 +443,7 @@ class BaseSurrealModel(BaseModel):
 
         if not self.get_index_primary_key() and not hasattr(self, "id"):
             raise SurrealDbError(  # pragma: no cover
-                "Can't create model, the model need either 'id' field or primirary_key in 'model_config'."
+                "Can't create model, the model needs either 'id' field or primary_key in 'model_config'."
             )
 
         return self

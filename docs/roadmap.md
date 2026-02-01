@@ -6,14 +6,14 @@
 
 ## Version History
 
-| Version   | Status       | Focus                                 |
-| --------- | ------------ | ------------------------------------- |
-| 0.1.x     | Released     | Basic ORM (Models, QuerySet, CRUD)    |
-| 0.2.x     | Released     | Custom SDK, Migrations, JWT Auth, CLI |
-| **0.3.0** | **Released** | **ORM Transactions + Aggregations**   |
-| 0.3.1     | Planned      | Bulk Operations                       |
-| 0.4.x     | Planned      | Relations & Graph Traversal           |
-| 0.5.x     | Planned      | Real-time Features (Live Models)      |
+| Version       | Status       | Focus                                 |
+| ------------- | ------------ | ------------------------------------- |
+| 0.1.x         | Released     | Basic ORM (Models, QuerySet, CRUD)    |
+| 0.2.x         | Released     | Custom SDK, Migrations, JWT Auth, CLI |
+| 0.3.0         | Released     | ORM Transactions + Aggregations       |
+| **0.3.1**     | **Released** | **Bulk Operations + Bug Fixes**       |
+| 0.4.x         | Planned      | Relations & Graph Traversal           |
+| 0.5.x         | Planned      | Real-time Features (Live Models)      |
 
 ---
 
@@ -102,9 +102,11 @@ monthly = await Order.objects().values("status", "month").annotate(
 
 ---
 
-## v0.3.1 - Bulk Operations
+## v0.3.1 - Bulk Operations (Released)
 
 **Goal:** Efficient batch operations with transaction support.
+
+**Status:** Implemented and released. Also includes bug fixes for ORDER BY position and error message typos.
 
 ### Bulk Create
 
