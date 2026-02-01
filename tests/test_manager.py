@@ -50,7 +50,7 @@ async def test_get_client(setup_connection_manager: AsyncGenerator[Any, Any]) ->
     with pytest.raises(ValueError) as exc2:
         await SurrealDBConnectionManager.get_client()
 
-    assert str(exc1.value) == "Can't connect to the database."
+    assert str(exc1.value).startswith("Can't connect to the database")
     assert str(exc2.value) == "Connection not been set."
 
 

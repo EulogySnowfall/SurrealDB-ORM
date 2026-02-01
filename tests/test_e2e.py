@@ -182,6 +182,9 @@ async def test_multi_select() -> None:
         name: str = Field(..., max_length=100)
         age: int = Field(..., ge=0, le=125)
 
+    # Clean up from any previous test runs
+    await MultiSelectTest.objects().delete_table()
+
     await MultiSelectTest(name="Ian", age=23).save()
     await MultiSelectTest(name="Yan", age=32).save()
     await MultiSelectTest(name="Isa", age=32).save()
