@@ -420,9 +420,9 @@ except QueryError as e:
 
 The SDK automatically handles URL conversion:
 
-| Input | HTTP Connection | WebSocket Connection |
-|-------|-----------------|---------------------|
-| `http://host:8000` | `http://host:8000/sql` | `ws://host:8000/rpc` |
+| Input               | HTTP Connection         | WebSocket Connection  |
+| ------------------- | ----------------------- | --------------------- |
+| `http://host:8000`  | `http://host:8000/sql`  | `ws://host:8000/rpc`  |
 | `https://host:8000` | `https://host:8000/sql` | `wss://host:8000/rpc` |
-| `ws://host:8000` | `http://host:8000/sql` | `ws://host:8000/rpc` |
-| `wss://host:8000` | `https://host:8000/sql` | `wss://host:8000/rpc` |
+| `ws://host:8000`    | `http://host:8000/sql`  | `ws://host:8000/rpc`  |
+| `wss://host:8000`   | `https://host:8000/sql` | `wss://host:8000/rpc` |
