@@ -15,6 +15,7 @@ from .base import BaseSurrealConnection
 
 if TYPE_CHECKING:
     from ..transaction import WebSocketTransaction
+    from ..streaming.live_select import LiveSelectStream, LiveSubscriptionParams
 from ..protocol.rpc import RPCRequest, RPCResponse
 from ..exceptions import ConnectionError, LiveQueryError, TimeoutError
 
@@ -75,6 +76,7 @@ class WebSocketConnection(BaseSurrealConnection):
         self._request_id = 0
         self._pending: dict[int, asyncio.Future[RPCResponse]] = {}
         self._live_callbacks: dict[str, LiveCallback] = {}
+        self._live_subscriptions: dict[str, "LiveSubscriptionParams"] = {}
         self._reader_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._closing = False
@@ -241,15 +243,77 @@ class WebSocketConnection(BaseSurrealConnection):
                 # Set namespace and database
                 await self.use(self.namespace, self.database)
 
-                # Re-establish live queries
-                # Note: Live query UUIDs change on reconnect
-                # Clients should handle this via callbacks
+                # Re-establish live queries with auto-resubscribe
+                await self._resubscribe_all()
 
                 return
 
             except Exception:
                 await self._cleanup()
                 continue
+
+    async def _resubscribe_all(self) -> None:
+        """Re-establish all live subscriptions after reconnect."""
+        old_subscriptions = dict(self._live_subscriptions)
+        self._live_subscriptions.clear()
+        self._live_callbacks.clear()
+
+        for old_id, params in old_subscriptions.items():
+            try:
+                new_id = await self._resubscribe_one(params)
+
+                # Call reconnect callback if provided
+                if params.on_reconnect:
+                    asyncio.create_task(params.on_reconnect(old_id, new_id))
+
+            except Exception:
+                # Failed to resubscribe, skip this one
+                pass
+
+    async def _resubscribe_one(self, params: "LiveSubscriptionParams") -> str:
+        """Resubscribe a single live query."""
+        # Set session variables for parameters
+        for key, value in params.params.items():
+            await self.let(key, value)
+
+        # Build query
+        sql = f"LIVE SELECT * FROM {params.table}"
+        if params.where:
+            sql += f" WHERE {params.where}"
+        if params.diff:
+            sql += " DIFF"
+
+        response = await self.query(sql)
+
+        if response.results:
+            first_result = response.results[0]
+            if first_result.is_ok:
+                result_data = first_result.result
+                if isinstance(result_data, str):
+                    new_id = result_data
+                elif isinstance(result_data, dict) and "result" in result_data:
+                    new_id = str(result_data["result"])
+                else:
+                    raise LiveQueryError("Invalid live query response")
+
+                # Re-register callback if provided
+                if params.callback:
+                    self._live_callbacks[new_id] = params.callback
+
+                # Store subscription params for future reconnects
+                self._live_subscriptions[new_id] = params
+
+                return new_id
+
+        raise LiveQueryError("No live query ID returned")
+
+    def _register_live_subscription(self, live_id: str, params: "LiveSubscriptionParams") -> None:
+        """Register a live subscription for auto-resubscribe."""
+        self._live_subscriptions[live_id] = params
+
+    def _unregister_live_subscription(self, live_id: str) -> None:
+        """Unregister a live subscription."""
+        self._live_subscriptions.pop(live_id, None)
 
     async def _send_rpc(self, request: RPCRequest) -> RPCResponse:
         """
@@ -402,3 +466,54 @@ class WebSocketConnection(BaseSurrealConnection):
         from ..transaction import WebSocketTransaction
 
         return WebSocketTransaction(self)
+
+    # Live Select Stream API
+
+    def live_select(
+        self,
+        table: str,
+        where: str | None = None,
+        params: dict[str, Any] | None = None,
+        diff: bool = False,
+        auto_resubscribe: bool = True,
+        on_reconnect: Callable[[str, str], Coroutine[Any, Any, None]] | None = None,
+    ) -> "LiveSelectStream":
+        """
+        Create a live select stream for real-time change notifications.
+
+        This method returns an async iterator that yields LiveChange objects
+        whenever records matching the query are created, updated, or deleted.
+
+        Args:
+            table: Table to watch (e.g., "players", "game_tables")
+            where: Optional WHERE clause filter (e.g., "table_id = $id")
+            params: Parameters for the WHERE clause (e.g., {"id": "game_tables:xyz"})
+            diff: If True, receive only changed fields
+            auto_resubscribe: If True, automatically resubscribe on reconnect
+            on_reconnect: Optional callback when resubscribed (old_id, new_id)
+
+        Returns:
+            LiveSelectStream async context manager and iterator
+
+        Usage:
+            async with conn.live_select("players", where="table_id = $id", params={"id": table_id}) as stream:
+                async for change in stream:
+                    match change.action:
+                        case LiveAction.CREATE:
+                            print(f"New player: {change.result}")
+                        case LiveAction.UPDATE:
+                            print(f"Player updated: {change.record_id}")
+                        case LiveAction.DELETE:
+                            print(f"Player left: {change.record_id}")
+        """
+        from ..streaming.live_select import LiveSelectStream
+
+        return LiveSelectStream(
+            connection=self,
+            table=table,
+            where=where,
+            params=params,
+            diff=diff,
+            auto_resubscribe=auto_resubscribe,
+            on_reconnect=on_reconnect,
+        )
