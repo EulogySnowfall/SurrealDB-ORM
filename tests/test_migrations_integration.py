@@ -24,7 +24,7 @@ from src.surreal_orm.migrations.state import SchemaState
 from src.surreal_orm.migrations.operations import CreateTable, AddField
 
 
-SURREALDB_URL = "http://localhost:8000"
+SURREALDB_URL = "http://localhost:8001"
 SURREALDB_USER = "root"
 SURREALDB_PASS = "root"
 SURREALDB_NAMESPACE = "test"

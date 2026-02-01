@@ -4,7 +4,7 @@ WebSocket Connection Implementation for SurrealDB SDK.
 Provides stateful WebSocket-based connection for real-time features.
 """
 
-from typing import Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine
 import asyncio
 import json
 
@@ -12,6 +12,9 @@ import aiohttp
 from aiohttp import ClientWSTimeout
 
 from .base import BaseSurrealConnection
+
+if TYPE_CHECKING:
+    from ..transaction import WebSocketTransaction
 from ..protocol.rpc import RPCRequest, RPCResponse
 from ..exceptions import ConnectionError, LiveQueryError, TimeoutError
 
@@ -102,6 +105,9 @@ class WebSocketConnection(BaseSurrealConnection):
             # Start message reader loop
             self._reader_task = asyncio.create_task(self._read_loop())
 
+            # Yield to event loop to allow read loop to start
+            await asyncio.sleep(0)
+
             # Set namespace and database
             await self.use(self.namespace, self.database)
 
@@ -169,6 +175,8 @@ class WebSocketConnection(BaseSurrealConnection):
                     break
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
                     break
+                elif msg.type == aiohttp.WSMsgType.CLOSE:
+                    break
 
         except asyncio.CancelledError:
             raise
@@ -188,12 +196,19 @@ class WebSocketConnection(BaseSurrealConnection):
         msg_id = message.get("id")
 
         # Check if this is a response to a pending request
-        if msg_id is not None and msg_id in self._pending:
-            response = RPCResponse.from_dict(message)
-            future = self._pending.pop(msg_id)
-            if not future.done():
-                future.set_result(response)
-            return
+        # Convert msg_id to int for comparison since SurrealDB may return string IDs
+        if msg_id is not None:
+            try:
+                msg_id_int = int(msg_id)
+            except (ValueError, TypeError):
+                msg_id_int = None
+
+            if msg_id_int is not None and msg_id_int in self._pending:
+                response = RPCResponse.from_dict(message)
+                future = self._pending.pop(msg_id_int)
+                if not future.done():
+                    future.set_result(response)
+                return
 
         # Check if this is a live query notification
         if "action" in message:
@@ -365,3 +380,25 @@ class WebSocketConnection(BaseSurrealConnection):
                 await self.kill(live_id)
             except Exception:
                 pass
+
+    # Transaction support
+
+    def transaction(self) -> "WebSocketTransaction":
+        """
+        Create a new WebSocket transaction.
+
+        WebSocket transactions use server-side state with BEGIN/COMMIT/ROLLBACK.
+        Operations are executed immediately within the transaction context.
+
+        Usage:
+            async with conn.transaction() as tx:
+                await tx.create("users", {"name": "Alice"})
+                await tx.create("orders", {"user": "users:alice"})
+                # Committed on successful exit, rolled back on exception
+
+        Returns:
+            WebSocketTransaction context manager
+        """
+        from ..transaction import WebSocketTransaction
+
+        return WebSocketTransaction(self)

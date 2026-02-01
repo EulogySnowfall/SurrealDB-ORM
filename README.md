@@ -7,29 +7,36 @@
 
 > **Alpha Software** - APIs may change. Use in non-production environments.
 
-**SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, Django-style migrations, and JWT authentication.
+**SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, and JWT authentication.
 
-**Includes a custom SDK (`surreal_sdk`)** - No dependency on the official `surrealdb` package!
+**Includes a custom SDK (`surreal_sdk`)** - Zero dependency on the official `surrealdb` package!
+
+---
+
+## What's New in 0.2.2
+
+- **Atomic Transactions** - Context manager for atomic operations with auto-commit/rollback
+- **Typed Functions API** - Fluent API for SurrealDB built-in and custom functions
+- **Improved WebSocket** - Better reconnection handling and live query support
+- **Test Infrastructure** - Automatic container management for integration tests
 
 ---
 
 ## Table of Contents
 
-- [Version](#version)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Features](#features)
+  - [Using the SDK (Recommended)](#using-the-sdk-recommended)
+  - [Using the ORM](#using-the-orm)
+- [SDK Features](#sdk-features)
+  - [Connections](#connections)
+  - [Transactions](#transactions)
+  - [Typed Functions](#typed-functions)
+  - [Live Queries](#live-queries)
+- [ORM Features](#orm-features)
 - [CLI Commands](#cli-commands)
-- [Authentication](#authentication)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
-- [License](#license)
-
----
-
-## Version
-
-**0.2.1** (Alpha)
 
 ---
 
@@ -46,32 +53,50 @@ pip install surrealdb-orm[cli]
 pip install surrealdb-orm[all]
 ```
 
-**Requirements:**
-
-- Python 3.12+
-- SurrealDB 2.6.0+
+**Requirements:** Python 3.12+ | SurrealDB 2.6.0+
 
 ---
 
 ## Quick Start
 
-### 1. Define Models
+### Using the SDK (Recommended)
 
 ```python
-from surreal_orm import BaseSurrealModel, SurrealConfigDict
+from surreal_sdk import SurrealDB
 
+async def main():
+    # HTTP connection (stateless, ideal for microservices)
+    async with SurrealDB.http("http://localhost:8000", "namespace", "database") as db:
+        await db.signin("root", "root")
+
+        # CRUD operations
+        user = await db.create("users", {"name": "Alice", "age": 30})
+        users = await db.query("SELECT * FROM users WHERE age > $min", {"min": 18})
+
+        # Atomic transactions
+        async with db.transaction() as tx:
+            await tx.create("accounts:alice", {"balance": 1000})
+            await tx.create("accounts:bob", {"balance": 500})
+            # Auto-commit on success, auto-rollback on exception
+
+        # Built-in functions with typed API
+        result = await db.fn.math.sqrt(16)  # Returns 4.0
+        now = await db.fn.time.now()        # Current timestamp
+```
+
+### Using the ORM
+
+```python
+from surreal_orm import BaseSurrealModel, SurrealDBConnectionManager
+
+# 1. Define your model
 class User(BaseSurrealModel):
     id: str | None = None
     name: str
     email: str
     age: int = 0
-```
 
-### 2. Configure Connection
-
-```python
-from surreal_orm import SurrealDBConnectionManager
-
+# 2. Configure connection
 SurrealDBConnectionManager.set_connection(
     url="http://localhost:8000",
     user="root",
@@ -79,66 +104,127 @@ SurrealDBConnectionManager.set_connection(
     namespace="myapp",
     database="main",
 )
-```
 
-### 3. CRUD Operations
-
-```python
-# Create
+# 3. CRUD operations
 user = User(name="Alice", email="alice@example.com", age=30)
 await user.save()
 
-# Read
-users = await User.objects().filter(name="Alice").exec()
-user = await User.objects().get(id="user:123")
-
-# Update
-user.age = 31
-await user.save()
-
-# Delete
-await user.delete()
-```
-
-### 4. QuerySet
-
-```python
-# Filter with lookups
-adults = await User.objects().filter(age__gte=18).exec()
-
-# Chaining
-results = await User.objects() \
-    .filter(age__gte=18) \
-    .order_by("name") \
-    .limit(10) \
-    .exec()
-
-# Supported lookups
-# exact, gt, gte, lt, lte, in, like, ilike, contains, icontains,
-# startswith, istartswith, endswith, iendswith, match, regex, isnull
+users = await User.objects().filter(age__gte=18).order_by("name").limit(10).exec()
 ```
 
 ---
 
-## Features
+## SDK Features
 
-### Core ORM
+### Connections
 
-- Model definition with Pydantic validation
-- QuerySet with Django-style lookups (`age__gte`, `name__in`, etc.)
-- Async CRUD operations
-- Automatic ID handling for SurrealDB RecordIDs
+| Type          | Use Case                 | Features                 |
+| ------------- | ------------------------ | ------------------------ |
+| **HTTP**      | Microservices, REST APIs | Stateless, simple        |
+| **WebSocket** | Real-time apps           | Live queries, persistent |
+| **Pool**      | High-throughput          | Connection reuse         |
 
-### Django-Style Migrations
+```python
+from surreal_sdk import SurrealDB, HTTPConnection, WebSocketConnection
 
-- Generate migrations from model changes
-- Apply/rollback schema migrations
-- Track migration history in database
+# HTTP (stateless)
+async with SurrealDB.http("http://localhost:8000", "ns", "db") as db:
+    await db.signin("root", "root")
 
-```bash
-surreal-orm makemigrations --name initial
-surreal-orm migrate
-surreal-orm status
+# WebSocket (stateful, real-time)
+async with SurrealDB.ws("ws://localhost:8000", "ns", "db") as db:
+    await db.signin("root", "root")
+    await db.live("orders", callback=on_order_change)
+
+# Connection Pool
+async with SurrealDB.pool("http://localhost:8000", "ns", "db", size=10) as pool:
+    await pool.set_credentials("root", "root")
+    async with pool.acquire() as conn:
+        await conn.query("SELECT * FROM users")
+```
+
+### Transactions
+
+Atomic transactions with automatic commit/rollback:
+
+```python
+# WebSocket: Immediate execution with server-side transaction
+async with db.transaction() as tx:
+    await tx.update("players:abc", {"is_ready": True})
+    await tx.update("game_tables:xyz", {"ready_count": "+=1"})
+    # Statements execute immediately
+    # COMMIT on success, CANCEL on exception
+
+# HTTP: Batched execution (all-or-nothing)
+async with db.transaction() as tx:
+    await tx.create("orders:1", {"total": 100})
+    await tx.create("payments:1", {"amount": 100})
+    # Statements queued, executed atomically at commit
+```
+
+**Transaction Methods:**
+
+- `tx.query(sql, vars)` - Execute raw SurrealQL
+- `tx.create(thing, data)` - Create record
+- `tx.update(thing, data)` - Replace record
+- `tx.delete(thing)` - Delete record
+- `tx.relate(from, edge, to)` - Create graph edge
+- `tx.commit()` - Explicit commit
+- `tx.rollback()` - Explicit rollback
+
+### Typed Functions
+
+Fluent API for SurrealDB functions:
+
+```python
+# Built-in functions (namespace::function)
+sqrt = await db.fn.math.sqrt(16)           # 4.0
+now = await db.fn.time.now()               # datetime
+length = await db.fn.string.len("hello")   # 5
+sha = await db.fn.crypto.sha256("data")    # hash string
+
+# Custom user-defined functions (fn::function)
+result = await db.fn.my_custom_function(arg1, arg2)
+# Executes: RETURN fn::my_custom_function($arg0, $arg1)
+```
+
+**Available Namespaces:**
+`array`, `crypto`, `duration`, `geo`, `http`, `math`, `meta`, `object`, `parse`, `rand`, `session`, `string`, `time`, `type`, `vector`
+
+### Live Queries
+
+Real-time updates via WebSocket:
+
+```python
+from surreal_sdk import LiveQuery, LiveNotification, LiveAction
+
+async def on_change(notification: LiveNotification):
+    if notification.action == LiveAction.CREATE:
+        print(f"New record: {notification.result}")
+    elif notification.action == LiveAction.UPDATE:
+        print(f"Updated: {notification.result}")
+    elif notification.action == LiveAction.DELETE:
+        print(f"Deleted: {notification.result}")
+
+live = LiveQuery(ws_conn, "orders")
+await live.subscribe(on_change)
+# ... records changes trigger callbacks ...
+await live.unsubscribe()
+```
+
+---
+
+## ORM Features
+
+### QuerySet with Django-style Lookups
+
+```python
+# Filter with lookups
+users = await User.objects().filter(age__gte=18, name__startswith="A").exec()
+
+# Supported lookups
+# exact, gt, gte, lt, lte, in, like, ilike, contains, icontains,
+# startswith, istartswith, endswith, iendswith, match, regex, isnull
 ```
 
 ### Table Types
@@ -159,27 +245,18 @@ class User(BaseSurrealModel):
         table_type=TableType.USER,
         permissions={"select": "$auth.id = id"},
     )
-    # ...
-```
-
-### Encrypted Fields
-
-```python
-from surreal_orm.fields import Encrypted
-
-class User(BaseSurrealModel):
-    password: Encrypted  # Auto-hashed with argon2
 ```
 
 ### JWT Authentication
 
 ```python
 from surreal_orm.auth import AuthenticatedUserMixin
+from surreal_orm.fields import Encrypted
 
 class User(AuthenticatedUserMixin, BaseSurrealModel):
     model_config = SurrealConfigDict(table_type=TableType.USER)
     email: str
-    password: Encrypted
+    password: Encrypted  # Auto-hashed with argon2
     name: str
 
 # Signup
@@ -187,6 +264,9 @@ user = await User.signup(email="alice@example.com", password="secret", name="Ali
 
 # Signin
 user, token = await User.signin(email="alice@example.com", password="secret")
+
+# Validate token
+user = await User.authenticate_token(token)
 ```
 
 ---
@@ -199,19 +279,14 @@ Requires `pip install surrealdb-orm[cli]`
 | ------------------- | --------------------------- |
 | `makemigrations`    | Generate migration files    |
 | `migrate`           | Apply schema migrations     |
-| `upgrade`           | Apply data migrations       |
 | `rollback <target>` | Rollback to migration       |
 | `status`            | Show migration status       |
-| `sqlmigrate <name>` | Show SQL without executing  |
 | `shell`             | Interactive SurrealQL shell |
 
 ```bash
 # Generate and apply migrations
 surreal-orm makemigrations --name initial
 surreal-orm migrate -u http://localhost:8000 -n myns -d mydb
-
-# Check status
-surreal-orm status
 
 # Environment variables supported
 export SURREAL_URL=http://localhost:8000
@@ -222,75 +297,18 @@ surreal-orm migrate
 
 ---
 
-## Authentication
-
-SurrealDB-ORM uses SurrealDB's native `DEFINE ACCESS ... TYPE RECORD` for JWT authentication:
-
-```python
-from surreal_orm import BaseSurrealModel, SurrealConfigDict
-from surreal_orm.types import TableType
-from surreal_orm.fields import Encrypted
-from surreal_orm.auth import AuthenticatedUserMixin
-
-class User(AuthenticatedUserMixin, BaseSurrealModel):
-    model_config = SurrealConfigDict(
-        table_type=TableType.USER,
-        identifier_field="email",
-        password_field="password",
-        token_duration="1h",
-        session_duration="24h",
-    )
-
-    id: str | None = None
-    email: str
-    password: Encrypted
-    name: str
-
-# Create user
-user = await User.signup(
-    email="user@example.com",
-    password="secure_password",
-    name="John Doe",
-)
-
-# Authenticate
-user, token = await User.signin(
-    email="user@example.com",
-    password="secure_password",
-)
-
-# Validate token
-user = await User.authenticate_token(token)
-
-# Change password
-await User.change_password(
-    identifier_value="user@example.com",
-    old_password="secure_password",
-    new_password="new_secure_password",
-)
-```
-
----
-
 ## Documentation
 
-- [Migration System](docs/migrations.md) - Complete migration guide
-- [Authentication](docs/auth.md) - JWT authentication guide
-- [CHANGELOG](CHANGELOG) - Version history
+| Document                               | Description              |
+| -------------------------------------- | ------------------------ |
+| [SDK Guide](docs/sdk.md)               | Full SDK documentation   |
+| [Migration System](docs/migrations.md) | Django-style migrations  |
+| [Authentication](docs/auth.md)         | JWT authentication guide |
+| [CHANGELOG](CHANGELOG)                 | Version history          |
 
 ---
 
 ## Contributing
-
-Contributions are welcome!
-
-1. Fork the repository
-2. Create a branch (`git checkout -b feature/new-feature`)
-3. Make your changes and commit (`git commit -m "Add new feature"`)
-4. Push to your branch (`git push origin feature/new-feature`)
-5. Create a Pull Request
-
-### Development
 
 ```bash
 # Clone and install
@@ -298,30 +316,17 @@ git clone https://github.com/EulogySnowfall/SurrealDB-ORM.git
 cd SurrealDB-ORM
 uv sync
 
-# Run tests
-make test              # Unit tests
-make test-integration  # Integration tests (requires SurrealDB)
+# Run tests (SurrealDB container managed automatically)
+make test              # Unit tests only
+make test-integration  # With integration tests
 
-# Start SurrealDB for testing
+# Start SurrealDB manually
 make db-up             # Test instance (port 8001)
 make db-dev            # Dev instance (port 8000)
 
 # Lint
-uv run ruff check src/
-uv run mypy src/
+make ci-lint           # Run all linters
 ```
-
----
-
-## TODO
-
-- [ ] Relations (ForeignKey, ManyToMany, graph traversal)
-- [ ] Aggregations (count, sum, avg, GROUP BY)
-- [ ] Transaction support
-- [ ] Connection pooling improvements
-- [x] ~~Migration system~~
-- [x] ~~JWT Authentication~~
-- [x] ~~CLI commands~~
 
 ---
 
@@ -331,5 +336,4 @@ MIT License - See [LICENSE](LICENSE) file.
 
 ---
 
-**Author:** Yannick Croteau
-**GitHub:** [EulogySnowfall](https://github.com/EulogySnowfall)
+**Author:** Yannick Croteau | **GitHub:** [EulogySnowfall](https://github.com/EulogySnowfall)

@@ -18,7 +18,7 @@ from src.surreal_orm.fields import Encrypted
 from src.surreal_orm.auth import AuthenticatedUserMixin, AccessDefinition, AccessGenerator
 
 
-SURREALDB_URL = "http://localhost:8000"
+SURREALDB_URL = "http://localhost:8001"
 SURREALDB_USER = "root"
 SURREALDB_PASS = "root"
 SURREALDB_NAMESPACE = "test"

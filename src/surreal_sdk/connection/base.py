@@ -5,9 +5,13 @@ Defines the abstract interface that all connection types must implement.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from ..protocol.rpc import RPCRequest, RPCResponse
+
+if TYPE_CHECKING:
+    from ..functions import FunctionNamespace
+    from ..transaction import BaseTransaction
 from ..types import (
     QueryResponse,
     RecordResponse,
@@ -376,3 +380,43 @@ class BaseSurrealConnection(ABC):
             params.append(data)
         result = await self.rpc("relate", params)
         return RecordResponse.from_rpc_result(result)
+
+    # Transaction support
+
+    @abstractmethod
+    def transaction(self) -> "BaseTransaction":
+        """
+        Create a new transaction context.
+
+        Usage:
+            async with conn.transaction() as tx:
+                await tx.update("players:abc", {"is_ready": True})
+                await tx.update("game_tables:xyz", {"ready_count": 1})
+                # Auto-commit on success, auto-rollback on exception
+
+        Returns:
+            Transaction context manager
+        """
+        ...
+
+    # Function call API
+
+    @property
+    def fn(self) -> "FunctionNamespace":
+        """
+        Access SurrealDB function call API.
+
+        Usage:
+            # Built-in functions
+            result = await conn.fn.math.sqrt(16)
+            result = await conn.fn.time.now()
+
+            # Custom user-defined functions
+            result = await conn.fn.cast_vote(user_id, table_id, "yes")
+
+        Returns:
+            Function namespace for building calls
+        """
+        from ..functions import FunctionNamespace
+
+        return FunctionNamespace(self)

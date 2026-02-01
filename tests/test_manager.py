@@ -3,7 +3,7 @@ from typing import AsyncGenerator, Any
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.connection_manager import SurrealDbConnectionError
 
-SURREALDB_URL = "http://localhost:8000"
+SURREALDB_URL = "http://localhost:8001"
 SURREALDB_USER = "root"
 SURREALDB_PASS = "root"
 SURREALDB_NAMESPACE = "test"
@@ -133,10 +133,12 @@ def test_is_connection_set(setup_connection_manager: AsyncGenerator[Any, Any]) -
 @pytest.mark.integration
 async def test_set_url(setup_connection_manager: AsyncGenerator[Any, Any]) -> None:
     """Test setting URL."""
-    new_url = "http://localhost:8001"
+    new_url = "http://localhost:8002"  # Different port to test URL change
     assert await SurrealDBConnectionManager.set_url(new_url) is True
     assert SurrealDBConnectionManager.get_url() == new_url
-    assert await SurrealDBConnectionManager.set_url(new_url, True) is False  # Cover validate_connection to False
+    # Use invalid port to test validation failure
+    invalid_url = "http://localhost:9999"
+    assert await SurrealDBConnectionManager.set_url(invalid_url, True) is False
 
     await SurrealDBConnectionManager.unset_connection()
     with pytest.raises(ValueError) as exc:

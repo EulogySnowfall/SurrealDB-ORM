@@ -1,6 +1,6 @@
 [project]
 name = "surrealdb-orm"
-version = "0.2.1"
+version = "0.2.2"
 description = "SurrealDB ORM as 'DJango style' for Python with async support. Works with pydantic validation."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -87,6 +87,7 @@ markers = [
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "module"
+asyncio_default_test_loop_scope = "module"
 # log_cli = true
 
 [tool.pyright]

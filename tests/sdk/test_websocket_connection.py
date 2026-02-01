@@ -86,7 +86,7 @@ class TestWebSocketConnectionIntegration:
     async def connection(self) -> AsyncGenerator[WebSocketConnection, None]:
         """Create a connected WebSocket connection."""
         conn = WebSocketConnection(
-            "ws://localhost:8000",
+            "ws://localhost:8001",
             "test",
             "test",
             auto_reconnect=False,
@@ -106,7 +106,6 @@ class TestWebSocketConnectionIntegration:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    @pytest.mark.xfail(reason="WebSocket receive loop needs investigation")
     async def test_query(self, connection: WebSocketConnection) -> None:
         """Test query execution."""
         result = await connection.query("INFO FOR DB")
@@ -114,7 +113,6 @@ class TestWebSocketConnectionIntegration:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    @pytest.mark.xfail(reason="WebSocket receive loop needs investigation")
     async def test_session_variables(self, connection: WebSocketConnection) -> None:
         """Test session variable operations."""
         # Set variable
@@ -129,7 +127,6 @@ class TestWebSocketConnectionIntegration:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    @pytest.mark.xfail(reason="WebSocket receive loop needs investigation")
     async def test_ping(self, connection: WebSocketConnection) -> None:
         """Test ping."""
         result = await connection.ping()
@@ -137,7 +134,6 @@ class TestWebSocketConnectionIntegration:
 
     @pytest.mark.asyncio
     @pytest.mark.integration
-    @pytest.mark.xfail(reason="WebSocket receive loop needs investigation")
     async def test_live_query(self, connection: WebSocketConnection) -> None:
         """Test live query subscription."""
         notifications: list[Any] = []

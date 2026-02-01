@@ -4,11 +4,14 @@ HTTP Connection Implementation for SurrealDB SDK.
 Provides stateless HTTP-based connection, ideal for microservices and serverless.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from .base import BaseSurrealConnection
+
+if TYPE_CHECKING:
+    from ..transaction import HTTPTransaction
 from ..protocol.rpc import RPCRequest, RPCResponse
 from ..types import AuthResponse
 from ..exceptions import ConnectionError, QueryError
@@ -395,3 +398,24 @@ class HTTPConnection(BaseSurrealConnection):
         response.raise_for_status()
         result: dict[str, Any] | list[dict[str, Any]] = response.json()
         return result
+
+    # Transaction support
+
+    def transaction(self) -> "HTTPTransaction":
+        """
+        Create a new HTTP transaction.
+
+        HTTP transactions batch all statements and execute them atomically on commit.
+
+        Usage:
+            async with conn.transaction() as tx:
+                await tx.create("users", {"name": "Alice"})
+                await tx.create("orders", {"user": "users:alice"})
+                # All statements executed atomically on exit
+
+        Returns:
+            HTTPTransaction context manager
+        """
+        from ..transaction import HTTPTransaction
+
+        return HTTPTransaction(self)

@@ -37,6 +37,22 @@ from .exceptions import (
     AuthenticationError,
     QueryError,
     TimeoutError,
+    TransactionError,
+)
+from .transaction import (
+    BaseTransaction,
+    HTTPTransaction,
+    WebSocketTransaction,
+    TransactionStatement,
+)
+from .functions import (
+    FunctionCall,
+    FunctionNamespace,
+    MathFunctions,
+    TimeFunctions,
+    ArrayFunctions,
+    StringFunctions,
+    CryptoFunctions,
 )
 
 __version__ = "0.1.0"
@@ -63,12 +79,26 @@ __all__ = [
     "InfoResponse",
     "LiveQueryId",
     "DeleteResponse",
+    # Transactions
+    "BaseTransaction",
+    "HTTPTransaction",
+    "WebSocketTransaction",
+    "TransactionStatement",
+    # Functions
+    "FunctionCall",
+    "FunctionNamespace",
+    "MathFunctions",
+    "TimeFunctions",
+    "ArrayFunctions",
+    "StringFunctions",
+    "CryptoFunctions",
     # Exceptions
     "SurrealDBError",
     "ConnectionError",
     "AuthenticationError",
     "QueryError",
     "TimeoutError",
+    "TransactionError",
 ]
 
 

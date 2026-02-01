@@ -6,6 +6,41 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.2.2] - 2026-02-01
+
+### Added
+
+- **Atomic Transactions** - Full transaction support with context manager
+  - `HTTPTransaction` - Batched execution for stateless connections
+  - `WebSocketTransaction` - Immediate execution with server-side transactions
+  - Context manager with auto-commit on success, auto-rollback on exception
+  - Transaction methods: `query()`, `create()`, `update()`, `delete()`, `relate()`
+  - `TransactionError` exception with rollback status tracking
+
+- **Typed Functions API** - Fluent interface for SurrealDB functions
+  - `db.fn.namespace.function()` syntax for built-in functions
+  - `db.fn.custom_function()` syntax for user-defined functions
+  - Support for all built-in namespaces: `array`, `crypto`, `duration`, `geo`, `http`, `math`, `meta`, `object`, `parse`, `rand`, `session`, `string`, `time`, `type`, `vector`
+  - Automatic parameter binding with variable namespacing
+
+- **Test Infrastructure Improvements**
+  - Automatic SurrealDB container lifecycle management in `conftest.py`
+  - Container detection to avoid duplicate instances
+  - Graceful container cleanup only when started by tests
+
+### Changed
+
+- Test coverage improved to 68.5%
+- Updated SDK documentation with transactions and functions guides
+
+### Fixed
+
+- Mypy `no-any-return` errors in `functions.py`
+- Unused imports and variables in test files
+- Module path resolution for SDK exceptions in tests
+
+---
+
 ## [0.2.1] - 2026-02-01
 
 ### Added

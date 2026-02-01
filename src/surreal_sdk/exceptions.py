@@ -56,3 +56,16 @@ class ChangeFeedError(SurrealDBError):
     """Raised when a change feed operation fails."""
 
     pass
+
+
+class TransactionError(SurrealDBError):
+    """Raised when a transaction operation fails."""
+
+    def __init__(
+        self,
+        message: str,
+        code: int | None = None,
+        rollback_succeeded: bool | None = None,
+    ):
+        self.rollback_succeeded = rollback_succeeded
+        super().__init__(message, code)
