@@ -10,6 +10,10 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ### Added
 
+- **New `surreal_sdk` package** - Standalone SDK that can be published separately to PyPI as `surreal-sdk`
+  - Has its own `pyproject.toml` and `README.md`
+  - Can be installed independently: `pip install surreal-sdk`
+
 - **New `surreal_sdk` module** - Custom Python SDK for SurrealDB independent of the official `surrealdb` package
   - `HTTPConnection` - Stateless HTTP-based connection, ideal for microservices and serverless
   - `WebSocketConnection` - Stateful WebSocket connection for real-time features and Live Queries

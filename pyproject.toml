@@ -22,7 +22,7 @@ classifiers = [
 
 dependencies = [
     "pydantic>=2.10.5",
-    # Custom SDK dependencies (no official surrealdb package needed)
+    # SDK dependencies (bundled until surreal-sdk is published to PyPI)
     "httpx>=0.27.0",
     "aiohttp>=3.9.0",
 ]
