@@ -1,7 +1,6 @@
 import pytest
 from pydantic import Field
 from src import surreal_orm
-from surrealdb import RecordID
 from src.surreal_orm.model_base import SurrealDbError
 from src.surreal_orm.query_set import SurrealDbError as QuerySetError
 from src.surreal_orm.connection_manager import SurrealDbConnectionError
@@ -15,13 +14,13 @@ SURREALDB_DATABASE = "db"
 
 
 class ModelTest(surreal_orm.BaseSurrealModel):
-    id: str | RecordID | None = None
+    id: str | None = None
     name: str = Field(..., max_length=100)
     age: int = Field(..., ge=0, le=125)
 
 
 class ModelTestEmpty(surreal_orm.BaseSurrealModel):
-    id: str | RecordID | None = Field(default=None)
+    id: str | None = Field(default=None)
     name: str = Field(..., max_length=100)
     age: int = Field(..., ge=0, le=125)
 
@@ -46,10 +45,12 @@ async def test_save_model() -> None:
     # Vérification de l'insertion
     client = await surreal_orm.SurrealDBConnectionManager.get_client()
     result = await client.select("ModelTest")
-    test_id = RecordID(table_name="ModelTest", identifier=1)
-    assert len(result) == 1
-
-    assert result[0] == {"id": test_id, "name": "Test Man", "age": 42}
+    # SDK returns RecordsResponse
+    assert result.count == 1
+    record = result.first
+    assert record is not None
+    assert record["name"] == "Test Man"
+    assert record["age"] == 42
 
 
 @pytest.mark.integration
@@ -150,11 +151,12 @@ async def test_delete_model() -> None:
     await model.save()
     client = await surreal_orm.SurrealDBConnectionManager.get_client()
     result = await client.select("ModelTest")
-    assert len(result) == 3
+    # SDK returns RecordsResponse
+    assert result.count == 3
 
     await model.delete()
     result = await client.select("ModelTest")
-    assert len(result) == 2
+    assert result.count == 2
 
     model2 = ModelTest(id="345", name="Test2", age=34)
 
@@ -176,7 +178,7 @@ async def test_query_model() -> None:
 async def test_multi_select() -> None:
     # Use a dedicated table for this test to avoid conflicts
     class MultiSelectTest(surreal_orm.BaseSurrealModel):
-        id: str | RecordID | None = None
+        id: str | None = None
         name: str = Field(..., max_length=100)
         age: int = Field(..., ge=0, le=125)
 

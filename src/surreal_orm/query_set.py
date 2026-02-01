@@ -1,7 +1,6 @@
 from .constants import LOOKUP_OPERATORS
 from .enum import OrderBy
 from .utils import remove_quotes_for_variables
-from surrealdb import Table
 from . import BaseSurrealModel, SurrealDBConnectionManager
 from typing import Self, Any, cast
 from pydantic_core import ValidationError
@@ -361,13 +360,11 @@ class QuerySet:
         """
         if id_item:
             client = await SurrealDBConnectionManager.get_client()
-            data = await client.select(f"{self._model_table}:{id_item}")
-            # surrealdb SDK 1.0.8 always returns a list from select()
-            if isinstance(data, list):
-                if len(data) == 0:
-                    raise self.model.DoesNotExist("Record not found.")
-                data = data[0]
-            return self.model.from_db(cast(dict | list | None, data))
+            result = await client.select(f"{self._model_table}:{id_item}")
+            # SDK returns RecordsResponse
+            if result.is_empty:
+                raise self.model.DoesNotExist("Record not found.")
+            return self.model.from_db(cast(dict | list | None, result.first))
         else:
             result = await self.exec()
             if len(result) > 1:
@@ -395,8 +392,8 @@ class QuerySet:
             ```
         """
         client = await SurrealDBConnectionManager.get_client()
-        results = await client.select(Table(self._model_table))
-        return self.model.from_db(cast(dict | list | None, results))
+        result = await client.select(self._model_table)
+        return self.model.from_db(cast(dict | list | None, result.records))
 
     async def _execute_query(self, query: str) -> list[Any]:
         """
@@ -444,7 +441,9 @@ class QuerySet:
             results = await self._run_query_on_client(client, "SELECT * FROM users;")
             ```
         """
-        return await client.query(remove_quotes_for_variables(query), self._variables)  # type: ignore
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        # SDK returns QueryResponse, extract all records
+        return cast(list[Any], result.all_records)
 
     async def delete_table(self) -> bool:
         """
@@ -465,7 +464,7 @@ class QuerySet:
             ```
         """
         client = await SurrealDBConnectionManager.get_client()
-        await client.delete(Table(self._model_table))
+        await client.delete(self._model_table)
         return True
 
     async def query(self, query: str, variables: dict[str, Any] = {}) -> Any:
@@ -496,6 +495,6 @@ class QuerySet:
         if f"FROM {self._model_table}" not in query:
             raise SurrealDbError(f"The query must include 'FROM {self._model_table}' to reference the correct table.")
         client = await SurrealDBConnectionManager.get_client()
-        results = await client.query(remove_quotes_for_variables(query), variables)
-        # surrealdb SDK 1.0.8 returns records directly, not wrapped in {"result": ...}
-        return self.model.from_db(cast(dict | list | None, results))
+        result = await client.query(remove_quotes_for_variables(query), variables)
+        # SDK returns QueryResponse, extract all records
+        return self.model.from_db(cast(dict | list | None, result.all_records))

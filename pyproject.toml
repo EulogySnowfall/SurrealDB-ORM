@@ -1,6 +1,6 @@
 [project]
 name = "surrealdb-orm"
-version = "0.1.5"
+version = "0.2.0"
 description = "SurrealDB ORM as 'DJango style' for Python with async support. Works with pydantic validation."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,19 +22,12 @@ classifiers = [
 
 dependencies = [
     "pydantic>=2.10.5",
-    "surrealdb>=0.4.1",
-    # SDK dependencies (direct connection without official SDK)
+    # Custom SDK dependencies (no official surrealdb package needed)
     "httpx>=0.27.0",
     "aiohttp>=3.9.0",
 ]
 
 [project.optional-dependencies]
-# Use only the custom SDK (no official surrealdb package)
-sdk-only = [
-    "pydantic>=2.10.5",
-    "httpx>=0.27.0",
-    "aiohttp>=3.9.0",
-]
 # CBOR support for binary protocol
 cbor = [
     "cbor2>=5.6.0",
@@ -66,11 +59,8 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 check_untyped_defs = true
 exclude = "^(tests|examples)/"
-
-[[tool.mypy.overrides]]
-module = ["surrealdb.*"]
-ignore_missing_imports = true
-no_implicit_reexport = true
+mypy_path = "src"
+explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = ["aiohttp.*", "httpx.*"]

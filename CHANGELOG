@@ -6,7 +6,7 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
-## [0.2.0] - 2026-01-31
+## [0.2.0] - 2026-02-01
 
 ### Added
 
@@ -33,14 +33,23 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ### Changed
 
+- **🚀 ORM now uses custom SDK** - Removed dependency on official `surrealdb` package
+  - `SurrealDBConnectionManager` now uses `HTTPConnection` from `surreal_sdk`
+  - All ORM methods adapted to use typed responses (`RecordResponse`, `RecordsResponse`, etc.)
+  - Removed `surrealdb>=0.4.1` from dependencies
+
 - **Python version support**: Now requires Python 3.12+ (dropped 3.11, added 3.14)
 - Updated `pyproject.toml` classifiers and tool configurations for Python 3.12/3.13/3.14
-
 - Coverage threshold reduced to 35% to accommodate new SDK code
+
+### Removed
+
+- **Dependency on `surrealdb` package** - No longer required, fully replaced by custom `surreal_sdk`
 
 ### Fixed
 
-- Compatibility with `surrealdb` SDK 1.0.8 breaking changes
+- ID parsing from SurrealDB format (`table:id` → `id`)
+- Test isolation with dedicated model classes per test
 
 ---
 

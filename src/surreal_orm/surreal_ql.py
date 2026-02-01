@@ -1,6 +1,7 @@
 from typing import Any, Self
-from .connection_manager import SurrealDBConnectionManager, AsyncSurrealConnection
+from .connection_manager import SurrealDBConnectionManager
 from .utils import remove_quotes_for_variables
+from surreal_sdk import HTTPConnection
 
 import logging
 
@@ -86,7 +87,7 @@ class SurrealQL:
         client = await SurrealDBConnectionManager.get_client()
         return await self._run_query_on_client(client, query)
 
-    async def _run_query_on_client(self, client: AsyncSurrealConnection, query: str) -> list[Any]:
+    async def _run_query_on_client(self, client: HTTPConnection, query: str) -> list[Any]:
         """
         Run the SQL query on the provided SurrealDB client.
 
@@ -94,7 +95,7 @@ class SurrealQL:
         and returns the raw query responses.
 
         Args:
-            client (AsyncSurrealConnection): The active SurrealDB client instance.
+            client (HTTPConnection): The active SurrealDB client instance.
             query (str): The SQL query string to execute.
 
         Returns:
@@ -108,4 +109,5 @@ class SurrealQL:
             results = await self._run_query_on_client(client, "SELECT * FROM users;")
             ```
         """
-        return await client.query(remove_quotes_for_variables(query), self._variables)  # type: ignore
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        return result.all_records

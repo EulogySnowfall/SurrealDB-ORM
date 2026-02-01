@@ -1,13 +1,10 @@
-from typing import Any, Union
-from surrealdb import AsyncSurreal
-from surrealdb.connections.async_ws import AsyncWsSurrealConnection
-from surrealdb.connections.async_http import AsyncHttpSurrealConnection
+from typing import Any
 import logging
 
-logger = logging.getLogger(__name__)
+from surreal_sdk import HTTPConnection
+from surreal_sdk.exceptions import SurrealDBError
 
-# Type alias for async surreal connections
-AsyncSurrealConnection = Union[AsyncWsSurrealConnection, AsyncHttpSurrealConnection, Any]
+logger = logging.getLogger(__name__)
 
 
 class SurrealDbConnectionError(Exception):
@@ -22,12 +19,12 @@ class SurrealDBConnectionManager:
     __password: str | None = None
     __namespace: str | None = None
     __database: str | None = None
-    __client: AsyncSurrealConnection | None = None
+    __client: HTTPConnection | None = None
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await SurrealDBConnectionManager.close_connection()
 
-    async def __aenter__(self) -> AsyncSurrealConnection:
+    async def __aenter__(self) -> HTTPConnection:
         return await SurrealDBConnectionManager.get_client()
 
     @classmethod
@@ -67,14 +64,14 @@ class SurrealDBConnectionManager:
         return all([cls.__url, cls.__user, cls.__password, cls.__namespace, cls.__database])
 
     @classmethod
-    async def get_client(cls) -> AsyncSurrealConnection:
+    async def get_client(cls) -> HTTPConnection:
         """
-        Connect to the SurrealDB instance.
+        Connect to the SurrealDB instance using the custom SDK.
 
-        :return: The SurrealDB instance.
+        :return: The HTTPConnection instance.
         """
 
-        if cls.__client is not None:
+        if cls.__client is not None and cls.__client.is_connected:
             return cls.__client
 
         if not cls.is_connection_set():
@@ -86,16 +83,21 @@ class SurrealDBConnectionManager:
             assert url is not None  # Already validated by is_connection_set()
             assert cls.__namespace is not None
             assert cls.__database is not None
+            assert cls.__user is not None
+            assert cls.__password is not None
 
-            _client = AsyncSurreal(url)
-            # connect() is only implemented for WebSocket connections
-            if url.startswith(("ws://", "wss://")):
-                await _client.connect()  # type: ignore[call-arg]
-            await _client.use(cls.__namespace, cls.__database)
-            await _client.signin({"username": cls.__user, "password": cls.__password})
+            _client = HTTPConnection(url, cls.__namespace, cls.__database)
+            await _client.connect()
+            await _client.signin(cls.__user, cls.__password)
 
             cls.__client = _client
             return cls.__client
+        except SurrealDBError as e:
+            logger.warning(f"Can't get connection: {e}")
+            if cls.__client is not None:  # pragma: no cover
+                await cls.__client.close()
+                cls.__client = None
+            raise SurrealDbConnectionError(f"Can't connect to the database: {e}")
         except Exception as e:
             logger.warning(f"Can't get connection: {e}")
             if cls.__client is not None:  # pragma: no cover
@@ -121,7 +123,7 @@ class SurrealDBConnectionManager:
         cls.__client = None
 
     @classmethod
-    async def reconnect(cls) -> AsyncSurrealConnection | None:
+    async def reconnect(cls) -> HTTPConnection | None:
         """
         Reconnect to the SurrealDB instance.
         """
