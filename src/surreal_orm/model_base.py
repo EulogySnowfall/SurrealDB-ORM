@@ -108,24 +108,18 @@ class BaseSurrealModel(BaseModel):
         Refresh the model instance from the database.
         """
         if not self.get_id():
-            raise SurrealDbError(
-                "Can't refresh data, not recorded yet."
-            )  # pragma: no cover
+            raise SurrealDbError("Can't refresh data, not recorded yet.")  # pragma: no cover
 
         client = await SurrealDBConnectionManager.get_client()
         result = await client.select(f"{self.get_table_name()}:{self.get_id()}")
 
         # SDK returns RecordsResponse with .records list
         if result.is_empty:
-            raise SurrealDbError(
-                "Can't refresh data, no record found."
-            )  # pragma: no cover
+            raise SurrealDbError("Can't refresh data, no record found.")  # pragma: no cover
 
         record = result.first
         if record is None:
-            raise SurrealDbError(
-                "Can't refresh data, no record found."
-            )  # pragma: no cover
+            raise SurrealDbError("Can't refresh data, no record found.")  # pragma: no cover
 
         # Update instance fields from the record
         for key, value in record.items():
@@ -154,9 +148,7 @@ class BaseSurrealModel(BaseModel):
 
         # SDK returns RecordResponse
         if not result.exists:
-            raise SurrealDbError(
-                "Can't save data, no record returned."
-            )  # pragma: no cover
+            raise SurrealDbError("Can't save data, no record returned.")  # pragma: no cover
 
         obj = self.from_db(cast(dict | list | None, result.record))
         if isinstance(obj, type(self)):

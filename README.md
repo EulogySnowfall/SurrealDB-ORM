@@ -48,7 +48,7 @@ The goal is to simplify writing complex queries while providing an intuitive int
 - Python : 3.12+
 - Pydantic : 2.10.5+
 - SurrealDB Database Version : 2.1.4+
-- You need to set a SurrealDB to connect to.  
+- You need to set a SurrealDB to connect to.
 
 ---
 
@@ -97,12 +97,12 @@ for user in users:
 
 ## 🌟 Features
 
-- 🔧 **Model definition** using Pydantic  
-- 📄 **QuerySet** with filter methods like `filter()`, `limit()`, and `order_by()`  
-- 🔄 **CRUD** operations (Create, Read, Update, Delete)  
-- ⚙️ **Asynchronous connection** to SurrealDB  
-- 🔍 **Automatic validation** with Pydantic  
-- 📊 **Complex queries** with conditional filters (`age__gte`, `name__in`, etc.)  
+- 🔧 **Model definition** using Pydantic
+- 📄 **QuerySet** with filter methods like `filter()`, `limit()`, and `order_by()`
+- 🔄 **CRUD** operations (Create, Read, Update, Delete)
+- ⚙️ **Asynchronous connection** to SurrealDB
+- 🔍 **Automatic validation** with Pydantic
+- 📊 **Complex queries** with conditional filters (`age__gte`, `name__in`, etc.)
 
 ---
 
@@ -111,20 +111,20 @@ for user in users:
 Contributions are welcome!  
 If you'd like to improve this project:
 
-1. Fork the repository.  
-2. Create a branch (`git checkout -b feature/new-feature`).  
-3. Make your changes and commit them (`git commit -m "Add new feature"`).  
-4. Push to your branch (`git push origin feature/new-feature`).  
-5. Create a Pull Request.  
+1. Fork the repository.
+2. Create a branch (`git checkout -b feature/new-feature`).
+3. Make your changes and commit them (`git commit -m "Add new feature"`).
+4. Push to your branch (`git push origin feature/new-feature`).
+5. Create a Pull Request.
 
 ---
 
 ## 📌 TODO
 
 - [ ] Implement relationships
-- [ ] Add transaction support  
-- [ ] Optimize complex queries  
-- [ ] Expand documentation with advanced examples  
+- [ ] Add transaction support
+- [ ] Optimize complex queries
+- [ ] Expand documentation with advanced examples
 - [ ] Better SurrealQL Integration
 
 ---
@@ -139,7 +139,7 @@ This project is licensed under the **MIT License**. See the `LICENSE` file for m
 
 **Author:** Yannick Croteau  
 **Email:** <croteau.yannick@gmail.com>  
-**GitHub:** [EulogySnowfall](https://github.com/EulogySnowfall)  
+**GitHub:** [EulogySnowfall](https://github.com/EulogySnowfall)
 
 ---
 
