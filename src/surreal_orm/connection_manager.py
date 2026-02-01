@@ -3,6 +3,7 @@ import logging
 
 from surreal_sdk import HTTPConnection
 from surreal_sdk.exceptions import SurrealDBError
+from surreal_sdk.transaction import HTTPTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -320,3 +321,21 @@ class SurrealDBConnectionManager:
         """
 
         return cls.__client is not None
+
+    @classmethod
+    async def transaction(cls) -> HTTPTransaction:
+        """
+        Create a transaction context manager for atomic operations.
+
+        Usage:
+            async with SurrealDBConnectionManager.transaction() as tx:
+                user = User(name="Alice")
+                await user.save(tx=tx)
+                order = Order(user_id=user.id)
+                await order.save(tx=tx)
+                # Auto-commit on success, auto-rollback on exception
+
+        :return: HTTPTransaction context manager
+        """
+        client = await cls.get_client()
+        return client.transaction()

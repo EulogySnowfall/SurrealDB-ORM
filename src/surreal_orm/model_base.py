@@ -1,9 +1,12 @@
-from typing import Any, Self, cast
+from typing import Any, Self, cast, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from .connection_manager import SurrealDBConnectionManager
 from .types import SchemaMode, TableType
+
+if TYPE_CHECKING:
+    from surreal_sdk.transaction import BaseTransaction, HTTPTransaction
 
 import logging
 
@@ -299,10 +302,38 @@ class BaseSurrealModel(BaseModel):
                 setattr(self, key, value)
         return None
 
-    async def save(self) -> Self:
+    async def save(self, tx: "BaseTransaction | None" = None) -> Self:
         """
         Save the model instance to the database.
+
+        Args:
+            tx: Optional transaction to use for this operation.
+                If provided, the operation will be part of the transaction.
+
+        Example:
+            # Without transaction
+            await user.save()
+
+            # With transaction
+            async with SurrealDBConnectionManager.transaction() as tx:
+                await user.save(tx=tx)
         """
+        if tx is not None:
+            # Use transaction
+            data = self.model_dump(exclude={"id"})
+            id = self.get_id()
+            table = self.get_table_name()
+
+            if id is not None:
+                thing = f"{table}:{id}"
+                await tx.create(thing, data)
+                return self
+
+            # Auto-generate ID - create without specific ID
+            await tx.create(table, data)
+            return self
+
+        # Original behavior without transaction
         client = await SurrealDBConnectionManager.get_client()
         data = self.model_dump(exclude={"id"})
         id = self.get_id()
@@ -327,19 +358,28 @@ class BaseSurrealModel(BaseModel):
 
         raise SurrealDbError("Can't save data, no record returned.")  # pragma: no cover
 
-    async def update(self) -> Any:
+    async def update(self, tx: "BaseTransaction | None" = None) -> Any:
         """
         Update the model instance to the database.
-        """
-        client = await SurrealDBConnectionManager.get_client()
 
+        Args:
+            tx: Optional transaction to use for this operation.
+        """
         data = self.model_dump(exclude={"id"})
         id = self.get_id()
-        if id is not None:
-            thing = f"{self.__class__.__name__}:{id}"
-            result = await client.update(thing, data)
-            return result.records
-        raise SurrealDbError("Can't update data, no id found.")
+
+        if id is None:
+            raise SurrealDbError("Can't update data, no id found.")
+
+        thing = f"{self.__class__.__name__}:{id}"
+
+        if tx is not None:
+            await tx.update(thing, data)
+            return None
+
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.update(thing, data)
+        return result.records
 
     @classmethod
     def get(cls, item: str) -> str:
@@ -348,42 +388,52 @@ class BaseSurrealModel(BaseModel):
         """
         return f"{cls.__name__}:{item}"
 
-    async def merge(self, **data: Any) -> Any:
+    async def merge(self, tx: "BaseTransaction | None" = None, **data: Any) -> Any:
         """
-        Update the model instance to the database.
-        """
+        Merge (partial update) the model instance in the database.
 
-        client = await SurrealDBConnectionManager.get_client()
+        Args:
+            tx: Optional transaction to use for this operation.
+            **data: Fields to update.
+        """
         data_set = {key: value for key, value in data.items()}
 
         id = self.get_id()
-        if id:
-            thing = f"{self.get_table_name()}:{id}"
-
-            await client.merge(thing, data_set)
-            await self.refresh()
-            return
-
-        raise SurrealDbError(f"No Id for the data to merge: {data}")
-
-    async def delete(self) -> None:
-        """
-        Delete the model instance from the database.
-        """
-
-        client = await SurrealDBConnectionManager.get_client()
-
-        id = self.get_id()
+        if not id:
+            raise SurrealDbError(f"No Id for the data to merge: {data}")
 
         thing = f"{self.get_table_name()}:{id}"
 
+        if tx is not None:
+            await tx.merge(thing, data_set)
+            return
+
+        client = await SurrealDBConnectionManager.get_client()
+        await client.merge(thing, data_set)
+        await self.refresh()
+
+    async def delete(self, tx: "BaseTransaction | None" = None) -> None:
+        """
+        Delete the model instance from the database.
+
+        Args:
+            tx: Optional transaction to use for this operation.
+        """
+        id = self.get_id()
+        thing = f"{self.get_table_name()}:{id}"
+
+        if tx is not None:
+            await tx.delete(thing)
+            logger.info(f"Record deleted (in transaction) -> {thing}.")
+            return
+
+        client = await SurrealDBConnectionManager.get_client()
         result = await client.delete(thing)
 
         if not result.success:
             raise SurrealDbError(f"Can't delete Record id -> '{id}' not found!")
 
         logger.info(f"Record deleted -> {result.deleted!r}.")
-        del self
 
     @model_validator(mode="after")
     def check_config(self) -> Self:
@@ -406,6 +456,26 @@ class BaseSurrealModel(BaseModel):
         from .query_set import QuerySet
 
         return QuerySet(cls)
+
+    @classmethod
+    async def transaction(cls) -> "HTTPTransaction":
+        """
+        Create a transaction context manager for atomic operations.
+
+        This is a convenience method that delegates to SurrealDBConnectionManager.
+
+        Usage:
+            async with User.transaction() as tx:
+                user1 = User(id="1", name="Alice")
+                await user1.save(tx=tx)
+                user2 = User(id="2", name="Bob")
+                await user2.save(tx=tx)
+                # Auto-commit on success, auto-rollback on exception
+
+        Returns:
+            HTTPTransaction context manager
+        """
+        return await SurrealDBConnectionManager.transaction()
 
     class DoesNotExist(Exception):
         """

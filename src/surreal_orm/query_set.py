@@ -2,6 +2,7 @@ from .constants import LOOKUP_OPERATORS
 from .enum import OrderBy
 from .utils import remove_quotes_for_variables
 from . import BaseSurrealModel, SurrealDBConnectionManager
+from .aggregations import Aggregation
 from typing import Self, Any, cast
 from pydantic_core import ValidationError
 
@@ -62,6 +63,8 @@ class QuerySet:
         self._order_by: str | None = None
         self._model_table: str = model.__name__
         self._variables: dict = {}
+        self._group_by_fields: list[str] = []
+        self._annotations: dict[str, Aggregation] = {}
 
     def select(self, *fields: str) -> Self:
         """
@@ -228,6 +231,93 @@ class QuerySet:
         self._order_by = f"{field_name} {order_type}"
         return self
 
+    def values(self, *fields: str) -> Self:
+        """
+        Specify the fields to group by for aggregation queries.
+
+        This method is used in conjunction with `annotate()` to perform GROUP BY operations.
+        The specified fields become the grouping keys, and aggregation functions are applied
+        to each group.
+
+        Args:
+            *fields (str): Variable length argument list of field names to group by.
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example:
+            ```python
+            # Group orders by status and calculate statistics
+            stats = await Order.objects().values("status").annotate(
+                count=Count(),
+                total=Sum("amount"),
+            )
+            # Result: [{"status": "paid", "count": 42, "total": 5000}, ...]
+            ```
+        """
+        self._group_by_fields = list(fields)
+        return self
+
+    def annotate(self, **aggregations: Aggregation) -> Self:
+        """
+        Add aggregation functions to compute values for each group.
+
+        This method is used in conjunction with `values()` to perform GROUP BY operations.
+        Each keyword argument should be an Aggregation instance (Count, Sum, Avg, Min, Max).
+
+        Args:
+            **aggregations (Aggregation): Keyword arguments where keys are alias names
+                and values are Aggregation instances.
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example:
+            ```python
+            from surreal_orm.aggregations import Count, Sum, Avg
+
+            # Calculate statistics per status
+            stats = await Order.objects().values("status").annotate(
+                count=Count(),
+                total=Sum("amount"),
+                avg_amount=Avg("amount"),
+            )
+            ```
+        """
+        self._annotations = aggregations
+        return self
+
+    async def _execute_annotate(self) -> list[dict[str, Any]]:
+        """
+        Execute the GROUP BY query with annotations.
+
+        Returns:
+            list[dict[str, Any]]: A list of dictionaries containing grouped results.
+        """
+        # Build SELECT clause with group fields and aggregations
+        select_parts: list[str] = list(self._group_by_fields)
+
+        for alias, aggregation in self._annotations.items():
+            select_parts.append(aggregation.to_surql(alias))
+
+        select_clause = ", ".join(select_parts)
+
+        # Build WHERE clause
+        where_clause = self._compile_where_clause()
+
+        # Build GROUP BY clause
+        if self._group_by_fields:
+            group_clause = f" GROUP BY {', '.join(self._group_by_fields)}"
+        else:
+            group_clause = " GROUP ALL"
+
+        query = f"SELECT {select_clause} FROM {self._model_table}{where_clause}{group_clause};"
+
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+
+        return cast(list[dict[str, Any]], result.all_records)
+
     def _compile_query(self) -> str:
         """
         Compile the QuerySet parameters into a SQL query string.
@@ -289,18 +379,33 @@ class QuerySet:
         the results. If the data conforms to the model schema, it returns a list of model instances;
         otherwise, it returns a list of dictionaries.
 
+        When `annotate()` has been called, this returns the aggregated results as dictionaries
+        instead of model instances.
+
         Returns:
             list[BaseSurrealModel] | list[dict]: A list of model instances if validation is successful,
-            otherwise a list of dictionaries representing the raw data.
+            otherwise a list of dictionaries representing the raw data. For annotated queries,
+            always returns a list of dictionaries.
 
         Raises:
             SurrealDbError: If there is an issue executing the query.
 
         Example:
             ```python
+            # Regular query
             results = await queryset.exec()
+
+            # Aggregation query
+            stats = await Order.objects().values("status").annotate(
+                count=Count(),
+                total=Sum("amount"),
+            ).exec()
             ```
         """
+        # If annotations are set, execute as GROUP BY query
+        if self._annotations:
+            return await self._execute_annotate()
+
         query = self._compile_query()
         results = await self._execute_query(query)
         try:
@@ -394,6 +499,164 @@ class QuerySet:
         client = await SurrealDBConnectionManager.get_client()
         result = await client.select(self._model_table)
         return self.model.from_db(cast(dict | list | None, result.records))
+
+    # ==================== Aggregation Methods ====================
+
+    def _compile_where_clause(self) -> str:
+        """
+        Compile the WHERE clause from filters.
+
+        Returns:
+            str: The WHERE clause string (including WHERE keyword) or empty string.
+        """
+        if not self._filters:
+            return ""
+
+        where_clauses = []
+        for field_name, lookup_name, value in self._filters:
+            op = LOOKUP_OPERATORS.get(lookup_name, "=")
+            if lookup_name == "in":
+                formatted_values = ", ".join(repr(v) for v in value)
+                where_clauses.append(f"{field_name} {op} [{formatted_values}]")
+            else:
+                where_clauses.append(f"{field_name} {op} {repr(value)}")
+
+        return " WHERE " + " AND ".join(where_clauses)
+
+    async def count(self) -> int:
+        """
+        Count the number of records matching the current filters.
+
+        Returns:
+            int: The number of matching records.
+
+        Example:
+            ```python
+            total = await User.objects().count()
+            active = await User.objects().filter(active=True).count()
+            ```
+        """
+        where_clause = self._compile_where_clause()
+        query = f"SELECT count() FROM {self._model_table}{where_clause} GROUP ALL;"
+
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+
+        if result.all_records:
+            record = result.all_records[0]
+            if isinstance(record, dict) and "count" in record:
+                return int(record["count"])
+        return 0
+
+    async def sum(self, field: str) -> float | int:
+        """
+        Calculate the sum of a numeric field.
+
+        Args:
+            field: The field name to sum.
+
+        Returns:
+            float | int: The sum of the field values, or 0 if no records match.
+
+        Example:
+            ```python
+            total = await Order.objects().filter(status="paid").sum("amount")
+            ```
+        """
+        where_clause = self._compile_where_clause()
+        query = f"SELECT math::sum({field}) AS total FROM {self._model_table}{where_clause} GROUP ALL;"
+
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+
+        if result.all_records:
+            record = result.all_records[0]
+            if isinstance(record, dict) and "total" in record:
+                value = record["total"]
+                return value if value is not None else 0
+        return 0
+
+    async def avg(self, field: str) -> float | None:
+        """
+        Calculate the average of a numeric field.
+
+        Args:
+            field: The field name to average.
+
+        Returns:
+            float | None: The average value, or None if no records match.
+
+        Example:
+            ```python
+            avg_age = await User.objects().filter(active=True).avg("age")
+            ```
+        """
+        where_clause = self._compile_where_clause()
+        query = f"SELECT math::mean({field}) AS average FROM {self._model_table}{where_clause} GROUP ALL;"
+
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+
+        if result.all_records:
+            record = result.all_records[0]
+            if isinstance(record, dict) and "average" in record:
+                value = record["average"]
+                return float(value) if value is not None else None
+        return None
+
+    async def min(self, field: str) -> Any:
+        """
+        Get the minimum value of a field.
+
+        Args:
+            field: The field name to find the minimum of.
+
+        Returns:
+            Any: The minimum value, or None if no records match.
+
+        Example:
+            ```python
+            min_price = await Product.objects().min("price")
+            ```
+        """
+        where_clause = self._compile_where_clause()
+        query = f"SELECT math::min({field}) AS minimum FROM {self._model_table}{where_clause} GROUP ALL;"
+
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+
+        if result.all_records:
+            record = result.all_records[0]
+            if isinstance(record, dict) and "minimum" in record:
+                return record["minimum"]
+        return None
+
+    async def max(self, field: str) -> Any:
+        """
+        Get the maximum value of a field.
+
+        Args:
+            field: The field name to find the maximum of.
+
+        Returns:
+            Any: The maximum value, or None if no records match.
+
+        Example:
+            ```python
+            max_price = await Product.objects().max("price")
+            ```
+        """
+        where_clause = self._compile_where_clause()
+        query = f"SELECT math::max({field}) AS maximum FROM {self._model_table}{where_clause} GROUP ALL;"
+
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+
+        if result.all_records:
+            record = result.all_records[0]
+            if isinstance(record, dict) and "maximum" in record:
+                return record["maximum"]
+        return None
 
     async def _execute_query(self, query: str) -> list[Any]:
         """
