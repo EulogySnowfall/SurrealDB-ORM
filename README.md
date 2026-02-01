@@ -13,12 +13,11 @@
 
 ---
 
-## What's New in 0.2.2
+## What's New in 0.3.0
 
-- **Atomic Transactions** - Context manager for atomic operations with auto-commit/rollback
-- **Typed Functions API** - Fluent API for SurrealDB built-in and custom functions
-- **Improved WebSocket** - Better reconnection handling and live query support
-- **Test Infrastructure** - Automatic container management for integration tests
+- **ORM Transactions** - Transaction support for Model CRUD operations (`save()`, `update()`, `merge()`, `delete()`)
+- **QuerySet Aggregations** - `count()`, `sum()`, `avg()`, `min()`, `max()` methods
+- **GROUP BY Support** - Django-style `values()` and `annotate()` for grouped aggregations
 
 ---
 
@@ -227,6 +226,58 @@ users = await User.objects().filter(age__gte=18, name__startswith="A").exec()
 # startswith, istartswith, endswith, iendswith, match, regex, isnull
 ```
 
+### ORM Transactions
+
+```python
+from surreal_orm import SurrealDBConnectionManager
+
+# Via ConnectionManager
+async with SurrealDBConnectionManager.transaction() as tx:
+    user = User(name="Alice", balance=1000)
+    await user.save(tx=tx)
+
+    order = Order(user_id=user.id, total=100)
+    await order.save(tx=tx)
+    # Auto-commit on success, auto-rollback on exception
+
+# Via Model class method
+async with User.transaction() as tx:
+    await user1.save(tx=tx)
+    await user2.delete(tx=tx)
+```
+
+### Aggregations
+
+```python
+# Simple aggregations
+total = await User.objects().count()
+total = await User.objects().filter(active=True).count()
+
+# Field aggregations
+avg_age = await User.objects().avg("age")
+total = await Order.objects().filter(status="paid").sum("amount")
+min_val = await Product.objects().min("price")
+max_val = await Product.objects().max("price")
+```
+
+### GROUP BY with Aggregations
+
+```python
+from surreal_orm import Count, Sum, Avg
+
+# Group by single field
+stats = await Order.objects().values("status").annotate(
+    count=Count(),
+    total=Sum("amount"),
+).exec()
+# Result: [{"status": "paid", "count": 42, "total": 5000}, ...]
+
+# Group by multiple fields
+monthly = await Order.objects().values("status", "month").annotate(
+    count=Count(),
+).exec()
+```
+
 ### Table Types
 
 | Type     | Description                 |
@@ -304,6 +355,7 @@ surreal-orm migrate
 | [SDK Guide](docs/sdk.md)               | Full SDK documentation   |
 | [Migration System](docs/migrations.md) | Django-style migrations  |
 | [Authentication](docs/auth.md)         | JWT authentication guide |
+| [Roadmap](docs/roadmap.md)             | Future features planning |
 | [CHANGELOG](CHANGELOG)                 | Version history          |
 
 ---

@@ -254,11 +254,13 @@ uv build
 
 ## TODO / Roadmap
 
-### Completed in 0.2.x
+See full roadmap: [docs/roadmap.md](docs/roadmap.md)
+
+### Completed (0.2.x)
 
 - [x] Custom SDK (HTTP + WebSocket)
 - [x] Connection pooling
-- [x] Atomic transactions
+- [x] Atomic transactions (SDK level)
 - [x] Typed functions API
 - [x] Migration system
 - [x] JWT Authentication
@@ -266,12 +268,30 @@ uv build
 - [x] Live Queries
 - [x] Change Feeds
 
-### Future
+### v0.3.0 (Next) - ORM Transactions & Aggregations
 
-- [ ] Relations (ForeignKey, ManyToMany, graph traversal)
-- [ ] Aggregations (count, sum, avg, GROUP BY)
-- [ ] Schema introspection from database
-- [ ] Multi-database support
+- [ ] Model-level transactions (`user.save(tx=tx)`)
+- [ ] QuerySet aggregations (`count()`, `sum()`, `avg()`, `min()`, `max()`)
+- [ ] GROUP BY with `values()` and `annotate()`
+
+### v0.3.1 - Bulk Operations
+
+- [ ] `bulk_create()` with atomic option
+- [ ] `bulk_update()` for filtered querysets
+- [ ] `bulk_delete()` with transaction support
+
+### v0.4.x - Relations & Graph
+
+- [ ] `ForeignKey`, `ManyToMany` fields
+- [ ] `Relation` for graph edges (SurrealDB's `->edge->`)
+- [ ] Graph traversal queries
+- [ ] `prefetch_related()` for eager loading
+
+### v0.5.x - Real-time
+
+- [ ] Live Models (real-time sync)
+- [ ] Model signals (pre_save, post_save, etc.)
+- [ ] Change Feed integration for ORM
 
 ---
 

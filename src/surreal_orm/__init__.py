@@ -26,6 +26,7 @@ from .types import (
 )
 from .fields import Encrypted
 from .auth import AuthenticatedUserMixin
+from .aggregations import Aggregation, Count, Sum, Avg, Min, Max
 
 __all__ = [
     # Connection
@@ -38,6 +39,13 @@ __all__ = [
     # Query
     "QuerySet",
     "OrderBy",
+    # Aggregations
+    "Aggregation",
+    "Count",
+    "Sum",
+    "Avg",
+    "Min",
+    "Max",
     # Types
     "TableType",
     "SchemaMode",
@@ -49,4 +57,4 @@ __all__ = [
     "AuthenticatedUserMixin",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
