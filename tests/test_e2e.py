@@ -9,8 +9,8 @@ from src.surreal_orm.connection_manager import SurrealDbConnectionError
 SURREALDB_URL = "http://localhost:8000"
 SURREALDB_USER = "root"
 SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "ns"
-SURREALDB_DATABASE = "db"
+SURREALDB_NAMESPACE = "test"
+SURREALDB_DATABASE = "test_e2e"
 
 
 class ModelTest(surreal_orm.BaseSurrealModel):
@@ -26,8 +26,9 @@ class ModelTestEmpty(surreal_orm.BaseSurrealModel):
 
 
 @pytest.fixture(scope="module", autouse=True)
-def setup_surrealdb() -> None:
-    # Initialiser SurrealDB
+async def setup_and_clean_surrealdb():
+    """Initialize SurrealDB connection, clean database before and after tests."""
+    # Initialize SurrealDB connection
     surreal_orm.SurrealDBConnectionManager.set_connection(
         SURREALDB_URL,
         SURREALDB_USER,
@@ -35,6 +36,31 @@ def setup_surrealdb() -> None:
         SURREALDB_NAMESPACE,
         SURREALDB_DATABASE,
     )
+
+    # Setup: Remove and recreate test database for clean state
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    try:
+        # We can't REMOVE DATABASE we're connected to, so delete all tables
+        for table in ["ModelTest", "ModelTestEmpty", "CustomModelName"]:
+            try:
+                await client.query(f"REMOVE TABLE IF EXISTS {table};")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    yield  # Run tests
+
+    # Teardown: Clean up all tables
+    try:
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        for table in ["ModelTest", "ModelTestEmpty", "CustomModelName"]:
+            try:
+                await client.query(f"REMOVE TABLE IF EXISTS {table};")
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 @pytest.mark.integration

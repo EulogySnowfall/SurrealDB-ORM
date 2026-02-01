@@ -6,6 +6,82 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.2.1] - 2026-02-01
+
+### Added
+
+- **Django-style Migration System** - Complete migration framework for schema versioning
+  - `MigrationGenerator` - Generates Python migration files from model changes
+  - `MigrationExecutor` - Applies/rolls back migrations to database
+  - `ModelIntrospector` - Extracts schema state from Pydantic models
+  - `SchemaState` with diff algorithm to compute operations between states
+  - Migration operations: `CreateTable`, `DropTable`, `AddField`, `DropField`, `AlterField`, `CreateIndex`, `DropIndex`, `DefineAccess`, `RemoveAccess`, `DataMigration`, `RawSQL`
+
+- **CLI for Schema Management** (`surreal-orm` command, requires `pip install surrealdb-orm[cli]`)
+  - `makemigrations` - Generate migration files from model changes
+  - `migrate` - Apply pending schema migrations
+  - `upgrade` - Apply data migrations (record transformations)
+  - `rollback <target>` - Rollback to a specific migration
+  - `status` - Show migration status
+  - `sqlmigrate <migration>` - Show SQL without executing
+  - `shell` - Interactive SurrealQL shell
+
+- **Table Type Classification** (`TableType` enum)
+  - `NORMAL` - Standard table (default)
+  - `USER` - Authentication table (enforces SCHEMAFULL, generates DEFINE ACCESS)
+  - `STREAM` - Real-time table with CHANGEFEED
+  - `HASH` - Lookup/cache table (defaults to SCHEMALESS)
+
+- **Encrypted Field Type** for password hashing
+  - `Encrypted` - Type alias for encrypted string fields
+  - `EncryptedField(algorithm)` - Factory for custom encryption algorithms
+  - Supported algorithms: `argon2` (default), `bcrypt`, `pbkdf2`, `scrypt`
+  - Auto-generates `crypto::<algorithm>::generate()` in schema
+
+- **JWT Authentication Support** using SurrealDB's `DEFINE ACCESS ... TYPE RECORD`
+  - `AuthenticatedUserMixin` - Mixin providing `signup()`, `signin()`, `authenticate_token()`, `change_password()`
+  - `AccessDefinition` - Dataclass for access configuration
+  - `AccessGenerator` - Generates DEFINE ACCESS from USER models
+  - Configurable token/session durations
+
+- **Extended Model Configuration** (`SurrealConfigDict`)
+  - `table_type` - USER, STREAM, HASH, NORMAL
+  - `schema_mode` - SCHEMAFULL / SCHEMALESS
+  - `changefeed` - Duration string (e.g., "7d")
+  - `permissions` - Row-level security expressions
+  - `identifier_field` - Field for signin (default: "email")
+  - `password_field` - Field for password (default: "password")
+  - `token_duration` / `session_duration` - JWT lifetimes
+
+- **Model Registry** - Auto-registration of models via `__init_subclass__`
+  - `get_registered_models()` - Get all registered model classes
+  - `clear_model_registry()` - Clear for testing
+
+- **New Test Suites**
+  - `test_types.py` - Tests for enums (14 tests)
+  - `test_encrypted_field.py` - Tests for Encrypted type (18 tests)
+  - `test_migrations_operations.py` - Tests for operations (40 tests)
+  - `test_migrations_state.py` - Tests for state/diff (25 tests)
+  - `test_migrations_introspector.py` - Tests for introspection (15 tests)
+  - `test_migrations_generator.py` - Tests for file generation (17 tests)
+  - `test_cli.py` - CLI command tests (21 tests)
+  - `test_auth_unit.py` - Auth unit tests (37 tests)
+  - `test_migrations_integration.py` - Integration tests (requires SurrealDB)
+  - `test_auth_integration.py` - Auth integration tests (requires SurrealDB)
+
+### Changed
+
+- Test coverage improved from ~44% to 56%
+- Added `click>=8.1.0` as optional dependency for CLI
+
+### Fixed
+
+- Mypy type errors in auth mixins and migration modules
+- Ruff linting issues across codebase
+- Dataclass property override issue in `AlterField` operation
+
+---
+
 ## [0.2.0] - 2026-02-01
 
 ### Added

@@ -1,6 +1,6 @@
 [project]
 name = "surrealdb-orm"
-version = "0.2.0"
+version = "0.2.1"
 description = "SurrealDB ORM as 'DJango style' for Python with async support. Works with pydantic validation."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -32,6 +32,18 @@ dependencies = [
 cbor = [
     "cbor2>=5.6.0",
 ]
+# CLI support
+cli = [
+    "click>=8.1.0",
+]
+# Full installation with all extras
+all = [
+    "cbor2>=5.6.0",
+    "click>=8.1.0",
+]
+
+[project.scripts]
+surreal-orm = "surreal_orm.cli.commands:main"
 
 [project.urls]
 Homepage = "https://github.com/EulogySnowfall/SurrealDB-ORM"

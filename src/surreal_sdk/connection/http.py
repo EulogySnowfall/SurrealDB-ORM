@@ -132,12 +132,21 @@ class HTTPConnection(BaseSurrealConnection):
         namespace: str | None = None,
         database: str | None = None,
         access: str | None = None,
+        **credentials: Any,
     ) -> AuthResponse:
         """
         Authenticate with SurrealDB via HTTP.
 
         For HTTP connections, this obtains a JWT token that will be
         included in subsequent request headers.
+
+        Args:
+            user: Username (for root/namespace/database auth)
+            password: Password (for root/namespace/database auth)
+            namespace: Optional namespace scope
+            database: Optional database scope
+            access: Optional access method (for record access auth)
+            **credentials: Additional credentials for record access (email, password, etc.)
         """
         if not self._client:
             raise ConnectionError("Not connected. Call connect() first.")
@@ -147,14 +156,21 @@ class HTTPConnection(BaseSurrealConnection):
         payload: dict[str, Any] = {}
         if user:
             payload["user"] = user
-        if password:
-            payload["pass"] = password
         if namespace:
             payload["ns"] = namespace
         if database:
             payload["db"] = database
         if access:
+            # Record access auth: password goes as 'password' in credentials
             payload["ac"] = access
+            if password:
+                payload["password"] = password
+        else:
+            # Root/namespace/database auth: password goes as 'pass'
+            if password:
+                payload["pass"] = password
+        # Add any additional credentials for record access
+        payload.update(credentials)
 
         try:
             response = await self._client.post(

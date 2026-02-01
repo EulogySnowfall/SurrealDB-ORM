@@ -121,6 +121,17 @@ class QueryResponse:
             records.extend(result.records)
         return records
 
+    @property
+    def is_empty(self) -> bool:
+        """Check if response contains no records."""
+        return len(self.all_records) == 0
+
+    @property
+    def first(self) -> dict[str, Any] | None:
+        """Get first record from all results or None."""
+        records = self.all_records
+        return records[0] if records else None
+
 
 @dataclass
 class RecordResponse:

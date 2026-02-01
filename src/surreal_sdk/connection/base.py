@@ -136,16 +136,18 @@ class BaseSurrealConnection(ABC):
         namespace: str | None = None,
         database: str | None = None,
         access: str | None = None,
+        **credentials: Any,
     ) -> AuthResponse:
         """
         Authenticate with SurrealDB.
 
         Args:
-            user: Username
-            password: Password
+            user: Username (for root/namespace/database auth)
+            password: Password (for root/namespace/database auth)
             namespace: Optional namespace scope
             database: Optional database scope
-            access: Optional access method
+            access: Optional access method (for record access auth)
+            **credentials: Additional credentials for record access (email, password, etc.)
 
         Returns:
             AuthResponse with token and success status
@@ -163,6 +165,8 @@ class BaseSurrealConnection(ABC):
             params["db"] = database
         if access:
             params["ac"] = access
+        # Add any additional credentials for record access
+        params.update(credentials)
 
         try:
             result = await self.rpc("signin", params)
