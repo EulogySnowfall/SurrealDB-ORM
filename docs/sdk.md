@@ -22,6 +22,11 @@ A custom Python SDK for SurrealDB with HTTP and WebSocket support.
   - [Custom Functions](#custom-functions)
   - [Available Namespaces](#available-namespaces)
 - [Live Queries](#live-queries)
+  - [Callback-Based Live Queries](#callback-based-live-queries)
+  - [Live Select Stream (v0.5.0)](#live-select-stream-v050)
+  - [Live Select Manager](#live-select-manager)
+  - [Auto-Resubscribe](#auto-resubscribe)
+- [Typed Function Calls (v0.5.0)](#typed-function-calls-v050)
 - [Change Feeds](#change-feeds)
 - [Typed Responses](#typed-responses)
 - [Error Handling](#error-handling)
@@ -478,6 +483,10 @@ await db.fn.my_function(arg1, arg2)
 
 Live Queries provide real-time updates when data changes (WebSocket only).
 
+### Callback-Based Live Queries
+
+The traditional callback approach for receiving change notifications:
+
 ```python
 from surreal_sdk import WebSocketConnection
 
@@ -500,25 +509,191 @@ async with WebSocketConnection("ws://localhost:8000", "ns", "db") as conn:
     await conn.kill(live_id)
 ```
 
-### Live Query Manager
+### Live Select Stream (v0.5.0)
 
-For managing multiple subscriptions:
+The async iterator pattern provides a more Pythonic way to consume live changes:
 
 ```python
-from surreal_sdk import LiveQuery, LiveNotification, LiveAction
+from surreal_sdk import SurrealDB, LiveAction
 
-async def on_change(notification: LiveNotification):
-    if notification.action == LiveAction.CREATE:
-        print(f"Created: {notification.result}")
-    elif notification.action == LiveAction.UPDATE:
-        print(f"Updated: {notification.result}")
-    elif notification.action == LiveAction.DELETE:
-        print(f"Deleted: {notification.result}")
+async with SurrealDB.ws("ws://localhost:8000", "ns", "db") as db:
+    await db.signin("root", "root")
 
-live = LiveQuery(conn, "users")
-await live.subscribe(on_change)
-# ...
-await live.unsubscribe()
+    # Async context manager + async iterator
+    async with db.live_select("users") as stream:
+        async for change in stream:
+            print(f"ID: {change.record_id}")
+            print(f"Action: {change.action}")
+            print(f"Data: {change.result}")
+
+            match change.action:
+                case LiveAction.CREATE:
+                    print(f"User created: {change.result['name']}")
+                case LiveAction.UPDATE:
+                    print(f"User updated: {change.record_id}")
+                case LiveAction.DELETE:
+                    print(f"User deleted: {change.record_id}")
+```
+
+**With WHERE clause and parameters:**
+
+```python
+# Subscribe only to players at a specific game table
+async with db.live_select(
+    "players",
+    where="table_id = $table_id AND active = true",
+    params={"table_id": "game_tables:xyz"}
+) as stream:
+    async for change in stream:
+        print(f"Player change: {change.result}")
+```
+
+**DIFF mode (receive only changed fields):**
+
+```python
+async with db.live_select("users", diff=True) as stream:
+    async for change in stream:
+        # change.changed_fields contains list of modified field names
+        print(f"Changed fields: {change.changed_fields}")
+```
+
+**LiveChange dataclass properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | `str` | Live query UUID |
+| `action` | `LiveAction` | CREATE, UPDATE, or DELETE |
+| `record_id` | `str` | The affected record ID (e.g., "users:alice") |
+| `result` | `dict` | The full record after the change |
+| `before` | `dict \| None` | Record before change (DIFF mode) |
+| `changed_fields` | `list[str]` | Changed field names (DIFF mode) |
+
+### Live Select Manager
+
+For callback-based multi-stream management:
+
+```python
+from surreal_sdk import LiveSelectManager
+
+manager = LiveSelectManager(db)
+
+# Watch multiple tables with callbacks
+await manager.watch("players", on_player_change, where="table_id = $id", params={"id": table_id})
+await manager.watch("game_tables", on_table_change, where="id = $id", params={"id": table_id})
+
+print(f"Active streams: {manager.count}")
+
+# Stop specific stream
+await manager.stop(live_id)
+
+# Stop all streams
+await manager.stop_all()
+```
+
+### Auto-Resubscribe
+
+Automatically resubscribe to Live Queries after WebSocket reconnection (network issues, K8s pod restarts):
+
+```python
+async def on_reconnect(old_id: str, new_id: str):
+    """Called when subscription is recreated after reconnect."""
+    print(f"Subscription renewed: {old_id} -> {new_id}")
+
+async with db.live_select(
+    "players",
+    where="table_id = $id",
+    params={"id": table_id},
+    auto_resubscribe=True,       # Enable auto-reconnect
+    on_reconnect=on_reconnect    # Optional callback
+) as stream:
+    async for change in stream:
+        # Stream automatically resumes after reconnection
+        process_change(change)
+```
+
+**How it works:**
+
+1. When `auto_resubscribe=True`, the connection stores subscription parameters
+2. On WebSocket disconnect, the connection attempts to reconnect
+3. After reconnect, all stored subscriptions are recreated
+4. `on_reconnect` callback is invoked with old and new subscription IDs
+5. The async iterator continues seamlessly
+
+---
+
+## Typed Function Calls (v0.5.0)
+
+Call SurrealDB functions with automatic return type conversion to Pydantic models or dataclasses.
+
+### Basic Usage
+
+```python
+from pydantic import BaseModel
+from dataclasses import dataclass
+
+# Pydantic model
+class VoteResult(BaseModel):
+    success: bool
+    new_count: int
+    total_votes: int
+
+# Or dataclass
+@dataclass
+class VoteResultDC:
+    success: bool
+    new_count: int
+    total_votes: int
+
+# Call with typed return
+result = await db.call(
+    "cast_vote",
+    params={"user_id": "alice", "table_id": "game:123"},
+    return_type=VoteResult
+)
+
+# result is a VoteResult instance, not a dict
+print(result.success)     # True
+print(result.new_count)   # 5
+print(result.total_votes) # 10
+```
+
+### Function Name Normalization
+
+```python
+# These are equivalent - fn:: prefix is added automatically
+await db.call("cast_vote", params={...})
+await db.call("fn::cast_vote", params={...})
+
+# Other namespaces are preserved
+await db.call("math::sqrt", params={"value": 16})  # No fn:: prefix added
+```
+
+### Defining Functions in SurrealDB
+
+```sql
+DEFINE FUNCTION fn::cast_vote($user_id: string, $table_id: string) {
+    LET $player = (SELECT * FROM players WHERE user_id = $user_id AND table_id = $table_id LIMIT 1)[0];
+
+    IF $player.has_voted {
+        RETURN { success: false, new_count: 0, total_votes: 0 };
+    };
+
+    UPDATE players SET has_voted = true WHERE id = $player.id;
+
+    LET $count = (SELECT count() FROM players WHERE table_id = $table_id AND has_voted = true GROUP ALL).count;
+    LET $total = (SELECT count() FROM players WHERE table_id = $table_id GROUP ALL).count;
+
+    RETURN { success: true, new_count: $count, total_votes: $total };
+};
+```
+
+### Simple Type Conversion
+
+```python
+# Convert to simple types
+count = await db.call("get_count", return_type=int)
+name = await db.call("get_name", return_type=str)
+price = await db.call("get_price", return_type=float)
 ```
 
 ---

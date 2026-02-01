@@ -10,7 +10,25 @@
 
 ---
 
-## Current Version: 0.4.0 (Alpha)
+## Current Version: 0.5.0 (Alpha)
+
+### What's New in 0.5.0
+
+- **Live Select Stream** - Async iterator pattern for real-time change notifications
+  - `LiveSelectStream` with `async with` context manager and `async for` iteration
+  - `LiveChange` dataclass: `record_id`, `action`, `result`, `changed_fields`
+  - `LiveAction` enum: `CREATE`, `UPDATE`, `DELETE`
+  - WHERE clause support with parameterized queries
+  - DIFF mode for receiving only changed fields
+
+- **Auto-Resubscribe** - Automatic reconnection after WebSocket disconnect
+  - `auto_resubscribe=True` parameter on `live_select()`
+  - `on_reconnect(old_id, new_id)` callback for tracking ID changes
+  - Seamless recovery from K8s pod restarts and network interruptions
+
+- **Typed Function Calls** - Pydantic/dataclass return type support
+  - `call(function, params, return_type)` for typed results
+  - Automatic conversion to Pydantic models and dataclasses
 
 ### What's New in 0.4.0
 
@@ -72,7 +90,8 @@ src/
     │   └── pool.py              # ConnectionPool
     └── streaming/
         ├── change_feed.py       # ChangeFeedStream (CDC, HTTP)
-        └── live_query.py        # LiveQuery (WebSocket real-time)
+        ├── live_query.py        # LiveQuery callback-based (WebSocket)
+        └── live_select.py       # LiveSelectStream async iterator (WebSocket)
 ```
 
 ---
@@ -125,6 +144,59 @@ sha = await db.fn.crypto.sha256("data")    # hash
 
 # Custom user-defined functions
 result = await db.fn.my_custom_function(arg1, arg2)
+```
+
+**Typed Function Calls (v0.5.0):**
+
+```python
+from pydantic import BaseModel
+
+class VoteResult(BaseModel):
+    success: bool
+    new_count: int
+    total_votes: int
+
+# Call with typed return
+result = await db.call(
+    "cast_vote",
+    params={"user_id": "alice", "table_id": "game:123"},
+    return_type=VoteResult
+)
+# result is VoteResult instance, not dict
+print(result.success, result.new_count)
+```
+
+**Live Select Stream (v0.5.0):**
+
+```python
+from surreal_sdk import LiveAction
+
+# Async iterator pattern with WHERE clause and parameters
+async with db.live_select(
+    "players",
+    where="table_id = $id",
+    params={"id": "game_tables:xyz"},
+    auto_resubscribe=True  # Auto-reconnect on WebSocket drop
+) as stream:
+    async for change in stream:
+        match change.action:
+            case LiveAction.CREATE:
+                print(f"Player joined: {change.result['name']}")
+            case LiveAction.UPDATE:
+                if change.result.get("is_ready"):
+                    print(f"Player ready: {change.record_id}")
+            case LiveAction.DELETE:
+                print(f"Player left: {change.record_id}")
+
+# Callback-based multi-stream manager
+from surreal_sdk import LiveSelectManager
+
+manager = LiveSelectManager(db)
+await manager.watch("players", on_player_change, where="table_id = $id", params={"id": table_id})
+await manager.watch("game_tables", on_table_change, where="id = $id", params={"id": table_id})
+
+# Later: cleanup
+await manager.stop_all()
 ```
 
 ### 2. ORM (`surreal_orm`)
@@ -307,11 +379,132 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `select_related()` and `prefetch_related()` for eager loading
 - [x] Model methods: `relate()`, `remove_relation()`, `get_related()`
 
-### v0.5.x (Next) - Real-time
+### Completed (0.5.0) - Real-time SDK Enhancements
 
-- [ ] Live Models (real-time sync)
+- [x] `LiveSelectStream` - Async iterator for Live Queries
+- [x] `LiveSelectManager` - Multi-stream callback management
+- [x] Auto-resubscribe on WebSocket reconnect
+- [x] `LiveChange` dataclass with `record_id`, `action`, `changed_fields`
+- [x] Typed function calls with Pydantic/dataclass support
+
+### v0.6.x (Next) - ORM Real-time Integration
+
+- [ ] Live Models (real-time sync at ORM level)
 - [ ] Model signals (pre_save, post_save, etc.)
 - [ ] Change Feed integration for ORM
+
+---
+
+## Real-World Use Case: Multiplayer Game Backend
+
+The SDK's real-time features are designed for use cases like multiplayer game backends with 2-4 players per table.
+
+### Scenario
+
+A card/board game where players:
+
+- Join tables and mark themselves "ready"
+- Cast votes during gameplay
+- Disconnect/reconnect during the game
+- Need real-time synchronization
+
+### Implementation Pattern
+
+```python
+from surreal_sdk import SurrealDB, LiveAction
+from pydantic import BaseModel
+
+# === Models ===
+class VoteResult(BaseModel):
+    success: bool
+    new_count: int
+    total_votes: int
+
+# === Real-time Event Handling ===
+async def on_player_change(change):
+    """Handle player status changes."""
+    match change.action:
+        case LiveAction.CREATE:
+            await notify_table(f"Player joined: {change.result['name']}")
+        case LiveAction.UPDATE:
+            if change.result.get("is_ready"):
+                await check_all_ready(change.result["table_id"])
+        case LiveAction.DELETE:
+            await handle_player_disconnect(change.record_id)
+
+async def on_table_change(change):
+    """Handle game table status changes."""
+    if change.action == LiveAction.UPDATE:
+        status = change.result.get("status")
+        if status == "voting":
+            await start_vote_timer()
+        elif status == "completed":
+            await show_results()
+
+# === Main Game Loop ===
+async def run_game(table_id: str):
+    async with SurrealDB.ws("ws://localhost:8000", "game", "prod") as db:
+        await db.signin("root", "root")
+
+        # Subscribe to players at this table (auto-reconnect enabled)
+        async with db.live_select(
+            "players",
+            where="table_id = $table_id",
+            params={"table_id": table_id},
+            auto_resubscribe=True,
+            on_reconnect=lambda old, new: print(f"Reconnected: {old} -> {new}")
+        ) as player_stream:
+
+            # Also watch the table itself
+            async with db.live_select(
+                "game_tables",
+                where="id = $id",
+                params={"id": table_id},
+                auto_resubscribe=True
+            ) as table_stream:
+
+                # Process events from both streams
+                async for change in player_stream:
+                    await on_player_change(change)
+
+# === Typed Function Calls ===
+async def cast_vote(db, user_id: str, table_id: str) -> VoteResult:
+    """Cast a vote with typed return."""
+    return await db.call(
+        "cast_vote",  # SurrealDB user-defined function
+        params={"user_id": user_id, "table_id": table_id},
+        return_type=VoteResult
+    )
+```
+
+### Key Features for Game Backends
+
+| Feature | Benefit |
+|---------|---------|
+| `live_select()` with WHERE | Subscribe only to relevant players/tables |
+| `auto_resubscribe=True` | Seamless recovery from K8s pod restarts |
+| `on_reconnect` callback | Track subscription ID changes for debugging |
+| `LiveChange.action` | Distinguish CREATE/UPDATE/DELETE events |
+| `LiveChange.record_id` | Quick access to affected record ID |
+| `LiveChange.changed_fields` | (DIFF mode) Know exactly what changed |
+| Typed `call()` | Get Pydantic models instead of raw dicts |
+
+### SurrealDB Function Example
+
+Define in SurrealDB for typed function calls:
+
+```sql
+DEFINE FUNCTION fn::cast_vote($user_id: string, $table_id: string) {
+    LET $player = SELECT * FROM players WHERE user_id = $user_id AND table_id = $table_id;
+    IF $player.has_voted {
+        RETURN { success: false, new_count: 0, total_votes: 0 };
+    };
+    UPDATE players SET has_voted = true WHERE id = $player.id;
+    LET $count = (SELECT count() FROM players WHERE table_id = $table_id AND has_voted = true GROUP ALL).count;
+    LET $total = (SELECT count() FROM players WHERE table_id = $table_id GROUP ALL).count;
+    RETURN { success: true, new_count: $count, total_votes: $total };
+};
+```
 
 ---
 

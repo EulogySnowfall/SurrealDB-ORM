@@ -420,3 +420,97 @@ class BaseSurrealConnection(ABC):
         from ..functions import FunctionNamespace
 
         return FunctionNamespace(self)
+
+    async def call(
+        self,
+        function: str,
+        params: dict[str, Any] | None = None,
+        return_type: type | None = None,
+    ) -> Any:
+        """
+        Call a SurrealDB function with typed return value.
+
+        This method provides a clean interface for calling custom functions
+        with automatic type conversion using Pydantic models or dataclasses.
+
+        Args:
+            function: Function name (e.g., "fn::cast_vote" or just "cast_vote")
+            params: Named parameters to pass to the function
+            return_type: Optional Pydantic model or dataclass to convert result to
+
+        Returns:
+            The function result, optionally converted to return_type
+
+        Usage:
+            # Without type
+            result = await conn.call("fn::cast_vote", {
+                "user_id": "users:alice",
+                "table_id": "game_tables:xyz",
+                "vote": "yes"
+            })
+
+            # With typed return
+            @dataclass
+            class VoteResult:
+                success: bool
+                new_count: int
+                total_votes: int
+
+            result: VoteResult = await conn.call(
+                "fn::cast_vote",
+                params={"user_id": "users:alice", "table_id": "game_tables:xyz", "vote": "yes"},
+                return_type=VoteResult
+            )
+        """
+        # Normalize function name
+        if not function.startswith("fn::") and "::" not in function:
+            function = f"fn::{function}"
+
+        # Build parameterized query
+        if params:
+            param_placeholders = ", ".join(f"${key}" for key in params.keys())
+            sql = f"RETURN {function}({param_placeholders});"
+        else:
+            sql = f"RETURN {function}();"
+
+        result = await self.query(sql, params or {})
+
+        # Extract result value
+        value = None
+        if result.first_result and result.first_result.result is not None:
+            value = result.first_result.result
+
+        # Convert to return_type if specified
+        if return_type is not None and value is not None:
+            return self._convert_to_type(value, return_type)
+
+        return value
+
+    def _convert_to_type(self, value: Any, target_type: type) -> Any:
+        """Convert a value to the target type."""
+        import dataclasses
+
+        # Check if it's a Pydantic model
+        try:
+            from pydantic import BaseModel
+
+            if isinstance(target_type, type) and issubclass(target_type, BaseModel):
+                if isinstance(value, dict):
+                    return target_type(**value)
+                return target_type.model_validate(value)
+        except ImportError:
+            pass
+
+        # Check if it's a dataclass
+        if dataclasses.is_dataclass(target_type) and isinstance(target_type, type):
+            if isinstance(value, dict):
+                return target_type(**value)
+
+        # For simple types, try direct conversion
+        if isinstance(target_type, type):
+            try:
+                return target_type(value)
+            except (TypeError, ValueError):
+                pass
+
+        return value

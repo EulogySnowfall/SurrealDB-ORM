@@ -8,7 +8,9 @@ Supports:
 - HTTP connections (stateless, ideal for microservices)
 - WebSocket connections (stateful, for real-time features)
 - Live Queries (WebSocket only)
+- Live Select Streams (async iterator pattern)
 - Change Feeds streaming (HTTP, stateless)
+- Typed function calls
 """
 
 from typing import Any
@@ -18,7 +20,14 @@ from .connection.http import HTTPConnection
 from .connection.websocket import WebSocketConnection
 from .connection.pool import ConnectionPool
 from .streaming.change_feed import ChangeFeedStream
-from .streaming.live_query import LiveQuery
+from .streaming.live_query import LiveQuery, LiveQueryManager, LiveNotification
+from .streaming.live_select import (
+    LiveSelectStream,
+    LiveSelectManager,
+    LiveChange,
+    LiveAction,
+    LiveSubscriptionParams,
+)
 from .protocol.rpc import RPCRequest, RPCResponse, RPCError
 from .types import (
     ResponseStatus,
@@ -55,16 +64,24 @@ from .functions import (
     CryptoFunctions,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.5.0"
 __all__ = [
     # Connections
     "BaseSurrealConnection",
     "HTTPConnection",
     "WebSocketConnection",
     "ConnectionPool",
-    # Streaming
+    # Streaming - Live Query (callback-based)
     "ChangeFeedStream",
     "LiveQuery",
+    "LiveQueryManager",
+    "LiveNotification",
+    # Streaming - Live Select (async iterator)
+    "LiveSelectStream",
+    "LiveSelectManager",
+    "LiveChange",
+    "LiveAction",
+    "LiveSubscriptionParams",
     # Protocol
     "RPCRequest",
     "RPCResponse",
