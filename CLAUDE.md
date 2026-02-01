@@ -12,7 +12,7 @@
 
 ## Architecture Actuelle (v0.1.5 Alpha)
 
-```
+```text
 src/surreal_orm/
 ├── __init__.py              # Exports publics de l'API
 ├── connection_manager.py    # Singleton de connexion à SurrealDB
@@ -34,12 +34,14 @@ src/surreal_orm/
 **Pattern:** Singleton statique avec classmethods
 
 **Fonctionnement:**
+
 - Connexion lazy (créée au premier `get_client()`)
 - Stocke URL, user, password, namespace, database
 - Utilise `AsyncSurrealDB` du SDK officiel
 - Support context manager async
 
 **Méthodes principales:**
+
 ```python
 set_connection(url, user, password, namespace, database)
 get_client() -> AsyncSurrealDB
@@ -48,6 +50,7 @@ validate_connection() -> bool
 ```
 
 **Limitations actuelles:**
+
 - Une seule connexion globale
 - Pas de pooling
 - Commentaires en français dans le code
@@ -59,11 +62,13 @@ validate_connection() -> bool
 **Pattern:** Héritage Pydantic BaseModel + méthodes CRUD async
 
 **Caractéristiques:**
+
 - Requiert `id: Optional[str]` OU `primary_key` dans `model_config`
 - Exception personnalisée `Model.DoesNotExist`
 - Conversion automatique des RecordID SurrealDB
 
 **Méthodes d'instance:**
+
 ```python
 async save() -> Self           # Insert ou update
 async update() -> Any          # Update tous les champs
@@ -74,6 +79,7 @@ get_id() -> str | RecordID | None
 ```
 
 **Méthodes de classe:**
+
 ```python
 get_table_name() -> str        # Nom de la table (défaut: nom de la classe)
 objects() -> QuerySet          # Retourne le query builder
@@ -89,6 +95,7 @@ from_db(record) -> Self        # Parse la réponse SurrealDB
 **Pattern:** Builder fluent chainable
 
 **Construction de requête:**
+
 ```python
 .select(*fields)              # Colonnes à sélectionner
 .filter(**kwargs)             # WHERE avec lookups (__gt, __contains, etc.)
@@ -99,6 +106,7 @@ from_db(record) -> Self        # Parse la réponse SurrealDB
 ```
 
 **Exécution:**
+
 ```python
 async .exec() -> List[Model]   # Exécute filter
 async .all() -> List[Model]    # Tous les records
@@ -109,6 +117,7 @@ async .delete_table()          # Supprime la table
 ```
 
 **Opérateurs lookup supportés:**
+
 ```python
 exact, gt, gte, lt, lte, in, like, ilike, contains, icontains,
 startswith, istartswith, endswith, iendswith, match, regex, iregex, isnull
@@ -121,13 +130,17 @@ startswith, istartswith, endswith, iendswith, match, regex, iregex, isnull
 ### 4. Nouveaux Fichiers (Non intégrés)
 
 #### `surreal_function.py`
+
 Enums pour les fonctions built-in SurrealDB:
+
 - `SurrealArrayFunction` - opérations sur tableaux
 - `SurrealTimeFunction` - fonctions temporelles
 - `SurrealMathFunction` - fonctions mathématiques (50+)
 
 #### `surreal_ql.py`
+
 Builder SurrealQL bas niveau - incomplet/placeholder:
+
 - Méthodes: `select()`, `related()`, `from_tables()`
 - Pas d'exécution, juste construction de string
 
@@ -136,10 +149,12 @@ Builder SurrealQL bas niveau - incomplet/placeholder:
 ## Dépendances
 
 **Runtime:**
+
 - `pydantic >= 2.10.5`
 - `surrealdb >= 0.4.1` (SDK officiel - limité)
 
 **Dev:**
+
 - pytest, pytest-asyncio, pytest-cov
 - mypy, black, ruff, isort
 - docker (pour tests e2e)
@@ -165,6 +180,7 @@ Builder SurrealQL bas niveau - incomplet/placeholder:
 ### Limitations du SDK Officiel
 
 Le SDK `surrealdb` Python est considéré comme:
+
 - Trop basique
 - API limitée
 - Manque de fonctionnalités avancées
@@ -177,13 +193,14 @@ Le SDK `surrealdb` Python est considéré comme:
 
 Pour le nouveau SDK à développer:
 
-| Protocole | Port Défaut | Usage |
-|-----------|-------------|-------|
-| HTTP/HTTPS | 8000 | REST API, requêtes simples |
-| WebSocket | 8000 | Connexion persistante, temps réel |
-| RPC | 8000 | Appels de procédures |
+| Protocole  | Port Défaut | Usage                             |
+| ---------- | ----------- | --------------------------------- |
+| HTTP/HTTPS | 8000        | REST API, requêtes simples        |
+| WebSocket  | 8000        | Connexion persistante, temps réel |
+| RPC        | 8000        | Appels de procédures              |
 
 **Endpoints principaux:**
+
 - `/sql` - Exécution de requêtes
 - `/rpc` - WebSocket RPC
 - `/signup`, `/signin` - Authentification
@@ -193,7 +210,7 @@ Pour le nouveau SDK à développer:
 
 ## Structure des Tests
 
-```
+```text
 tests/
 ├── test_unit.py      # Tests QuerySet, Model
 ├── test_manager.py   # Tests ConnectionManager
@@ -201,6 +218,7 @@ tests/
 ```
 
 **Exécution:**
+
 ```bash
 uv run pytest                    # Tous les tests
 uv run pytest tests/test_unit.py # Tests unitaires
@@ -212,17 +230,20 @@ tox                              # Tests multi-versions Python
 ## Prochaines Étapes Suggérées
 
 ### Phase 1: Correction des Bugs
+
 - [ ] Fix `refresh()` pour mettre à jour l'instance
 - [ ] Fix ordre ORDER BY dans le SQL généré
 - [ ] Fix typos dans les messages d'erreur
 
 ### Phase 2: Nouveau SDK de Connexion
+
 - [ ] Implémenter connexion WebSocket native
 - [ ] Implémenter connexion HTTP REST
 - [ ] Pool de connexions
 - [ ] Support multi-database
 
 ### Phase 3: Fonctionnalités ORM
+
 - [ ] Relations (graph traversal SurrealDB)
 - [ ] Agrégations
 - [ ] Transactions
@@ -273,7 +294,7 @@ uv build
 
 ### Architecture
 
-```
+```text
 src/surreal_sdk/
 ├── __init__.py              # Factory SurrealDB.http() / .ws() / .pool()
 ├── exceptions.py            # Exceptions personnalisées

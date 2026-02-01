@@ -5,142 +5,331 @@
 [![codecov](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM/graph/badge.svg?token=XUONTG2M6Z)](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM)
 ![GitHub License](https://img.shields.io/github/license/EulogySnowfall/SurrealDB-ORM)
 
-> **⚠️ ALPHA SOFTWARE - NOT READY FOR PRODUCTION**
->
-> This project is in active development and is not yet stable. APIs may change without notice.
-> Use at your own risk in non-production environments only.
+> **Alpha Software** - APIs may change. Use in non-production environments.
 
-🚀 **SurrealDB-ORM** is a lightweight ORM (Object-Relational Mapping) inspired by Django ORM, designed to simplify interactions with **SurrealDB** in Python projects. It provides an intuitive way to manage models, perform queries, and execute CRUD (Create, Read, Update, Delete) operations.
+**SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, Django-style migrations, and JWT authentication.
 
-**Now includes a custom SDK (`surreal_sdk`)** - No dependency on the official `surrealdb` package!
+**Includes a custom SDK (`surreal_sdk`)** - No dependency on the official `surrealdb` package!
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
-- [Version](#-version)
-- [Description](#-description)
-- [Requirements and tested based](#-requirements-and-tested-based)
-- [Installation](#-installation)
-- [Usage Example](#-usage-example)
-- [Features](#-features)
-- [Contributing](#-contributing)
-- [TODO](#-todo)
-- [License](#-license)
-
----
-
-## ✅ Version
-
-**Alpha 0.2.0**
+- [Version](#version)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Features](#features)
+- [CLI Commands](#cli-commands)
+- [Authentication](#authentication)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
 
 ---
 
-## 📝 Description
+## Version
 
-SurrealDB-ORM offers a clean abstraction for handling SurrealDB through Python models.
-The goal is to simplify writing complex queries while providing an intuitive interface similar to modern ORMs like Django or SQLAlchemy.
-
----
-
-## 📝 Requirements and tested based
-
-- Python : 3.12+
-- Pydantic : 2.10.5+
-- SurrealDB Database Version : 2.1.4+
-- You need to set a SurrealDB to connect to.
+**0.2.1** (Alpha)
 
 ---
 
-## 🛠️ Installation
+## Installation
 
 ```bash
+# Basic installation
 pip install surrealdb-orm
+
+# With CLI support
+pip install surrealdb-orm[cli]
+
+# Full installation (CLI + CBOR)
+pip install surrealdb-orm[all]
 ```
+
+**Requirements:**
+
+- Python 3.12+
+- SurrealDB 2.6.0+
 
 ---
 
-## 🚀 Usage Example
+## Quick Start
 
-Here's a simple example demonstrating how to define a model and interact with SurrealDB:
-
-### 1. Define a Model
+### 1. Define Models
 
 ```python
-from surreal_orm.modelBase import BaseSurrealModel
-from pydantic import BaseModel, Field
-from typing import Optional
-
+from surreal_orm import BaseSurrealModel, SurrealConfigDict
 
 class User(BaseSurrealModel):
-    id: Optional[str] = None
-    name: str = Field(..., max_length=100)
+    id: str | None = None
+    name: str
     email: str
+    age: int = 0
 ```
 
-### 2. Create and Save a User
+### 2. Configure Connection
 
 ```python
-user = User(name="Alice", email="alice@example.com")
+from surreal_orm import SurrealDBConnectionManager
+
+SurrealDBConnectionManager.set_connection(
+    url="http://localhost:8000",
+    user="root",
+    password="root",
+    namespace="myapp",
+    database="main",
+)
+```
+
+### 3. CRUD Operations
+
+```python
+# Create
+user = User(name="Alice", email="alice@example.com", age=30)
 await user.save()
+
+# Read
+users = await User.objects().filter(name="Alice").exec()
+user = await User.objects().get(id="user:123")
+
+# Update
+user.age = 31
+await user.save()
+
+# Delete
+await user.delete()
 ```
 
-### 3. Query Users
+### 4. QuerySet
 
 ```python
-users = await User.objects().filter(name="Alice").exec()
-for user in users:
-    print(user.name, user.email)
+# Filter with lookups
+adults = await User.objects().filter(age__gte=18).exec()
+
+# Chaining
+results = await User.objects() \
+    .filter(age__gte=18) \
+    .order_by("name") \
+    .limit(10) \
+    .exec()
+
+# Supported lookups
+# exact, gt, gte, lt, lte, in, like, ilike, contains, icontains,
+# startswith, istartswith, endswith, iendswith, match, regex, isnull
 ```
 
 ---
 
-## 🌟 Features
+## Features
 
-- 🔧 **Model definition** using Pydantic
-- 📄 **QuerySet** with filter methods like `filter()`, `limit()`, and `order_by()`
-- 🔄 **CRUD** operations (Create, Read, Update, Delete)
-- ⚙️ **Asynchronous connection** to SurrealDB
-- 🔍 **Automatic validation** with Pydantic
-- 📊 **Complex queries** with conditional filters (`age__gte`, `name__in`, etc.)
+### Core ORM
+
+- Model definition with Pydantic validation
+- QuerySet with Django-style lookups (`age__gte`, `name__in`, etc.)
+- Async CRUD operations
+- Automatic ID handling for SurrealDB RecordIDs
+
+### Django-Style Migrations
+
+- Generate migrations from model changes
+- Apply/rollback schema migrations
+- Track migration history in database
+
+```bash
+surreal-orm makemigrations --name initial
+surreal-orm migrate
+surreal-orm status
+```
+
+### Table Types
+
+| Type     | Description                 |
+| -------- | --------------------------- |
+| `NORMAL` | Standard table (default)    |
+| `USER`   | Auth table with JWT support |
+| `STREAM` | Real-time with CHANGEFEED   |
+| `HASH`   | Lookup/cache (SCHEMALESS)   |
+
+```python
+from surreal_orm import BaseSurrealModel, SurrealConfigDict
+from surreal_orm.types import TableType
+
+class User(BaseSurrealModel):
+    model_config = SurrealConfigDict(
+        table_type=TableType.USER,
+        permissions={"select": "$auth.id = id"},
+    )
+    # ...
+```
+
+### Encrypted Fields
+
+```python
+from surreal_orm.fields import Encrypted
+
+class User(BaseSurrealModel):
+    password: Encrypted  # Auto-hashed with argon2
+```
+
+### JWT Authentication
+
+```python
+from surreal_orm.auth import AuthenticatedUserMixin
+
+class User(AuthenticatedUserMixin, BaseSurrealModel):
+    model_config = SurrealConfigDict(table_type=TableType.USER)
+    email: str
+    password: Encrypted
+    name: str
+
+# Signup
+user = await User.signup(email="alice@example.com", password="secret", name="Alice")
+
+# Signin
+user, token = await User.signin(email="alice@example.com", password="secret")
+```
 
 ---
 
-## 🤝 Contributing
+## CLI Commands
 
-Contributions are welcome!  
-If you'd like to improve this project:
+Requires `pip install surrealdb-orm[cli]`
 
-1. Fork the repository.
-2. Create a branch (`git checkout -b feature/new-feature`).
-3. Make your changes and commit them (`git commit -m "Add new feature"`).
-4. Push to your branch (`git push origin feature/new-feature`).
-5. Create a Pull Request.
+| Command             | Description                 |
+| ------------------- | --------------------------- |
+| `makemigrations`    | Generate migration files    |
+| `migrate`           | Apply schema migrations     |
+| `upgrade`           | Apply data migrations       |
+| `rollback <target>` | Rollback to migration       |
+| `status`            | Show migration status       |
+| `sqlmigrate <name>` | Show SQL without executing  |
+| `shell`             | Interactive SurrealQL shell |
+
+```bash
+# Generate and apply migrations
+surreal-orm makemigrations --name initial
+surreal-orm migrate -u http://localhost:8000 -n myns -d mydb
+
+# Check status
+surreal-orm status
+
+# Environment variables supported
+export SURREAL_URL=http://localhost:8000
+export SURREAL_NAMESPACE=myns
+export SURREAL_DATABASE=mydb
+surreal-orm migrate
+```
 
 ---
 
-## 📌 TODO
+## Authentication
 
-- [ ] Implement relationships
-- [ ] Add transaction support
-- [ ] Optimize complex queries
-- [ ] Expand documentation with advanced examples
-- [ ] Better SurrealQL Integration
+SurrealDB-ORM uses SurrealDB's native `DEFINE ACCESS ... TYPE RECORD` for JWT authentication:
+
+```python
+from surreal_orm import BaseSurrealModel, SurrealConfigDict
+from surreal_orm.types import TableType
+from surreal_orm.fields import Encrypted
+from surreal_orm.auth import AuthenticatedUserMixin
+
+class User(AuthenticatedUserMixin, BaseSurrealModel):
+    model_config = SurrealConfigDict(
+        table_type=TableType.USER,
+        identifier_field="email",
+        password_field="password",
+        token_duration="1h",
+        session_duration="24h",
+    )
+
+    id: str | None = None
+    email: str
+    password: Encrypted
+    name: str
+
+# Create user
+user = await User.signup(
+    email="user@example.com",
+    password="secure_password",
+    name="John Doe",
+)
+
+# Authenticate
+user, token = await User.signin(
+    email="user@example.com",
+    password="secure_password",
+)
+
+# Validate token
+user = await User.authenticate_token(token)
+
+# Change password
+await User.change_password(
+    identifier_value="user@example.com",
+    old_password="secure_password",
+    new_password="new_secure_password",
+)
+```
 
 ---
 
-## 📄 License
+## Documentation
 
-This project is licensed under the **MIT License**. See the `LICENSE` file for more information.
+- [Migration System](docs/migrations.md) - Complete migration guide
+- [Authentication](docs/auth.md) - JWT authentication guide
+- [CHANGELOG](CHANGELOG) - Version history
 
 ---
 
-### 📨 Contact
+## Contributing
 
-**Author:** Yannick Croteau  
-**Email:** <croteau.yannick@gmail.com>  
+Contributions are welcome!
+
+1. Fork the repository
+2. Create a branch (`git checkout -b feature/new-feature`)
+3. Make your changes and commit (`git commit -m "Add new feature"`)
+4. Push to your branch (`git push origin feature/new-feature`)
+5. Create a Pull Request
+
+### Development
+
+```bash
+# Clone and install
+git clone https://github.com/EulogySnowfall/SurrealDB-ORM.git
+cd SurrealDB-ORM
+uv sync
+
+# Run tests
+make test              # Unit tests
+make test-integration  # Integration tests (requires SurrealDB)
+
+# Start SurrealDB for testing
+make db-up             # Test instance (port 8001)
+make db-dev            # Dev instance (port 8000)
+
+# Lint
+uv run ruff check src/
+uv run mypy src/
+```
+
+---
+
+## TODO
+
+- [ ] Relations (ForeignKey, ManyToMany, graph traversal)
+- [ ] Aggregations (count, sum, avg, GROUP BY)
+- [ ] Transaction support
+- [ ] Connection pooling improvements
+- [x] ~~Migration system~~
+- [x] ~~JWT Authentication~~
+- [x] ~~CLI commands~~
+
+---
+
+## License
+
+MIT License - See [LICENSE](LICENSE) file.
+
+---
+
+**Author:** Yannick Croteau
 **GitHub:** [EulogySnowfall](https://github.com/EulogySnowfall)
-
----
-
-**SurrealDB-ORM** is a personal package to use with other projects. I will certainly improve it over the next few months, but feel free to open issues or suggest improvements 🚀

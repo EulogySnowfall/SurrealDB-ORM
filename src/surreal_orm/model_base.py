@@ -1,6 +1,9 @@
 from typing import Any, Self, cast
+
 from pydantic import BaseModel, ConfigDict, model_validator
+
 from .connection_manager import SurrealDBConnectionManager
+from .types import SchemaMode, TableType
 
 import logging
 
@@ -12,6 +15,26 @@ class SurrealDbError(Exception):
 
 
 logger = logging.getLogger(__name__)
+
+# Global registry of all SurrealDB models for migration introspection
+_MODEL_REGISTRY: list[type["BaseSurrealModel"]] = []
+
+
+def get_registered_models() -> list[type["BaseSurrealModel"]]:
+    """
+    Get all registered SurrealDB models.
+
+    Returns:
+        List of all model classes that inherit from BaseSurrealModel
+    """
+    return _MODEL_REGISTRY.copy()
+
+
+def clear_model_registry() -> None:
+    """
+    Clear the model registry. Useful for testing.
+    """
+    _MODEL_REGISTRY.clear()
 
 
 def _parse_record_id(record_id: Any) -> str | None:
@@ -31,25 +54,172 @@ class SurrealConfigDict(ConfigDict):
     """
     SurrealConfigDict is a configuration dictionary for SurrealDB models.
 
+    Extends Pydantic's ConfigDict with SurrealDB-specific options for
+    table types, schema modes, and authentication settings.
+
     Attributes:
-        primary_key (str | None): The primary key field name for the model.
+        primary_key: The primary key field name for the model
+        table_name: Override the default table name (default: class name)
+        table_type: Table classification (NORMAL, USER, STREAM, HASH)
+        schema_mode: Schema enforcement mode (SCHEMAFULL, SCHEMALESS)
+        changefeed: Changefeed duration for STREAM tables (e.g., "7d")
+        permissions: Table-level permissions dict {"select": "...", "update": "..."}
+        identifier_field: Field used for signin (USER type, default: "email")
+        password_field: Field containing password (USER type, default: "password")
+        token_duration: JWT token duration (USER type, default: "15m")
+        session_duration: Session duration (USER type, default: "12h")
     """
 
     primary_key: str | None
-    " The primary key field name for the model. "
+    table_name: str | None
+    table_type: TableType | None
+    schema_mode: SchemaMode | None
+    changefeed: str | None
+    permissions: dict[str, str] | None
+    identifier_field: str | None
+    password_field: str | None
+    token_duration: str | None
+    session_duration: str | None
 
 
 class BaseSurrealModel(BaseModel):
     """
     Base class for models interacting with SurrealDB.
+
+    All models that interact with SurrealDB should inherit from this class.
+    Models are automatically registered for migration introspection.
+
+    Example:
+        class User(BaseSurrealModel):
+            model_config = SurrealConfigDict(
+                table_type=TableType.USER,
+                schema_mode=SchemaMode.SCHEMAFULL,
+            )
+
+            id: str | None = None
+            email: str
+            password: Encrypted
     """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Register subclasses in the model registry for migration introspection."""
+        super().__init_subclass__(**kwargs)
+        # Only register concrete models, not intermediate base classes
+        if cls.__name__ != "BaseSurrealModel" and not cls.__name__.startswith("_"):
+            if cls not in _MODEL_REGISTRY:
+                _MODEL_REGISTRY.append(cls)
 
     @classmethod
     def get_table_name(cls) -> str:
         """
         Get the table name for the model.
+
+        Returns the table_name from model_config if set,
+        otherwise returns the class name.
         """
+        if hasattr(cls, "model_config"):
+            table_name = cls.model_config.get("table_name", None)
+            if isinstance(table_name, str):
+                return table_name
         return cls.__name__
+
+    @classmethod
+    def get_table_type(cls) -> TableType:
+        """
+        Get the table type classification for the model.
+
+        Returns:
+            TableType enum value (default: NORMAL)
+        """
+        if hasattr(cls, "model_config"):
+            table_type = cls.model_config.get("table_type", None)
+            if isinstance(table_type, TableType):
+                return table_type
+        return TableType.NORMAL
+
+    @classmethod
+    def get_schema_mode(cls) -> SchemaMode:
+        """
+        Get the schema mode for the model.
+
+        USER tables are always SCHEMAFULL.
+        HASH tables default to SCHEMALESS.
+        All others default to SCHEMAFULL.
+
+        Returns:
+            SchemaMode enum value
+        """
+        table_type = cls.get_table_type()
+
+        # USER tables must be SCHEMAFULL
+        if table_type == TableType.USER:
+            return SchemaMode.SCHEMAFULL
+
+        if hasattr(cls, "model_config"):
+            schema_mode = cls.model_config.get("schema_mode", None)
+            if isinstance(schema_mode, SchemaMode):
+                return schema_mode
+
+        # HASH tables default to SCHEMALESS
+        if table_type == TableType.HASH:
+            return SchemaMode.SCHEMALESS
+
+        return SchemaMode.SCHEMAFULL
+
+    @classmethod
+    def get_changefeed(cls) -> str | None:
+        """
+        Get the changefeed duration for the model.
+
+        Returns:
+            Changefeed duration string (e.g., "7d") or None
+        """
+        if hasattr(cls, "model_config"):
+            changefeed = cls.model_config.get("changefeed", None)
+            return str(changefeed) if changefeed is not None else None
+        return None
+
+    @classmethod
+    def get_permissions(cls) -> dict[str, str]:
+        """
+        Get the table permissions for the model.
+
+        Returns:
+            Dict of permission type to condition expression
+        """
+        if hasattr(cls, "model_config"):
+            permissions = cls.model_config.get("permissions", None)
+            if isinstance(permissions, dict):
+                return permissions
+        return {}
+
+    @classmethod
+    def get_identifier_field(cls) -> str:
+        """
+        Get the identifier field for USER type tables.
+
+        Returns:
+            Field name used for signin (default: "email")
+        """
+        if hasattr(cls, "model_config"):
+            field = cls.model_config.get("identifier_field", None)
+            if isinstance(field, str):
+                return field
+        return "email"
+
+    @classmethod
+    def get_password_field(cls) -> str:
+        """
+        Get the password field for USER type tables.
+
+        Returns:
+            Field name containing password (default: "password")
+        """
+        if hasattr(cls, "model_config"):
+            field = cls.model_config.get("password_field", None)
+            if isinstance(field, str):
+                return field
+        return "password"
 
     @classmethod
     def get_index_primary_key(cls) -> str | None:
