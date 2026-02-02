@@ -1,0 +1,268 @@
+# Auto-merge Dependabot PRs after successful tests
+# Creates patch version tags (x.x.x.1, x.x.x.2, etc.) for security updates
+
+name: Dependabot Auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  SURREALDB_URL: http://localhost:8000
+  SURREALDB_USER: root
+  SURREALDB_PASS: root
+  SURREALDB_NAMESPACE: test
+  SURREALDB_DATABASE: test
+
+jobs:
+  # =============================================================================
+  # Check if this is a Dependabot PR
+  # =============================================================================
+  check-dependabot:
+    name: Check Dependabot PR
+    runs-on: ubuntu-latest
+    outputs:
+      is-dependabot: ${{ steps.check.outputs.is-dependabot }}
+      is-security: ${{ steps.check.outputs.is-security }}
+      is-surrealdb: ${{ steps.check.outputs.is-surrealdb }}
+    steps:
+      - name: Check if Dependabot PR
+        id: check
+        run: |
+          IS_DEPENDABOT="false"
+          IS_SECURITY="false"
+          IS_SURREALDB="false"
+
+          if [[ "${{ github.actor }}" == "dependabot[bot]" ]]; then
+            IS_DEPENDABOT="true"
+          fi
+
+          # Check PR labels for security
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'security') }}" == "true" ]]; then
+            IS_SECURITY="true"
+          fi
+
+          # Check if it's a SurrealDB update
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'surrealdb') }}" == "true" ]]; then
+            IS_SURREALDB="true"
+          fi
+
+          echo "is-dependabot=$IS_DEPENDABOT" >> $GITHUB_OUTPUT
+          echo "is-security=$IS_SECURITY" >> $GITHUB_OUTPUT
+          echo "is-surrealdb=$IS_SURREALDB" >> $GITHUB_OUTPUT
+
+  # =============================================================================
+  # Run full test suite for Dependabot PRs
+  # =============================================================================
+  test-dependabot:
+    name: Test Dependabot Changes
+    needs: check-dependabot
+    if: needs.check-dependabot.outputs.is-dependabot == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      tests-passed: ${{ steps.test-result.outputs.passed }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run linting
+        run: |
+          uv run ruff format --check
+          uv run ruff check
+
+      - name: Run type checking
+        run: uv run python -m mypy src/
+
+      - name: Run unit tests
+        run: |
+          uv run pytest tests/ -m "not integration" \
+            --junitxml=junit-unit.xml \
+            --cov=src \
+            --cov-branch \
+            --cov-report=xml:coverage-unit.xml
+
+      - name: Start SurrealDB
+        run: |
+          docker compose -f devops/docker-compose.yml up -d surrealdb-ci
+          ./devops/wait-for-healthy.sh localhost 8000 60
+
+      - name: Run integration tests
+        run: |
+          uv run pytest tests/ -m integration \
+            --junitxml=junit-integration.xml \
+            --cov=src \
+            --cov-branch \
+            --cov-report=xml:coverage-integration.xml
+
+      - name: Stop SurrealDB
+        if: always()
+        run: docker compose -f devops/docker-compose.yml down
+
+      - name: Set test result
+        id: test-result
+        if: success()
+        run: echo "passed=true" >> $GITHUB_OUTPUT
+
+  # =============================================================================
+  # Auto-merge and create patch version tag
+  # =============================================================================
+  automerge:
+    name: Auto-merge & Tag
+    needs: [check-dependabot, test-dependabot]
+    if: |
+      needs.check-dependabot.outputs.is-dependabot == 'true' &&
+      needs.test-dependabot.outputs.tests-passed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get Dependabot metadata
+        id: dependabot-metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Calculate next patch version
+        id: version
+        run: |
+          # Get current version from pyproject.toml
+          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "Current version: $CURRENT_VERSION"
+
+          # Get all tags matching the current version pattern
+          # Tags can be: v0.5.1, v0.5.1.1, v0.5.1.2, etc.
+          BASE_TAG="v${CURRENT_VERSION}"
+
+          # Find the highest patch number for this version
+          HIGHEST_PATCH=0
+
+          for tag in $(git tag -l "${BASE_TAG}*"); do
+            # Extract the patch number if it exists (e.g., v0.5.1.2 -> 2)
+            if [[ "$tag" =~ ^v${CURRENT_VERSION}\.([0-9]+)$ ]]; then
+              PATCH="${BASH_REMATCH[1]}"
+              if [[ $PATCH -gt $HIGHEST_PATCH ]]; then
+                HIGHEST_PATCH=$PATCH
+              fi
+            elif [[ "$tag" == "$BASE_TAG" ]]; then
+              # Base tag exists, start from .1
+              if [[ $HIGHEST_PATCH -eq 0 ]]; then
+                HIGHEST_PATCH=0
+              fi
+            fi
+          done
+
+          NEXT_PATCH=$((HIGHEST_PATCH + 1))
+          NEW_TAG="v${CURRENT_VERSION}.${NEXT_PATCH}"
+
+          echo "Base tag: $BASE_TAG"
+          echo "Highest patch: $HIGHEST_PATCH"
+          echo "New tag: $NEW_TAG"
+
+          echo "current-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "new-tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "patch-number=$NEXT_PATCH" >> $GITHUB_OUTPUT
+
+      - name: Enable auto-merge
+        run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Approve PR
+        run: gh pr review --approve "${{ github.event.pull_request.number }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for merge
+        id: wait-merge
+        run: |
+          MAX_ATTEMPTS=30
+          ATTEMPT=0
+
+          while [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; do
+            STATE=$(gh pr view "${{ github.event.pull_request.number }}" --json state -q '.state')
+
+            if [[ "$STATE" == "MERGED" ]]; then
+              echo "PR merged successfully"
+              echo "merged=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            echo "Waiting for PR to merge... (attempt $((ATTEMPT + 1))/$MAX_ATTEMPTS)"
+            sleep 10
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          echo "PR did not merge in time"
+          echo "merged=false" >> $GITHUB_OUTPUT
+          exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout main after merge
+        if: steps.wait-merge.outputs.merged == 'true'
+        run: |
+          git fetch origin main
+          git checkout main
+          git pull origin main
+
+      - name: Create patch version tag
+        if: steps.wait-merge.outputs.merged == 'true'
+        run: |
+          NEW_TAG="${{ steps.version.outputs.new-tag }}"
+
+          git tag -a "$NEW_TAG" -m "Security patch: ${{ steps.dependabot-metadata.outputs.dependency-names }}"
+          git push origin "$NEW_TAG"
+
+          echo "Created tag: $NEW_TAG"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.wait-merge.outputs.merged == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.new-tag }}
+          name: "Security Patch ${{ steps.version.outputs.new-tag }}"
+          body: |
+            ## Security Patch Release
+
+            This is an automated security patch release.
+
+            ### Updated Dependencies
+            - **Package:** ${{ steps.dependabot-metadata.outputs.dependency-names }}
+            - **Update type:** ${{ steps.dependabot-metadata.outputs.update-type }}
+            - **From:** ${{ steps.dependabot-metadata.outputs.previous-version }}
+            - **To:** ${{ steps.dependabot-metadata.outputs.new-version }}
+
+            ### What's Changed
+            ${{ github.event.pull_request.title }}
+
+            ---
+            *This release was automatically created by the Dependabot auto-merge workflow.*
+          prerelease: false
+          generate_release_notes: false
