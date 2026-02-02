@@ -15,6 +15,11 @@
 
 ## What's New in 0.5.x
 
+### v0.5.3.2 - Critical Bug Fix
+
+- **QuerySet table name fix** - Fixed critical bug where QuerySet used class name instead of `table_name` from config
+- **`QuerySet.get()` signature** - Now accepts `id=` keyword argument in addition to positional `id_item`
+
 ### v0.5.3.1 - Bug Fixes
 
 - **Partial updates for persisted records** - `save()` now uses `merge()` for already-persisted records, only sending modified fields

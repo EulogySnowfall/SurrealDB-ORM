@@ -10,7 +10,15 @@
 
 ---
 
-## Current Version: 0.5.3.1 (Alpha)
+## Current Version: 0.5.3.2 (Alpha)
+
+### What's New in 0.5.3.2
+
+- **Critical Bug Fix**
+  - **QuerySet table name** - Fixed critical bug where QuerySet used class name (`MyModel`) instead of configured `table_name` from `model_config`. This caused queries to fail silently when using custom table names.
+
+- **API Improvements**
+  - **`QuerySet.get()` signature** - Now accepts both `id=` keyword and positional `id_item` parameter for better usability. All these work: `get("id")`, `get(id="id")`, `get(id_item="id")`.
 
 ### What's New in 0.5.3.1
 
