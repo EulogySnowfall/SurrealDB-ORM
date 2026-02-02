@@ -120,6 +120,11 @@ class BaseTransaction(ABC):
         ...
 
     @abstractmethod
+    async def upsert(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
+        """Upsert records within the transaction (create or update)."""
+        ...
+
+    @abstractmethod
     async def merge(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
         """Merge data into records within the transaction."""
         ...
@@ -256,6 +261,15 @@ class HTTPTransaction(BaseTransaction):
         self._queue_statement(sql, data)
         return RecordsResponse(records=[], raw=[])
 
+    async def upsert(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
+        """Queue an upsert operation (create or update)."""
+        from .types import RecordsResponse
+
+        fields = ", ".join(f"{k} = ${k}" for k in data.keys())
+        sql = f"UPSERT {thing} SET {fields};"
+        self._queue_statement(sql, data)
+        return RecordsResponse(records=[], raw=[])
+
     async def merge(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
         """Queue a merge operation."""
         from .types import RecordsResponse
@@ -360,6 +374,12 @@ class WebSocketTransaction(BaseTransaction):
         if not self.is_active:
             raise TransactionError("Transaction not active")
         return await self._connection.update(thing, data)
+
+    async def upsert(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
+        """Execute upsert immediately within transaction (create or update)."""
+        if not self.is_active:
+            raise TransactionError("Transaction not active")
+        return await self._connection.upsert(thing, data)
 
     async def merge(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
         """Execute merge immediately within transaction."""
