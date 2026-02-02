@@ -61,7 +61,7 @@ class QuerySet:
         self._limit: int | None = None
         self._offset: int | None = None
         self._order_by: str | None = None
-        self._model_table: str = model.__name__
+        self._model_table: str = model.get_table_name()
         self._variables: dict = {}
         self._group_by_fields: list[str] = []
         self._annotations: dict[str, Aggregation] = {}
@@ -597,7 +597,7 @@ class QuerySet:
 
         raise self.model.DoesNotExist("Query returned no results.")
 
-    async def get(self, id_item: Any = None) -> Any:
+    async def get(self, id_item: Any = None, *, id: Any = None) -> Any:
         """
         Retrieve a single record by its unique identifier or based on the current QuerySet filters.
 
@@ -607,6 +607,7 @@ class QuerySet:
 
         Args:
             id_item (str | None, optional): The unique identifier of the item to retrieve. Defaults to `None`.
+            id (str | None, optional): Keyword-only alias for `id_item`. Defaults to `None`.
 
         Returns:
             BaseSurrealModel | dict[str, Any]: The retrieved model instance or a dictionary representing the raw data.
@@ -616,12 +617,16 @@ class QuerySet:
 
         Example:
             ```python
-            user = await queryset.get(id_item='user:123')
+            user = await queryset.get('user_123')
+            user = await queryset.get(id='user_123')
+            user = await queryset.get(id_item='user_123')
             ```
         """
-        if id_item:
+        # Allow 'id' keyword to be used as alias for 'id_item'
+        record_id = id if id is not None else id_item
+        if record_id:
             client = await SurrealDBConnectionManager.get_client()
-            result = await client.select(f"{self._model_table}:{id_item}")
+            result = await client.select(f"{self._model_table}:{record_id}")
             # SDK returns RecordsResponse
             if result.is_empty:
                 raise self.model.DoesNotExist("Record not found.")
