@@ -36,7 +36,7 @@ def is_container_running() -> bool:
 
 
 def is_port_responding(port: int = TEST_PORT) -> bool:
-    """Check if the SurrealDB port is responding."""
+    """Check if the SurrealDB port is responding (basic TCP check)."""
     import socket
 
     try:
@@ -45,6 +45,20 @@ def is_port_responding(port: int = TEST_PORT) -> bool:
             s.connect(("localhost", port))
             return True
     except (socket.timeout, ConnectionRefusedError, OSError):
+        return False
+
+
+def is_surrealdb_healthy(port: int = TEST_PORT) -> bool:
+    """Check if SurrealDB is healthy via /health endpoint."""
+    import urllib.request
+    import urllib.error
+
+    try:
+        url = f"http://localhost:{port}/health"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=2) as response:
+            return response.status == 200
+    except (urllib.error.URLError, TimeoutError, OSError):
         return False
 
 
@@ -61,10 +75,10 @@ def start_container() -> bool:
             print(f"Failed to start container: {result.stderr}")
             return False
 
-        # Wait for container to be healthy
+        # Wait for SurrealDB to be healthy (not just port open)
         start_time = time.time()
         while time.time() - start_time < HEALTH_CHECK_TIMEOUT:
-            if is_port_responding():
+            if is_surrealdb_healthy():
                 return True
             time.sleep(0.5)
 
@@ -108,8 +122,8 @@ def pytest_configure(config: pytest.Config) -> None:
         # Not running integration tests, no need for container
         return
 
-    # Check if container is already running
-    if is_container_running() and is_port_responding():
+    # Check if container is already running and healthy
+    if is_container_running() and is_surrealdb_healthy():
         print(f"\n[conftest] SurrealDB test container already running on port {TEST_PORT}")
         _container_started_by_tests = False
         return
@@ -154,4 +168,4 @@ def surrealdb_available() -> Generator[bool, None, None]:
             if not surrealdb_available:
                 pytest.skip("SurrealDB not available")
     """
-    yield is_port_responding()
+    yield is_surrealdb_healthy()

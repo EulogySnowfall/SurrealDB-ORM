@@ -154,37 +154,53 @@ jobs:
           CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
           echo "Current version: $CURRENT_VERSION"
 
-          # Get all tags matching the current version pattern
-          # Tags can be: v0.5.1, v0.5.1.1, v0.5.1.2, etc.
-          BASE_TAG="v${CURRENT_VERSION}"
+          # Extract the semantic base version (x.y.z) from current version
+          # Examples:
+          #   0.5.2     -> 0.5.2
+          #   0.5.2.1   -> 0.5.2
+          #   0.5.2.1.1 -> 0.5.2 (invalid, but handle gracefully)
+          BASE_VERSION=$(echo "$CURRENT_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+          echo "Base semantic version: $BASE_VERSION"
 
-          # Find the highest patch number for this version
+          if [[ -z "$BASE_VERSION" ]]; then
+            echo "Error: Could not extract base version from $CURRENT_VERSION"
+            exit 1
+          fi
+
+          # Find the highest patch number for this base version
+          # Tags can be: v0.5.2, v0.5.2.1, v0.5.2.2, etc.
           HIGHEST_PATCH=0
 
-          for tag in $(git tag -l "${BASE_TAG}*"); do
-            # Extract the patch number if it exists (e.g., v0.5.1.2 -> 2)
-            if [[ "$tag" =~ ^v${CURRENT_VERSION}\.([0-9]+)$ ]]; then
+          for tag in $(git tag -l "v${BASE_VERSION}*"); do
+            echo "Checking tag: $tag"
+
+            # Extract the patch number if it exists (e.g., v0.5.2.3 -> 3)
+            if [[ "$tag" =~ ^v${BASE_VERSION}\.([0-9]+)$ ]]; then
               PATCH="${BASH_REMATCH[1]}"
+              echo "  Found patch number: $PATCH"
               if [[ $PATCH -gt $HIGHEST_PATCH ]]; then
                 HIGHEST_PATCH=$PATCH
               fi
-            elif [[ "$tag" == "$BASE_TAG" ]]; then
-              # Base tag exists, start from .1
-              if [[ $HIGHEST_PATCH -eq 0 ]]; then
-                HIGHEST_PATCH=0
-              fi
+            elif [[ "$tag" == "v${BASE_VERSION}" ]]; then
+              # Base tag exists (v0.5.2), patches will start at .1
+              echo "  Base tag exists"
             fi
           done
 
           NEXT_PATCH=$((HIGHEST_PATCH + 1))
-          NEW_TAG="v${CURRENT_VERSION}.${NEXT_PATCH}"
+          NEW_TAG="v${BASE_VERSION}.${NEXT_PATCH}"
+          NEW_VERSION="${BASE_VERSION}.${NEXT_PATCH}"
 
-          echo "Base tag: $BASE_TAG"
-          echo "Highest patch: $HIGHEST_PATCH"
+          echo "Base version: $BASE_VERSION"
+          echo "Highest existing patch: $HIGHEST_PATCH"
+          echo "Next patch number: $NEXT_PATCH"
           echo "New tag: $NEW_TAG"
+          echo "New version: $NEW_VERSION"
 
+          echo "base-version=$BASE_VERSION" >> $GITHUB_OUTPUT
           echo "current-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "new-tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "new-version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "patch-number=$NEXT_PATCH" >> $GITHUB_OUTPUT
 
       - name: Enable auto-merge
@@ -239,9 +255,10 @@ jobs:
         if: steps.wait-merge.outputs.merged == 'true'
         run: |
           NEW_TAG="${{ steps.version.outputs.new-tag }}"
-          NEW_VERSION="${NEW_TAG#v}"  # Remove 'v' prefix
+          NEW_VERSION="${{ steps.version.outputs.new-version }}"
 
           echo "Updating version to: $NEW_VERSION"
+          echo "Creating tag: $NEW_TAG"
 
           # Update pyproject.toml
           sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml

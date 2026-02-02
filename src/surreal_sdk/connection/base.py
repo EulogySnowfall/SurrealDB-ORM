@@ -71,8 +71,8 @@ class BaseSurrealConnection(ABC):
     # Abstract methods that must be implemented
 
     @abstractmethod
-    async def connect(self) -> None:
-        """Establish connection to SurrealDB."""
+    async def connect(self) -> Self:
+        """Establish connection to SurrealDB. Returns self for fluent API."""
         ...
 
     @abstractmethod

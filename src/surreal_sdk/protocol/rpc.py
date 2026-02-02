@@ -5,8 +5,38 @@ Handles the JSON-RPC style messaging format used by SurrealDB.
 """
 
 from dataclasses import dataclass, field
+from datetime import date, datetime, time
+from decimal import Decimal
 from typing import Any
+from uuid import UUID
 import json
+
+
+class SurrealJSONEncoder(json.JSONEncoder):
+    """
+    Custom JSON encoder for SurrealDB types.
+
+    Handles serialization of Python types that are not natively JSON serializable:
+    - datetime → ISO 8601 string
+    - date → ISO 8601 string
+    - time → ISO 8601 string
+    - Decimal → float
+    - UUID → string
+    """
+
+    def default(self, obj: Any) -> Any:
+        """Encode non-standard types to JSON-serializable values."""
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        if isinstance(obj, time):
+            return obj.isoformat()
+        if isinstance(obj, Decimal):
+            return float(obj)
+        if isinstance(obj, UUID):
+            return str(obj)
+        return super().default(obj)
 
 
 @dataclass
@@ -33,8 +63,8 @@ class RPCRequest:
         }
 
     def to_json(self) -> str:
-        """Serialize to JSON string."""
-        return json.dumps(self.to_dict())
+        """Serialize to JSON string with custom encoder for datetime, UUID, etc."""
+        return json.dumps(self.to_dict(), cls=SurrealJSONEncoder)
 
     @classmethod
     def query(cls, sql: str, vars: dict[str, Any] | None = None, request_id: int = 1) -> "RPCRequest":

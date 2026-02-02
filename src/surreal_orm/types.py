@@ -42,23 +42,114 @@ class FieldType(StrEnum):
     SurrealDB field types for schema definitions.
 
     Maps to SurrealDB's native type system.
+    See: https://surrealdb.com/docs/surrealql/datamodel
+
+    Numeric Types:
+        - INT: 64-bit signed integer (-9223372036854775808 to 9223372036854775807)
+        - FLOAT: 64-bit double-precision floating point
+        - DECIMAL: Arbitrary precision decimal (for financial calculations)
+        - NUMBER: Auto-detected numeric type (stores using minimal bytes)
+
+    Primitive Types:
+        - STRING: Text data
+        - BOOL: Boolean true/false
+        - DATETIME: RFC 3339 timestamp with timezone
+        - DURATION: Time length (e.g., "1h30m", "7d")
+        - BYTES: Binary data / byte array
+        - UUID: Universal unique identifier
+
+    Collection Types:
+        - ARRAY: Ordered collection (can be typed: array<string>)
+        - SET: Unique collection (auto-deduplicated)
+        - OBJECT: Flexible JSON-like container
+
+    Special Types:
+        - ANY: Accepts any value type
+        - OPTION: Optional value (can be typed: option<string>)
+        - RECORD: Reference to another record (can be typed: record<users>)
+        - GEOMETRY: GeoJSON spatial data (point, line, polygon, etc.)
+        - REGEX: Compiled regular expression
+
+    Generic Type Syntax:
+        For typed collections/references, use the generic() class method:
+        - FieldType.ARRAY.generic("string") -> "array<string>"
+        - FieldType.RECORD.generic("users") -> "record<users>"
+        - FieldType.OPTION.generic("int") -> "option<int>"
+        - FieldType.GEOMETRY.generic("point") -> "geometry<point>"
     """
 
-    STRING = "string"
+    # Numeric types
     INT = "int"
     FLOAT = "float"
+    DECIMAL = "decimal"
+    NUMBER = "number"
+
+    # Primitive types
+    STRING = "string"
     BOOL = "bool"
     DATETIME = "datetime"
     DURATION = "duration"
-    DECIMAL = "decimal"
-    ARRAY = "array"
-    OBJECT = "object"
-    RECORD = "record"
-    GEOMETRY = "geometry"
-    ANY = "any"
-    OPTION = "option"
     BYTES = "bytes"
     UUID = "uuid"
+
+    # Collection types
+    ARRAY = "array"
+    SET = "set"
+    OBJECT = "object"
+
+    # Special types
+    ANY = "any"
+    OPTION = "option"
+    RECORD = "record"
+    GEOMETRY = "geometry"
+    REGEX = "regex"
+
+    def generic(self, inner_type: str) -> str:
+        """
+        Create a generic type string for parameterized types.
+
+        Args:
+            inner_type: The inner type parameter (e.g., "string", "users", "point")
+
+        Returns:
+            Formatted type string (e.g., "array<string>", "record<users>")
+
+        Examples:
+            >>> FieldType.ARRAY.generic("string")
+            'array<string>'
+            >>> FieldType.RECORD.generic("users")
+            'record<users>'
+            >>> FieldType.GEOMETRY.generic("point|polygon")
+            'geometry<point|polygon>'
+        """
+        return f"{self.value}<{inner_type}>"
+
+    @classmethod
+    def from_python_type(cls, python_type: type) -> "FieldType":
+        """
+        Map a Python type to a SurrealDB FieldType.
+
+        Args:
+            python_type: A Python type (str, int, float, bool, list, dict, bytes)
+
+        Returns:
+            The corresponding FieldType
+
+        Raises:
+            ValueError: If the type cannot be mapped
+        """
+        mapping: dict[type, FieldType] = {
+            str: cls.STRING,
+            int: cls.INT,
+            float: cls.FLOAT,
+            bool: cls.BOOL,
+            list: cls.ARRAY,
+            dict: cls.OBJECT,
+            bytes: cls.BYTES,
+        }
+        if python_type in mapping:
+            return mapping[python_type]
+        raise ValueError(f"Cannot map Python type {python_type} to SurrealDB FieldType")
 
 
 class EncryptionAlgorithm(StrEnum):
@@ -75,6 +166,7 @@ class EncryptionAlgorithm(StrEnum):
 
 
 # Type mapping from Python types to SurrealDB types
+# Deprecated: Use FieldType.from_python_type() instead
 PYTHON_TO_SURREAL_TYPE: dict[type, FieldType] = {
     str: FieldType.STRING,
     int: FieldType.INT,

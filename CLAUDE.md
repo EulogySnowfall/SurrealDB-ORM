@@ -10,7 +10,24 @@
 
 ---
 
-## Current Version: 0.5.1 (Alpha)
+## Current Version: 0.5.2 (Alpha)
+
+### What's New in 0.5.2
+
+- **FieldType Enum Improvements** - Enhanced type system for migrations
+  - Added `NUMBER`, `SET`, `REGEX` types to `FieldType` enum
+  - `generic(inner_type)` method for parameterized types (`array<string>`, `record<users>`)
+  - `from_python_type(type)` class method for automatic Python → SurrealDB type mapping
+  - Comprehensive docstrings with SurrealDB type documentation
+  - `AddField` and `AlterField` now accept `FieldType | str` with validation
+
+- **Bug Fixes** - Critical fixes for SDK and ORM
+  - **datetime serialization** - Custom JSON encoder for datetime, date, time, Decimal, UUID in RPC requests
+  - **Fluent API** - `connect()` now returns `Self` for method chaining (`await conn.connect().signin(...)`)
+  - **Session cleanup** - WebSocket callback tasks properly tracked and cancelled on close
+  - **Optional fields** - `exclude_unset=True` in `model_dump()` prevents None from overriding DB defaults
+  - **Parameter alias** - `username` parameter alias for `user` in `SurrealDBConnectionManager.set_connection()`
+  - **Patch version increment** - Fixed version calculation to use semantic base (x.y.z) instead of full version
 
 ### What's New in 0.5.1
 
@@ -492,15 +509,15 @@ async def cast_vote(db, user_id: str, table_id: str) -> VoteResult:
 
 ### Key Features for Game Backends
 
-| Feature | Benefit |
-|---------|---------|
-| `live_select()` with WHERE | Subscribe only to relevant players/tables |
-| `auto_resubscribe=True` | Seamless recovery from K8s pod restarts |
-| `on_reconnect` callback | Track subscription ID changes for debugging |
-| `LiveChange.action` | Distinguish CREATE/UPDATE/DELETE events |
-| `LiveChange.record_id` | Quick access to affected record ID |
-| `LiveChange.changed_fields` | (DIFF mode) Know exactly what changed |
-| Typed `call()` | Get Pydantic models instead of raw dicts |
+| Feature                     | Benefit                                     |
+| --------------------------- | ------------------------------------------- |
+| `live_select()` with WHERE  | Subscribe only to relevant players/tables   |
+| `auto_resubscribe=True`     | Seamless recovery from K8s pod restarts     |
+| `on_reconnect` callback     | Track subscription ID changes for debugging |
+| `LiveChange.action`         | Distinguish CREATE/UPDATE/DELETE events     |
+| `LiveChange.record_id`      | Quick access to affected record ID          |
+| `LiveChange.changed_fields` | (DIFF mode) Know exactly what changed       |
+| Typed `call()`              | Get Pydantic models instead of raw dicts    |
 
 ### SurrealDB Function Example
 
@@ -523,7 +540,7 @@ DEFINE FUNCTION fn::cast_vote($user_id: string, $table_id: string) {
 
 ## Known Issues
 
-*All previously documented issues have been fixed in v0.3.1:*
+_All previously documented issues have been fixed in v0.3.1:_
 
 - ~~`refresh()` in model_base.py doesn't reassign data to instance~~ (Fixed)
 - ~~ORDER BY positioned after LIMIT/START in generated SQL~~ (Fixed in v0.3.1)

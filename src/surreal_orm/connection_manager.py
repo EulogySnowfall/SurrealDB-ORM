@@ -29,14 +29,31 @@ class SurrealDBConnectionManager:
         return await SurrealDBConnectionManager.get_client()
 
     @classmethod
-    def set_connection(cls, url: str, user: str, password: str, namespace: str, database: str) -> None:
+    def set_connection(
+        cls,
+        url: str,
+        user: str,
+        password: str,
+        namespace: str,
+        database: str,
+        *,
+        username: str | None = None,
+    ) -> None:
         """
         Set the connection kwargs for the SurrealDB instance.
 
-        :param kwargs: The connection kwargs for the SurrealDB instance.
+        :param url: The URL of the SurrealDB instance.
+        :param user: The username for authentication.
+        :param password: The password for authentication.
+        :param namespace: The namespace to use.
+        :param database: The database to use.
+        :param username: Keyword-only alias for 'user' (overrides 'user' if provided).
         """
+        # Allow 'username' keyword to override 'user' for API flexibility
+        actual_user = username if username is not None else user
+
         cls.__url = url
-        cls.__user = user
+        cls.__user = actual_user
         cls.__password = password
         cls.__namespace = namespace
         cls.__database = database

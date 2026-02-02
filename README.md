@@ -13,7 +13,36 @@
 
 ---
 
-## What's New in 0.4.0
+## What's New in 0.5.x
+
+### v0.5.2 - Bug Fixes & FieldType Improvements
+
+- **FieldType enum** - Enhanced migration type system with `generic()` and `from_python_type()` methods
+- **datetime serialization** - Proper JSON encoding for datetime, date, time, Decimal, UUID
+- **Fluent API** - `connect()` now returns `self` for method chaining
+- **Session cleanup** - WebSocket callback tasks properly tracked and cancelled
+- **Optional fields** - `exclude_unset=True` prevents None from overriding DB defaults
+- **Parameter alias** - `username` parameter alias for `user` in ConnectionManager
+
+### v0.5.1 - Security Workflows
+
+- **Dependabot integration** - Automatic dependency security updates
+- **Auto-merge** - Dependabot PRs merged after CI passes
+- **SurrealDB monitoring** - Integration tests on new SurrealDB releases
+
+### v0.5.0 - Real-time SDK Enhancements
+
+- **Live Select Stream** - Async iterator pattern for real-time changes
+  - `async with db.live_select("table") as stream: async for change in stream:`
+  - `LiveChange` dataclass with `record_id`, `action`, `result`, `changed_fields`
+  - WHERE clause support with parameterized queries
+- **Auto-Resubscribe** - Automatic reconnection after WebSocket disconnect
+  - `auto_resubscribe=True` parameter for seamless K8s pod restart recovery
+  - `on_reconnect(old_id, new_id)` callback for tracking ID changes
+- **Typed Function Calls** - Pydantic/dataclass return type support
+  - `await db.call("fn::my_func", params={...}, return_type=MyModel)`
+
+### v0.4.0 - Relations & Graph
 
 - **Relations & Graph Traversal** - Django-style relation definitions with SurrealDB graph support
   - `ForeignKey`, `ManyToMany`, `Relation` field types
@@ -197,20 +226,52 @@ result = await db.fn.my_custom_function(arg1, arg2)
 Real-time updates via WebSocket:
 
 ```python
-from surreal_sdk import LiveQuery, LiveNotification, LiveAction
+from surreal_sdk import LiveAction
+
+# Async iterator pattern (recommended)
+async with db.live_select(
+    "orders",
+    where="status = $status",
+    params={"status": "pending"},
+    auto_resubscribe=True,  # Auto-reconnect on WebSocket drop
+) as stream:
+    async for change in stream:
+        match change.action:
+            case LiveAction.CREATE:
+                print(f"New order: {change.result}")
+            case LiveAction.UPDATE:
+                print(f"Updated: {change.record_id}")
+            case LiveAction.DELETE:
+                print(f"Deleted: {change.record_id}")
+
+# Callback-based pattern
+from surreal_sdk import LiveQuery, LiveNotification
 
 async def on_change(notification: LiveNotification):
-    if notification.action == LiveAction.CREATE:
-        print(f"New record: {notification.result}")
-    elif notification.action == LiveAction.UPDATE:
-        print(f"Updated: {notification.result}")
-    elif notification.action == LiveAction.DELETE:
-        print(f"Deleted: {notification.result}")
+    print(f"{notification.action}: {notification.result}")
 
 live = LiveQuery(ws_conn, "orders")
 await live.subscribe(on_change)
-# ... records changes trigger callbacks ...
+# ... record changes trigger callbacks ...
 await live.unsubscribe()
+```
+
+**Typed Function Calls:**
+
+```python
+from pydantic import BaseModel
+
+class VoteResult(BaseModel):
+    success: bool
+    count: int
+
+# Call SurrealDB function with typed return
+result = await db.call(
+    "cast_vote",
+    params={"user": "alice", "vote": "yes"},
+    return_type=VoteResult
+)
+print(result.success, result.count)  # Typed access
 ```
 
 ---

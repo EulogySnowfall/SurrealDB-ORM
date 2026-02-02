@@ -6,16 +6,16 @@
 
 ## Version History
 
-| Version       | Status       | Focus                                     |
-| ------------- | ------------ | ----------------------------------------- |
-| 0.1.x         | Released     | Basic ORM (Models, QuerySet, CRUD)        |
-| 0.2.x         | Released     | Custom SDK, Migrations, JWT Auth, CLI     |
-| 0.3.0         | Released     | ORM Transactions + Aggregations           |
-| 0.3.1         | Released     | Bulk Operations + Bug Fixes               |
-| 0.4.0         | Released     | Relations & Graph Traversal               |
-| **0.5.0**     | **Released** | **SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls** |
-| 0.5.1         | Planned      | Computed Fields                           |
-| 0.6.x         | Planned      | ORM Live Models + Signals                 |
+| Version   | Status       | Focus                                                         |
+| --------- | ------------ | ------------------------------------------------------------- |
+| 0.1.x     | Released     | Basic ORM (Models, QuerySet, CRUD)                            |
+| 0.2.x     | Released     | Custom SDK, Migrations, JWT Auth, CLI                         |
+| 0.3.0     | Released     | ORM Transactions + Aggregations                               |
+| 0.3.1     | Released     | Bulk Operations + Bug Fixes                                   |
+| 0.4.0     | Released     | Relations & Graph Traversal                                   |
+| **0.5.0** | **Released** | **SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls** |
+| 0.5.5     | Planned      | Computed Fields                                               |
+| 0.6.x     | Planned      | ORM Live Models + Signals                                     |
 
 ---
 
@@ -429,20 +429,20 @@ users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
 
 ## Implementation Priority
 
-| Feature                      | Version | Priority | Status   | Dependencies     |
-| ---------------------------- | ------- | -------- | -------- | ---------------- |
-| Model Transactions           | 0.3.0   | Critical | Done     | SDK transactions |
-| Aggregations (count/sum/avg) | 0.3.0   | High     | Done     | SDK functions    |
-| GROUP BY                     | 0.3.0   | High     | Done     | Aggregations     |
-| Bulk Operations              | 0.3.1   | Medium   | Done     | Transactions     |
-| Relations (ForeignKey)       | 0.4.0   | High     | Done     | -                |
-| Graph Traversal              | 0.4.0   | High     | Done     | Relations        |
-| Live Select Stream           | 0.5.0   | High     | Done     | SDK WebSocket    |
-| Auto-Resubscribe             | 0.5.0   | High     | Done     | Live Select      |
-| Typed Function Calls         | 0.5.0   | Medium   | Done     | SDK functions    |
-| Computed Fields              | 0.5.1   | Medium   | Planned  | SDK functions    |
-| ORM Live Models              | 0.6.0   | Medium   | Planned  | SDK live queries |
-| Model Signals                | 0.6.0   | Low      | Planned  | Live Models      |
+| Feature                      | Version | Priority | Status  | Dependencies     |
+| ---------------------------- | ------- | -------- | ------- | ---------------- |
+| Model Transactions           | 0.3.0   | Critical | Done    | SDK transactions |
+| Aggregations (count/sum/avg) | 0.3.0   | High     | Done    | SDK functions    |
+| GROUP BY                     | 0.3.0   | High     | Done    | Aggregations     |
+| Bulk Operations              | 0.3.1   | Medium   | Done    | Transactions     |
+| Relations (ForeignKey)       | 0.4.0   | High     | Done    | -                |
+| Graph Traversal              | 0.4.0   | High     | Done    | Relations        |
+| Live Select Stream           | 0.5.0   | High     | Done    | SDK WebSocket    |
+| Auto-Resubscribe             | 0.5.0   | High     | Done    | Live Select      |
+| Typed Function Calls         | 0.5.0   | Medium   | Done    | SDK functions    |
+| Computed Fields              | 0.5.1   | Medium   | Planned | SDK functions    |
+| ORM Live Models              | 0.6.0   | Medium   | Planned | SDK live queries |
+| Model Signals                | 0.6.0   | Low      | Planned | Live Models      |
 
 ---
 
