@@ -7,9 +7,32 @@ Uses Click's CliRunner for testing CLI commands without database connections.
 import tempfile
 import shutil
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
+
+
+def mock_run_async_factory(return_value: Any = None, exception: Exception | None = None):
+    """
+    Create a mock side_effect for run_async that properly closes the coroutine.
+
+    When mocking run_async, the coroutine passed to it must be closed to avoid
+    'coroutine was never awaited' warnings.
+
+    Args:
+        return_value: Value to return from the mock
+        exception: Exception to raise instead of returning
+    """
+
+    def side_effect(coro):
+        coro.close()
+        if exception is not None:
+            raise exception
+        return return_value
+
+    return side_effect
+
 
 # Check if click is available
 try:
@@ -161,7 +184,7 @@ class TestMigrateCommand:
     @patch("src.surreal_orm.cli.commands.run_async")
     def test_migrate_no_migrations(self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
         """Test migrate with no pending migrations."""
-        mock_run_async.return_value = []
+        mock_run_async.side_effect = mock_run_async_factory([])
 
         result = runner.invoke(
             cli_command,
@@ -183,7 +206,7 @@ class TestMigrateCommand:
         self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path
     ) -> None:
         """Test migrate applies pending migrations."""
-        mock_run_async.return_value = ["0001_initial", "0002_add_field"]
+        mock_run_async.side_effect = mock_run_async_factory(["0001_initial", "0002_add_field"])
 
         result = runner.invoke(
             cli_command,
@@ -205,7 +228,7 @@ class TestMigrateCommand:
     @patch("src.surreal_orm.cli.commands.run_async")
     def test_migrate_with_fake(self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
         """Test migrate --fake option."""
-        mock_run_async.return_value = ["0001_initial"]
+        mock_run_async.side_effect = mock_run_async_factory(["0001_initial"])
 
         result = runner.invoke(
             cli_command,
@@ -237,7 +260,7 @@ class TestUpgradeCommand:
         self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path
     ) -> None:
         """Test upgrade applies data migrations."""
-        mock_run_async.return_value = ["0001_initial"]
+        mock_run_async.side_effect = mock_run_async_factory(["0001_initial"])
 
         result = runner.invoke(
             cli_command,
@@ -272,7 +295,7 @@ class TestRollbackCommand:
     @patch("src.surreal_orm.cli.commands.run_async")
     def test_rollback_to_target(self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
         """Test rollback to specific target."""
-        mock_run_async.return_value = ["0003_third", "0002_second"]
+        mock_run_async.side_effect = mock_run_async_factory(["0003_third", "0002_second"])
 
         result = runner.invoke(
             cli_command,
@@ -303,7 +326,7 @@ class TestStatusCommand:
     @patch("src.surreal_orm.cli.commands.run_async")
     def test_status_no_migrations(self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
         """Test status with no migrations."""
-        mock_run_async.return_value = {}
+        mock_run_async.side_effect = mock_run_async_factory({})
 
         result = runner.invoke(
             cli_command,
@@ -322,10 +345,12 @@ class TestStatusCommand:
     @patch("src.surreal_orm.cli.commands.run_async")
     def test_status_shows_migrations(self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
         """Test status shows migration list."""
-        mock_run_async.return_value = {
-            "0001_initial": {"applied": True, "reversible": True, "has_data": False, "operations": 3},
-            "0002_add_field": {"applied": False, "reversible": True, "has_data": True, "operations": 1},
-        }
+        mock_run_async.side_effect = mock_run_async_factory(
+            {
+                "0001_initial": {"applied": True, "reversible": True, "has_data": False, "operations": 3},
+                "0002_add_field": {"applied": False, "reversible": True, "has_data": True, "operations": 1},
+            }
+        )
 
         result = runner.invoke(
             cli_command,
@@ -364,7 +389,9 @@ class TestSqlMigrateCommand:
     @patch("src.surreal_orm.cli.commands.run_async")
     def test_sqlmigrate_shows_sql(self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
         """Test sqlmigrate shows SQL."""
-        mock_run_async.return_value = "DEFINE TABLE users SCHEMAFULL;\nDEFINE FIELD name ON users TYPE string;"
+        mock_run_async.side_effect = mock_run_async_factory(
+            "DEFINE TABLE users SCHEMAFULL;\nDEFINE FIELD name ON users TYPE string;"
+        )
 
         result = runner.invoke(
             cli_command,
@@ -381,7 +408,7 @@ class TestSqlMigrateCommand:
     @patch("src.surreal_orm.cli.commands.run_async")
     def test_sqlmigrate_not_found(self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
         """Test sqlmigrate with non-existent migration."""
-        mock_run_async.side_effect = FileNotFoundError("Migration not found")
+        mock_run_async.side_effect = mock_run_async_factory(exception=FileNotFoundError("Migration not found"))
 
         result = runner.invoke(
             cli_command,
