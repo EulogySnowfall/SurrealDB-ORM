@@ -1,4 +1,4 @@
-from typing import Any, Literal, Self, cast, TYPE_CHECKING
+from typing import Any, Literal, Self, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -71,6 +71,10 @@ class SurrealConfigDict(ConfigDict):
         password_field: Field containing password (USER type, default: "password")
         token_duration: JWT token duration (USER type, default: "15m")
         session_duration: Session duration (USER type, default: "12h")
+        server_fields: List of field names that are server-generated and should
+            be excluded from save/update operations (e.g., ["created_at", "updated_at"]).
+            These fields are populated by SurrealDB's VALUE clause and should not be
+            sent back during updates.
     """
 
     primary_key: str | None
@@ -83,6 +87,7 @@ class SurrealConfigDict(ConfigDict):
     password_field: str | None
     token_duration: str | None
     session_duration: str | None
+    server_fields: list[str] | None
 
 
 class BaseSurrealModel(BaseModel):
@@ -236,6 +241,23 @@ class BaseSurrealModel(BaseModel):
 
         return None
 
+    @classmethod
+    def get_server_fields(cls) -> set[str]:
+        """
+        Get the list of server-generated field names.
+
+        Server fields are populated by SurrealDB (e.g., via VALUE time::now())
+        and should be excluded from save/update operations.
+
+        Returns:
+            Set of field names to exclude from save/update operations.
+        """
+        if hasattr(cls, "model_config"):
+            server_fields = cls.model_config.get("server_fields", None)
+            if isinstance(server_fields, list):
+                return set(server_fields)
+        return set()
+
     def get_id(self) -> str | None:
         """
         Get the ID of the model instance.
@@ -276,6 +298,29 @@ class BaseSurrealModel(BaseModel):
                 data["id"] = _parse_record_id(data["id"])
             return data
 
+    def _update_from_db(self, record: dict[str, Any]) -> None:
+        """
+        Update instance fields from a database record without marking them as user-set.
+
+        This preserves the original __pydantic_fields_set__ so that exclude_unset=True
+        continues to work correctly on subsequent saves.
+
+        Args:
+            record: Dictionary of field values from the database.
+        """
+        # Store original fields_set to preserve user-set tracking
+        original_fields_set = self.__pydantic_fields_set__.copy()
+
+        for key, value in record.items():
+            if key == "id":
+                value = _parse_record_id(value)
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+        # Restore original fields_set - only user-set fields should be marked
+        # DB-loaded fields should not be considered as "set" for exclude_unset
+        object.__setattr__(self, "__pydantic_fields_set__", original_fields_set)
+
     async def refresh(self) -> None:
         """
         Refresh the model instance from the database.
@@ -294,12 +339,8 @@ class BaseSurrealModel(BaseModel):
         if record is None:
             raise SurrealDbError("Can't refresh data, no record found.")  # pragma: no cover
 
-        # Update instance fields from the record
-        for key, value in record.items():
-            if key == "id":
-                value = _parse_record_id(value)
-            if hasattr(self, key):
-                setattr(self, key, value)
+        # Update instance fields without marking them as user-set
+        self._update_from_db(record)
         return None
 
     async def save(self, tx: "BaseTransaction | None" = None) -> Self:
@@ -318,15 +359,19 @@ class BaseSurrealModel(BaseModel):
             async with SurrealDBConnectionManager.transaction() as tx:
                 await user.save(tx=tx)
         """
+        # Build exclude set: always exclude 'id' and any server-generated fields
+        exclude_fields = {"id"} | self.get_server_fields()
+
         if tx is not None:
             # Use transaction
-            data = self.model_dump(exclude={"id"}, exclude_unset=True)
+            data = self.model_dump(exclude=exclude_fields, exclude_unset=True)
             id = self.get_id()
             table = self.get_table_name()
 
             if id is not None:
+                # Use upsert for idempotent save (create or update)
                 thing = f"{table}:{id}"
-                await tx.create(thing, data)
+                await tx.upsert(thing, data)
                 return self
 
             # Auto-generate ID - create without specific ID
@@ -335,13 +380,14 @@ class BaseSurrealModel(BaseModel):
 
         # Original behavior without transaction
         client = await SurrealDBConnectionManager.get_client()
-        data = self.model_dump(exclude={"id"}, exclude_unset=True)
+        data = self.model_dump(exclude=exclude_fields, exclude_unset=True)
         id = self.get_id()
         table = self.get_table_name()
 
         if id is not None:
+            # Use upsert for idempotent save (create or update)
             thing = f"{table}:{id}"
-            await client.create(thing, data)
+            await client.upsert(thing, data)
             return self
 
         # Auto-generate the ID
@@ -351,9 +397,12 @@ class BaseSurrealModel(BaseModel):
         if not result.exists:
             raise SurrealDbError("Can't save data, no record returned.")  # pragma: no cover
 
-        obj = self.from_db(cast(dict | list | None, result.record))
-        if isinstance(obj, type(self)):
-            self = obj
+        # Update self's attributes from the database response
+        # This includes the auto-generated ID and any server-side fields
+        # Use _update_from_db to avoid marking DB fields as user-set
+        record = result.record
+        if isinstance(record, dict):
+            self._update_from_db(record)
             return self
 
         raise SurrealDbError("Can't save data, no record returned.")  # pragma: no cover
@@ -365,7 +414,9 @@ class BaseSurrealModel(BaseModel):
         Args:
             tx: Optional transaction to use for this operation.
         """
-        data = self.model_dump(exclude={"id"}, exclude_unset=True)
+        # Build exclude set: always exclude 'id' and any server-generated fields
+        exclude_fields = {"id"} | self.get_server_fields()
+        data = self.model_dump(exclude=exclude_fields, exclude_unset=True)
         id = self.get_id()
 
         if id is None:
@@ -388,13 +439,16 @@ class BaseSurrealModel(BaseModel):
         """
         return f"{cls.__name__}:{item}"
 
-    async def merge(self, tx: "BaseTransaction | None" = None, **data: Any) -> Any:
+    async def merge(self, tx: "BaseTransaction | None" = None, **data: Any) -> Self:
         """
         Merge (partial update) the model instance in the database.
 
         Args:
             tx: Optional transaction to use for this operation.
             **data: Fields to update.
+
+        Returns:
+            Self: The updated model instance.
         """
         data_set = {key: value for key, value in data.items()}
 
@@ -406,11 +460,16 @@ class BaseSurrealModel(BaseModel):
 
         if tx is not None:
             await tx.merge(thing, data_set)
-            return
+            # Update local instance with merged data
+            for key, value in data_set.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+            return self
 
         client = await SurrealDBConnectionManager.get_client()
         await client.merge(thing, data_set)
         await self.refresh()
+        return self
 
     async def delete(self, tx: "BaseTransaction | None" = None) -> None:
         """

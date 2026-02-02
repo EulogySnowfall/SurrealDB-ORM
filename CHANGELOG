@@ -6,6 +6,52 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.5.3] - 2026-02-02
+
+### Added
+
+- **`upsert()` Method** - New SDK method for create-or-update operations
+  - Added to `BaseSurrealConnection` and all transaction types
+  - Enables idempotent save behavior for existing records
+
+- **`server_fields` Config Option** - Exclude server-generated fields from saves
+  - New `server_fields` option in `SurrealConfigDict`
+  - Automatically excludes fields like `created_at`, `updated_at` from save/update
+  - Prevents datetime serialization errors on subsequent saves
+
+- **`_update_from_db()` Helper** - Internal method for DB data loading
+  - Updates model fields without marking them as user-set
+  - Preserves `__pydantic_fields_set__` for correct `exclude_unset` behavior
+
+### Fixed
+
+- **Bug #2: NULL Values** - `exclude_unset=True` now works after loading from DB
+  - `_update_from_db()` preserves original `__pydantic_fields_set__`
+  - Subsequent saves don't include DB-loaded fields as user-set
+
+- **Bug #7: save() Returns New Instance** - Now updates original instance
+  - `save()` updates `self` attributes in place instead of returning new object
+  - Uses `_update_from_db()` for consistent field handling
+
+- **Bug #8: datetime Serialization for UPDATE** - Fixed via `server_fields`
+  - Server-generated datetime fields excluded from save operations
+  - No more "expected datetime" errors on second save
+
+- **Bug #9: merge() Returns None** - Now returns `self`
+  - `merge()` method signature updated to return `Self`
+  - Updates local instance with merged data before returning
+
+### Changed
+
+- **`save()` Uses Upsert** - Idempotent behavior for existing records
+  - When ID is set, `save()` now uses `upsert` instead of `create`
+  - No more "record already exists" errors on duplicate saves
+  - **Breaking:** save() with duplicate ID now updates instead of failing
+
+- Version bump to 0.5.3
+
+---
+
 ## [0.5.2] - 2026-02-01
 
 ### Added

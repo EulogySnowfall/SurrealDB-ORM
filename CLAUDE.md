@@ -10,7 +10,22 @@
 
 ---
 
-## Current Version: 0.5.2 (Alpha)
+## Current Version: 0.5.3 (Alpha)
+
+### What's New in 0.5.3
+
+- **ORM Improvements** - Better save/update behavior
+  - **Upsert behavior** - `save()` now uses `upsert` for existing records (idempotent, Django-like)
+  - **`server_fields` config** - Exclude server-generated fields (created_at, updated_at) from save/update
+  - **`merge()` returns self** - Now returns the updated model instance instead of None
+  - **`save()` updates self** - No longer returns new instance, updates original in place
+
+- **Bug Fixes** - Critical fixes for ORM
+  - **NULL values fix** - `_update_from_db()` preserves `__pydantic_fields_set__` so `exclude_unset=True` works after DB load
+  - **datetime for UPDATE** - Server fields excluded via `server_fields` config option
+
+- **SDK Enhancements**
+  - **`upsert()` method** - Added to `BaseSurrealConnection` and transactions for create-or-update operations
 
 ### What's New in 0.5.2
 

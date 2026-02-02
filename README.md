@@ -15,6 +15,14 @@
 
 ## What's New in 0.5.x
 
+### v0.5.3 - ORM Improvements
+
+- **Upsert save behavior** - `save()` now uses `upsert` for existing records (idempotent, Django-like)
+- **`server_fields` config** - Exclude server-generated fields (created_at, updated_at) from saves
+- **`merge()` returns self** - Now returns the updated model instance instead of None
+- **`save()` updates self** - Updates original instance attributes instead of returning new object
+- **NULL values fix** - `exclude_unset=True` now works correctly after loading from DB
+
 ### v0.5.2 - Bug Fixes & FieldType Improvements
 
 - **FieldType enum** - Enhanced migration type system with `generic()` and `from_python_type()` methods

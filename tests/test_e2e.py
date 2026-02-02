@@ -4,7 +4,6 @@ from pydantic import Field
 from src import surreal_orm
 from src.surreal_orm.model_base import SurrealDbError
 from src.surreal_orm.query_set import SurrealDbError as QuerySetError
-from surreal_sdk.exceptions import QueryError
 
 SURREALDB_URL = "http://localhost:8001"
 SURREALDB_USER = "root"
@@ -179,13 +178,15 @@ async def test_save_model_already_exist() -> None:
     model1 = DuplicateTestModel(id="dup1", name="Test1", age=30)
     await model1.save()
 
-    # Second save with same ID should fail
+    # Second save with same ID should perform upsert (update existing record)
     model2 = DuplicateTestModel(id="dup1", name="Test2", age=34)
-    with pytest.raises(QueryError) as exc:
-        await model2.save()
+    await model2.save()
 
-    # SurrealDB error message format for duplicate records
-    assert "already exists" in str(exc.value)
+    # Verify the record was updated (upsert behavior)
+    result = await client.select("DuplicateTestModel:dup1")
+    assert result.count == 1
+    assert result.first["name"] == "Test2"
+    assert result.first["age"] == 34
 
 
 @pytest.mark.integration
@@ -334,17 +335,15 @@ async def test_with_primary_key() -> None:
     model = ModelWithPK(name="Test", age=32, username="testuser123")
     await model.save()
 
-    # Error on duplicate primary key
-    with pytest.raises(QueryError) as exc:
-        await ModelWithPK(name="Test3", age=35, username="testuser123").save()
+    # Second save with same primary key should perform upsert (update)
+    await ModelWithPK(name="Test3", age=35, username="testuser123").save()
 
-    assert "already exists" in str(exc.value)
-
-    # Fetch by primary key
+    # Fetch by primary key - should have updated values
     fetched = await ModelWithPK.objects().get("testuser123")
     if isinstance(fetched, ModelWithPK):
-        assert fetched.name == "Test"
-        assert fetched.age == 32
+        # Values should be updated from the second save
+        assert fetched.name == "Test3"
+        assert fetched.age == 35
         assert fetched.username == "testuser123"
     else:
         assert False

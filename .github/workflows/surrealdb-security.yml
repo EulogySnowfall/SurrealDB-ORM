@@ -25,7 +25,7 @@ permissions:
   issues: write
 
 env:
-  SURREALDB_URL: http://localhost:8000
+  SURREALDB_URL: http://localhost:8001
   SURREALDB_USER: root
   SURREALDB_PASS: root
   SURREALDB_NAMESPACE: test
@@ -146,18 +146,18 @@ jobs:
         run: |
           echo "Testing with SurrealDB version: $SURREALDB_VERSION"
 
-          # Start SurrealDB with specific version
+          # Start SurrealDB with specific version on port 8001 (matching conftest.py TEST_PORT)
           docker run -d \
             --name surrealdb-test \
-            -p 8000:8000 \
+            -p 8001:8000 \
             "surrealdb/surrealdb:v${SURREALDB_VERSION}" \
             start --log error --user root --pass root memory
 
           # Wait for healthy
-          ./devops/wait-for-healthy.sh localhost 8000 60
+          ./devops/wait-for-healthy.sh localhost 8001 60
 
           # Verify version
-          RUNNING_VERSION=$(curl -s http://localhost:8000/version || echo "unknown")
+          RUNNING_VERSION=$(curl -s http://localhost:8001/version || echo "unknown")
           echo "Running SurrealDB version: $RUNNING_VERSION"
 
       - name: Run unit tests

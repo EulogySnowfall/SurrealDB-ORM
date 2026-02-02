@@ -315,6 +315,23 @@ class BaseSurrealConnection(ABC):
         result = await self.rpc("update", [thing, data])
         return RecordsResponse.from_rpc_result(result)
 
+    async def upsert(self, thing: str, data: dict[str, Any]) -> RecordsResponse:
+        """
+        Upsert record(s) - create if not exists, update if exists.
+
+        This is the recommended method for save operations when you have
+        a specific ID and want idempotent behavior.
+
+        Args:
+            thing: Table name or record ID
+            data: Record data
+
+        Returns:
+            RecordsResponse containing upserted record(s)
+        """
+        result = await self.rpc("upsert", [thing, data])
+        return RecordsResponse.from_rpc_result(result)
+
     async def merge(self, thing: str, data: dict[str, Any]) -> RecordsResponse:
         """
         Merge data into record(s), updating only specified fields.
