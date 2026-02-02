@@ -320,7 +320,7 @@ class BaseSurrealModel(BaseModel):
         """
         if tx is not None:
             # Use transaction
-            data = self.model_dump(exclude={"id"})
+            data = self.model_dump(exclude={"id"}, exclude_unset=True)
             id = self.get_id()
             table = self.get_table_name()
 
@@ -335,7 +335,7 @@ class BaseSurrealModel(BaseModel):
 
         # Original behavior without transaction
         client = await SurrealDBConnectionManager.get_client()
-        data = self.model_dump(exclude={"id"})
+        data = self.model_dump(exclude={"id"}, exclude_unset=True)
         id = self.get_id()
         table = self.get_table_name()
 
@@ -365,7 +365,7 @@ class BaseSurrealModel(BaseModel):
         Args:
             tx: Optional transaction to use for this operation.
         """
-        data = self.model_dump(exclude={"id"})
+        data = self.model_dump(exclude={"id"}, exclude_unset=True)
         id = self.get_id()
 
         if id is None:

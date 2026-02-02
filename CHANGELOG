@@ -6,6 +6,74 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.5.2] - 2026-02-01
+
+### Added
+
+- **FieldType Enum Improvements** - Enhanced type system for migrations
+  - Added `NUMBER`, `SET`, `REGEX` types to `FieldType` enum
+  - `generic(inner_type)` method for parameterized types (`array<string>`, `record<users>`)
+  - `from_python_type(type)` class method for automatic type mapping
+  - Comprehensive docstrings with SurrealDB type documentation
+
+- **Migration Type Validation** - Strict type checking for field definitions
+  - `AddField` and `AlterField` now accept `FieldType | str`
+  - Validation rejects invalid type strings
+  - Support for generic types and union types
+
+### Fixed
+
+- **datetime Serialization** (Bug #1) - Custom JSON encoder for RPC requests
+  - `SurrealJSONEncoder` handles `datetime`, `date`, `time`, `Decimal`, `UUID`
+  - HTTP connection now uses pre-encoded JSON to preserve custom types
+
+- **NULL Values Override** (Bug #2) - Optional fields no longer override DB defaults
+  - Changed `model_dump()` to use `exclude_unset=True` in save/update operations
+  - Unset optional fields are not sent to the database
+
+- **Fluent API** (Bug #3) - `connect()` now returns `Self` for method chaining
+  - `HTTPConnection.connect()` and `WebSocketConnection.connect()` return `self`
+  - Enables patterns like `await (await conn.connect()).signin(...)`
+
+- **Session Cleanup** (Bug #5) - WebSocket callback tasks properly managed
+  - Added `_callback_tasks` set to track active tasks
+  - Tasks are cancelled and cleared in `_cleanup()` method
+
+- **Parameter Alias** (Bug #4) - `username` alias for `user` parameter
+  - `SurrealDBConnectionManager.set_connection()` accepts both `user` and `username`
+  - Raises `ValueError` if neither is provided
+
+- **Patch Version Increment** - Fixed version calculation for security patches
+  - Now extracts semantic base version (x.y.z) from current version
+  - Correctly increments to x.y.z.1, x.y.z.2, etc. instead of x.y.z.1.1
+
+### Changed
+
+- Version bump to 0.5.2
+
+---
+
+## [0.5.1] - 2026-02-01
+
+### Added
+
+- **Dependabot Security Workflows** - Automated dependency updates
+  - Auto-merge for Dependabot PRs after CI passes
+  - Patch version tagging (x.x.x.1, x.x.x.2, etc.) for security updates
+  - Automatic GitHub releases for security patches
+
+- **SurrealDB Security Monitoring** - Database vulnerability tracking
+  - Daily checks for new SurrealDB releases
+  - Automatic integration tests with new DB versions
+  - Auto-update of DB requirements on security patches
+  - Issue creation for compatibility failures
+
+### Changed
+
+- Version bump to 0.5.1
+
+---
+
 ## [0.5.0] - 2026-02-01
 
 ### Added

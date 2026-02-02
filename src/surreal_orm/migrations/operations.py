@@ -9,6 +9,53 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
 
+from ..types import FieldType
+
+
+def _normalize_field_type(field_type: FieldType | str) -> str:
+    """
+    Normalize a field type to its string representation.
+
+    Accepts FieldType enum or string. For strings, validates that it's either
+    a known FieldType value or a valid generic type (e.g., "array<string>").
+
+    Args:
+        field_type: FieldType enum or string type specification
+
+    Returns:
+        String representation of the type for SurrealQL
+
+    Raises:
+        ValueError: If the string is not a valid SurrealDB type
+    """
+    if isinstance(field_type, FieldType):
+        return field_type.value
+
+    # Check if it's a known base type
+    try:
+        return FieldType(field_type).value
+    except ValueError:
+        pass
+
+    # Check if it's a generic type (e.g., "array<string>", "record<users>")
+    if "<" in field_type and field_type.endswith(">"):
+        base_type = field_type.split("<")[0]
+        try:
+            FieldType(base_type)
+            return field_type  # Valid generic type
+        except ValueError:
+            pass
+
+    # Check for union types (e.g., "int | null", "option<string>")
+    if "|" in field_type:
+        return field_type  # Allow union types
+
+    raise ValueError(
+        f"Invalid field type: '{field_type}'. "
+        f"Must be a FieldType enum value, a valid SurrealDB type string, "
+        f"or a generic type like 'array<string>' or 'record<users>'."
+    )
+
 
 @dataclass
 class Operation(ABC):
@@ -123,8 +170,15 @@ class AddField(Operation):
         AddField(
             table="users",
             name="email",
-            field_type="string",
+            field_type=FieldType.STRING,  # or "string"
             assertion="is::email($value)"
+        )
+
+        # With generic types
+        AddField(
+            table="users",
+            name="tags",
+            field_type=FieldType.ARRAY.generic("string"),  # "array<string>"
         )
 
     Generates:
@@ -133,7 +187,7 @@ class AddField(Operation):
 
     table: str
     name: str
-    field_type: str
+    field_type: FieldType | str
     default: Any = None
     assertion: str | None = None
     encrypted: bool = False
@@ -142,13 +196,19 @@ class AddField(Operation):
     value: str | None = None
     comment: str | None = None
 
+    def __post_init__(self) -> None:
+        """Validate field_type on initialization."""
+        # Validate the field type (raises ValueError if invalid)
+        _normalize_field_type(self.field_type)
+
     def forwards(self) -> str:
         parts = [f"DEFINE FIELD {self.name} ON {self.table}"]
 
         if self.flexible:
             parts.append("FLEXIBLE")
 
-        parts.append(f"TYPE {self.field_type}")
+        normalized_type = _normalize_field_type(self.field_type)
+        parts.append(f"TYPE {normalized_type}")
 
         # For encrypted fields, use VALUE clause with crypto function
         if self.encrypted:
@@ -224,7 +284,7 @@ class AlterField(Operation):
         AlterField(
             table="users",
             name="email",
-            field_type="string",
+            field_type=FieldType.STRING,  # or "string"
             assertion="is::email($value)"
         )
 
@@ -234,7 +294,7 @@ class AlterField(Operation):
 
     table: str
     name: str
-    field_type: str | None = None
+    field_type: FieldType | str | None = None
     default: Any = None
     assertion: str | None = None
     encrypted: bool = False
@@ -242,9 +302,18 @@ class AlterField(Operation):
     readonly: bool = False
     value: str | None = None
     # Store previous definition for rollback
-    previous_type: str | None = None
+    previous_type: FieldType | str | None = None
     previous_default: Any = None
     previous_assertion: str | None = None
+
+    def __post_init__(self) -> None:
+        """Validate field_type and set reversible based on previous state."""
+        # Validate field types if provided
+        if self.field_type is not None:
+            _normalize_field_type(self.field_type)
+        if self.previous_type is not None:
+            _normalize_field_type(self.previous_type)
+        object.__setattr__(self, "reversible", self.previous_type is not None)
 
     def forwards(self) -> str:
         # DEFINE FIELD is idempotent - it creates or updates
@@ -254,7 +323,8 @@ class AlterField(Operation):
             parts.append("FLEXIBLE")
 
         if self.field_type:
-            parts.append(f"TYPE {self.field_type}")
+            normalized_type = _normalize_field_type(self.field_type)
+            parts.append(f"TYPE {normalized_type}")
 
         if self.encrypted:
             parts.append("VALUE crypto::argon2::generate($value)")
@@ -284,7 +354,8 @@ class AlterField(Operation):
         if not self.previous_type:
             return ""
 
-        parts = [f"DEFINE FIELD {self.name} ON {self.table} TYPE {self.previous_type}"]
+        normalized_prev_type = _normalize_field_type(self.previous_type)
+        parts = [f"DEFINE FIELD {self.name} ON {self.table} TYPE {normalized_prev_type}"]
 
         if self.previous_default is not None:
             if isinstance(self.previous_default, str):
@@ -296,10 +367,6 @@ class AlterField(Operation):
             parts.append(f"ASSERT {self.previous_assertion}")
 
         return " ".join(parts) + ";"
-
-    def __post_init__(self) -> None:
-        """Set reversible based on whether previous state is stored."""
-        object.__setattr__(self, "reversible", self.previous_type is not None)
 
     def describe(self) -> str:
         return f"Alter field {self.name} on {self.table}"

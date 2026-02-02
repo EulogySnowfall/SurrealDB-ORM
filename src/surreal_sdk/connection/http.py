@@ -4,7 +4,7 @@ HTTP Connection Implementation for SurrealDB SDK.
 Provides stateless HTTP-based connection, ideal for microservices and serverless.
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import httpx
 
@@ -71,10 +71,10 @@ class HTTPConnection(BaseSurrealConnection):
         self._request_id += 1
         return self._request_id
 
-    async def connect(self) -> None:
-        """Establish HTTP client connection."""
+    async def connect(self) -> Self:
+        """Establish HTTP client connection. Returns self for fluent API."""
         if self._connected:
-            return
+            return self
 
         self._client = httpx.AsyncClient(
             base_url=self.url,
@@ -83,6 +83,7 @@ class HTTPConnection(BaseSurrealConnection):
             limits=httpx.Limits(max_keepalive_connections=0, max_connections=100),
         )
         self._connected = True
+        return self
 
     async def close(self) -> None:
         """Close HTTP client."""
@@ -112,10 +113,12 @@ class HTTPConnection(BaseSurrealConnection):
         request.id = self._next_request_id()
 
         try:
+            # Use pre-encoded JSON with custom encoder for datetime, UUID, etc.
+            headers = {**self.headers, "Content-Type": "application/json"}
             response = await self._client.post(
                 "/rpc",
-                json=request.to_dict(),
-                headers=self.headers,
+                content=request.to_json(),
+                headers=headers,
             )
             response.raise_for_status()
             return RPCResponse.from_dict(response.json())

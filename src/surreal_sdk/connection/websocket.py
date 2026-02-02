@@ -4,7 +4,7 @@ WebSocket Connection Implementation for SurrealDB SDK.
 Provides stateful WebSocket-based connection for real-time features.
 """
 
-from typing import TYPE_CHECKING, Any, Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Self
 import asyncio
 import json
 
@@ -80,16 +80,17 @@ class WebSocketConnection(BaseSurrealConnection):
         self._reader_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._closing = False
+        self._callback_tasks: set[asyncio.Task[Any]] = set()  # Track fire-and-forget callback tasks
 
     def _next_request_id(self) -> int:
         """Generate next request ID."""
         self._request_id += 1
         return self._request_id
 
-    async def connect(self) -> None:
-        """Establish WebSocket connection."""
+    async def connect(self) -> Self:
+        """Establish WebSocket connection. Returns self for fluent API."""
         if self._connected:
-            return
+            return self
 
         self._closing = False
         self._session = aiohttp.ClientSession()
@@ -112,6 +113,8 @@ class WebSocketConnection(BaseSurrealConnection):
 
             # Set namespace and database
             await self.use(self.namespace, self.database)
+
+            return self
 
         except aiohttp.ClientError as e:
             await self._cleanup()
@@ -150,6 +153,11 @@ class WebSocketConnection(BaseSurrealConnection):
             if not future.done():
                 future.set_exception(ConnectionError("Connection closed"))
         self._pending.clear()
+
+        # Cancel all callback tasks
+        for task in self._callback_tasks:
+            task.cancel()
+        self._callback_tasks.clear()
 
         # Close WebSocket
         if self._ws:
@@ -217,7 +225,10 @@ class WebSocketConnection(BaseSurrealConnection):
             live_id = message.get("id")
             if live_id and live_id in self._live_callbacks:
                 callback = self._live_callbacks[live_id]
-                asyncio.create_task(callback(message))
+                # Track task for proper cleanup on connection close
+                task = asyncio.create_task(callback(message))
+                self._callback_tasks.add(task)
+                task.add_done_callback(self._callback_tasks.discard)
 
     async def _reconnect(self) -> None:
         """Attempt to reconnect after disconnection."""
