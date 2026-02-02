@@ -230,11 +230,38 @@ jobs:
           git checkout main
           git pull origin main
 
-      - name: Create patch version tag
+      - name: Configure Git
+        if: steps.wait-merge.outputs.merged == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update version files and create tag
         if: steps.wait-merge.outputs.merged == 'true'
         run: |
           NEW_TAG="${{ steps.version.outputs.new-tag }}"
+          NEW_VERSION="${NEW_TAG#v}"  # Remove 'v' prefix
 
+          echo "Updating version to: $NEW_VERSION"
+
+          # Update pyproject.toml
+          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
+
+          # Update src/surreal_orm/__init__.py
+          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" src/surreal_orm/__init__.py
+
+          # Update src/surreal_sdk/__init__.py
+          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" src/surreal_sdk/__init__.py
+
+          # Update src/surreal_sdk/pyproject.toml
+          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" src/surreal_sdk/pyproject.toml
+
+          # Commit version bump
+          git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml
+          git commit -m "chore(release): bump version to $NEW_VERSION [skip ci]"
+          git push origin main
+
+          # Create and push tag
           git tag -a "$NEW_TAG" -m "Security patch: ${{ steps.dependabot-metadata.outputs.dependency-names }}"
           git push origin "$NEW_TAG"
 

@@ -389,6 +389,10 @@ jobs:
           git checkout main
           git pull origin main
 
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           # Calculate next patch version
           CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
           BASE_TAG="v${CURRENT_VERSION}"
@@ -405,32 +409,33 @@ jobs:
 
           NEXT_PATCH=$((HIGHEST_PATCH + 1))
           NEW_TAG="v${CURRENT_VERSION}.${NEXT_PATCH}"
+          NEW_VERSION="${NEW_TAG#v}"
 
+          echo "Updating version to: $NEW_VERSION"
           echo "Creating tag: $NEW_TAG"
 
+          # Update version files
+          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
+          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" src/surreal_orm/__init__.py
+          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" src/surreal_sdk/__init__.py
+          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" src/surreal_sdk/pyproject.toml
+
+          # Commit version bump
+          git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml
+          git commit -m "chore(release): bump version to $NEW_VERSION [skip ci]"
+          git push origin main
+
+          # Create and push tag
           git tag -a "$NEW_TAG" -m "SurrealDB security update: v${{ needs.check-surrealdb-release.outputs.latest-version }}"
           git push origin "$NEW_TAG"
+
+          # Save tag for next step
+          echo "NEW_TAG=$NEW_TAG" >> $GITHUB_ENV
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-          BASE_TAG="v${CURRENT_VERSION}"
-
-          # Get the tag we just created
-          HIGHEST_PATCH=0
-          for tag in $(git tag -l "${BASE_TAG}*"); do
-            if [[ "$tag" =~ ^v${CURRENT_VERSION}\.([0-9]+)$ ]]; then
-              PATCH="${BASH_REMATCH[1]}"
-              if [[ $PATCH -gt $HIGHEST_PATCH ]]; then
-                HIGHEST_PATCH=$PATCH
-              fi
-            fi
-          done
-
-          NEW_TAG="v${CURRENT_VERSION}.${HIGHEST_PATCH}"
-
           gh release create "$NEW_TAG" \
             --title "SurrealDB Security Patch $NEW_TAG" \
             --notes "## SurrealDB Security Update
