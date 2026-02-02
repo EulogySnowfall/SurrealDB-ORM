@@ -352,8 +352,8 @@ jobs:
 
           echo "Found PR #$PR_NUMBER"
 
-          # Approve and merge
-          gh pr review --approve "$PR_NUMBER"
+          # Enable auto-merge (approval must be done manually or via branch rules)
+          # Note: GITHUB_TOKEN cannot approve PRs (security restriction)
           gh pr merge --auto --squash "$PR_NUMBER"
 
       - name: Wait for merge and create patch tag
