@@ -192,10 +192,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Approve PR
-        run: gh pr review --approve "${{ github.event.pull_request.number }}"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Note: GITHUB_TOKEN cannot approve PRs (security restriction)
+      # Configure branch protection to allow Dependabot PRs to merge without approval,
+      # or manually approve the PR to trigger auto-merge
 
       - name: Wait for merge
         id: wait-merge
