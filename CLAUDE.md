@@ -10,7 +10,12 @@
 
 ---
 
-## Current Version: 0.5.3.2 (Alpha)
+## Current Version: 0.5.3.3 (Alpha)
+
+### What's New in 0.5.3.3
+
+- **Bug Fix**
+  - **`from_db()` fields_set** - Fixed bug where `from_db()` marked all fields as "user-set", causing `exclude_unset=True` to include DB-loaded fields (like `created_at`) in subsequent saves. Now `from_db()` clears `__pydantic_fields_set__` so only user-modified fields are sent during updates.
 
 ### What's New in 0.5.3.2
 
