@@ -15,6 +15,10 @@
 
 ## What's New in 0.5.x
 
+### v0.5.3.3 - Bug Fix
+
+- **`from_db()` fields_set fix** - Fixed bug where DB-loaded fields were incorrectly included in updates via `exclude_unset=True`
+
 ### v0.5.3.2 - Critical Bug Fix
 
 - **QuerySet table name fix** - Fixed critical bug where QuerySet used class name instead of `table_name` from config

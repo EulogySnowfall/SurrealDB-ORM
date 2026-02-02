@@ -322,6 +322,9 @@ class BaseSurrealModel(BaseModel):
 
         instance = cls(**record)
         instance._db_persisted = True
+        # Clear fields_set so DB-loaded fields aren't considered "user-set"
+        # This allows exclude_unset=True to work correctly on subsequent saves
+        object.__setattr__(instance, "__pydantic_fields_set__", set())
         return instance
 
     @model_validator(mode="before")
