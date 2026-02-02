@@ -168,6 +168,9 @@ jobs:
             --cov-branch
 
       - name: Run integration tests
+        env:
+          # Tell conftest.py to skip container management - we already started it
+          SURREALDB_SKIP_CONTAINER: "true"
         run: |
           uv run pytest tests/ -m integration \
             --junitxml=junit-integration.xml \
