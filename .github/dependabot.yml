@@ -1,0 +1,68 @@
+# Dependabot configuration for security updates and dependency management
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # Python dependencies (pip/uv)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "America/Montreal"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+    groups:
+      # Group all patch updates together
+      python-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+      # Group development dependencies
+      python-dev:
+        patterns:
+          - "pytest*"
+          - "mypy"
+          - "ruff"
+          - "black"
+          - "isort"
+          - "flake8"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "America/Montreal"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(actions)"
+
+  # Docker dependencies (SurrealDB image)
+  - package-ecosystem: "docker"
+    directory: "/devops"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "America/Montreal"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "surrealdb"
+      - "security"
+    commit-message:
+      prefix: "chore(docker)"

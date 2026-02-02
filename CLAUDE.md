@@ -10,7 +10,20 @@
 
 ---
 
-## Current Version: 0.5.0 (Alpha)
+## Current Version: 0.5.1 (Alpha)
+
+### What's New in 0.5.1
+
+- **Dependabot Security Workflows** - Automated security update management
+  - Auto-merge for Dependabot PRs after tests pass
+  - Patch version tagging (x.x.x.1, x.x.x.2, etc.) for security updates
+  - Automatic GitHub releases for security patches
+
+- **SurrealDB Security Monitoring** - Database vulnerability tracking
+  - Daily checks for new SurrealDB releases
+  - Automatic integration tests with new DB versions
+  - Auto-update of DB requirements on security patches
+  - Issue creation for compatibility failures
 
 ### What's New in 0.5.0
 
