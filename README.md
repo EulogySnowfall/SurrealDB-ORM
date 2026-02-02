@@ -15,9 +15,15 @@
 
 ## What's New in 0.5.x
 
+### v0.5.3.1 - Bug Fixes
+
+- **Partial updates for persisted records** - `save()` now uses `merge()` for already-persisted records, only sending modified fields
+- **datetime parsing** - `_update_from_db()` now parses ISO 8601 strings to `datetime` objects automatically
+- **`_db_persisted` flag** - Internal tracking to distinguish new vs persisted records
+
 ### v0.5.3 - ORM Improvements
 
-- **Upsert save behavior** - `save()` now uses `upsert` for existing records (idempotent, Django-like)
+- **Upsert save behavior** - `save()` now uses `upsert` for new records with ID (idempotent, Django-like)
 - **`server_fields` config** - Exclude server-generated fields (created_at, updated_at) from saves
 - **`merge()` returns self** - Now returns the updated model instance instead of None
 - **`save()` updates self** - Updates original instance attributes instead of returning new object

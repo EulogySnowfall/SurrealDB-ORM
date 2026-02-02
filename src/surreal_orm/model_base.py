@@ -1,6 +1,7 @@
-from typing import Any, Literal, Self, TYPE_CHECKING
+from datetime import datetime
+from typing import Any, Literal, Self, TYPE_CHECKING, get_args, get_origin
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
 from .connection_manager import SurrealDBConnectionManager
 from .types import SchemaMode, TableType
@@ -51,6 +52,36 @@ def _parse_record_id(record_id: Any) -> str | None:
     if ":" in record_str:
         return record_str.split(":", 1)[1]
     return record_str
+
+
+def _parse_datetime(value: Any) -> Any:
+    """
+    Parse a datetime value from SurrealDB.
+
+    SurrealDB returns datetime as ISO 8601 strings.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            # Try parsing ISO format (with or without timezone)
+            # SurrealDB returns format like "2026-02-02T13:21:23.641315924Z"
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return value  # Return as-is if we can't parse
+
+
+def _is_datetime_field(field_type: Any) -> bool:
+    """Check if a field type is datetime or Optional[datetime]."""
+    # Handle Optional[datetime] which is Union[datetime, None]
+    origin = get_origin(field_type)
+    if origin is not None:
+        args = get_args(field_type)
+        return datetime in args
+    return field_type is datetime
 
 
 class SurrealConfigDict(ConfigDict):
@@ -108,6 +139,10 @@ class BaseSurrealModel(BaseModel):
             email: str
             password: Encrypted
     """
+
+    # Private attribute to track if this instance has been persisted to the database.
+    # This helps distinguish between create (first save) and update (subsequent saves).
+    _db_persisted: bool = PrivateAttr(default=False)
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Register subclasses in the model registry for migration introspection."""
@@ -285,7 +320,9 @@ class BaseSurrealModel(BaseModel):
         if isinstance(record, list):
             return [cls.from_db(rs) for rs in record]  # type: ignore
 
-        return cls(**record)
+        instance = cls(**record)
+        instance._db_persisted = True
+        return instance
 
     @model_validator(mode="before")
     @classmethod
@@ -305,21 +342,35 @@ class BaseSurrealModel(BaseModel):
         This preserves the original __pydantic_fields_set__ so that exclude_unset=True
         continues to work correctly on subsequent saves.
 
+        Also handles type coercion for datetime fields (SurrealDB returns ISO strings).
+
         Args:
             record: Dictionary of field values from the database.
         """
         # Store original fields_set to preserve user-set tracking
         original_fields_set = self.__pydantic_fields_set__.copy()
 
+        # Get field type annotations for datetime parsing
+        field_types = self.__class__.model_fields
+
         for key, value in record.items():
             if key == "id":
                 value = _parse_record_id(value)
+            elif key in field_types:
+                # Check if this field is a datetime type and parse if needed
+                field_info = field_types[key]
+                if _is_datetime_field(field_info.annotation):
+                    value = _parse_datetime(value)
+
             if hasattr(self, key):
                 setattr(self, key, value)
 
         # Restore original fields_set - only user-set fields should be marked
         # DB-loaded fields should not be considered as "set" for exclude_unset
         object.__setattr__(self, "__pydantic_fields_set__", original_fields_set)
+
+        # Mark as persisted since we just loaded data from DB
+        self._db_persisted = True
 
     async def refresh(self) -> None:
         """
@@ -347,6 +398,11 @@ class BaseSurrealModel(BaseModel):
         """
         Save the model instance to the database.
 
+        For persisted records: uses merge() for partial update, only sending
+        explicitly set fields (preserving server-side values like timestamps).
+        For new records with ID: uses upsert() to create or fully replace.
+        For new records without ID: uses create() to auto-generate an ID.
+
         Args:
             tx: Optional transaction to use for this operation.
                 If provided, the operation will be part of the transaction.
@@ -361,37 +417,51 @@ class BaseSurrealModel(BaseModel):
         """
         # Build exclude set: always exclude 'id' and any server-generated fields
         exclude_fields = {"id"} | self.get_server_fields()
+        id = self.get_id()
+        table = self.get_table_name()
 
         if tx is not None:
             # Use transaction
             data = self.model_dump(exclude=exclude_fields, exclude_unset=True)
-            id = self.get_id()
-            table = self.get_table_name()
 
-            if id is not None:
-                # Use upsert for idempotent save (create or update)
+            if self._db_persisted and id is not None:
+                # Already persisted: use merge for partial update
+                # Only sends explicitly set fields, preserving server-side values
                 thing = f"{table}:{id}"
-                await tx.upsert(thing, data)
+                await tx.merge(thing, data)
                 return self
 
-            # Auto-generate ID - create without specific ID
-            await tx.create(table, data)
+            if id is not None:
+                # New record with user-provided ID: use upsert
+                thing = f"{table}:{id}"
+                await tx.upsert(thing, data)
+            else:
+                # Auto-generate ID
+                await tx.create(table, data)
+
+            self._db_persisted = True
             return self
 
         # Original behavior without transaction
         client = await SurrealDBConnectionManager.get_client()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True)
-        id = self.get_id()
-        table = self.get_table_name()
+
+        if self._db_persisted and id is not None:
+            # Already persisted: use merge for partial update
+            # Only sends explicitly set fields, preserving server-side values
+            thing = f"{table}:{id}"
+            await client.merge(thing, data)
+            return self
 
         if id is not None:
-            # Use upsert for idempotent save (create or update)
+            # New record with user-provided ID: use upsert
             thing = f"{table}:{id}"
             await client.upsert(thing, data)
+            self._db_persisted = True
             return self
 
         # Auto-generate the ID
-        result = await client.create(table, data)  # pragma: no cover
+        result = await client.create(table, data)
 
         # SDK returns RecordResponse
         if not result.exists:
@@ -411,6 +481,9 @@ class BaseSurrealModel(BaseModel):
         """
         Update the model instance to the database.
 
+        Uses merge() to only update the specified fields, preserving
+        any fields that weren't explicitly set.
+
         Args:
             tx: Optional transaction to use for this operation.
         """
@@ -425,11 +498,13 @@ class BaseSurrealModel(BaseModel):
         thing = f"{self.__class__.__name__}:{id}"
 
         if tx is not None:
-            await tx.update(thing, data)
+            # Use merge for partial update - preserves unspecified fields
+            await tx.merge(thing, data)
             return None
 
         client = await SurrealDBConnectionManager.get_client()
-        result = await client.update(thing, data)
+        # Use merge for partial update - preserves unspecified fields
+        result = await client.merge(thing, data)
         return result.records
 
     @classmethod
