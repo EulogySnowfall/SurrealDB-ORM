@@ -10,12 +10,19 @@
 
 ---
 
-## Current Version: 0.5.3 (Alpha)
+## Current Version: 0.5.3.1 (Alpha)
+
+### What's New in 0.5.3.1
+
+- **Bug Fixes** - Critical fixes for partial updates and datetime handling
+  - **Partial updates for persisted records** - `save()` now uses `merge()` for already-persisted records, only sending explicitly modified fields. This prevents server-set fields (like `created_at`) from being overwritten with NONE.
+  - **datetime parsing from DB** - `_update_from_db()` now automatically parses ISO 8601 datetime strings from SurrealDB into Python `datetime` objects. No more manual conversion needed.
+  - **`_db_persisted` flag** - New internal tracking to distinguish between new records (use upsert) and already-persisted records (use merge for partial update).
 
 ### What's New in 0.5.3
 
 - **ORM Improvements** - Better save/update behavior
-  - **Upsert behavior** - `save()` now uses `upsert` for existing records (idempotent, Django-like)
+  - **Upsert behavior** - `save()` now uses `upsert` for new records with ID (idempotent, Django-like)
   - **`server_fields` config** - Exclude server-generated fields (created_at, updated_at) from save/update
   - **`merge()` returns self** - Now returns the updated model instance instead of None
   - **`save()` updates self** - No longer returns new instance, updates original in place
