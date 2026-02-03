@@ -9,6 +9,10 @@ on:
       - '*'
     paths:
       - 'src/**'
+
+permissions:
+  contents: read
+
       - 'tests/**'
       - 'devops/**'
       - 'pyproject.toml'
