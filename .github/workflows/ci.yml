@@ -176,6 +176,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, test-unit, test-integration, coverage]
     if: always()
+    permissions: {}
     steps:
       - name: Check all jobs passed
         run: |
