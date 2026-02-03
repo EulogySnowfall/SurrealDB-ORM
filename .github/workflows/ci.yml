@@ -12,14 +12,11 @@ on:
       - '*'
     paths:
       - 'src/**'
-
-permissions:
-  contents: read
-
       - 'tests/**'
       - 'devops/**'
       - 'pyproject.toml'
       - 'Makefile'
+      - '.github/workflows/**'
 
 env:
   SURREALDB_URL: http://localhost:8000
