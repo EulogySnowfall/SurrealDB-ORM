@@ -605,6 +605,10 @@ class QuerySet:
         to retrieve a single record based on the existing filters. It raises an error if multiple or
         no records are found when no ID is specified.
 
+        The method automatically handles both formats:
+        - Just the ID: "abc123"
+        - Full SurrealDB format: "table:abc123"
+
         Args:
             id_item (str | None, optional): The unique identifier of the item to retrieve. Defaults to `None`.
             id (str | None, optional): Keyword-only alias for `id_item`. Defaults to `None`.
@@ -620,13 +624,19 @@ class QuerySet:
             user = await queryset.get('user_123')
             user = await queryset.get(id='user_123')
             user = await queryset.get(id_item='user_123')
+            # Also accepts full SurrealDB format
+            user = await queryset.get('users:user_123')
             ```
         """
         # Allow 'id' keyword to be used as alias for 'id_item'
         record_id = id if id is not None else id_item
         if record_id:
+            record_id_str = str(record_id)
+            # Handle full SurrealDB format (table:id) - extract just the ID part
+            if ":" in record_id_str:
+                record_id_str = record_id_str.split(":", 1)[1]
             client = await SurrealDBConnectionManager.get_client()
-            result = await client.select(f"{self._model_table}:{record_id}")
+            result = await client.select(f"{self._model_table}:{record_id_str}")
             # SDK returns RecordsResponse
             if result.is_empty:
                 raise self.model.DoesNotExist("Record not found.")

@@ -10,7 +10,40 @@
 
 ---
 
-## Current Version: 0.5.3.3 (Alpha)
+## Current Version: 0.5.4 (Alpha)
+
+### What's New in 0.5.4
+
+- **API Improvements** - Enhanced usability for common operations
+
+  - **Record ID format handling** - `QuerySet.get()` now automatically handles both formats:
+    - Just the ID: `get("abc123")`
+    - Full SurrealDB format: `get("players:abc123")`
+    This eliminates the need to manually strip table prefixes from IDs.
+
+  - **`remove_relation()` accepts string IDs** - The method now accepts both model instances and string IDs:
+    - Model instance: `await table.remove_relation("has_player", player_instance)`
+    - String ID (full format): `await table.remove_relation("has_player", "players:abc123")`
+    - String ID (just ID): `await table.remove_relation("has_player", "abc123")`
+
+  - **`raw_query()` class method** - New method for executing arbitrary SurrealQL queries:
+
+    ```python
+    # Simple query
+    results = await User.raw_query("SELECT * FROM users WHERE age > 21")
+
+    # With variables (safe from injection)
+    results = await User.raw_query(
+        "SELECT * FROM users WHERE status = $status",
+        variables={"status": "active"}
+    )
+
+    # Complex graph query
+    results = await User.raw_query(
+        "DELETE has_player WHERE in = $table_id AND out = $player_id",
+        variables={"table_id": "tables:xyz", "player_id": "players:abc"}
+    )
+    ```
 
 ### What's New in 0.5.3.3
 
