@@ -614,6 +614,54 @@ class BaseSurrealModel(BaseModel):
         """
         return await SurrealDBConnectionManager.transaction()
 
+    @classmethod
+    async def raw_query(
+        cls,
+        query: str,
+        variables: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Execute a raw SurrealQL query.
+
+        This method provides direct access to SurrealDB for executing
+        arbitrary SurrealQL queries when the ORM abstractions are insufficient.
+
+        Args:
+            query: The raw SurrealQL query string to execute.
+            variables: Optional dictionary of variables to bind in the query.
+                Use $variable_name syntax in the query to reference them.
+
+        Returns:
+            list[dict[str, Any]]: Raw query results as a list of dictionaries.
+
+        Example:
+            # Simple query
+            results = await User.raw_query("SELECT * FROM users WHERE age > 21")
+
+            # With variables (safe from injection)
+            results = await User.raw_query(
+                "SELECT * FROM users WHERE status = $status AND age > $min_age",
+                variables={"status": "active", "min_age": 18}
+            )
+
+            # Complex graph query
+            results = await User.raw_query(
+                "SELECT ->follows->users AS following FROM users:alice"
+            )
+
+            # Delete with return
+            deleted = await User.raw_query(
+                "DELETE FROM users WHERE status = 'inactive' RETURN BEFORE"
+            )
+
+        Note:
+            This method returns raw dictionaries, not model instances.
+            Use this for edge cases where the standard QuerySet API is insufficient.
+        """
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(query, variables or {})
+        return list(result.all_records) if result.all_records else []
+
     # ==================== Graph Relation Methods ====================
 
     async def relate(
@@ -686,7 +734,7 @@ class BaseSurrealModel(BaseModel):
     async def remove_relation(
         self,
         relation: str,
-        to: "BaseSurrealModel",
+        to: "BaseSurrealModel | str",
         tx: "BaseTransaction | None" = None,
     ) -> None:
         """
@@ -697,31 +745,60 @@ class BaseSurrealModel(BaseModel):
 
         Args:
             relation: Name of the edge table (e.g., "follows", "likes")
-            to: Target model instance to unrelate
+            to: Target model instance or string ID to unrelate.
+                String IDs can be in any format:
+                - Just the ID: "abc123"
+                - Full SurrealDB format: "table:abc123"
             tx: Optional transaction to use for this operation
 
         Example:
-            # Remove relation
+            # Remove relation with model instance
             await alice.remove_relation("follows", bob)
+
+            # Remove relation with string ID
+            await table.remove_relation("has_player", "players:abc123")
+            await table.remove_relation("has_player", "abc123")
 
             # In a transaction
             async with User.transaction() as tx:
                 await alice.remove_relation("follows", bob, tx=tx)
-                await alice.remove_relation("follows", charlie, tx=tx)
+                await alice.remove_relation("follows", "users:charlie", tx=tx)
         """
         source_id = self.get_id()
-        target_id = to.get_id()
 
         if not source_id:
             raise SurrealDbError("Cannot remove relation from unsaved instance")
-        if not target_id:
-            raise SurrealDbError("Cannot remove relation to unsaved instance")
 
         source_table = self.get_table_name()
-        target_table = to.get_table_name()
+
+        # Handle both model instances and string IDs
+        if isinstance(to, str):
+            # String ID - could be "table:id" or just "id"
+            if ":" in to:
+                # Full format: "table:id"
+                target_thing = to
+            else:
+                # Just ID - we don't know the target table, so we query by out ID only
+                # Use record::id() to extract the ID part from the record link
+                query = f"DELETE {relation} WHERE in = {source_table}:{source_id} AND record::id(out) = '{to}';"
+
+                if tx is not None:
+                    await tx.query(query)
+                    return
+
+                client = await SurrealDBConnectionManager.get_client()
+                await client.query(query)
+                return
+        else:
+            # Model instance
+            target_id = to.get_id()
+            if not target_id:
+                raise SurrealDbError("Cannot remove relation to unsaved instance")
+            target_table = to.get_table_name()
+            target_thing = f"{target_table}:{target_id}"
 
         # Delete edge where in=source and out=target
-        query = f"DELETE {relation} WHERE in = {source_table}:{source_id} AND out = {target_table}:{target_id};"
+        query = f"DELETE {relation} WHERE in = {source_table}:{source_id} AND out = {target_thing};"
 
         if tx is not None:
             await tx.query(query)
