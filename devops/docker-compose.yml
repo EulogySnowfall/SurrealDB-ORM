@@ -12,7 +12,7 @@ services:
   # Development instance (persistent data)
   # =============================================================================
   surrealdb:
-    image: surrealdb/surrealdb:latest
+    image: surrealdb/surrealdb:v2.6.0
     container_name: surrealdb-dev
     ports:
       - "8000:8000"
@@ -29,7 +29,7 @@ services:
   # Test instance (in-memory, ephemeral) - Used for CI and local tests
   # =============================================================================
   surrealdb-test:
-    image: surrealdb/surrealdb:latest
+    image: surrealdb/surrealdb:v2.6.0
     container_name: surrealdb-test
     ports:
       - "8001:8000"
@@ -41,7 +41,7 @@ services:
   # CI instance - Optimized for GitHub Actions
   # =============================================================================
   surrealdb-ci:
-    image: surrealdb/surrealdb:latest
+    image: surrealdb/surrealdb:v2.6.0
     container_name: surrealdb-ci
     ports:
       - "8000:8000"
@@ -54,7 +54,7 @@ services:
   # Activated with: docker compose --profile cluster up -d
   # =============================================================================
   surrealdb-node1:
-    image: surrealdb/surrealdb:latest
+    image: surrealdb/surrealdb:v2.6.0
     container_name: surrealdb-node1
     ports:
       - "8002:8000"
@@ -65,7 +65,7 @@ services:
       - surrealdb-net
 
   surrealdb-node2:
-    image: surrealdb/surrealdb:latest
+    image: surrealdb/surrealdb:v2.6.0
     container_name: surrealdb-node2
     ports:
       - "8003:8000"
@@ -76,7 +76,7 @@ services:
       - surrealdb-net
 
   surrealdb-node3:
-    image: surrealdb/surrealdb:latest
+    image: surrealdb/surrealdb:v2.6.0
     container_name: surrealdb-node3
     ports:
       - "8004:8000"
