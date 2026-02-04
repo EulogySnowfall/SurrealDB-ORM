@@ -9,6 +9,7 @@ Bug fixes included:
 - Issue #7 (MEDIUM): get_related() with direction=in not working
 """
 
+from datetime import datetime, timezone
 from typing import AsyncGenerator
 
 import pytest
@@ -1006,3 +1007,324 @@ class TestSDKLevelProtocols:
             # Verify relation via query
             query_result = await conn.query("SELECT ->sdk_wrote->sdk_book FROM sdk_author:1")
             assert len(query_result.results) > 0
+
+
+# =============================================================================
+# Issue #9: datetime_type Pydantic validation error
+# =============================================================================
+
+
+class DatetimeModel(BaseSurrealModel):
+    """Model with datetime field for Issue #9 tests."""
+
+    id: str | None = None
+    name: str
+    status: str = "active"
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class TestIssue9DatetimeValidation:
+    """
+    Issue #9 (CRITICAL): datetime_type validation error in from_db().
+
+    When loading records from SurrealDB that contain datetime fields,
+    Pydantic validation fails with "datetime_type" error because the
+    from_db() method didn't preprocess datetime values before passing
+    to Pydantic.
+
+    This caused the ORM to silently return dict values instead of model
+    instances, breaking the entire application.
+    """
+
+    def test_from_db_with_iso_datetime_string(self) -> None:
+        """from_db should handle ISO datetime strings from SurrealDB."""
+        record = {
+            "id": "test1",
+            "name": "Test Record",
+            "status": "active",
+            "created_at": "2026-02-02T13:21:23.641315924Z",
+            "updated_at": "2026-02-04T10:00:00+00:00",
+        }
+
+        result = DatetimeModel.from_db(record)
+
+        # Should return a model instance, not a dict
+        assert isinstance(result, DatetimeModel), f"Expected DatetimeModel, got {type(result)}"
+        assert result.name == "Test Record"
+        assert result.status == "active"
+        # Datetime fields should be parsed correctly
+        assert isinstance(result.created_at, datetime)
+        assert isinstance(result.updated_at, datetime)
+
+    def test_from_db_with_python_datetime(self) -> None:
+        """from_db should handle Python datetime objects (from CBOR)."""
+        # CBOR decoder returns Python datetime objects directly
+        now = datetime.now(timezone.utc)
+        record = {
+            "id": "test2",
+            "name": "CBOR Record",
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+        }
+
+        result = DatetimeModel.from_db(record)
+
+        assert isinstance(result, DatetimeModel)
+        assert result.created_at == now
+        assert result.updated_at == now
+
+    def test_from_db_with_none_datetime(self) -> None:
+        """from_db should handle None datetime values."""
+        record = {
+            "id": "test3",
+            "name": "No Datetime",
+            "status": "active",
+            "created_at": None,
+            "updated_at": None,
+        }
+
+        result = DatetimeModel.from_db(record)
+
+        assert isinstance(result, DatetimeModel)
+        assert result.created_at is None
+        assert result.updated_at is None
+
+    def test_from_db_with_missing_datetime(self) -> None:
+        """from_db should handle missing datetime fields."""
+        record = {
+            "id": "test4",
+            "name": "Missing Fields",
+            "status": "active",
+            # created_at and updated_at are not in the record
+        }
+
+        result = DatetimeModel.from_db(record)
+
+        assert isinstance(result, DatetimeModel)
+        assert result.created_at is None
+        assert result.updated_at is None
+
+    def test_from_db_list_with_datetimes(self) -> None:
+        """from_db should handle lists of records with datetime fields."""
+        records = [
+            {
+                "id": "list1",
+                "name": "Record 1",
+                "status": "active",
+                "created_at": "2026-02-01T00:00:00Z",
+            },
+            {
+                "id": "list2",
+                "name": "Record 2",
+                "status": "pending",
+                "created_at": "2026-02-02T00:00:00Z",
+            },
+        ]
+
+        results = DatetimeModel.from_db(records)
+
+        assert isinstance(results, list)
+        assert len(results) == 2
+        assert all(isinstance(r, DatetimeModel) for r in results)
+        assert all(isinstance(r.created_at, datetime) for r in results)
+
+    def test_from_db_with_nanosecond_precision(self) -> None:
+        """from_db should handle SurrealDB's nanosecond precision datetimes."""
+        # SurrealDB often returns datetime with nanosecond precision
+        record = {
+            "id": "nanosec",
+            "name": "Nanosecond Test",
+            "status": "active",
+            "created_at": "2026-02-02T13:21:23.641315924Z",
+        }
+
+        result = DatetimeModel.from_db(record)
+
+        assert isinstance(result, DatetimeModel)
+        assert isinstance(result.created_at, datetime)
+        # The microsecond part should be preserved (Python truncates nanoseconds to microseconds)
+        assert result.created_at.microsecond == 641315
+
+    def test_preprocess_db_record_parses_datetime(self) -> None:
+        """_preprocess_db_record should convert datetime strings."""
+        record = {
+            "id": "test123",
+            "name": "Test",
+            "status": "active",
+            "created_at": "2026-02-02T13:21:23Z",
+        }
+
+        processed = DatetimeModel._preprocess_db_record(record)
+
+        assert processed["id"] == "test123"  # ID is extracted
+        assert isinstance(processed["created_at"], datetime)
+
+    def test_preprocess_db_record_handles_recordid(self) -> None:
+        """_preprocess_db_record should handle RecordId objects from CBOR."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        record = {
+            "id": RecordId(table="DatetimeModel", id="cbor123"),
+            "name": "CBOR Test",
+            "status": "active",
+        }
+
+        processed = DatetimeModel._preprocess_db_record(record)
+
+        # RecordId should be converted to just the ID string
+        assert processed["id"] == "cbor123"
+
+    def test_from_db_with_cbor_timestamp_list(self) -> None:
+        """from_db should handle CBOR datetime format [seconds, nanoseconds]."""
+        # CBOR protocol returns datetime as [seconds_since_epoch, nanoseconds]
+        # 1770213067 seconds = 2026-02-04T13:31:07 UTC
+        record = {
+            "id": "cbor_datetime",
+            "name": "CBOR Timestamp Test",
+            "status": "active",
+            "created_at": [1770213067, 874247569],  # [seconds, nanoseconds]
+        }
+
+        result = DatetimeModel.from_db(record)
+
+        assert isinstance(result, DatetimeModel)
+        assert isinstance(result.created_at, datetime)
+        # Verify the timestamp is correct (874247569 ns = 874247 µs)
+        assert result.created_at.year == 2026
+        assert result.created_at.month == 2
+        assert result.created_at.day == 4
+        assert result.created_at.microsecond == 874247
+
+    def test_from_db_with_cbor_timestamp_tuple(self) -> None:
+        """from_db should also handle tuple format for CBOR datetime."""
+        record = {
+            "id": "cbor_tuple",
+            "name": "CBOR Tuple Test",
+            "status": "active",
+            "created_at": (1770213067, 500000000),  # tuple format
+        }
+
+        result = DatetimeModel.from_db(record)
+
+        assert isinstance(result, DatetimeModel)
+        assert isinstance(result.created_at, datetime)
+        assert result.created_at.microsecond == 500000
+
+
+@pytest.mark.integration
+class TestIssue9DatetimeIntegration:
+    """Integration tests for Issue #9: datetime validation with real DB."""
+
+    @pytest.fixture(autouse=True)
+    async def setup_connection(self) -> AsyncGenerator[None, None]:
+        """Setup connection for datetime integration tests."""
+        # Close any existing connection
+        try:
+            await SurrealDBConnectionManager.close_connection()
+            await SurrealDBConnectionManager.unset_connection()
+        except Exception:
+            pass
+
+        # Setup connection
+        SurrealDBConnectionManager.set_connection(
+            SURREALDB_URL,
+            "root",
+            "root",
+            "test",
+            "test_datetime",
+            protocol="cbor",
+        )
+
+        # Clean up test tables
+        try:
+            client = await SurrealDBConnectionManager.get_client()
+            await client.query("DELETE issue9_test;")
+            await client.query("DELETE issue9_exec_test;")
+        except Exception:
+            pass
+
+        yield
+
+        # Cleanup
+        try:
+            client = await SurrealDBConnectionManager.get_client()
+            await client.query("DELETE issue9_test;")
+            await client.query("DELETE issue9_exec_test;")
+        except Exception:
+            pass
+
+        await SurrealDBConnectionManager.close_connection()
+        await SurrealDBConnectionManager.unset_connection()
+
+    async def test_save_and_fetch_with_datetime(self) -> None:
+        """Save and fetch a record with datetime should return model instance."""
+        # Create a record with server-side datetime
+        client = await SurrealDBConnectionManager.get_client()
+
+        # Create table with datetime field that has default value
+        await client.query("DELETE issue9_test;")
+        await client.query("""
+            DEFINE TABLE issue9_test SCHEMAFULL;
+            DEFINE FIELD name ON issue9_test TYPE string;
+            DEFINE FIELD status ON issue9_test TYPE string DEFAULT 'active';
+            DEFINE FIELD created_at ON issue9_test TYPE option<datetime> VALUE time::now();
+        """)
+
+        # Create record
+        result = await client.create("issue9_test:datetime1", {"name": "Datetime Test"})
+        assert result.exists
+
+        # Fetch via ORM query
+        query_result = await client.query("SELECT * FROM issue9_test:datetime1")
+        record_data = query_result.first
+
+        # Verify the datetime field exists in the raw data
+        assert "created_at" in record_data, "created_at should be in the record"
+
+        # Use from_db to convert to model
+        class Issue9Model(BaseSurrealModel):
+            model_config = {"table_name": "issue9_test"}
+            id: str | None = None
+            name: str
+            status: str = "active"
+            created_at: datetime | None = None
+
+        model = Issue9Model.from_db(record_data)
+
+        # Should be a model instance, not a dict
+        assert isinstance(model, Issue9Model), f"Expected Issue9Model, got {type(model)}"
+        assert model.name == "Datetime Test"
+        assert isinstance(model.created_at, datetime) or model.created_at is None
+
+    async def test_queryset_exec_returns_models_not_dicts(self) -> None:
+        """QuerySet.exec() should return model instances, not dicts."""
+        client = await SurrealDBConnectionManager.get_client()
+
+        # Create table and records
+        await client.query("DELETE issue9_exec_test;")
+        await client.query("""
+            DEFINE TABLE issue9_exec_test SCHEMAFULL;
+            DEFINE FIELD name ON issue9_exec_test TYPE string;
+            DEFINE FIELD created_at ON issue9_exec_test TYPE option<datetime> VALUE time::now();
+        """)
+        await client.create("issue9_exec_test:exec1", {"name": "Exec Test 1"})
+        await client.create("issue9_exec_test:exec2", {"name": "Exec Test 2"})
+
+        class Issue9ExecModel(BaseSurrealModel):
+            model_config = {"table_name": "issue9_exec_test"}
+            id: str | None = None
+            name: str
+            created_at: datetime | None = None
+
+        # Fetch via QuerySet
+        results = await Issue9ExecModel.objects().exec()
+
+        # All results should be model instances
+        assert len(results) == 2
+        for result in results:
+            assert isinstance(result, Issue9ExecModel), f"Expected Issue9ExecModel, got {type(result)}"
+            # datetime field should be properly parsed
+            if result.created_at is not None:
+                assert isinstance(result.created_at, datetime)
