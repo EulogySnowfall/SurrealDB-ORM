@@ -1,6 +1,6 @@
 from .constants import LOOKUP_OPERATORS
 from .enum import OrderBy
-from .utils import remove_quotes_for_variables
+from .utils import remove_quotes_for_variables, format_thing, parse_record_id
 from . import BaseSurrealModel, SurrealDBConnectionManager
 from .aggregations import Aggregation
 from typing import Self, Any, Sequence, cast
@@ -410,8 +410,8 @@ class QuerySet:
         client = await SurrealDBConnectionManager.get_client()
 
         if source_id:
-            # Use specific record as starting point
-            source_thing = f"{self._model_table}:{source_id}"
+            # Use specific record as starting point with proper escaping
+            source_thing = format_thing(self._model_table, str(source_id))
 
             # Parse the traversal to get edge and direction
             # Simple pattern: ->edge->Table or <-edge<-Table
@@ -420,24 +420,26 @@ class QuerySet:
                 parts = traversal.split("->")
                 if len(parts) >= 3:
                     edge = parts[1]
-                    query = f"SELECT out FROM {edge} WHERE in = {source_thing} FETCH out;"
+                    # Use SELECT VALUE out.* for more reliable record extraction
+                    query = f"SELECT VALUE out.* FROM {edge} WHERE in = {source_thing};"
                     result = await client.query(query, {**self._variables, **variables})
                     records: list[dict[str, Any]] = []
-                    for row in result.all_records or []:
-                        if isinstance(row.get("out"), dict):
-                            records.append(row["out"])
+                    for record in result.all_records or []:
+                        if isinstance(record, dict):
+                            records.append(record)
                     return records
             elif traversal.startswith("<-"):
                 # Incoming: get sources where target is 'out'
                 parts = traversal.split("<-")
                 if len(parts) >= 3:
                     edge = parts[1]
-                    query = f"SELECT in FROM {edge} WHERE out = {source_thing} FETCH in;"
+                    # Use SELECT VALUE in.* for more reliable record extraction
+                    query = f"SELECT VALUE in.* FROM {edge} WHERE out = {source_thing};"
                     result = await client.query(query, {**self._variables, **variables})
                     records = []
-                    for row in result.all_records or []:
-                        if isinstance(row.get("in"), dict):
-                            records.append(row["in"])
+                    for record in result.all_records or []:
+                        if isinstance(record, dict):
+                            records.append(record)
                     return records
 
         # Fallback: return empty for unsupported patterns
@@ -609,6 +611,8 @@ class QuerySet:
         - Just the ID: "abc123"
         - Full SurrealDB format: "table:abc123"
 
+        IDs that start with a digit or contain special characters are automatically escaped.
+
         Args:
             id_item (str | None, optional): The unique identifier of the item to retrieve. Defaults to `None`.
             id (str | None, optional): Keyword-only alias for `id_item`. Defaults to `None`.
@@ -626,6 +630,8 @@ class QuerySet:
             user = await queryset.get(id_item='user_123')
             # Also accepts full SurrealDB format
             user = await queryset.get('users:user_123')
+            # IDs starting with digits are properly handled
+            user = await queryset.get('7abc123')
             ```
         """
         # Allow 'id' keyword to be used as alias for 'id_item'
@@ -633,10 +639,11 @@ class QuerySet:
         if record_id:
             record_id_str = str(record_id)
             # Handle full SurrealDB format (table:id) - extract just the ID part
-            if ":" in record_id_str:
-                record_id_str = record_id_str.split(":", 1)[1]
+            _, id_part = parse_record_id(record_id_str)
+            # Format the thing reference with proper escaping for special IDs
+            thing = format_thing(self._model_table, id_part)
             client = await SurrealDBConnectionManager.get_client()
-            result = await client.select(f"{self._model_table}:{record_id_str}")
+            result = await client.select(thing)
             # SDK returns RecordsResponse
             if result.is_empty:
                 raise self.model.DoesNotExist("Record not found.")

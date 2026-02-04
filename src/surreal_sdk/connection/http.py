@@ -4,7 +4,7 @@ HTTP Connection Implementation for SurrealDB SDK.
 Provides stateless HTTP-based connection, ideal for microservices and serverless.
 """
 
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 import httpx
 
@@ -25,6 +25,10 @@ class HTTPConnection(BaseSurrealConnection):
     Ideal for microservices, serverless, and horizontally scaled applications.
 
     Authentication is performed via headers on each request.
+
+    Supports both JSON and CBOR protocols. CBOR is recommended as it properly
+    handles binary data and avoids string interpretation issues (e.g., 'data:xxx'
+    being interpreted as record links).
     """
 
     def __init__(
@@ -33,6 +37,7 @@ class HTTPConnection(BaseSurrealConnection):
         namespace: str,
         database: str,
         timeout: float = 30.0,
+        protocol: Literal["json", "cbor"] = "cbor",
     ):
         """
         Initialize HTTP connection.
@@ -42,6 +47,9 @@ class HTTPConnection(BaseSurrealConnection):
             namespace: Target namespace
             database: Target database
             timeout: Request timeout in seconds
+            protocol: Serialization protocol ("json" or "cbor").
+                      Defaults to "cbor" which properly handles string values
+                      that might be misinterpreted as record links (e.g., "data:...").
         """
         # Normalize URL to HTTP if needed
         if url.startswith("ws://"):
@@ -49,13 +57,37 @@ class HTTPConnection(BaseSurrealConnection):
         elif url.startswith("wss://"):
             url = url.replace("wss://", "https://", 1)
 
+        if protocol not in ("json", "cbor"):
+            raise ValueError(f"Invalid protocol '{protocol}'. Must be 'json' or 'cbor'.")
+
         super().__init__(url, namespace, database, timeout)
         self._client: httpx.AsyncClient | None = None
         self._request_id = 0
+        self.protocol: Literal["json", "cbor"] = protocol
 
     @property
     def headers(self) -> dict[str, str]:
-        """Build request headers."""
+        """Build request headers based on protocol setting."""
+        if self.protocol == "cbor":
+            content_type = "application/cbor"
+            accept = "application/cbor"
+        else:
+            content_type = "application/json"
+            accept = "application/json"
+
+        h = {
+            "Surreal-NS": self.namespace,
+            "Surreal-DB": self.database,
+            "Accept": accept,
+            "Content-Type": content_type,
+        }
+        if self._token:
+            h["Authorization"] = f"Bearer {self._token}"
+        return h
+
+    @property
+    def _json_headers(self) -> dict[str, str]:
+        """Build JSON headers for endpoints that always use JSON (sql, rest_*)."""
         h = {
             "Surreal-NS": self.namespace,
             "Surreal-DB": self.database,
@@ -97,6 +129,10 @@ class HTTPConnection(BaseSurrealConnection):
         """
         Send RPC request via HTTP POST to /rpc endpoint.
 
+        Uses CBOR or JSON encoding based on the protocol setting.
+        CBOR is recommended as it properly handles string values that
+        might be misinterpreted as record links (e.g., "data:...").
+
         Args:
             request: The RPC request to send
 
@@ -113,15 +149,30 @@ class HTTPConnection(BaseSurrealConnection):
         request.id = self._next_request_id()
 
         try:
-            # Use pre-encoded JSON with custom encoder for datetime, UUID, etc.
-            headers = {**self.headers, "Content-Type": "application/json"}
-            response = await self._client.post(
-                "/rpc",
-                content=request.to_json(),
-                headers=headers,
-            )
-            response.raise_for_status()
-            return RPCResponse.from_dict(response.json())
+            if self.protocol == "cbor":
+                # Use CBOR encoding which properly handles all data types
+                headers = {
+                    **self.headers,
+                    "Content-Type": "application/cbor",
+                    "Accept": "application/cbor",
+                }
+                response = await self._client.post(
+                    "/rpc",
+                    content=request.to_cbor(),
+                    headers=headers,
+                )
+                response.raise_for_status()
+                return RPCResponse.from_cbor(response.content)
+            else:
+                # Use JSON encoding
+                headers = {**self.headers, "Content-Type": "application/json"}
+                response = await self._client.post(
+                    "/rpc",
+                    content=request.to_json(),
+                    headers=headers,
+                )
+                response.raise_for_status()
+                return RPCResponse.from_dict(response.json())
 
         except httpx.HTTPStatusError as e:
             raise QueryError(
@@ -202,6 +253,7 @@ class HTTPConnection(BaseSurrealConnection):
         Execute raw SurrealQL via POST /sql endpoint.
 
         This is a direct SQL execution endpoint, alternative to RPC.
+        Always uses JSON protocol regardless of connection protocol setting.
 
         Args:
             query: SurrealQL query string
@@ -214,10 +266,11 @@ class HTTPConnection(BaseSurrealConnection):
             raise ConnectionError("Not connected. Call connect() first.")
 
         try:
+            # Always use JSON headers for /sql endpoint (plain text query)
             response = await self._client.post(
                 "/sql",
                 content=query,
-                headers=self.headers,
+                headers=self._json_headers,
                 params=vars,
             )
             response.raise_for_status()
@@ -245,7 +298,7 @@ class HTTPConnection(BaseSurrealConnection):
             response = await self._client.get("/health")
             return response.status_code == 200
         except Exception:
-            return False
+            return False  # Any error means server is unhealthy
 
     async def status(self) -> bool:
         """
@@ -261,7 +314,7 @@ class HTTPConnection(BaseSurrealConnection):
             response = await self._client.get("/status")
             return response.status_code == 200
         except Exception:
-            return False
+            return False  # Any error means server is not running
 
     # REST-style CRUD endpoints (alternative to RPC)
 
@@ -283,7 +336,7 @@ class HTTPConnection(BaseSurrealConnection):
         if record_id:
             path += f"/{record_id}"
 
-        response = await self._client.get(path, headers=self.headers)
+        response = await self._client.get(path, headers=self._json_headers)
         response.raise_for_status()
         result = response.json()
         return result if isinstance(result, list) else [result]
@@ -312,7 +365,7 @@ class HTTPConnection(BaseSurrealConnection):
         if record_id:
             path += f"/{record_id}"
 
-        response = await self._client.post(path, json=data, headers=self.headers)
+        response = await self._client.post(path, json=data, headers=self._json_headers)
         response.raise_for_status()
         result: dict[str, Any] = response.json()
         return result
@@ -340,7 +393,7 @@ class HTTPConnection(BaseSurrealConnection):
         response = await self._client.put(
             f"/key/{table}/{record_id}",
             json=data,
-            headers=self.headers,
+            headers=self._json_headers,
         )
         response.raise_for_status()
         result: dict[str, Any] = response.json()
@@ -369,7 +422,7 @@ class HTTPConnection(BaseSurrealConnection):
         response = await self._client.patch(
             f"/key/{table}/{record_id}",
             json=data,
-            headers=self.headers,
+            headers=self._json_headers,
         )
         response.raise_for_status()
         result: dict[str, Any] = response.json()
@@ -397,7 +450,7 @@ class HTTPConnection(BaseSurrealConnection):
         if record_id:
             path += f"/{record_id}"
 
-        response = await self._client.delete(path, headers=self.headers)
+        response = await self._client.delete(path, headers=self._json_headers)
         response.raise_for_status()
         result: dict[str, Any] | list[dict[str, Any]] = response.json()
         return result
@@ -422,3 +475,109 @@ class HTTPConnection(BaseSurrealConnection):
         from ..transaction import HTTPTransaction
 
         return HTTPTransaction(self)
+
+    def _to_thing(self, thing: str) -> Any:
+        """
+        Convert a thing string to the appropriate type for the protocol.
+
+        For CBOR protocol, converts "table:id" strings to RecordId objects.
+        For JSON protocol, returns the string as-is.
+
+        Handles backtick-escaped IDs (e.g., "table:`7abc`" -> RecordId(table, "7abc")).
+
+        Args:
+            thing: Thing reference (table name or "table:id")
+
+        Returns:
+            RecordId object for CBOR if thing contains ":", else string
+        """
+        if self.protocol == "cbor" and ":" in thing:
+            from ..protocol.cbor import RecordId
+
+            table, id_part = thing.split(":", 1)
+
+            # Handle backtick-escaped IDs (e.g., "`7abc`" -> "7abc")
+            if id_part.startswith("`") and id_part.endswith("`"):
+                id_part = id_part[1:-1].replace("``", "`")
+
+            return RecordId(table=table, id=id_part)
+        return thing
+
+    async def select(self, thing: str) -> Any:
+        """Select records with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("select", [self._to_thing(thing)])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def create(self, thing: str, data: dict[str, Any] | None = None) -> Any:
+        """Create a record with CBOR-aware thing conversion."""
+        from ..types import RecordResponse
+
+        params: list[Any] = [self._to_thing(thing)]
+        if data:
+            params.append(data)
+        result = await self.rpc("create", params)
+        return RecordResponse.from_rpc_result(result)
+
+    async def upsert(self, thing: str | Any, data: dict[str, Any] | None = None) -> Any:
+        """Upsert a record with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        # Handle both string and RecordId objects
+        if isinstance(thing, str):
+            thing_param = self._to_thing(thing)
+        else:
+            thing_param = thing
+
+        params: list[Any] = [thing_param]
+        if data:
+            params.append(data)
+        result = await self.rpc("upsert", params)
+        return RecordsResponse.from_rpc_result(result)
+
+    async def update(self, thing: str, data: dict[str, Any] | None = None) -> Any:
+        """Update a record with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        params: list[Any] = [self._to_thing(thing)]
+        if data:
+            params.append(data)
+        result = await self.rpc("update", params)
+        return RecordsResponse.from_rpc_result(result)
+
+    async def merge(self, thing: str, data: dict[str, Any]) -> Any:
+        """Merge a record with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("merge", [self._to_thing(thing), data])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def delete(self, thing: str) -> Any:
+        """Delete a record with CBOR-aware thing conversion."""
+        from ..types import DeleteResponse
+
+        result = await self.rpc("delete", [self._to_thing(thing)])
+        return DeleteResponse.from_rpc_result(result)
+
+    async def relate(
+        self,
+        from_thing: str,
+        relation: str,
+        to_thing: str,
+        data: dict[str, Any] | None = None,
+    ) -> Any:
+        """
+        Create a graph relationship between records.
+
+        For CBOR protocol, this converts string record IDs to RecordId objects
+        which SurrealDB requires for the relate operation.
+        """
+        from ..types import RecordResponse
+
+        params: list[Any] = [self._to_thing(from_thing), relation, self._to_thing(to_thing)]
+        if data:
+            params.append(data)
+
+        result = await self.rpc("relate", params)
+        return RecordResponse.from_rpc_result(result)

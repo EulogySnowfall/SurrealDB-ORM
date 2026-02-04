@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
 from .connection_manager import SurrealDBConnectionManager
 from .types import SchemaMode, TableType
+from .utils import format_thing, parse_record_id
 
 if TYPE_CHECKING:
     from surreal_sdk.transaction import BaseTransaction, HTTPTransaction
@@ -44,10 +45,23 @@ def clear_model_registry() -> None:
 def _parse_record_id(record_id: Any) -> str | None:
     """
     Parse a record ID from various formats.
-    SurrealDB returns IDs as 'table:id' strings.
+    SurrealDB returns IDs as 'table:id' strings or RecordId objects (with CBOR).
     """
     if record_id is None:
         return None
+
+    # Handle RecordId objects from CBOR responses
+    # Import here to avoid circular imports
+    from surreal_sdk.protocol.cbor import RecordId
+
+    if isinstance(record_id, RecordId):
+        # RecordId.id can be a string or another RecordId (nested)
+        id_value = record_id.id
+        if isinstance(id_value, RecordId):
+            # Nested RecordId - extract the innermost id
+            return str(id_value.id)
+        return str(id_value)
+
     record_str = str(record_id)
     if ":" in record_str:
         return record_str.split(":", 1)[1]
@@ -392,11 +406,13 @@ class BaseSurrealModel(BaseModel):
         """
         Refresh the model instance from the database.
         """
-        if not self.get_id():
+        record_id = self.get_id()
+        if not record_id:
             raise SurrealDbError("Can't refresh data, not recorded yet.")  # pragma: no cover
 
         client = await SurrealDBConnectionManager.get_client()
-        result = await client.select(f"{self.get_table_name()}:{self.get_id()}")
+        thing = format_thing(self.get_table_name(), record_id)
+        result = await client.select(thing)
 
         # SDK returns RecordsResponse with .records list
         if result.is_empty:
@@ -443,13 +459,13 @@ class BaseSurrealModel(BaseModel):
             if self._db_persisted and id is not None:
                 # Already persisted: use merge for partial update
                 # Only sends explicitly set fields, preserving server-side values
-                thing = f"{table}:{id}"
+                thing = format_thing(table, id)
                 await tx.merge(thing, data)
                 return self
 
             if id is not None:
                 # New record with user-provided ID: use upsert
-                thing = f"{table}:{id}"
+                thing = format_thing(table, id)
                 await tx.upsert(thing, data)
             else:
                 # Auto-generate ID
@@ -465,13 +481,13 @@ class BaseSurrealModel(BaseModel):
         if self._db_persisted and id is not None:
             # Already persisted: use merge for partial update
             # Only sends explicitly set fields, preserving server-side values
-            thing = f"{table}:{id}"
+            thing = format_thing(table, id)
             await client.merge(thing, data)
             return self
 
         if id is not None:
             # New record with user-provided ID: use upsert
-            thing = f"{table}:{id}"
+            thing = format_thing(table, id)
             await client.upsert(thing, data)
             self._db_persisted = True
             return self
@@ -506,12 +522,12 @@ class BaseSurrealModel(BaseModel):
         # Build exclude set: always exclude 'id' and any server-generated fields
         exclude_fields = {"id"} | self.get_server_fields()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
-        id = self.get_id()
+        record_id = self.get_id()
 
-        if id is None:
+        if record_id is None:
             raise SurrealDbError("Can't update data, no id found.")
 
-        thing = f"{self.__class__.__name__}:{id}"
+        thing = format_thing(self.get_table_name(), record_id)
 
         if tx is not None:
             # Use merge for partial update - preserves unspecified fields
@@ -543,11 +559,11 @@ class BaseSurrealModel(BaseModel):
         """
         data_set = {key: value for key, value in data.items()}
 
-        id = self.get_id()
-        if not id:
+        record_id = self.get_id()
+        if not record_id:
             raise SurrealDbError(f"No Id for the data to merge: {data}")
 
-        thing = f"{self.get_table_name()}:{id}"
+        thing = format_thing(self.get_table_name(), record_id)
 
         if tx is not None:
             await tx.merge(thing, data_set)
@@ -569,8 +585,11 @@ class BaseSurrealModel(BaseModel):
         Args:
             tx: Optional transaction to use for this operation.
         """
-        id = self.get_id()
-        thing = f"{self.get_table_name()}:{id}"
+        record_id = self.get_id()
+        if not record_id:
+            raise SurrealDbError("Can't delete record without an ID.")
+
+        thing = format_thing(self.get_table_name(), record_id)
 
         if tx is not None:
             await tx.delete(thing)
@@ -581,7 +600,7 @@ class BaseSurrealModel(BaseModel):
         result = await client.delete(thing)
 
         if not result.success:
-            raise SurrealDbError(f"Can't delete Record id -> '{id}' not found!")
+            raise SurrealDbError(f"Can't delete Record id -> '{record_id}' not found!")
 
         logger.info(f"Record deleted -> {result.deleted!r}.")
 
@@ -725,8 +744,8 @@ class BaseSurrealModel(BaseModel):
         source_table = self.get_table_name()
         target_table = to.get_table_name()
 
-        from_thing = f"{source_table}:{source_id}"
-        to_thing = f"{target_table}:{target_id}"
+        from_thing = format_thing(source_table, source_id)
+        to_thing = format_thing(target_table, target_id)
 
         if tx is not None:
             await tx.relate(from_thing, relation, to_thing, edge_data if edge_data else None)
@@ -783,35 +802,39 @@ class BaseSurrealModel(BaseModel):
             raise SurrealDbError("Cannot remove relation from unsaved instance")
 
         source_table = self.get_table_name()
+        source_thing = format_thing(source_table, source_id)
 
         # Handle both model instances and string IDs
         if isinstance(to, str):
             # String ID - could be "table:id" or just "id"
-            if ":" in to:
+            target_table, target_id = parse_record_id(to)
+
+            if target_table:
                 # Full format: "table:id"
-                target_thing = to
+                target_thing = format_thing(target_table, target_id)
             else:
                 # Just ID - we don't know the target table, so we query by out ID only
                 # Use record::id() to extract the ID part from the record link
-                query = f"DELETE {relation} WHERE in = {source_table}:{source_id} AND record::id(out) = '{to}';"
+                # Use parameterized query to safely pass the ID
+                query = f"DELETE {relation} WHERE in = {source_thing} AND record::id(out) = $target_id;"
 
                 if tx is not None:
-                    await tx.query(query)
+                    await tx.query(query, {"target_id": target_id})
                     return
 
                 client = await SurrealDBConnectionManager.get_client()
-                await client.query(query)
+                await client.query(query, {"target_id": target_id})
                 return
         else:
             # Model instance
-            target_id = to.get_id()
-            if not target_id:
+            model_target_id = to.get_id()
+            if not model_target_id:
                 raise SurrealDbError("Cannot remove relation to unsaved instance")
             target_table = to.get_table_name()
-            target_thing = f"{target_table}:{target_id}"
+            target_thing = format_thing(target_table, model_target_id)
 
         # Delete edge where in=source and out=target
-        query = f"DELETE {relation} WHERE in = {source_table}:{source_id} AND out = {target_thing};"
+        query = f"DELETE {relation} WHERE in = {source_thing} AND out = {target_thing};"
 
         if tx is not None:
             await tx.query(query)
@@ -854,46 +877,50 @@ class BaseSurrealModel(BaseModel):
             followers = await alice.get_related("follows", direction="in", model_class=User)
 
         SurrealQL equivalent:
-            - out: SELECT out FROM follows WHERE in = users:alice FETCH out;
-            - in: SELECT in FROM follows WHERE out = users:alice FETCH in;
+            - out: SELECT VALUE out.* FROM follows WHERE in = users:alice;
+            - in: SELECT VALUE in.* FROM follows WHERE out = users:alice;
         """
         source_id = self.get_id()
         if not source_id:
             raise SurrealDbError("Cannot query relations from unsaved instance")
 
         source_table = self.get_table_name()
-        source_thing = f"{source_table}:{source_id}"
+        source_thing = format_thing(source_table, source_id)
 
         client = await SurrealDBConnectionManager.get_client()
         records: list[dict[str, Any]] = []
 
         # Query edge table and fetch related records
+        # Use SELECT VALUE field.* to get the full related records directly
+        # This is more reliable than FETCH for extracting nested records
         # For outgoing: get 'out' field where 'in' matches source
         # For incoming: get 'in' field where 'out' matches source
         if direction == "out":
-            query = f"SELECT out FROM {relation} WHERE in = {source_thing} FETCH out;"
+            # Get records that this record points TO
+            query = f"SELECT VALUE out.* FROM {relation} WHERE in = {source_thing};"
             result = await client.query(query)
-            for row in result.all_records or []:
-                if isinstance(row.get("out"), dict):
-                    records.append(row["out"])
+            for record in result.all_records or []:
+                if isinstance(record, dict):
+                    records.append(record)
         elif direction == "in":
-            query = f"SELECT in FROM {relation} WHERE out = {source_thing} FETCH in;"
+            # Get records that point TO this record
+            query = f"SELECT VALUE in.* FROM {relation} WHERE out = {source_thing};"
             result = await client.query(query)
-            for row in result.all_records or []:
-                if isinstance(row.get("in"), dict):
-                    records.append(row["in"])
+            for record in result.all_records or []:
+                if isinstance(record, dict):
+                    records.append(record)
         else:  # both
             # Get both outgoing and incoming relations
-            query_out = f"SELECT out FROM {relation} WHERE in = {source_thing} FETCH out;"
-            query_in = f"SELECT in FROM {relation} WHERE out = {source_thing} FETCH in;"
+            query_out = f"SELECT VALUE out.* FROM {relation} WHERE in = {source_thing};"
+            query_in = f"SELECT VALUE in.* FROM {relation} WHERE out = {source_thing};"
             result_out = await client.query(query_out)
             result_in = await client.query(query_in)
-            for row in result_out.all_records or []:
-                if isinstance(row.get("out"), dict):
-                    records.append(row["out"])
-            for row in result_in.all_records or []:
-                if isinstance(row.get("in"), dict):
-                    records.append(row["in"])
+            for record in result_out.all_records or []:
+                if isinstance(record, dict):
+                    records.append(record)
+            for record in result_in.all_records or []:
+                if isinstance(record, dict):
+                    records.append(record)
 
         if model_class is not None:
             instances: list[BaseSurrealModel] = []

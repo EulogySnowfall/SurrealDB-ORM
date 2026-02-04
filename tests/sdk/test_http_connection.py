@@ -28,9 +28,21 @@ class TestHTTPConnection:
         conn = HTTPConnection("http://localhost:8000/", "ns", "db")
         assert conn.url == "http://localhost:8000"
 
-    def test_headers_without_token(self) -> None:
-        """Test headers when not authenticated."""
+    def test_headers_without_token_cbor(self) -> None:
+        """Test headers when not authenticated (default CBOR protocol)."""
         conn = HTTPConnection("http://localhost:8000", "test_ns", "test_db")
+        headers = conn.headers
+
+        assert headers["Surreal-NS"] == "test_ns"
+        assert headers["Surreal-DB"] == "test_db"
+        # Default protocol is CBOR
+        assert headers["Accept"] == "application/cbor"
+        assert headers["Content-Type"] == "application/cbor"
+        assert "Authorization" not in headers
+
+    def test_headers_without_token_json(self) -> None:
+        """Test headers when not authenticated (JSON protocol)."""
+        conn = HTTPConnection("http://localhost:8000", "test_ns", "test_db", protocol="json")
         headers = conn.headers
 
         assert headers["Surreal-NS"] == "test_ns"
@@ -95,6 +107,54 @@ class TestHTTPConnection:
         assert conn._next_request_id() == 1
         assert conn._next_request_id() == 2
         assert conn._next_request_id() == 3
+
+
+class TestHTTPConnectionProtocol:
+    """Tests for protocol configuration."""
+
+    def test_default_protocol_is_cbor(self) -> None:
+        """HTTPConnection should default to CBOR protocol."""
+        conn = HTTPConnection("http://localhost:8000", "ns", "db")
+        assert conn.protocol == "cbor"
+
+    def test_cbor_protocol_explicit(self) -> None:
+        """HTTPConnection should accept explicit CBOR protocol."""
+        conn = HTTPConnection("http://localhost:8000", "ns", "db", protocol="cbor")
+        assert conn.protocol == "cbor"
+
+    def test_json_protocol(self) -> None:
+        """HTTPConnection should accept JSON protocol."""
+        conn = HTTPConnection("http://localhost:8000", "ns", "db", protocol="json")
+        assert conn.protocol == "json"
+
+    def test_invalid_protocol_raises(self) -> None:
+        """HTTPConnection should reject invalid protocols."""
+        with pytest.raises(ValueError, match="Invalid protocol"):
+            HTTPConnection("http://localhost:8000", "ns", "db", protocol="xml")  # type: ignore
+
+    def test_cbor_headers(self) -> None:
+        """CBOR protocol should set correct headers."""
+        conn = HTTPConnection("http://localhost:8000", "ns", "db", protocol="cbor")
+        headers = conn.headers
+        assert headers["Accept"] == "application/cbor"
+        assert headers["Content-Type"] == "application/cbor"
+
+    def test_json_headers(self) -> None:
+        """JSON protocol should set correct headers."""
+        conn = HTTPConnection("http://localhost:8000", "ns", "db", protocol="json")
+        headers = conn.headers
+        assert headers["Accept"] == "application/json"
+        assert headers["Content-Type"] == "application/json"
+
+    def test_timeout_parameter(self) -> None:
+        """HTTPConnection should accept timeout parameter."""
+        conn = HTTPConnection("http://localhost:8000", "ns", "db", timeout=60.0)
+        assert conn.timeout == 60.0
+
+    def test_default_timeout(self) -> None:
+        """HTTPConnection should have default timeout."""
+        conn = HTTPConnection("http://localhost:8000", "ns", "db")
+        assert conn.timeout == 30.0
 
 
 class TestHTTPConnectionIntegration:

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 import logging
 
 from surreal_sdk import HTTPConnection
@@ -20,6 +20,7 @@ class SurrealDBConnectionManager:
     __password: str | None = None
     __namespace: str | None = None
     __database: str | None = None
+    __protocol: Literal["json", "cbor"] = "cbor"
     __client: HTTPConnection | None = None
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -38,6 +39,7 @@ class SurrealDBConnectionManager:
         database: str,
         *,
         username: str | None = None,
+        protocol: Literal["json", "cbor"] = "cbor",
     ) -> None:
         """
         Set the connection kwargs for the SurrealDB instance.
@@ -48,6 +50,9 @@ class SurrealDBConnectionManager:
         :param namespace: The namespace to use.
         :param database: The database to use.
         :param username: Keyword-only alias for 'user' (overrides 'user' if provided).
+        :param protocol: Serialization protocol ("json" or "cbor"). Defaults to "cbor"
+                         which properly handles string values that might be misinterpreted
+                         as record links (e.g., data URLs like "data:image/png;base64,...").
         """
         # Allow 'username' keyword to override 'user' for API flexibility
         actual_user = username if username is not None else user
@@ -57,6 +62,7 @@ class SurrealDBConnectionManager:
         cls.__password = password
         cls.__namespace = namespace
         cls.__database = database
+        cls.__protocol = protocol
 
     @classmethod
     async def unset_connection(cls) -> None:
@@ -97,6 +103,7 @@ class SurrealDBConnectionManager:
         cls.__password = None
         cls.__namespace = None
         cls.__database = None
+        cls.__protocol = "cbor"
         cls.__client = None
 
     @classmethod
@@ -131,7 +138,12 @@ class SurrealDBConnectionManager:
             assert cls.__user is not None
             assert cls.__password is not None
 
-            _client = HTTPConnection(url, cls.__namespace, cls.__database)
+            _client = HTTPConnection(
+                url,
+                cls.__namespace,
+                cls.__database,
+                protocol=cls.__protocol,
+            )
             await _client.connect()
             await _client.signin(cls.__user, cls.__password)
 

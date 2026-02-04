@@ -6,6 +6,51 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.5.5.1] - 2026-02-03
+
+### Fixed
+
+- **Issue #8 (CRITICAL): Record IDs starting with digits** - IDs like `7abc123` now properly escaped
+  - SurrealDB interprets unquoted IDs starting with digits as number tokens, causing parse errors
+  - New `escape_record_id()` utility escapes such IDs with backticks: `` `7abc123` ``
+  - New `format_thing()` utility generates correct thing references: `` table:`7abc123` ``
+  - All CRUD operations (`get()`, `save()`, `update()`, `merge()`, `delete()`) use proper escaping
+
+- **Issue #3 (HIGH): CBOR protocol for HTTP connections**
+  - HTTP connections now support and default to CBOR protocol
+  - Fixes `data:` prefix strings being misinterpreted as record links
+  - `HTTPConnection` accepts `protocol` parameter: `"cbor"` (default) or `"json"`
+  - `SurrealDBConnectionManager.set_connection()` accepts `protocol` parameter
+
+- **Issue #1 (HIGH): `QuerySet.get()` handles full record ID format**
+  - `get("table:id")` now correctly extracts the ID part and queries the correct table
+  - New `parse_record_id()` utility handles both formats: `"abc123"` and `"table:abc123"`
+  - Handles escaped IDs correctly: `` "table:`7abc`" `` → `"7abc"`
+
+- **Issue #7 (MEDIUM): `get_related()` with `direction="in"` returns correct results**
+  - Changed from unreliable `SELECT ... FETCH` to `SELECT VALUE field.* FROM ... WHERE ...`
+  - Both `direction="in"` and `direction="out"` now return full related records
+
+- **`update()` table name bug** - Fixed incidental bug using class name instead of `table_name`
+  - Was using `self.__class__.__name__` instead of `self.get_table_name()`
+  - Models with custom `table_name` config now update correctly
+
+### Added
+
+- **New utility module** - `src/surreal_orm/utils.py` with record ID handling functions:
+  - `needs_id_escaping(record_id)` - Check if ID needs backtick escaping
+  - `escape_record_id(record_id)` - Escape ID with backticks if needed
+  - `format_thing(table, record_id)` - Generate proper SurrealDB thing reference
+  - `parse_record_id(full_id)` - Parse `table:id` format into components
+
+### Changed
+
+- HTTP connections default to CBOR protocol (same as WebSocket)
+- All ORM CRUD methods use `format_thing()` for consistent ID handling
+- Version bump to 0.5.5.1
+
+---
+
 ## [0.5.5] - 2026-02-03
 
 ### Added
