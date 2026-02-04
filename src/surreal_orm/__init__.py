@@ -78,4 +78,4 @@ __all__ = [
     "AuthenticatedUserMixin",
 ]
 
-__version__ = "0.5.5.2"
+__version__ = "0.5.5.3"

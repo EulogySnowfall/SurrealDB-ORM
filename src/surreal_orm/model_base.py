@@ -109,6 +109,31 @@ def _is_datetime_field(field_type: Any) -> bool:
     return field_type is datetime
 
 
+def _convert_record_id_to_string(value: Any) -> Any:
+    """
+    Convert a RecordId object to its string representation.
+
+    For non-id fields (like foreign keys), RecordId objects should be
+    converted to "table:id" string format.
+
+    Args:
+        value: Any value, possibly a RecordId object
+
+    Returns:
+        String "table:id" if value is a RecordId, otherwise the original value
+    """
+    # Check if value is a RecordId from surreal_sdk (duck typing with module validation)
+    # This avoids import path issues between src.surreal_sdk and surreal_sdk
+    if (
+        hasattr(value, "table")
+        and hasattr(value, "id")
+        and value.__class__.__name__ == "RecordId"
+        and "surreal" in value.__class__.__module__
+    ):
+        return str(value)  # Returns "table:id" format
+    return value
+
+
 class SurrealConfigDict(ConfigDict):
     """
     SurrealConfigDict is a configuration dictionary for SurrealDB models.
@@ -381,7 +406,8 @@ class BaseSurrealModel(BaseModel):
 
         Handles type coercion for:
         - datetime fields: Parse ISO strings and normalize timezone-aware datetimes
-        - id field: Convert RecordId objects to string IDs
+        - id field: Convert RecordId objects to just the ID part (strips table prefix)
+        - Other fields with RecordId: Convert to "table:id" string format
 
         This preprocessing ensures that values from SurrealDB (especially via CBOR)
         are in formats that Pydantic can validate correctly.
@@ -391,13 +417,18 @@ class BaseSurrealModel(BaseModel):
 
         for key, value in record.items():
             if key == "id":
-                # Handle RecordId objects from CBOR responses
+                # For the 'id' field, extract just the ID part (strip table prefix)
                 value = _parse_record_id(value)
-            elif key in field_types:
+            else:
+                # For other fields, convert RecordId objects to "table:id" strings
+                # This is needed for foreign key fields that reference other records
+                value = _convert_record_id_to_string(value)
+
                 # Check if this field is a datetime type and parse if needed
-                field_info = field_types[key]
-                if _is_datetime_field(field_info.annotation):
-                    value = _parse_datetime(value)
+                if key in field_types:
+                    field_info = field_types[key]
+                    if _is_datetime_field(field_info.annotation):
+                        value = _parse_datetime(value)
 
             processed[key] = value
 
@@ -434,12 +465,17 @@ class BaseSurrealModel(BaseModel):
 
         for key, value in record.items():
             if key == "id":
+                # For the 'id' field, extract just the ID part (strip table prefix)
                 value = _parse_record_id(value)
-            elif key in field_types:
+            else:
+                # For other fields, convert RecordId objects to "table:id" strings
+                value = _convert_record_id_to_string(value)
+
                 # Check if this field is a datetime type and parse if needed
-                field_info = field_types[key]
-                if _is_datetime_field(field_info.annotation):
-                    value = _parse_datetime(value)
+                if key in field_types:
+                    field_info = field_types[key]
+                    if _is_datetime_field(field_info.annotation):
+                        value = _parse_datetime(value)
 
             if hasattr(self, key):
                 setattr(self, key, value)

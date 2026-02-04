@@ -1328,3 +1328,191 @@ class TestIssue9DatetimeIntegration:
             # datetime field should be properly parsed
             if result.created_at is not None:
                 assert isinstance(result.created_at, datetime)
+
+
+# =============================================================================
+# Issue #10: RecordId objects in non-id fields not converted to strings
+# =============================================================================
+
+
+class ModelWithForeignKey(BaseSurrealModel):
+    """Model with a foreign key field for RecordId tests."""
+
+    id: str | None = None
+    name: str
+    user_id: str | None = None  # Foreign key to users table
+    table_id: str | None = None  # Foreign key to tables
+
+
+class TestRecordIdConversion:
+    """
+    Issue #10: RecordId objects in non-id fields should be converted to strings.
+
+    When using CBOR protocol, SurrealDB returns RecordId objects for record
+    references. These need to be converted to strings for Pydantic validation.
+    """
+
+    def test_from_db_converts_recordid_in_non_id_fields(self) -> None:
+        """from_db should convert RecordId objects in non-id fields to strings."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        record = {
+            "id": RecordId(table="ModelWithForeignKey", id="test1"),
+            "name": "Test Model",
+            "user_id": RecordId(table="users", id="user123"),
+            "table_id": RecordId(table="game_tables", id="table456"),
+        }
+
+        result = ModelWithForeignKey.from_db(record)
+
+        # Should return a model instance
+        assert isinstance(result, ModelWithForeignKey)
+        # id field should be just the id part (no table prefix)
+        assert result.id == "test1"
+        # Foreign key fields should be "table:id" format strings
+        assert result.user_id == "users:user123"
+        assert result.table_id == "game_tables:table456"
+        # Verify they are strings, not RecordId objects
+        assert isinstance(result.user_id, str)
+        assert isinstance(result.table_id, str)
+
+    def test_from_db_handles_mixed_recordid_and_strings(self) -> None:
+        """from_db should handle a mix of RecordId and string values."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        record = {
+            "id": "already_string",
+            "name": "Mixed Test",
+            "user_id": RecordId(table="users", id="user789"),
+            "table_id": "game_tables:table_string",  # Already a string
+        }
+
+        result = ModelWithForeignKey.from_db(record)
+
+        assert isinstance(result, ModelWithForeignKey)
+        assert result.id == "already_string"
+        assert result.user_id == "users:user789"
+        assert result.table_id == "game_tables:table_string"
+
+    def test_from_db_handles_none_values(self) -> None:
+        """from_db should handle None values in foreign key fields."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        record = {
+            "id": RecordId(table="ModelWithForeignKey", id="test_none"),
+            "name": "None FK Test",
+            "user_id": None,
+            "table_id": None,
+        }
+
+        result = ModelWithForeignKey.from_db(record)
+
+        assert isinstance(result, ModelWithForeignKey)
+        assert result.id == "test_none"
+        assert result.user_id is None
+        assert result.table_id is None
+
+    def test_preprocess_db_record_converts_recordid(self) -> None:
+        """_preprocess_db_record should convert RecordId objects."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        record = {
+            "id": RecordId(table="ModelWithForeignKey", id="preprocess_test"),
+            "name": "Preprocess Test",
+            "user_id": RecordId(table="users", id="u1"),
+        }
+
+        processed = ModelWithForeignKey._preprocess_db_record(record)
+
+        # id should be just the id part
+        assert processed["id"] == "preprocess_test"
+        # user_id should be "table:id" format
+        assert processed["user_id"] == "users:u1"
+        # name should be unchanged
+        assert processed["name"] == "Preprocess Test"
+
+    def test_from_db_list_with_recordid_fields(self) -> None:
+        """from_db should handle lists of records with RecordId fields."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        records = [
+            {
+                "id": RecordId(table="ModelWithForeignKey", id="list1"),
+                "name": "Record 1",
+                "user_id": RecordId(table="users", id="user1"),
+            },
+            {
+                "id": RecordId(table="ModelWithForeignKey", id="list2"),
+                "name": "Record 2",
+                "user_id": RecordId(table="users", id="user2"),
+            },
+        ]
+
+        results = ModelWithForeignKey.from_db(records)
+
+        assert isinstance(results, list)
+        assert len(results) == 2
+        assert all(isinstance(r, ModelWithForeignKey) for r in results)
+        assert results[0].user_id == "users:user1"
+        assert results[1].user_id == "users:user2"
+
+    def test_update_from_db_converts_recordid_in_non_id_fields(self) -> None:
+        """_update_from_db should convert RecordId objects in non-id fields."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        # Create an instance with initial values
+        instance = ModelWithForeignKey(
+            id="existing",
+            name="Initial",
+            user_id="old:user",
+            table_id="old:table",
+        )
+        instance._db_persisted = True
+
+        # Simulate DB update with RecordId objects
+        db_record = {
+            "id": RecordId(table="ModelWithForeignKey", id="existing"),
+            "name": "Updated",
+            "user_id": RecordId(table="users", id="new_user"),
+            "table_id": RecordId(table="game_tables", id="new_table"),
+        }
+
+        instance._update_from_db(db_record)
+
+        # Verify the instance was updated with converted values
+        assert instance.id == "existing"
+        assert instance.name == "Updated"
+        assert instance.user_id == "users:new_user"
+        assert instance.table_id == "game_tables:new_table"
+        # Verify they are strings, not RecordId objects
+        assert isinstance(instance.user_id, str)
+        assert isinstance(instance.table_id, str)
+
+    def test_update_from_db_preserves_fields_set(self) -> None:
+        """_update_from_db should preserve __pydantic_fields_set__ for partial updates."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        # Create an instance and track which fields were set
+        instance = ModelWithForeignKey(
+            id="test_preserve",
+            name="Original",
+            user_id="users:original",
+        )
+        instance._db_persisted = True
+
+        # Remember original fields_set
+        original_fields_set = instance.__pydantic_fields_set__.copy()
+
+        # Simulate DB update
+        db_record = {
+            "id": RecordId(table="ModelWithForeignKey", id="test_preserve"),
+            "name": "DB Updated",
+            "user_id": RecordId(table="users", id="db_user"),
+            "table_id": RecordId(table="game_tables", id="db_table"),
+        }
+
+        instance._update_from_db(db_record)
+
+        # __pydantic_fields_set__ should be preserved (cleared by _update_from_db)
+        # This ensures exclude_unset=True works correctly after DB load
+        assert instance.__pydantic_fields_set__ == original_fields_set
