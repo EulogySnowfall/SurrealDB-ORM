@@ -17,8 +17,73 @@
 | 0.5.1     | Released     | Security Workflows (Dependabot, SurrealDB monitoring)         |
 | 0.5.2     | Released     | Bug Fixes & FieldType Improvements                            |
 | **0.5.3** | **Released** | **ORM Improvements: Upsert, server_fields, merge() fix**      |
-| 0.5.5     | Planned      | Computed Fields                                               |
+| **0.5.5.1** | **Released** | **Critical Bug Fixes: ID escaping, CBOR HTTP, get_related** |
+| 0.5.x     | Planned      | Computed Fields                                               |
 | 0.6.x     | Planned      | ORM Live Models + Signals                                     |
+
+---
+
+## v0.5.5.1 - Critical Bug Fixes (Released)
+
+**Goal:** Fix production-reported bugs affecting record ID handling and protocol issues.
+
+**Status:** Implemented and released.
+
+### Record ID Escaping (Issue #8 - Critical)
+
+SurrealDB interprets unquoted IDs starting with digits as number tokens, causing parse errors:
+
+```python
+# Before: Generated invalid SurrealQL
+await Player.objects().get("7abc123")
+# SELECT * FROM players:7abc123  ← Parse error!
+
+# After: Properly escaped with backticks
+await Player.objects().get("7abc123")
+# SELECT * FROM players:`7abc123`  ← Works!
+```
+
+**Implementation:**
+
+- New `escape_record_id()` utility escapes IDs with backticks when needed
+- New `format_thing()` generates correct thing references
+- All CRUD methods (`get()`, `save()`, `update()`, `merge()`, `delete()`) use proper escaping
+
+### CBOR Protocol for HTTP (Issue #3 - High)
+
+HTTP connections now support and default to CBOR protocol, fixing `data:` prefix strings:
+
+```python
+# CBOR properly handles strings that look like record links
+SurrealDBConnectionManager.set_connection(
+    url="http://localhost:8000",
+    user="root",
+    password="root",
+    namespace="ns",
+    database="db",
+    protocol="cbor",  # Default, can also use "json"
+)
+```
+
+### Full Record ID Format (Issue #1 - High)
+
+`QuerySet.get()` now correctly handles both ID formats:
+
+```python
+# Both formats now work
+player = await Player.objects().get("abc123")
+player = await Player.objects().get("players:abc123")
+```
+
+### get_related() Direction Fix (Issue #7 - Medium)
+
+Fixed `get_related()` with `direction="in"` returning empty results:
+
+```python
+# Now correctly returns related records for both directions
+await user.get_related("follows", direction="out")  # Users this user follows
+await user.get_related("follows", direction="in")   # Users following this user
+```
 
 ---
 
@@ -523,6 +588,9 @@ users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
 | Security Workflows           | 0.5.1   | High     | Done    | -                |
 | FieldType Improvements       | 0.5.2   | Medium   | Done    | -                |
 | Upsert & server_fields       | 0.5.3   | High     | Done    | -                |
+| Record ID Escaping           | 0.5.5.1 | Critical | Done    | -                |
+| CBOR HTTP Protocol           | 0.5.5.1 | High     | Done    | SDK CBOR         |
+| get_related() direction fix  | 0.5.5.1 | Medium   | Done    | Relations        |
 | Computed Fields              | 0.5.5   | Medium   | Planned | SDK functions    |
 | ORM Live Models              | 0.6.0   | Medium   | Planned | SDK live queries |
 | Model Signals                | 0.6.0   | Low      | Planned | Live Models      |

@@ -10,7 +10,60 @@
 
 ---
 
-## Current Version: 0.5.5 (Alpha)
+## Current Version: 0.5.5.1 (Alpha)
+
+### What's New in 0.5.5.1
+
+- **Critical Bug Fixes** - Fixes for issues reported in production usage
+
+  - **Issue #8 (CRITICAL): IDs starting with digits** - Fixed parse error when record IDs start with a digit (e.g., `7qvdzsc14e5clo8sg064`). IDs are now properly escaped with backticks when needed.
+
+    ```python
+    # Now works correctly
+    table = await GameTable.objects().get("7qvdzsc14e5clo8sg064")
+
+    # IDs starting with digits are automatically escaped
+    # Generates: SELECT * FROM game_tables:`7qvdzsc14e5clo8sg064`
+    ```
+
+  - **Issue #3 (HIGH): data: prefix strings** - Fixed issue where strings starting with `data:` (like data URLs) were interpreted as record links. CBOR protocol is now the default for HTTP connections.
+
+    ```python
+    # Now works correctly
+    player.avatar = "data:image/png;base64,iVBORw0KGgo..."
+    await player.save()  # Saves as string, not record link
+    ```
+
+  - **Issue #1 (HIGH): Full record ID format in .get()** - `.get()` now properly handles both ID formats using the new `parse_record_id()` utility.
+
+  - **Issue #2 (MEDIUM): remove_relation() string IDs** - Fixed to properly use parameterized queries when removing relations with string IDs.
+
+  - **Issue #7 (MEDIUM): get_related() with direction=in** - Improved query syntax using `SELECT VALUE field.*` for more reliable record extraction.
+
+  - **Bug fix: update() table name** - Fixed bug where `update()` used `self.__class__.__name__` instead of `self.get_table_name()`, causing failures with custom table names.
+
+- **SDK Enhancements**
+
+  - **HTTP CBOR Protocol** - HTTP connections now support CBOR protocol (default) in addition to JSON. This fixes the data URL interpretation issue.
+
+    ```python
+    # CBOR is now the default for both HTTP and WebSocket
+    SurrealDBConnectionManager.set_connection(
+        url="http://localhost:8000",
+        user="root",
+        password="root",
+        namespace="test",
+        database="test",
+        protocol="cbor",  # Default, can use "json" for debugging
+    )
+    ```
+
+- **New Utility Functions** - Added to `surreal_orm.utils`:
+
+  - `needs_id_escaping(record_id)` - Check if an ID needs escaping
+  - `escape_record_id(record_id)` - Escape an ID with backticks if needed
+  - `format_thing(table, record_id)` - Format a full thing reference with proper escaping
+  - `parse_record_id(full_id)` - Parse a record ID into (table, id) tuple
 
 ### What's New in 0.5.5
 

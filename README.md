@@ -15,6 +15,14 @@
 
 ## What's New in 0.5.x
 
+### v0.5.5.1 - Critical Bug Fixes
+
+- **Record ID escaping** - IDs starting with digits (e.g., `7abc123`) now properly escaped with backticks
+- **CBOR for HTTP connections** - HTTP connections now default to CBOR protocol, fixing `data:` prefix issues
+- **`get()` full ID format** - `QuerySet.get("table:id")` now correctly parses and queries
+- **`get_related()` direction="in"** - Fixed to return actual related records instead of empty results
+- **`update()` table name** - Fixed bug where custom `table_name` was ignored
+
 ### v0.5.5 - CBOR Protocol & Field Aliases
 
 - **CBOR Protocol (Default)** - Binary protocol for WebSocket connections

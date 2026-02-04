@@ -227,13 +227,19 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create branch
+      - name: Prepare branch
         id: branch
         run: |
           BRANCH_NAME="surrealdb-update-${{ needs.check-surrealdb-release.outputs.latest-version }}"
           echo "branch-name=$BRANCH_NAME" >> $GITHUB_OUTPUT
 
-          git checkout -b "$BRANCH_NAME"
+          # Reuse existing branch if present to avoid non-fast-forward errors
+          git fetch origin "$BRANCH_NAME" || true
+          if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+            git checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
+          else
+            git checkout -B "$BRANCH_NAME"
+          fi
 
       - name: Update SurrealDB version file
         run: |
@@ -270,7 +276,7 @@ jobs:
 
       - name: Push branch
         run: |
-          git push -u origin "${{ steps.branch.outputs.branch-name }}"
+          git push --force-with-lease -u origin "${{ steps.branch.outputs.branch-name }}"
 
       - name: Create Pull Request
         id: create-pr

@@ -27,7 +27,6 @@ from uuid import UUID
 import cbor2
 from cbor2 import CBORTag
 
-
 # CBOR is always available (required dependency)
 CBOR_AVAILABLE = True
 
@@ -93,6 +92,10 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
     Custom CBOR encoder for SurrealDB types.
 
     Handles encoding of Python types to SurrealDB CBOR format.
+
+    Note: String record IDs (like "table:id") are NOT automatically converted
+    to RecordId objects. The caller must use RecordId objects explicitly when
+    needed (e.g., for record references in relation operations).
     """
     if isinstance(value, RecordId):
         # Encode RecordId as tagged array [table, id]
