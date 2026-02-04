@@ -6,6 +6,66 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.5.5] - 2026-02-03
+
+### Added
+
+- **CBOR Protocol Support** - Binary protocol for WebSocket connections (Issue #3)
+  - `cbor2` is now a **required dependency** (previously optional)
+  - CBOR is the **default protocol** for WebSocket connections
+  - Properly handles strings with `data:` prefix (no longer misinterpreted as record links)
+  - Custom CBOR tags for SurrealDB types: `RecordId`, `Table`, `Duration`, `DateTime`, `UUID`, `Decimal`
+  - `RPCRequest.to_cbor()` and `RPCResponse.from_cbor()` methods
+  - Aligns with official SurrealDB SDK protocol behavior
+
+- **`unset_connection_sync()` Method** (Issue #4)
+  - Synchronous version of `unset_connection()` for non-async contexts
+  - Useful in `atexit` handlers, `__del__` methods, and synchronous cleanup code
+  - Clears connection settings without async `close()` call
+
+- **Field Alias Support** (Issue #6)
+  - Map Python field names to different database column names
+  - Uses Pydantic `Field(alias="db_column_name")` syntax
+  - `populate_by_name=True` set by default in `BaseSurrealModel`
+  - All `model_dump()` calls use `by_alias=True` for database operations
+
+### Changed
+
+- **CBOR is now required** - `cbor2>=5.6.0` moved from optional to required dependency
+- **CBOR is the default protocol** - WebSocket connections use `protocol="cbor"` by default
+- Removed `[cbor]` optional extra from `pyproject.toml`
+- Updated `WebSocketConnection` docstring to reflect CBOR as recommended protocol
+- Version bump to 0.5.5
+
+### Fixed
+
+- **Issue #3** - Strings with `data:` prefix (like base64 images) no longer misinterpreted as record links
+  - JSON protocol interprets `data:xxx` as `record<data>` type
+  - CBOR protocol properly encodes strings without interpretation
+
+---
+
+## [0.5.4] - 2026-02-02
+
+### Added
+
+- **Record ID format handling** - `QuerySet.get()` now automatically handles both formats:
+  - Just the ID: `get("abc123")`
+  - Full SurrealDB format: `get("players:abc123")`
+
+- **`remove_relation()` accepts string IDs** - Now accepts both model instances and string IDs:
+  - Model instance: `await table.remove_relation("has_player", player_instance)`
+  - String ID (full format): `await table.remove_relation("has_player", "players:abc123")`
+  - String ID (just ID): `await table.remove_relation("has_player", "abc123")`
+
+- **`raw_query()` class method** - Execute arbitrary SurrealQL queries from model class
+
+### Changed
+
+- Version bump to 0.5.4
+
+---
+
 ## [0.5.3] - 2026-02-02
 
 ### Added

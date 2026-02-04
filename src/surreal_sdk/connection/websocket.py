@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from ..transaction import WebSocketTransaction
     from ..streaming.live_select import LiveSelectStream, LiveSubscriptionParams
 from ..protocol.rpc import RPCRequest, RPCResponse
+from ..protocol import cbor as cbor_module
 from ..exceptions import ConnectionError, LiveQueryError, TimeoutError
 
 
@@ -42,6 +43,7 @@ class WebSocketConnection(BaseSurrealConnection):
         auto_reconnect: bool = True,
         reconnect_interval: float = 1.0,
         max_reconnect_attempts: int = 5,
+        protocol: str = "cbor",
     ):
         """
         Initialize WebSocket connection.
@@ -54,6 +56,11 @@ class WebSocketConnection(BaseSurrealConnection):
             auto_reconnect: Whether to automatically reconnect on disconnect
             reconnect_interval: Seconds between reconnection attempts
             max_reconnect_attempts: Maximum reconnection attempts
+            protocol: Serialization protocol ("cbor" or "json").
+                CBOR is the default and recommended protocol as it properly
+                handles binary data and avoids string interpretation issues
+                (e.g., 'data:xxx' values being interpreted as record links).
+                Use "json" only for debugging or compatibility reasons.
         """
         # Normalize URL to WebSocket
         if url.startswith("http://"):
@@ -66,6 +73,11 @@ class WebSocketConnection(BaseSurrealConnection):
             url = url.rstrip("/") + "/rpc"
 
         super().__init__(url, namespace, database, timeout)
+
+        # Validate and set protocol
+        if protocol not in ("json", "cbor"):
+            raise ValueError(f"Invalid protocol '{protocol}'. Must be 'json' or 'cbor'.")
+        self.protocol = protocol
 
         self.auto_reconnect = auto_reconnect
         self.reconnect_interval = reconnect_interval
@@ -101,7 +113,7 @@ class WebSocketConnection(BaseSurrealConnection):
             self._ws = await self._session.ws_connect(
                 self.url,
                 timeout=ClientWSTimeout(ws_close=self.timeout),
-                protocols=["json"],  # Explicit JSON format for RPC
+                protocols=[self.protocol],  # Use configured protocol (json or cbor)
             )
             self._connected = True
 
@@ -177,10 +189,10 @@ class WebSocketConnection(BaseSurrealConnection):
         try:
             async for msg in self._ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    await self._handle_message(msg.data)
+                    await self._handle_message_json(msg.data)
                 elif msg.type == aiohttp.WSMsgType.BINARY:
-                    # CBOR support could be added here
-                    pass
+                    # CBOR protocol uses binary messages
+                    await self._handle_message_cbor(msg.data)
                 elif msg.type == aiohttp.WSMsgType.ERROR:
                     break
                 elif msg.type == aiohttp.WSMsgType.CLOSED:
@@ -196,13 +208,26 @@ class WebSocketConnection(BaseSurrealConnection):
             if not self._closing and self.auto_reconnect:
                 self._reconnect_task = asyncio.create_task(self._reconnect())
 
-    async def _handle_message(self, data: str) -> None:
-        """Handle incoming WebSocket message."""
+    async def _handle_message_json(self, data: str) -> None:
+        """Handle incoming JSON WebSocket message."""
         try:
             message = json.loads(data)
         except json.JSONDecodeError:
             return
 
+        await self._process_message(message)
+
+    async def _handle_message_cbor(self, data: bytes) -> None:
+        """Handle incoming CBOR WebSocket message."""
+        try:
+            message = cbor_module.decode(data)
+        except Exception:
+            return
+
+        await self._process_message(message)
+
+    async def _process_message(self, message: dict[str, Any]) -> None:
+        """Process a decoded message (from JSON or CBOR)."""
         msg_id = message.get("id")
 
         # Check if this is a response to a pending request
@@ -242,7 +267,7 @@ class WebSocketConnection(BaseSurrealConnection):
                 self._ws = await self._session.ws_connect(
                     self.url,
                     timeout=ClientWSTimeout(ws_close=self.timeout),
-                    protocols=["json"],
+                    protocols=[self.protocol],  # Use configured protocol
                 )
                 self._connected = True
                 self._reader_task = asyncio.create_task(self._read_loop())
@@ -304,6 +329,9 @@ class WebSocketConnection(BaseSurrealConnection):
                     new_id = result_data
                 elif isinstance(result_data, dict) and "result" in result_data:
                     new_id = str(result_data["result"])
+                elif hasattr(result_data, "__str__"):
+                    # Handle UUID objects from CBOR decoding
+                    new_id = str(result_data)
                 else:
                     raise LiveQueryError("Invalid live query response")
 
@@ -351,8 +379,11 @@ class WebSocketConnection(BaseSurrealConnection):
         self._pending[request.id] = future
 
         try:
-            # Send request
-            await self._ws.send_str(request.to_json())
+            # Send request using configured protocol
+            if self.protocol == "cbor":
+                await self._ws.send_bytes(request.to_cbor())
+            else:
+                await self._ws.send_str(request.to_json())
 
             # Wait for response with timeout
             response = await asyncio.wait_for(future, timeout=self.timeout)
@@ -398,11 +429,15 @@ class WebSocketConnection(BaseSurrealConnection):
             if response.results:
                 first_result = response.results[0]
                 if first_result.is_ok:
-                    # Result can be string UUID directly or dict with "result" key
+                    # Result can be string UUID directly, dict with "result" key,
+                    # or UUID object from CBOR decoding
                     if isinstance(first_result.result, str):
                         live_id = first_result.result
                     elif isinstance(first_result.result, dict) and "result" in first_result.result:
                         live_id = str(first_result.result["result"])
+                    elif hasattr(first_result.result, "__str__"):
+                        # Handle UUID objects from CBOR decoding
+                        live_id = str(first_result.result)
                     else:
                         raise LiveQueryError("Invalid live query response")
 

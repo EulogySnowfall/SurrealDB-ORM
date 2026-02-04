@@ -128,6 +128,9 @@ class BaseSurrealModel(BaseModel):
     All models that interact with SurrealDB should inherit from this class.
     Models are automatically registered for migration introspection.
 
+    Field aliases are supported for mapping Python field names to different
+    database column names:
+
     Example:
         class User(BaseSurrealModel):
             model_config = SurrealConfigDict(
@@ -138,7 +141,17 @@ class BaseSurrealModel(BaseModel):
             id: str | None = None
             email: str
             password: Encrypted
+
+        # With field alias (password in Python, password_hash in DB):
+        class User(BaseSurrealModel):
+            password: str = Field(alias="password_hash")
     """
+
+    # Default config that enables alias support:
+    # - populate_by_name: Accept both field name and alias when loading from DB
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
 
     # Private attribute to track if this instance has been persisted to the database.
     # This helps distinguish between create (first save) and update (subsequent saves).
@@ -425,7 +438,7 @@ class BaseSurrealModel(BaseModel):
 
         if tx is not None:
             # Use transaction
-            data = self.model_dump(exclude=exclude_fields, exclude_unset=True)
+            data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
 
             if self._db_persisted and id is not None:
                 # Already persisted: use merge for partial update
@@ -447,7 +460,7 @@ class BaseSurrealModel(BaseModel):
 
         # Original behavior without transaction
         client = await SurrealDBConnectionManager.get_client()
-        data = self.model_dump(exclude=exclude_fields, exclude_unset=True)
+        data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
 
         if self._db_persisted and id is not None:
             # Already persisted: use merge for partial update
@@ -492,7 +505,7 @@ class BaseSurrealModel(BaseModel):
         """
         # Build exclude set: always exclude 'id' and any server-generated fields
         exclude_fields = {"id"} | self.get_server_fields()
-        data = self.model_dump(exclude=exclude_fields, exclude_unset=True)
+        data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
         id = self.get_id()
 
         if id is None:

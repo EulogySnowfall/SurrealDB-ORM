@@ -29,6 +29,13 @@ from .streaming.live_select import (
     LiveSubscriptionParams,
 )
 from .protocol.rpc import RPCRequest, RPCResponse, RPCError
+from .protocol.cbor import (
+    CBOR_AVAILABLE,
+    RecordId,
+    Table,
+    Duration,
+    is_available as cbor_is_available,
+)
 from .types import (
     ResponseStatus,
     QueryResult,
@@ -86,6 +93,12 @@ __all__ = [
     "RPCRequest",
     "RPCResponse",
     "RPCError",
+    # CBOR Types
+    "CBOR_AVAILABLE",
+    "RecordId",
+    "Table",
+    "Duration",
+    "cbor_is_available",
     # Response Types
     "ResponseStatus",
     "QueryResult",
@@ -129,10 +142,17 @@ class SurrealDB:
             await db.signin("root", "root")
             result = await db.query("SELECT * FROM users")
 
-        # WebSocket connection (stateful)
+        # WebSocket connection (stateful, CBOR protocol - default)
+        # CBOR properly handles strings like 'data:image/png;base64,...' that
+        # JSON would incorrectly interpret as record links.
         async with SurrealDB.ws("ws://localhost:8000", "ns", "db") as db:
             await db.signin("root", "root")
             await db.live("users", callback=on_change)
+            # data:xxx values are handled correctly with CBOR
+
+        # WebSocket connection with JSON protocol (for debugging/compatibility)
+        async with SurrealDB.ws("ws://localhost:8000", "ns", "db", protocol="json") as db:
+            await db.signin("root", "root")
     """
 
     @staticmethod

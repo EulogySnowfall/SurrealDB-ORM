@@ -61,9 +61,11 @@ class SurrealDBConnectionManager:
     @classmethod
     async def unset_connection(cls) -> None:
         """
-        Set the connection kwargs for the SurrealDB instance.
+        Unset the connection kwargs and close any active connection.
 
-        :param kwargs: The connection kwargs for the SurrealDB instance.
+        This is an async method that properly closes the connection before
+        clearing the settings. Use unset_connection_sync() if you need a
+        synchronous version (e.g., in atexit handlers or non-async contexts).
         """
         cls.__url = None
         cls.__user = None
@@ -71,6 +73,31 @@ class SurrealDBConnectionManager:
         cls.__namespace = None
         cls.__database = None
         await cls.close_connection()
+
+    @classmethod
+    def unset_connection_sync(cls) -> None:
+        """
+        Synchronously unset the connection kwargs without closing the connection.
+
+        This method clears all connection settings but does NOT close the active
+        connection (since close() is async). Use this in contexts where you cannot
+        use async/await, such as:
+        - atexit handlers
+        - __del__ methods
+        - synchronous cleanup code
+
+        For proper cleanup that closes the connection, use the async unset_connection().
+
+        Note: The underlying connection object will be garbage collected, but the
+        WebSocket/HTTP session may not be cleanly closed. If possible, prefer
+        calling unset_connection() in an async context.
+        """
+        cls.__url = None
+        cls.__user = None
+        cls.__password = None
+        cls.__namespace = None
+        cls.__database = None
+        cls.__client = None
 
     @classmethod
     def is_connection_set(cls) -> bool:
