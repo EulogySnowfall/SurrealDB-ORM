@@ -6,6 +6,25 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.5.5.3] - 2026-02-04
+
+### Fixed
+
+- **Issue #10: RecordId objects in non-id fields not converted to strings**
+  - When using CBOR protocol, foreign key fields (like `user_id`, `table_id`) returned `RecordId` objects instead of strings
+  - This caused Pydantic validation errors and application failures
+  - Fix: `_preprocess_db_record()` now converts RecordId objects in ANY field to strings
+  - For the `id` field: extracts just the id part (e.g., `"abc123"`)
+  - For other fields: converts to "table:id" format (e.g., `"users:abc123"`)
+
+### Changed
+
+- `_convert_record_id_to_string()` - New helper function for converting RecordId objects
+- `_update_from_db()` now also handles RecordId conversion in non-id fields
+- Version bump to 0.5.5.3
+
+---
+
 ## [0.5.5.2] - 2026-02-04
 
 ### Fixed

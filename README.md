@@ -15,6 +15,10 @@
 
 ## What's New in 0.5.x
 
+### v0.5.5.3 - RecordId Conversion Fix
+
+- **Fixed RecordId objects in foreign key fields** - When using CBOR protocol, fields like `user_id`, `table_id` are now properly converted to `"table:id"` strings instead of raw RecordId objects, preventing Pydantic validation errors.
+
 ### v0.5.5.2 - Datetime Regression Fix
 
 - **Fixed datetime_type Pydantic validation error** - v0.5.5.1 introduced a regression where records with datetime fields failed validation, causing `from_db()` to return dicts instead of model instances
