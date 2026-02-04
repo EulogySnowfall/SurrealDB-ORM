@@ -15,6 +15,11 @@
 
 ## What's New in 0.5.x
 
+### v0.5.5.2 - Datetime Regression Fix
+
+- **Fixed datetime_type Pydantic validation error** - v0.5.5.1 introduced a regression where records with datetime fields failed validation, causing `from_db()` to return dicts instead of model instances
+- **New `_preprocess_db_record()` method** - Properly handles datetime parsing and RecordId conversion before Pydantic validation
+
 ### v0.5.5.1 - Critical Bug Fixes
 
 - **Record ID escaping** - IDs starting with digits (e.g., `7abc123`) now properly escaped with backticks

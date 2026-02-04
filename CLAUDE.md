@@ -10,7 +10,31 @@
 
 ---
 
-## Current Version: 0.5.5.1 (Alpha)
+## Current Version: 0.5.5.2 (Alpha)
+
+### What's New in 0.5.5.2
+
+- **Critical Bug Fix: Issue #9 (datetime_type regression)**
+
+  - **Fixed Pydantic validation error for datetime fields** - In v0.5.5.1, records containing datetime fields failed Pydantic validation when loaded from the database, causing `from_db()` to silently return dict values instead of model instances.
+
+  - **Root cause**: The `from_db()` method passed raw database data directly to Pydantic without preprocessing datetime fields. When SurrealDB returns datetime values (especially via CBOR protocol), they may be in formats that need normalization before Pydantic can validate them.
+
+  - **Fix**: Added `_preprocess_db_record()` method to handle datetime parsing and RecordId conversion before Pydantic validation. The `_parse_datetime()` function now handles all datetime formats:
+    - ISO 8601 strings (JSON protocol): `"2026-02-02T13:21:23.641315924Z"`
+    - Python datetime objects (CBOR protocol with proper decoding)
+    - CBOR timestamp arrays: `[seconds_since_epoch, nanoseconds]`
+
+    ```python
+    # Now works correctly - returns model instance, not dict
+    records = await GameTable.objects().exec()
+    assert isinstance(records[0], GameTable)  # True in 0.5.5.2, was False in 0.5.5.1
+
+    # Datetime fields are properly parsed
+    assert isinstance(records[0].created_at, datetime)
+    ```
+
+  - **Impact**: This fix restores proper ORM functionality that was broken in v0.5.5.1. Users who experienced "dict object has no attribute 'model_dump'" errors or similar issues should upgrade to 0.5.5.2.
 
 ### What's New in 0.5.5.1
 

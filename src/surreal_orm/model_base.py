@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Self, TYPE_CHECKING, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
@@ -72,7 +72,9 @@ def _parse_datetime(value: Any) -> Any:
     """
     Parse a datetime value from SurrealDB.
 
-    SurrealDB returns datetime as ISO 8601 strings.
+    SurrealDB returns datetime in different formats depending on the protocol:
+    - JSON: ISO 8601 strings (e.g., "2026-02-02T13:21:23.641315924Z")
+    - CBOR: Can be Python datetime objects, or [seconds, nanoseconds] arrays
     """
     if value is None:
         return None
@@ -84,6 +86,15 @@ def _parse_datetime(value: Any) -> Any:
             # SurrealDB returns format like "2026-02-02T13:21:23.641315924Z"
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
+            pass
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        # CBOR format: [seconds_since_epoch, nanoseconds]
+        try:
+            seconds, nanoseconds = value
+            # Convert nanoseconds to microseconds (Python datetime precision)
+            microseconds = nanoseconds // 1000
+            return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(microsecond=microseconds)
+        except (TypeError, ValueError, OSError):
             pass
     return value  # Return as-is if we can't parse
 
@@ -340,6 +351,11 @@ class BaseSurrealModel(BaseModel):
     def from_db(cls, record: dict | list | None) -> Self | list[Self]:
         """
         Create an instance from a SurrealDB record.
+
+        This method handles type coercion for fields that need special handling:
+        - datetime fields: SurrealDB may return ISO strings or Python datetime objects
+          with timezone info that needs normalization for Pydantic validation.
+        - id field: RecordId objects from CBOR responses are converted to strings.
         """
         if record is None:
             raise cls.DoesNotExist("Record not found.")
@@ -347,12 +363,45 @@ class BaseSurrealModel(BaseModel):
         if isinstance(record, list):
             return [cls.from_db(rs) for rs in record]  # type: ignore
 
-        instance = cls(**record)
+        # Preprocess record data before Pydantic validation
+        # This handles datetime parsing and RecordId conversion
+        processed_record = cls._preprocess_db_record(record)
+
+        instance = cls(**processed_record)
         instance._db_persisted = True
         # Clear fields_set so DB-loaded fields aren't considered "user-set"
         # This allows exclude_unset=True to work correctly on subsequent saves
         object.__setattr__(instance, "__pydantic_fields_set__", set())
         return instance
+
+    @classmethod
+    def _preprocess_db_record(cls, record: dict[str, Any]) -> dict[str, Any]:
+        """
+        Preprocess a database record before Pydantic validation.
+
+        Handles type coercion for:
+        - datetime fields: Parse ISO strings and normalize timezone-aware datetimes
+        - id field: Convert RecordId objects to string IDs
+
+        This preprocessing ensures that values from SurrealDB (especially via CBOR)
+        are in formats that Pydantic can validate correctly.
+        """
+        field_types = cls.model_fields
+        processed: dict[str, Any] = {}
+
+        for key, value in record.items():
+            if key == "id":
+                # Handle RecordId objects from CBOR responses
+                value = _parse_record_id(value)
+            elif key in field_types:
+                # Check if this field is a datetime type and parse if needed
+                field_info = field_types[key]
+                if _is_datetime_field(field_info.annotation):
+                    value = _parse_datetime(value)
+
+            processed[key] = value
+
+        return processed
 
     @model_validator(mode="before")
     @classmethod

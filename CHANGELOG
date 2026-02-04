@@ -6,6 +6,34 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.5.5.2] - 2026-02-04
+
+### Fixed
+
+- **Issue #9 (CRITICAL): datetime_type Pydantic validation regression**
+  - In v0.5.5.1, records with datetime fields failed Pydantic validation
+  - `from_db()` silently returned dicts instead of model instances
+  - Caused widespread application failures ("'dict' object has no attribute 'model_dump'")
+  - Root cause: `from_db()` passed raw database data directly to Pydantic without preprocessing
+  - Fix: Added `_preprocess_db_record()` method to handle datetime parsing and RecordId conversion
+
+### Added
+
+- **`BaseSurrealModel._preprocess_db_record()`** - New classmethod that preprocesses database records
+  - Parses datetime fields in all formats:
+    - ISO 8601 strings (JSON protocol)
+    - Python datetime objects (CBOR protocol)
+    - CBOR timestamp arrays `[seconds, nanoseconds]`
+  - Converts RecordId objects from CBOR responses to string IDs
+  - Called by `from_db()` before Pydantic validation
+
+### Changed
+
+- `from_db()` now uses `_preprocess_db_record()` for consistent handling with `_update_from_db()`
+- Version bump to 0.5.5.2
+
+---
+
 ## [0.5.5.1] - 2026-02-03
 
 ### Fixed
