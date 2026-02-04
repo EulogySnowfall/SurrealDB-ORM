@@ -278,6 +278,28 @@ async def test_unset(setup_connection_manager: AsyncGenerator[Any, Any]) -> None
     )
 
 
+def test_unset_connection_sync() -> None:
+    """Test synchronous unsetting of connection.
+
+    This tests the sync version of unset_connection which can be used
+    in non-async contexts like atexit handlers or __del__ methods.
+    """
+    # Setup: set connection
+    SurrealDBConnectionManager.set_connection(
+        SURREALDB_URL,
+        SURREALDB_USER,
+        SURREALDB_PASS,
+        SURREALDB_NAMESPACE,
+        SURREALDB_DATABASE,
+    )
+    assert SurrealDBConnectionManager.is_connection_set() is True
+
+    # Test: sync unset clears settings
+    SurrealDBConnectionManager.unset_connection_sync()
+    assert SurrealDBConnectionManager.is_connection_set() is False
+    assert SurrealDBConnectionManager.is_connected() is False
+
+
 @pytest.mark.integration
 async def test_reconnect(setup_connection_manager: AsyncGenerator[Any, Any]) -> None:
     await SurrealDBConnectionManager.close_connection()

@@ -15,6 +15,22 @@
 
 ## What's New in 0.5.x
 
+### v0.5.5 - CBOR Protocol & Field Aliases
+
+- **CBOR Protocol (Default)** - Binary protocol for WebSocket connections
+  - `cbor2` is now a **required dependency**
+  - CBOR is the **default protocol** for WebSocket (fixes `data:` prefix string issues)
+  - Aligns with official SurrealDB SDK behavior
+- **`unset_connection_sync()`** - Synchronous version for non-async cleanup contexts
+- **Field Alias Support** - Map Python field names to different DB column names
+  - Use `Field(alias="db_column")` to store under a different name in DB
+
+### v0.5.4 - API Improvements
+
+- **Record ID format handling** - `QuerySet.get()` accepts both `"abc123"` and `"table:abc123"`
+- **`remove_relation()` accepts string IDs** - Pass string IDs instead of model instances
+- **`raw_query()` class method** - Execute arbitrary SurrealQL from model class
+
 ### v0.5.3.3 - Bug Fix
 
 - **`from_db()` fields_set fix** - Fixed bug where DB-loaded fields were incorrectly included in updates via `exclude_unset=True`
@@ -96,17 +112,16 @@
 ## Installation
 
 ```bash
-# Basic installation
+# Basic installation (includes CBOR support)
 pip install surrealdb-orm
 
 # With CLI support
 pip install surrealdb-orm[cli]
-
-# Full installation (CLI + CBOR)
-pip install surrealdb-orm[all]
 ```
 
 **Requirements:** Python 3.12+ | SurrealDB 2.6.0+
+
+**Included:** `pydantic`, `httpx`, `aiohttp`, `cbor2` (CBOR is the default protocol for WebSocket)
 
 ---
 
@@ -483,6 +498,28 @@ make db-dev            # Dev instance (port 8000)
 
 # Lint
 make ci-lint           # Run all linters
+```
+
+---
+
+## Related Projects
+
+### [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite)
+
+A lightweight Django-style ORM built on the **official SurrealDB Python SDK**.
+
+| Feature         | SurrealDB-ORM          | SurrealDB-ORM-lite   |
+| --------------- | ---------------------- | -------------------- |
+| SDK             | Custom (`surreal_sdk`) | Official `surrealdb` |
+| Live Queries    | Full support           | Limited              |
+| CBOR Protocol   | Default                | SDK-dependent        |
+| Transactions    | Full support           | Basic                |
+| Typed Functions | Yes                    | No                   |
+
+Choose **SurrealDB-ORM-lite** if you prefer to use the official SDK with basic ORM features.
+
+```bash
+pip install surreal-orm-lite
 ```
 
 ---

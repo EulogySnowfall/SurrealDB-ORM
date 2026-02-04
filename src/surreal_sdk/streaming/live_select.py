@@ -190,6 +190,9 @@ class LiveSelectStream:
                         self._live_id = result_data
                     elif isinstance(result_data, dict) and "result" in result_data:
                         self._live_id = str(result_data["result"])
+                    elif hasattr(result_data, "__str__"):
+                        # Handle UUID objects from CBOR decoding
+                        self._live_id = str(result_data)
                     else:
                         raise LiveQueryError("Invalid live query response")
 

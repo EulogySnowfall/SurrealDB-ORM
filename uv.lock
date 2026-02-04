@@ -1527,21 +1527,18 @@ wheels = [
 
 [[package]]
 name = "surrealdb-orm"
-version = "0.5.3.3"
+version = "0.5.5"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "cbor2" },
     { name = "httpx" },
     { name = "pydantic" },
 ]
 
 [package.optional-dependencies]
 all = [
-    { name = "cbor2" },
     { name = "click" },
-]
-cbor = [
-    { name = "cbor2" },
 ]
 cli = [
     { name = "click" },
@@ -1568,14 +1565,13 @@ lint = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
-    { name = "cbor2", marker = "extra == 'all'", specifier = ">=5.6.0" },
-    { name = "cbor2", marker = "extra == 'cbor'", specifier = ">=5.6.0" },
+    { name = "cbor2", specifier = ">=5.6.0" },
     { name = "click", marker = "extra == 'all'", specifier = ">=8.1.0" },
     { name = "click", marker = "extra == 'cli'", specifier = ">=8.1.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "pydantic", specifier = ">=2.10.5" },
 ]
-provides-extras = ["cbor", "cli", "all"]
+provides-extras = ["cli", "all"]
 
 [package.metadata.requires-dev]
 dev = [

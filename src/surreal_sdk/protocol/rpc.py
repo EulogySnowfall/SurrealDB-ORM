@@ -2,6 +2,7 @@
 SurrealDB RPC Protocol Implementation.
 
 Handles the JSON-RPC style messaging format used by SurrealDB.
+Supports both JSON and CBOR serialization formats.
 """
 
 from dataclasses import dataclass, field
@@ -10,6 +11,8 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 import json
+
+from . import cbor as cbor_module
 
 
 class SurrealJSONEncoder(json.JSONEncoder):
@@ -65,6 +68,19 @@ class RPCRequest:
     def to_json(self) -> str:
         """Serialize to JSON string with custom encoder for datetime, UUID, etc."""
         return json.dumps(self.to_dict(), cls=SurrealJSONEncoder)
+
+    def to_cbor(self) -> bytes:
+        """
+        Serialize to CBOR bytes.
+
+        CBOR encoding is recommended for SurrealDB as it properly handles
+        binary data and avoids string interpretation issues (e.g., 'data:xxx'
+        being interpreted as record links).
+
+        Raises:
+            ImportError: If cbor2 is not installed
+        """
+        return cbor_module.encode(self.to_dict())
 
     @classmethod
     def query(cls, sql: str, vars: dict[str, Any] | None = None, request_id: int = 1) -> "RPCRequest":
@@ -203,6 +219,23 @@ class RPCResponse:
     def from_json(cls, json_str: str) -> "RPCResponse":
         """Parse from JSON string."""
         data = json.loads(json_str)
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_cbor(cls, cbor_data: bytes) -> "RPCResponse":
+        """
+        Parse from CBOR bytes.
+
+        Args:
+            cbor_data: CBOR-encoded response bytes
+
+        Returns:
+            Parsed RPCResponse
+
+        Raises:
+            ImportError: If cbor2 is not installed
+        """
+        data = cbor_module.decode(cbor_data)
         return cls.from_dict(data)
 
 

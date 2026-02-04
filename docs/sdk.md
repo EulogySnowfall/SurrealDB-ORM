@@ -114,6 +114,9 @@ conn = HTTPConnection(
 
 Stateful connection for real-time features and Live Queries.
 
+**Protocol:** WebSocket connections use **CBOR** (binary) protocol by default (v0.5.5+).
+CBOR properly handles strings like `data:image/png;base64,...` that JSON would incorrectly interpret as record links.
+
 ```python
 from surreal_sdk import WebSocketConnection
 
@@ -124,6 +127,7 @@ conn = WebSocketConnection(
     auto_reconnect=True,
     reconnect_interval=1.0,
     max_reconnect_attempts=5,
+    protocol="cbor",  # Default. Use "json" only for debugging.
 )
 
 async with conn:

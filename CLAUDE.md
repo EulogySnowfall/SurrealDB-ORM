@@ -10,7 +10,53 @@
 
 ---
 
-## Current Version: 0.5.4 (Alpha)
+## Current Version: 0.5.5 (Alpha)
+
+### What's New in 0.5.5
+
+- **CBOR Protocol (Default)** - Binary protocol for WebSocket connections
+
+  - **CBOR is now required** - `cbor2>=5.6.0` is a required dependency (no longer optional)
+  - **CBOR is the default protocol** - WebSocket connections use `protocol="cbor"` by default
+  - **Aligns with official SurrealDB SDK** - Uses the same protocol as the official Python SDK
+
+    ```python
+    # CBOR is the default protocol (no need to specify)
+    async with SurrealDB.ws("ws://localhost:8000", "ns", "db") as db:
+        # data:xxx strings are handled correctly
+        await db.create("files", {"content": "data:image/png;base64,..."})
+
+    # Use JSON only for debugging/compatibility
+    async with SurrealDB.ws("ws://localhost:8000", "ns", "db", protocol="json") as db:
+        ...
+    ```
+
+  - **Fixes data: prefix issue** - JSON protocol incorrectly interprets `data:xxx` strings as record links. CBOR properly encodes them as strings.
+  - **Custom CBOR tags** - Full support for SurrealDB's custom CBOR tags (RecordId, Table, Duration, DateTime, UUID, Decimal)
+
+- **Field Alias Support** - Map Python field names to different database column names
+
+  - **Pydantic Field aliases** - Use `Field(alias="db_column_name")` to map Python fields to DB columns:
+
+    ```python
+    class User(BaseSurrealModel):
+        # Python 'password' maps to 'password_hash' in database
+        password: str = Field(alias="password_hash")
+
+    user = User(password="secret")  # Use Python name
+    await user.save()  # Saves as password_hash in DB
+    ```
+
+  - **Automatic bidirectional mapping** - Saves use alias names, loads accept both names
+
+- **Sync `unset_connection()`** - Synchronous version for non-async contexts
+
+  - **`unset_connection_sync()`** - New method for use in atexit handlers or `__del__` methods:
+
+    ```python
+    # In non-async cleanup code
+    SurrealDBConnectionManager.unset_connection_sync()
+    ```
 
 ### What's New in 0.5.4
 
@@ -374,6 +420,7 @@ surreal-orm rollback 0001_initial
 - `pydantic >= 2.10.5` - Model validation
 - `httpx >= 0.27.0` - HTTP client
 - `aiohttp >= 3.9.0` - WebSocket client
+- `cbor2 >= 5.6.0` - CBOR protocol (required, default for WebSocket)
 - `click >= 8.1.0` - CLI (optional, with `[cli]`)
 
 **No dependency on the official `surrealdb` package!**
