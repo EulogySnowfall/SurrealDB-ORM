@@ -38,6 +38,15 @@ from .fields import (
 )
 from .auth import AuthenticatedUserMixin
 from .aggregations import Aggregation, Count, Sum, Avg, Min, Max
+from .signals import (
+    Signal,
+    pre_save,
+    post_save,
+    pre_delete,
+    post_delete,
+    pre_update,
+    post_update,
+)
 
 __all__ = [
     # Connection
@@ -76,6 +85,14 @@ __all__ = [
     "is_relation_field",
     # Auth
     "AuthenticatedUserMixin",
+    # Signals
+    "Signal",
+    "pre_save",
+    "post_save",
+    "pre_delete",
+    "post_delete",
+    "pre_update",
+    "post_update",
 ]
 
-__version__ = "0.5.6"
+__version__ = "0.5.7"
