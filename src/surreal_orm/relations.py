@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .connection_manager import SurrealDBConnectionManager
 from .fields.relation import RelationInfo
+from .utils import escape_record_id
 
 if TYPE_CHECKING:
     from .model_base import BaseSurrealModel
@@ -143,8 +144,9 @@ class RelationQuerySet:
         if not source_id:
             raise ValueError("Cannot traverse relations from unsaved instance")
 
-        # Build the traversal path
-        path_parts = [f"{source_table}:{source_id}"]
+        # Build the traversal path with properly escaped ID
+        escaped_id = escape_record_id(source_id)
+        path_parts = [f"{source_table}:{escaped_id}"]
         variables: dict[str, Any] = {}
         where_clauses: list[str] = []
         var_counter = 0

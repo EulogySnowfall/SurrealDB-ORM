@@ -28,6 +28,8 @@ from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, core_schema
 
+from surreal_orm.utils import escape_record_id
+
 if TYPE_CHECKING:
     pass
 
@@ -71,15 +73,18 @@ class RelationInfo:
         Returns:
             SurrealQL traversal query string
         """
+        # Escape the ID if it starts with a digit or contains special characters
+        escaped_id = escape_record_id(from_id)
+
         if self.relation_type == "relation":
             if self.reverse:
-                return f"SELECT * FROM {from_table}:{from_id}<-{self.edge_table}<-{self.to_model}"
-            return f"SELECT * FROM {from_table}:{from_id}->{self.edge_table}->{self.to_model}"
+                return f"SELECT * FROM {from_table}:{escaped_id}<-{self.edge_table}<-{self.to_model}"
+            return f"SELECT * FROM {from_table}:{escaped_id}->{self.edge_table}->{self.to_model}"
         elif self.relation_type == "foreign_key":
-            return f"SELECT * FROM {self.to_model} WHERE id = {from_table}:{from_id}.{self.edge_table}"
+            return f"SELECT * FROM {self.to_model} WHERE id = {from_table}:{escaped_id}.{self.edge_table}"
         else:  # many_to_many
             through = self.through or f"{from_table}_{self.to_model}"
-            return f"SELECT * FROM {from_table}:{from_id}->{through}->{self.to_model}"
+            return f"SELECT * FROM {from_table}:{escaped_id}->{through}->{self.to_model}"
 
 
 class _ForeignKeyMarker:

@@ -10,7 +10,29 @@
 
 ---
 
-## Current Version: 0.5.5.3 (Alpha)
+## Current Version: 0.5.6 (Alpha)
+
+### What's New in 0.5.6
+
+- **Bug Fix: Issue #8 bis (Numeric ID escaping in relation queries)**
+
+  - **Fixed missing ID escaping in graph traversal queries** - When using `get_related()`, `RelationQuerySet`, or `RelationInfo.get_traversal_query()` with IDs starting with digits, the queries would fail with parse errors.
+
+    ```python
+    # Before (v0.5.5.3) - Parse error for numeric IDs in relations
+    table = GameTable(id="7qvdzsc14e5clo8sg064", ...)
+    await table.save()
+    players = await table.get_related("has_player", direction="out", model_class=Player)
+    # Parse error: Failed to parse query - expected identifier, found '7qvdzsc'
+
+    # After (v0.5.6) - Properly escaped
+    players = await table.get_related("has_player", direction="out", model_class=Player)
+    # Generates: SELECT VALUE out.* FROM has_player WHERE in = game_tables:`7qvdzsc14e5clo8sg064`;
+    ```
+
+  - **Files Fixed**:
+    - `fields/relation.py` - `RelationInfo.get_traversal_query()` now uses `escape_record_id()`
+    - `relations.py` - `RelationQuerySet._build_traversal_query()` now uses `escape_record_id()`
 
 ### What's New in 0.5.5.3
 

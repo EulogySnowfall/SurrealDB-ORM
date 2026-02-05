@@ -1516,3 +1516,157 @@ class TestRecordIdConversion:
         # __pydantic_fields_set__ should be preserved (cleared by _update_from_db)
         # This ensures exclude_unset=True works correctly after DB load
         assert instance.__pydantic_fields_set__ == original_fields_set
+
+
+# =============================================================================
+# Issue #8 (v0.5.6): Numeric ID escaping in relation queries
+# =============================================================================
+
+
+class TestRelationInfoNumericIdEscaping:
+    """
+    Test that RelationInfo.get_traversal_query() properly escapes IDs starting with digits.
+
+    This fixes a bug where graph traversal queries would fail with parse errors
+    when the source record ID started with a digit.
+    """
+
+    def test_get_traversal_query_escapes_numeric_id(self) -> None:
+        """get_traversal_query should escape IDs starting with digits."""
+        from src.surreal_orm.fields.relation import RelationInfo
+
+        rel_info = RelationInfo(
+            to_model="users",
+            relation_type="relation",
+            edge_table="follows",
+        )
+
+        # Numeric ID should be escaped with backticks
+        query = rel_info.get_traversal_query("users", "7abc123")
+        assert "`7abc123`" in query
+        assert "users:`7abc123`" in query
+        assert query == "SELECT * FROM users:`7abc123`->follows->users"
+
+    def test_get_traversal_query_escapes_numeric_id_reverse(self) -> None:
+        """get_traversal_query should escape IDs in reverse direction."""
+        from src.surreal_orm.fields.relation import RelationInfo
+
+        rel_info = RelationInfo(
+            to_model="users",
+            relation_type="relation",
+            edge_table="follows",
+            reverse=True,
+        )
+
+        query = rel_info.get_traversal_query("users", "0test")
+        assert "`0test`" in query
+        assert query == "SELECT * FROM users:`0test`<-follows<-users"
+
+    def test_get_traversal_query_escapes_numeric_id_foreign_key(self) -> None:
+        """get_traversal_query should escape IDs for foreign key relations."""
+        from src.surreal_orm.fields.relation import RelationInfo
+
+        rel_info = RelationInfo(
+            to_model="profiles",
+            relation_type="foreign_key",
+            edge_table="profile",
+        )
+
+        query = rel_info.get_traversal_query("users", "123")
+        assert "`123`" in query
+        assert "users:`123`" in query
+
+    def test_get_traversal_query_escapes_numeric_id_many_to_many(self) -> None:
+        """get_traversal_query should escape IDs for many-to-many relations."""
+        from src.surreal_orm.fields.relation import RelationInfo
+
+        rel_info = RelationInfo(
+            to_model="groups",
+            relation_type="many_to_many",
+            through="membership",
+        )
+
+        query = rel_info.get_traversal_query("users", "1a2b3c")
+        assert "`1a2b3c`" in query
+        assert query == "SELECT * FROM users:`1a2b3c`->membership->groups"
+
+    def test_get_traversal_query_no_escape_for_normal_id(self) -> None:
+        """get_traversal_query should not escape normal IDs."""
+        from src.surreal_orm.fields.relation import RelationInfo
+
+        rel_info = RelationInfo(
+            to_model="users",
+            relation_type="relation",
+            edge_table="follows",
+        )
+
+        query = rel_info.get_traversal_query("users", "abc123")
+        assert "`" not in query
+        assert query == "SELECT * FROM users:abc123->follows->users"
+
+
+class TestRelationQuerySetNumericIdEscaping:
+    """
+    Test that RelationQuerySet._build_traversal_query() properly escapes IDs starting with digits.
+    """
+
+    def test_build_traversal_query_escapes_numeric_source_id(self) -> None:
+        """_build_traversal_query should escape source IDs starting with digits."""
+        from src.surreal_orm.relations import RelationQuerySet
+        from src.surreal_orm.fields.relation import RelationInfo
+
+        # Create a mock instance with a numeric ID
+        class MockInstance:
+            def get_table_name(self):
+                return "game_tables"
+
+            def get_id(self):
+                return "7qvdzsc14e5clo8sg064"
+
+        rel_info = RelationInfo(
+            to_model="players",
+            relation_type="relation",
+            edge_table="has_player",
+        )
+
+        queryset = RelationQuerySet(
+            MockInstance(),
+            rel_info,
+            [(rel_info, {})],
+        )
+
+        query, _ = queryset._build_traversal_query()
+
+        # The source ID should be escaped
+        assert "`7qvdzsc14e5clo8sg064`" in query
+        assert "game_tables:`7qvdzsc14e5clo8sg064`" in query
+
+    def test_build_traversal_query_no_escape_for_normal_source_id(self) -> None:
+        """_build_traversal_query should not escape normal source IDs."""
+        from src.surreal_orm.relations import RelationQuerySet
+        from src.surreal_orm.fields.relation import RelationInfo
+
+        class MockInstance:
+            def get_table_name(self):
+                return "game_tables"
+
+            def get_id(self):
+                return "abc123"
+
+        rel_info = RelationInfo(
+            to_model="players",
+            relation_type="relation",
+            edge_table="has_player",
+        )
+
+        queryset = RelationQuerySet(
+            MockInstance(),
+            rel_info,
+            [(rel_info, {})],
+        )
+
+        query, _ = queryset._build_traversal_query()
+
+        # Normal IDs should not be escaped
+        assert "`" not in query
+        assert "game_tables:abc123" in query

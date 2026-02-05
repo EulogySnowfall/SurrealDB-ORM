@@ -79,3 +79,6 @@ dmypy.json
 
 # Claude
 .claude/
+
+# Interne
+features/

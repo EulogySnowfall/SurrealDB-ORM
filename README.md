@@ -15,6 +15,10 @@
 
 ## What's New in 0.5.x
 
+### v0.5.6 - Relation Query ID Escaping Fix
+
+- **Fixed ID escaping in relation queries** - When using `get_related()`, `RelationQuerySet`, or graph traversal with IDs starting with digits, queries now properly escape the IDs with backticks, preventing parse errors.
+
 ### v0.5.5.3 - RecordId Conversion Fix
 
 - **Fixed RecordId objects in foreign key fields** - When using CBOR protocol, fields like `user_id`, `table_id` are now properly converted to `"table:id"` strings instead of raw RecordId objects, preventing Pydantic validation errors.
