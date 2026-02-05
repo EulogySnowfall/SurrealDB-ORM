@@ -15,6 +15,22 @@
 
 ## What's New in 0.5.x
 
+### v0.5.7 - Model Signals
+
+- **Django-style Model Signals** - Event hooks for model lifecycle operations
+  - `pre_save`, `post_save` - Before/after save operations
+  - `pre_delete`, `post_delete` - Before/after delete operations
+  - `pre_update`, `post_update` - Before/after update/merge operations
+
+  ```python
+  from surreal_orm import post_save, Player
+
+  @post_save.connect(Player)
+  async def on_player_saved(sender, instance, created, **kwargs):
+      if instance.is_ready:
+          await ws_manager.broadcast({"type": "player_ready", "id": instance.id})
+  ```
+
 ### v0.5.6 - Relation Query ID Escaping Fix
 
 - **Fixed ID escaping in relation queries** - When using `get_related()`, `RelationQuerySet`, or graph traversal with IDs starting with digits, queries now properly escape the IDs with backticks, preventing parse errors.

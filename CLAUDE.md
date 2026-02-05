@@ -10,7 +10,39 @@
 
 ---
 
-## Current Version: 0.5.6 (Alpha)
+## Current Version: 0.5.7 (Alpha)
+
+### What's New in 0.5.7
+
+- **Model Signals** - Django-style event hooks for model lifecycle operations
+
+  - **Signal types**: `pre_save`, `post_save`, `pre_delete`, `post_delete`, `pre_update`, `post_update`
+  - **Use case**: Push real-time updates to WebSocket clients immediately after database operations
+
+  ```python
+  from surreal_orm import post_save, post_delete
+
+  @post_save.connect(Player)
+  async def on_player_saved(sender, instance, created, **kwargs):
+      """Called after any Player is saved."""
+      if instance.is_ready:
+          await ws_manager.broadcast_to_table(
+              instance.table_id,
+              {"type": "player_ready", "player_id": str(instance.id)}
+          )
+
+  @post_delete.connect(Player)
+  async def on_player_deleted(sender, instance, **kwargs):
+      """Called after any Player is deleted."""
+      await ws_manager.broadcast({"type": "player_left", "id": instance.id})
+  ```
+
+  - **Signal arguments**:
+    - `sender`: The model class
+    - `instance`: The model instance
+    - `created` (save only): True if new record, False if update
+    - `update_fields` (update only): Dict of fields being updated
+    - `tx`: Transaction context if within a transaction
 
 ### What's New in 0.5.6
 

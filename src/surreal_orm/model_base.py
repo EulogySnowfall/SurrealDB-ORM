@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 from .connection_manager import SurrealDBConnectionManager
 from .types import SchemaMode, TableType
 from .utils import format_thing, parse_record_id
+from . import signals as model_signals
 
 if TYPE_CHECKING:
     from surreal_sdk.transaction import BaseTransaction, HTTPTransaction
@@ -520,6 +521,10 @@ class BaseSurrealModel(BaseModel):
         For new records with ID: uses upsert() to create or fully replace.
         For new records without ID: uses create() to auto-generate an ID.
 
+        Signals:
+            - pre_save: Sent before the save operation.
+            - post_save: Sent after the save operation completes.
+
         Args:
             tx: Optional transaction to use for this operation.
                 If provided, the operation will be part of the transaction.
@@ -532,6 +537,17 @@ class BaseSurrealModel(BaseModel):
             async with SurrealDBConnectionManager.transaction() as tx:
                 await user.save(tx=tx)
         """
+        # Determine if this is a create or update
+        created = not self._db_persisted
+
+        # Send pre_save signal
+        await model_signals.pre_save.send(
+            sender=self.__class__,
+            instance=self,
+            created=created,
+            tx=tx,
+        )
+
         # Build exclude set: always exclude 'id' and any server-generated fields
         exclude_fields = {"id"} | self.get_server_fields()
         id = self.get_id()
@@ -546,6 +562,13 @@ class BaseSurrealModel(BaseModel):
                 # Only sends explicitly set fields, preserving server-side values
                 thing = format_thing(table, id)
                 await tx.merge(thing, data)
+                # Send post_save signal
+                await model_signals.post_save.send(
+                    sender=self.__class__,
+                    instance=self,
+                    created=False,
+                    tx=tx,
+                )
                 return self
 
             if id is not None:
@@ -557,6 +580,13 @@ class BaseSurrealModel(BaseModel):
                 await tx.create(table, data)
 
             self._db_persisted = True
+            # Send post_save signal
+            await model_signals.post_save.send(
+                sender=self.__class__,
+                instance=self,
+                created=created,
+                tx=tx,
+            )
             return self
 
         # Original behavior without transaction
@@ -568,6 +598,13 @@ class BaseSurrealModel(BaseModel):
             # Only sends explicitly set fields, preserving server-side values
             thing = format_thing(table, id)
             await client.merge(thing, data)
+            # Send post_save signal
+            await model_signals.post_save.send(
+                sender=self.__class__,
+                instance=self,
+                created=False,
+                tx=tx,
+            )
             return self
 
         if id is not None:
@@ -575,6 +612,13 @@ class BaseSurrealModel(BaseModel):
             thing = format_thing(table, id)
             await client.upsert(thing, data)
             self._db_persisted = True
+            # Send post_save signal
+            await model_signals.post_save.send(
+                sender=self.__class__,
+                instance=self,
+                created=True,
+                tx=tx,
+            )
             return self
 
         # Auto-generate the ID
@@ -590,6 +634,13 @@ class BaseSurrealModel(BaseModel):
         record = result.record
         if isinstance(record, dict):
             self._update_from_db(record)
+            # Send post_save signal
+            await model_signals.post_save.send(
+                sender=self.__class__,
+                instance=self,
+                created=True,
+                tx=tx,
+            )
             return self
 
         raise SurrealDbError("Can't save data, no record returned.")  # pragma: no cover
@@ -600,6 +651,10 @@ class BaseSurrealModel(BaseModel):
 
         Uses merge() to only update the specified fields, preserving
         any fields that weren't explicitly set.
+
+        Signals:
+            - pre_update: Sent before the update operation.
+            - post_update: Sent after the update operation completes.
 
         Args:
             tx: Optional transaction to use for this operation.
@@ -612,16 +667,38 @@ class BaseSurrealModel(BaseModel):
         if record_id is None:
             raise SurrealDbError("Can't update data, no id found.")
 
+        # Send pre_update signal
+        await model_signals.pre_update.send(
+            sender=self.__class__,
+            instance=self,
+            update_fields=data,
+            tx=tx,
+        )
+
         thing = format_thing(self.get_table_name(), record_id)
 
         if tx is not None:
             # Use merge for partial update - preserves unspecified fields
             await tx.merge(thing, data)
+            # Send post_update signal
+            await model_signals.post_update.send(
+                sender=self.__class__,
+                instance=self,
+                update_fields=data,
+                tx=tx,
+            )
             return None
 
         client = await SurrealDBConnectionManager.get_client()
         # Use merge for partial update - preserves unspecified fields
         result = await client.merge(thing, data)
+        # Send post_update signal
+        await model_signals.post_update.send(
+            sender=self.__class__,
+            instance=self,
+            update_fields=data,
+            tx=tx,
+        )
         return result.records
 
     @classmethod
@@ -634,6 +711,10 @@ class BaseSurrealModel(BaseModel):
     async def merge(self, tx: "BaseTransaction | None" = None, **data: Any) -> Self:
         """
         Merge (partial update) the model instance in the database.
+
+        Signals:
+            - pre_update: Sent before the merge operation.
+            - post_update: Sent after the merge operation completes.
 
         Args:
             tx: Optional transaction to use for this operation.
@@ -648,6 +729,14 @@ class BaseSurrealModel(BaseModel):
         if not record_id:
             raise SurrealDbError(f"No Id for the data to merge: {data}")
 
+        # Send pre_update signal
+        await model_signals.pre_update.send(
+            sender=self.__class__,
+            instance=self,
+            update_fields=data_set,
+            tx=tx,
+        )
+
         thing = format_thing(self.get_table_name(), record_id)
 
         if tx is not None:
@@ -656,16 +745,34 @@ class BaseSurrealModel(BaseModel):
             for key, value in data_set.items():
                 if hasattr(self, key):
                     setattr(self, key, value)
+            # Send post_update signal
+            await model_signals.post_update.send(
+                sender=self.__class__,
+                instance=self,
+                update_fields=data_set,
+                tx=tx,
+            )
             return self
 
         client = await SurrealDBConnectionManager.get_client()
         await client.merge(thing, data_set)
         await self.refresh()
+        # Send post_update signal
+        await model_signals.post_update.send(
+            sender=self.__class__,
+            instance=self,
+            update_fields=data_set,
+            tx=tx,
+        )
         return self
 
     async def delete(self, tx: "BaseTransaction | None" = None) -> None:
         """
         Delete the model instance from the database.
+
+        Signals:
+            - pre_delete: Sent before the delete operation.
+            - post_delete: Sent after the delete operation completes.
 
         Args:
             tx: Optional transaction to use for this operation.
@@ -674,11 +781,24 @@ class BaseSurrealModel(BaseModel):
         if not record_id:
             raise SurrealDbError("Can't delete record without an ID.")
 
+        # Send pre_delete signal
+        await model_signals.pre_delete.send(
+            sender=self.__class__,
+            instance=self,
+            tx=tx,
+        )
+
         thing = format_thing(self.get_table_name(), record_id)
 
         if tx is not None:
             await tx.delete(thing)
             logger.info(f"Record deleted (in transaction) -> {thing}.")
+            # Send post_delete signal
+            await model_signals.post_delete.send(
+                sender=self.__class__,
+                instance=self,
+                tx=tx,
+            )
             return
 
         client = await SurrealDBConnectionManager.get_client()
@@ -688,6 +808,12 @@ class BaseSurrealModel(BaseModel):
             raise SurrealDbError(f"Can't delete Record id -> '{record_id}' not found!")
 
         logger.info(f"Record deleted -> {result.deleted!r}.")
+        # Send post_delete signal
+        await model_signals.post_delete.send(
+            sender=self.__class__,
+            instance=self,
+            tx=tx,
+        )
 
     @model_validator(mode="after")
     def check_config(self) -> Self:
