@@ -523,6 +523,7 @@ class BaseSurrealModel(BaseModel):
 
         Signals:
             - pre_save: Sent before the save operation.
+            - around_save: Wraps the DB operation (generator-based).
             - post_save: Sent after the save operation completes.
 
         Args:
@@ -552,74 +553,67 @@ class BaseSurrealModel(BaseModel):
         exclude_fields = {"id"} | self.get_server_fields()
         id = self.get_id()
         table = self.get_table_name()
+        data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
 
+        # Wrap the DB operation with around_save signal
+        async with model_signals.around_save.wrap(
+            sender=self.__class__,
+            instance=self,
+            created=created,
+            tx=tx,
+        ):
+            await self._execute_save(tx, table, id, data, created)
+
+        # Send post_save signal
+        await model_signals.post_save.send(
+            sender=self.__class__,
+            instance=self,
+            created=created,
+            tx=tx,
+        )
+        return self
+
+    async def _execute_save(
+        self,
+        tx: "BaseTransaction | None",
+        table: str,
+        id: str | None,
+        data: dict[str, Any],
+        created: bool,
+    ) -> None:
+        """Execute the actual save operation (wrapped by around_save signal)."""
         if tx is not None:
             # Use transaction
-            data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
-
             if self._db_persisted and id is not None:
                 # Already persisted: use merge for partial update
-                # Only sends explicitly set fields, preserving server-side values
                 thing = format_thing(table, id)
                 await tx.merge(thing, data)
-                # Send post_save signal
-                await model_signals.post_save.send(
-                    sender=self.__class__,
-                    instance=self,
-                    created=False,
-                    tx=tx,
-                )
-                return self
-
-            if id is not None:
+            elif id is not None:
                 # New record with user-provided ID: use upsert
                 thing = format_thing(table, id)
                 await tx.upsert(thing, data)
+                self._db_persisted = True
             else:
                 # Auto-generate ID
                 await tx.create(table, data)
+                self._db_persisted = True
+            return
 
-            self._db_persisted = True
-            # Send post_save signal
-            await model_signals.post_save.send(
-                sender=self.__class__,
-                instance=self,
-                created=created,
-                tx=tx,
-            )
-            return self
-
-        # Original behavior without transaction
+        # Without transaction
         client = await SurrealDBConnectionManager.get_client()
-        data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
 
         if self._db_persisted and id is not None:
             # Already persisted: use merge for partial update
-            # Only sends explicitly set fields, preserving server-side values
             thing = format_thing(table, id)
             await client.merge(thing, data)
-            # Send post_save signal
-            await model_signals.post_save.send(
-                sender=self.__class__,
-                instance=self,
-                created=False,
-                tx=tx,
-            )
-            return self
+            return
 
         if id is not None:
             # New record with user-provided ID: use upsert
             thing = format_thing(table, id)
             await client.upsert(thing, data)
             self._db_persisted = True
-            # Send post_save signal
-            await model_signals.post_save.send(
-                sender=self.__class__,
-                instance=self,
-                created=True,
-                tx=tx,
-            )
-            return self
+            return
 
         # Auto-generate the ID
         result = await client.create(table, data)
@@ -629,19 +623,10 @@ class BaseSurrealModel(BaseModel):
             raise SurrealDbError("Can't save data, no record returned.")  # pragma: no cover
 
         # Update self's attributes from the database response
-        # This includes the auto-generated ID and any server-side fields
-        # Use _update_from_db to avoid marking DB fields as user-set
         record = result.record
         if isinstance(record, dict):
             self._update_from_db(record)
-            # Send post_save signal
-            await model_signals.post_save.send(
-                sender=self.__class__,
-                instance=self,
-                created=True,
-                tx=tx,
-            )
-            return self
+            return
 
         raise SurrealDbError("Can't save data, no record returned.")  # pragma: no cover
 
@@ -654,6 +639,7 @@ class BaseSurrealModel(BaseModel):
 
         Signals:
             - pre_update: Sent before the update operation.
+            - around_update: Wraps the DB operation (generator-based).
             - post_update: Sent after the update operation completes.
 
         Args:
@@ -676,22 +662,22 @@ class BaseSurrealModel(BaseModel):
         )
 
         thing = format_thing(self.get_table_name(), record_id)
+        result_records: Any = None
 
-        if tx is not None:
-            # Use merge for partial update - preserves unspecified fields
-            await tx.merge(thing, data)
-            # Send post_update signal
-            await model_signals.post_update.send(
-                sender=self.__class__,
-                instance=self,
-                update_fields=data,
-                tx=tx,
-            )
-            return None
+        # Wrap the DB operation with around_update signal
+        async with model_signals.around_update.wrap(
+            sender=self.__class__,
+            instance=self,
+            update_fields=data,
+            tx=tx,
+        ):
+            if tx is not None:
+                await tx.merge(thing, data)
+            else:
+                client = await SurrealDBConnectionManager.get_client()
+                result = await client.merge(thing, data)
+                result_records = result.records
 
-        client = await SurrealDBConnectionManager.get_client()
-        # Use merge for partial update - preserves unspecified fields
-        result = await client.merge(thing, data)
         # Send post_update signal
         await model_signals.post_update.send(
             sender=self.__class__,
@@ -699,7 +685,7 @@ class BaseSurrealModel(BaseModel):
             update_fields=data,
             tx=tx,
         )
-        return result.records
+        return result_records
 
     @classmethod
     def get(cls, item: str) -> str:
@@ -714,6 +700,7 @@ class BaseSurrealModel(BaseModel):
 
         Signals:
             - pre_update: Sent before the merge operation.
+            - around_update: Wraps the DB operation (generator-based).
             - post_update: Sent after the merge operation completes.
 
         Args:
@@ -739,24 +726,24 @@ class BaseSurrealModel(BaseModel):
 
         thing = format_thing(self.get_table_name(), record_id)
 
-        if tx is not None:
-            await tx.merge(thing, data_set)
-            # Update local instance with merged data
-            for key, value in data_set.items():
-                if hasattr(self, key):
-                    setattr(self, key, value)
-            # Send post_update signal
-            await model_signals.post_update.send(
-                sender=self.__class__,
-                instance=self,
-                update_fields=data_set,
-                tx=tx,
-            )
-            return self
+        # Wrap the DB operation with around_update signal
+        async with model_signals.around_update.wrap(
+            sender=self.__class__,
+            instance=self,
+            update_fields=data_set,
+            tx=tx,
+        ):
+            if tx is not None:
+                await tx.merge(thing, data_set)
+                # Update local instance with merged data
+                for key, value in data_set.items():
+                    if hasattr(self, key):
+                        setattr(self, key, value)
+            else:
+                client = await SurrealDBConnectionManager.get_client()
+                await client.merge(thing, data_set)
+                await self.refresh()
 
-        client = await SurrealDBConnectionManager.get_client()
-        await client.merge(thing, data_set)
-        await self.refresh()
         # Send post_update signal
         await model_signals.post_update.send(
             sender=self.__class__,
@@ -772,6 +759,7 @@ class BaseSurrealModel(BaseModel):
 
         Signals:
             - pre_delete: Sent before the delete operation.
+            - around_delete: Wraps the DB operation (generator-based).
             - post_delete: Sent after the delete operation completes.
 
         Args:
@@ -790,24 +778,24 @@ class BaseSurrealModel(BaseModel):
 
         thing = format_thing(self.get_table_name(), record_id)
 
-        if tx is not None:
-            await tx.delete(thing)
-            logger.info(f"Record deleted (in transaction) -> {thing}.")
-            # Send post_delete signal
-            await model_signals.post_delete.send(
-                sender=self.__class__,
-                instance=self,
-                tx=tx,
-            )
-            return
+        # Wrap the DB operation with around_delete signal
+        async with model_signals.around_delete.wrap(
+            sender=self.__class__,
+            instance=self,
+            tx=tx,
+        ):
+            if tx is not None:
+                await tx.delete(thing)
+                logger.info(f"Record deleted (in transaction) -> {thing}.")
+            else:
+                client = await SurrealDBConnectionManager.get_client()
+                result = await client.delete(thing)
 
-        client = await SurrealDBConnectionManager.get_client()
-        result = await client.delete(thing)
+                if not result.success:
+                    raise SurrealDbError(f"Can't delete Record id -> '{record_id}' not found!")
 
-        if not result.success:
-            raise SurrealDbError(f"Can't delete Record id -> '{record_id}' not found!")
+                logger.info(f"Record deleted -> {result.deleted!r}.")
 
-        logger.info(f"Record deleted -> {result.deleted!r}.")
         # Send post_delete signal
         await model_signals.post_delete.send(
             sender=self.__class__,

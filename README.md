@@ -15,6 +15,33 @@
 
 ## What's New in 0.5.x
 
+### v0.5.8 - Around Signals (Generator-based middleware)
+
+- **Around Signals** - Generator-based middleware pattern for wrapping DB operations
+  - `around_save`, `around_delete`, `around_update`
+  - Shared state between before/after phases (local variables)
+  - Guaranteed cleanup with `try/finally`
+
+  ```python
+  from surreal_orm import around_save
+
+  @around_save.connect(Player)
+  async def time_save(sender, instance, created, **kwargs):
+      start = time.time()
+      yield  # save happens here
+      print(f"Saved {instance.id} in {time.time() - start:.3f}s")
+
+  @around_delete.connect(Player)
+  async def delete_with_lock(sender, instance, **kwargs):
+      lock = await acquire_lock(instance.id)
+      try:
+          yield  # delete happens while lock is held
+      finally:
+          await release_lock(lock)  # Always runs
+  ```
+
+  **Execution order:** `pre_* → around(before) → DB → around(after) → post_*`
+
 ### v0.5.7 - Model Signals
 
 - **Django-style Model Signals** - Event hooks for model lifecycle operations
