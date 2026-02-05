@@ -451,17 +451,24 @@ class AroundSignal:
             yield
             return
 
-        # Start all generators (run "before" code)
-        active_generators: list[AsyncGenerator[None, None]] = []
+        # Track generators with their handlers for proper cleanup and error reporting
+        # Each tuple is (generator, handler_function)
+        active_generators: list[tuple[AsyncGenerator[None, None], AroundHandler]] = []
+
         for handler in handlers:
+            gen: AsyncGenerator[None, None] | None = None
             try:
                 gen = handler(sender=sender, **kwargs)
                 await gen.__anext__()  # Run code before yield
-                active_generators.append(gen)
+                active_generators.append((gen, handler))
             except StopAsyncIteration:
-                # Handler didn't yield - that's OK, just means no "after" code
-                pass
+                # Handler didn't yield - close the generator to prevent resource leaks
+                if gen is not None:
+                    await gen.aclose()
             except Exception as e:
+                # Clean up the generator that failed before yielding
+                if gen is not None:
+                    await gen.aclose()
                 logger.exception(
                     f"Around handler {handler.__name__} raised an exception "
                     f"(before phase) for signal {self.name} on {sender.__name__}: {e}"
@@ -472,7 +479,7 @@ class AroundSignal:
             yield
         finally:
             # Run "after" code for all handlers (in reverse order for proper cleanup)
-            for gen in reversed(active_generators):
+            for gen, handler in reversed(active_generators):
                 try:
                     await gen.__anext__()
                 except StopAsyncIteration:
@@ -480,8 +487,12 @@ class AroundSignal:
                     pass
                 except Exception as e:
                     logger.exception(
-                        f"Around handler raised an exception (after phase) for signal {self.name} on {sender.__name__}: {e}"
+                        f"Around handler {handler.__name__} raised an exception "
+                        f"(after phase) for signal {self.name} on {sender.__name__}: {e}"
                     )
+                finally:
+                    # Always close the generator to prevent resource leaks
+                    await gen.aclose()
 
     @property
     def receivers(self) -> dict[type | None, list[AroundHandler]]:
