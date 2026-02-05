@@ -10,7 +10,46 @@
 
 ---
 
-## Current Version: 0.5.7 (Alpha)
+## Current Version: 0.5.8 (Alpha)
+
+### What's New in 0.5.8
+
+- **Around Signals** - Generator-based middleware pattern for wrapping DB operations
+
+  - **Around signal types**: `around_save`, `around_delete`, `around_update`
+  - **Use case**: Shared state between before/after logic, timing, guaranteed cleanup
+
+  ```python
+  from surreal_orm import around_save, around_delete
+
+  @around_save.connect(Player)
+  async def time_player_save(sender, instance, created, **kwargs):
+      """Wrap save with timing measurement."""
+      import time
+      start = time.time()
+
+      yield  # <-- The save() operation happens here
+
+      duration = time.time() - start
+      await log_audit(f"Saved {instance.id} in {duration:.3f}s")
+
+  @around_delete.connect(Player)
+  async def delete_with_lock(sender, instance, **kwargs):
+      """Hold a lock during delete with guaranteed cleanup."""
+      lock = await acquire_lock(f"player:{instance.id}")
+      try:
+          yield  # <-- delete happens while lock is held
+      finally:
+          await release_lock(lock)  # Always runs, even on error
+  ```
+
+  - **Key advantages over pre/post signals**:
+    - Shared local variables between before/after code
+    - Guaranteed cleanup with `try/finally`
+    - Single handler for both phases
+    - Cleaner timing and metrics collection
+
+  - **Execution order**: `pre_* → around(before) → DB operation → around(after) → post_*`
 
 ### What's New in 0.5.7
 

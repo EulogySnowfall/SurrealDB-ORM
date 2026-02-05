@@ -17,6 +17,11 @@ from surreal_orm import (
     post_delete,
     pre_update,
     post_update,
+    # Around signals
+    AroundSignal,
+    around_save,
+    around_delete,
+    around_update,
 )
 
 
@@ -442,6 +447,330 @@ class TestSignalArguments:
 
 
 # =============================================================================
+# Unit Tests - AroundSignal Class (Generator-based middleware)
+# =============================================================================
+
+
+class TestAroundSignalClass:
+    """Unit tests for the AroundSignal class itself."""
+
+    def test_around_signal_creation(self) -> None:
+        """Test that an around signal can be created."""
+        signal = AroundSignal("test_around")
+        assert signal.name == "test_around"
+        assert signal._handlers == {}
+
+    def test_connect_with_sender(self) -> None:
+        """Test connecting a handler with a specific sender."""
+        signal = AroundSignal("test")
+
+        @signal.connect(SignalTestModel)
+        async def handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            yield
+
+        assert SignalTestModel in signal._handlers
+        assert handler in signal._handlers[SignalTestModel]
+
+        # Cleanup
+        signal.clear()
+
+    def test_connect_without_sender(self) -> None:
+        """Test connecting a handler without a sender (global handler)."""
+        signal = AroundSignal("test")
+
+        @signal.connect()
+        async def handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            yield
+
+        assert None in signal._handlers
+        assert handler in signal._handlers[None]
+
+        # Cleanup
+        signal.clear()
+
+    def test_connect_without_parentheses(self) -> None:
+        """Test connecting a handler using decorator without parentheses."""
+        signal = AroundSignal("test")
+
+        @signal.connect
+        async def handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            yield
+
+        assert None in signal._handlers
+        assert handler in signal._handlers[None]
+
+        # Cleanup
+        signal.clear()
+
+    def test_disconnect(self) -> None:
+        """Test disconnecting a handler."""
+        signal = AroundSignal("test")
+
+        @signal.connect(SignalTestModel)
+        async def handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            yield
+
+        assert signal.disconnect(handler, sender=SignalTestModel)
+        assert handler not in signal._handlers.get(SignalTestModel, [])
+
+    def test_disconnect_nonexistent(self) -> None:
+        """Test disconnecting a handler that doesn't exist."""
+        signal = AroundSignal("test")
+
+        async def handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            yield
+
+        assert not signal.disconnect(handler, sender=SignalTestModel)
+
+    def test_clear(self) -> None:
+        """Test clearing all handlers."""
+        signal = AroundSignal("test")
+
+        @signal.connect(SignalTestModel)
+        async def handler1(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            yield
+
+        @signal.connect()
+        async def handler2(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            yield
+
+        signal.clear()
+        assert signal._handlers == {}
+
+    def test_has_receivers(self) -> None:
+        """Test has_receivers method."""
+        signal = AroundSignal("test")
+
+        assert not signal.has_receivers()
+        assert not signal.has_receivers(SignalTestModel)
+
+        @signal.connect(SignalTestModel)
+        async def handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            yield
+
+        assert signal.has_receivers()
+        assert signal.has_receivers(SignalTestModel)
+
+        # Cleanup
+        signal.clear()
+
+    @pytest.mark.asyncio
+    async def test_wrap_executes_before_and_after(self) -> None:
+        """Test that wrap() executes code before and after yield."""
+        signal = AroundSignal("test")
+        execution_order: list[str] = []
+
+        @signal.connect(SignalTestModel)
+        async def handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            execution_order.append("before")
+            yield
+            execution_order.append("after")
+
+        async with signal.wrap(SignalTestModel, instance=None):
+            execution_order.append("operation")
+
+        assert execution_order == ["before", "operation", "after"]
+
+        # Cleanup
+        signal.clear()
+
+    @pytest.mark.asyncio
+    async def test_wrap_with_multiple_handlers(self) -> None:
+        """Test that wrap() executes multiple handlers in order."""
+        signal = AroundSignal("test")
+        execution_order: list[str] = []
+
+        @signal.connect(SignalTestModel)
+        async def handler1(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            execution_order.append("h1_before")
+            yield
+            execution_order.append("h1_after")
+
+        @signal.connect(SignalTestModel)
+        async def handler2(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            execution_order.append("h2_before")
+            yield
+            execution_order.append("h2_after")
+
+        async with signal.wrap(SignalTestModel, instance=None):
+            execution_order.append("operation")
+
+        # After code runs in reverse order (LIFO for cleanup)
+        assert execution_order == ["h1_before", "h2_before", "operation", "h2_after", "h1_after"]
+
+        # Cleanup
+        signal.clear()
+
+    @pytest.mark.asyncio
+    async def test_wrap_with_no_handlers(self) -> None:
+        """Test that wrap() works with no handlers."""
+        signal = AroundSignal("test")
+        executed = False
+
+        async with signal.wrap(SignalTestModel, instance=None):
+            executed = True
+
+        assert executed
+
+    @pytest.mark.asyncio
+    async def test_wrap_with_global_and_specific_handlers(self) -> None:
+        """Test that wrap() executes both global and sender-specific handlers."""
+        signal = AroundSignal("test")
+        execution_order: list[str] = []
+
+        @signal.connect(SignalTestModel)
+        async def specific_handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            execution_order.append("specific_before")
+            yield
+            execution_order.append("specific_after")
+
+        @signal.connect()
+        async def global_handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            execution_order.append("global_before")
+            yield
+            execution_order.append("global_after")
+
+        async with signal.wrap(SignalTestModel, instance=None):
+            execution_order.append("operation")
+
+        # Specific handlers first, then global
+        assert "specific_before" in execution_order
+        assert "global_before" in execution_order
+        assert "operation" in execution_order
+        assert "specific_after" in execution_order
+        assert "global_after" in execution_order
+
+        # Cleanup
+        signal.clear()
+
+    @pytest.mark.asyncio
+    async def test_wrap_handler_exception_before_yield(self) -> None:
+        """Test that exceptions in before code are logged but don't break wrap."""
+        signal = AroundSignal("test")
+
+        @signal.connect(SignalTestModel)
+        async def bad_handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            raise ValueError("Error before yield")
+            yield  # type: ignore  # unreachable
+
+        executed = False
+        async with signal.wrap(SignalTestModel, instance=None):
+            executed = True
+
+        assert executed  # Operation should still execute
+
+        # Cleanup
+        signal.clear()
+
+    @pytest.mark.asyncio
+    async def test_wrap_handler_exception_after_yield(self) -> None:
+        """Test that exceptions in after code are logged but don't break wrap."""
+        signal = AroundSignal("test")
+
+        @signal.connect(SignalTestModel)
+        async def bad_handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            yield
+            raise ValueError("Error after yield")
+
+        executed = False
+        # Should not raise, exception is logged
+        async with signal.wrap(SignalTestModel, instance=None):
+            executed = True
+
+        assert executed
+
+        # Cleanup
+        signal.clear()
+
+    @pytest.mark.asyncio
+    async def test_wrap_passes_kwargs_to_handlers(self) -> None:
+        """Test that kwargs are passed to handlers."""
+        signal = AroundSignal("test")
+        received_kwargs: dict[str, Any] = {}
+
+        @signal.connect(SignalTestModel)
+        async def handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            received_kwargs.update(kwargs)
+            yield
+
+        async with signal.wrap(SignalTestModel, instance="test_instance", custom="value"):
+            pass
+
+        assert received_kwargs["instance"] == "test_instance"
+        assert received_kwargs["custom"] == "value"
+
+        # Cleanup
+        signal.clear()
+
+    @pytest.mark.asyncio
+    async def test_wrap_with_try_finally(self) -> None:
+        """Test that handlers can use try/finally for guaranteed cleanup."""
+        signal = AroundSignal("test")
+        cleanup_called = False
+
+        @signal.connect(SignalTestModel)
+        async def handler_with_cleanup(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            nonlocal cleanup_called
+            try:
+                yield
+            finally:
+                cleanup_called = True
+
+        # Even if wrapped code raises, cleanup should run
+        try:
+            async with signal.wrap(SignalTestModel, instance=None):
+                raise RuntimeError("Operation failed")
+        except RuntimeError:
+            pass
+
+        assert cleanup_called
+
+        # Cleanup
+        signal.clear()
+
+    @pytest.mark.asyncio
+    async def test_wrap_shared_state_between_before_and_after(self) -> None:
+        """Test that handlers can share state between before and after."""
+        signal = AroundSignal("test")
+        timing: dict[str, float] = {}
+
+        @signal.connect(SignalTestModel)
+        async def timing_handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            import time
+
+            start = time.time()
+            yield
+            timing["duration"] = time.time() - start
+
+        async with signal.wrap(SignalTestModel, instance=None):
+            import asyncio
+
+            await asyncio.sleep(0.01)  # Small delay
+
+        assert "duration" in timing
+        assert timing["duration"] >= 0.01
+
+        # Cleanup
+        signal.clear()
+
+
+class TestAroundSignalPreDefined:
+    """Test pre-defined around signals."""
+
+    def test_around_save_exists(self) -> None:
+        """Test that around_save signal exists."""
+        assert around_save.name == "around_save"
+
+    def test_around_delete_exists(self) -> None:
+        """Test that around_delete signal exists."""
+        assert around_delete.name == "around_delete"
+
+    def test_around_update_exists(self) -> None:
+        """Test that around_update signal exists."""
+        assert around_update.name == "around_update"
+
+
+# =============================================================================
 # Integration Tests - Real Database Operations
 # =============================================================================
 
@@ -691,6 +1020,181 @@ class TestSignalsWithDatabase:
             post_save.disconnect(global_handler, sender=None)
 
 
+@pytest.mark.integration
+class TestAroundSignalsWithDatabase:
+    """Integration tests that verify around signals wrap real database operations."""
+
+    @pytest.mark.asyncio
+    async def test_around_save_wraps_save_operation(self) -> None:
+        """Test that around_save wraps the save() operation correctly."""
+        execution_order: list[str] = []
+
+        @around_save.connect(SignalTestModel)
+        async def timing_handler(
+            sender: type, instance: SignalTestModel, created: bool, **kwargs: Any
+        ) -> AsyncGenerator[None, None]:
+            execution_order.append(f"before_save:created={created}")
+            yield
+            execution_order.append(f"after_save:id={instance.id}")
+
+        try:
+            instance = SignalTestModel(id="around_test_1", name="test", value=42)
+            await instance.save()
+
+            assert "before_save:created=True" in execution_order
+            assert "after_save:id=around_test_1" in execution_order
+            # Verify order
+            assert execution_order.index("before_save:created=True") < execution_order.index("after_save:id=around_test_1")
+
+            # Cleanup
+            await instance.delete()
+        finally:
+            around_save.disconnect(timing_handler, sender=SignalTestModel)
+
+    @pytest.mark.asyncio
+    async def test_around_save_can_measure_timing(self) -> None:
+        """Test that around_save can be used to measure operation timing."""
+        import time
+
+        timing: dict[str, float] = {}
+
+        @around_save.connect(SignalTestModel)
+        async def timing_handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            start = time.time()
+            yield
+            timing["duration"] = time.time() - start
+
+        try:
+            instance = SignalTestModel(id="around_test_2", name="timing_test")
+            await instance.save()
+
+            assert "duration" in timing
+            assert timing["duration"] >= 0  # Should be non-negative
+
+            # Cleanup
+            await instance.delete()
+        finally:
+            around_save.disconnect(timing_handler, sender=SignalTestModel)
+
+    @pytest.mark.asyncio
+    async def test_around_delete_wraps_delete_operation(self) -> None:
+        """Test that around_delete wraps the delete() operation correctly."""
+        execution_order: list[str] = []
+
+        @around_delete.connect(SignalTestModel)
+        async def delete_handler(sender: type, instance: SignalTestModel, **kwargs: Any) -> AsyncGenerator[None, None]:
+            execution_order.append(f"before_delete:id={instance.id}")
+            yield
+            execution_order.append("after_delete")
+
+        try:
+            # Create a record first
+            instance = SignalTestModel(id="around_test_3", name="to_delete")
+            await instance.save()
+
+            # Delete it
+            await instance.delete()
+
+            assert "before_delete:id=around_test_3" in execution_order
+            assert "after_delete" in execution_order
+        finally:
+            around_delete.disconnect(delete_handler, sender=SignalTestModel)
+
+    @pytest.mark.asyncio
+    async def test_around_update_wraps_update_operation(self) -> None:
+        """Test that around_update wraps the update() operation correctly."""
+        captured: dict[str, Any] = {}
+
+        @around_update.connect(SignalTestModel)
+        async def update_handler(
+            sender: type,
+            instance: SignalTestModel,
+            update_fields: dict[str, Any],
+            **kwargs: Any,
+        ) -> AsyncGenerator[None, None]:
+            captured["before_fields"] = update_fields.copy()
+            captured["before_value"] = instance.value
+            yield
+            captured["after_value"] = instance.value
+
+        try:
+            # Create a record
+            instance = SignalTestModel(id="around_test_4", name="original", value=0)
+            await instance.save()
+
+            # Update it
+            instance.name = "updated"
+            instance.value = 100
+            await instance.update()
+
+            assert "name" in captured["before_fields"]
+            assert captured["before_fields"]["name"] == "updated"
+
+            # Cleanup
+            await instance.delete()
+        finally:
+            around_update.disconnect(update_handler, sender=SignalTestModel)
+
+    @pytest.mark.asyncio
+    async def test_around_save_with_try_finally_for_cleanup(self) -> None:
+        """Test that around_save can use try/finally for cleanup even on failure."""
+        cleanup_called = False
+        instance: SignalTestModel | None = None
+
+        @around_save.connect(SignalTestModel)
+        async def cleanup_handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            nonlocal cleanup_called
+            try:
+                yield
+            finally:
+                cleanup_called = True
+
+        try:
+            instance = SignalTestModel(id="around_test_5", name="cleanup_test")
+            await instance.save()
+
+            assert cleanup_called
+
+            # Cleanup
+            if instance:
+                await instance.delete()
+        finally:
+            around_save.disconnect(cleanup_handler, sender=SignalTestModel)
+
+    @pytest.mark.asyncio
+    async def test_around_and_regular_signals_order(self) -> None:
+        """Test that signals fire in correct order: pre -> around(before) -> DB -> around(after) -> post."""
+        execution_order: list[str] = []
+
+        @pre_save.connect(SignalTestModel)
+        async def pre_handler(sender: type, **kwargs: Any) -> None:
+            execution_order.append("pre_save")
+
+        @around_save.connect(SignalTestModel)
+        async def around_handler(sender: type, **kwargs: Any) -> AsyncGenerator[None, None]:
+            execution_order.append("around_before")
+            yield
+            execution_order.append("around_after")
+
+        @post_save.connect(SignalTestModel)
+        async def post_handler(sender: type, **kwargs: Any) -> None:
+            execution_order.append("post_save")
+
+        try:
+            instance = SignalTestModel(id="around_test_6", name="order_test")
+            await instance.save()
+
+            # Expected order: pre_save -> around_before -> (DB) -> around_after -> post_save
+            assert execution_order == ["pre_save", "around_before", "around_after", "post_save"]
+
+            # Cleanup
+            await instance.delete()
+        finally:
+            pre_save.disconnect(pre_handler, sender=SignalTestModel)
+            around_save.disconnect(around_handler, sender=SignalTestModel)
+            post_save.disconnect(post_handler, sender=SignalTestModel)
+
+
 # =============================================================================
 # Cleanup fixture
 # =============================================================================
@@ -707,3 +1211,7 @@ def cleanup_signals() -> None:
     post_delete.clear()
     pre_update.clear()
     post_update.clear()
+    # Clear around signals too
+    around_save.clear()
+    around_delete.clear()
+    around_update.clear()

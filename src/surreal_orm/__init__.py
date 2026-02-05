@@ -46,6 +46,11 @@ from .signals import (
     post_delete,
     pre_update,
     post_update,
+    # Around signals (generator-based middleware pattern)
+    AroundSignal,
+    around_save,
+    around_delete,
+    around_update,
 )
 
 __all__ = [
@@ -93,6 +98,11 @@ __all__ = [
     "post_delete",
     "pre_update",
     "post_update",
+    # Around Signals (generator-based)
+    "AroundSignal",
+    "around_save",
+    "around_delete",
+    "around_update",
 ]
 
-__version__ = "0.5.7"
+__version__ = "0.5.8"

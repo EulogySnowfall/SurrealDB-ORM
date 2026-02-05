@@ -22,8 +22,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Awaitable, Callable, TypeVar
 
 if TYPE_CHECKING:
     from .model_base import BaseSurrealModel
@@ -34,6 +35,9 @@ T = TypeVar("T", bound="BaseSurrealModel")
 
 # Type alias for signal handlers
 SignalHandler = Callable[..., Awaitable[None]]
+
+# Type alias for around signal handlers (async generators that yield once)
+AroundHandler = Callable[..., AsyncGenerator[None, None]]
 
 
 @dataclass
@@ -274,6 +278,226 @@ class Signal:
 
 
 # =============================================================================
+# Around Signal - Generator-based middleware pattern
+# =============================================================================
+
+
+@dataclass
+class AroundSignal:
+    """
+    Generator-based signal for wrapping operations with before/after logic.
+
+    Unlike regular signals (pre_*/post_*), AroundSignal handlers are async
+    generators that yield once. Code before the yield runs before the operation,
+    and code after the yield runs after the operation completes.
+
+    This pattern allows:
+    - Shared state between before/after logic (local variables)
+    - Guaranteed cleanup with try/finally
+    - Timing and metrics collection
+    - Transaction-like wrapping
+
+    Attributes:
+        name: Human-readable name for the signal (for debugging)
+
+    Example:
+        @around_save.connect(Player)
+        async def audit_player_save(sender, instance, **kwargs):
+            # === BEFORE save ===
+            start_time = time.time()
+            old_status = instance._db_persisted
+
+            yield  # <-- The save() operation happens here
+
+            # === AFTER save ===
+            duration = time.time() - start_time
+            await log_audit(
+                action="save",
+                model=sender.__name__,
+                id=instance.id,
+                duration=duration,
+                was_create=not old_status,
+            )
+
+        # With try/finally for guaranteed cleanup
+        @around_delete.connect(Player)
+        async def with_lock(sender, instance, **kwargs):
+            lock = await acquire_lock(instance.id)
+            try:
+                yield
+            finally:
+                await release_lock(lock)
+    """
+
+    name: str
+    _handlers: dict[type | None, list[AroundHandler]] = field(default_factory=dict, repr=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+    def connect(
+        self,
+        sender: type[T] | AroundHandler | None = None,
+    ) -> Callable[[AroundHandler], AroundHandler] | AroundHandler:
+        """
+        Connect an async generator handler to this signal.
+
+        Can be used as a decorator with or without sender:
+
+            # With sender - only fires for Player model
+            @around_save.connect(Player)
+            async def on_player_save(sender, instance, **kwargs):
+                # before
+                yield
+                # after
+
+            # Without sender - fires for all models
+            @around_save.connect()
+            async def on_any_save(sender, instance, **kwargs):
+                yield
+
+        Args:
+            sender: Optional model class to filter signals.
+                    If None, handler receives signals from all models.
+
+        Returns:
+            Decorator function.
+        """
+
+        def decorator(func: AroundHandler) -> AroundHandler:
+            actual_sender: type | None = None
+            if sender is not None and isinstance(sender, type):
+                actual_sender = sender
+
+            with self._lock:
+                if actual_sender not in self._handlers:
+                    self._handlers[actual_sender] = []
+
+                if func not in self._handlers[actual_sender]:
+                    self._handlers[actual_sender].append(func)
+
+            return func
+
+        # Check if sender is actually the handler function (decorator without parens)
+        if sender is not None and callable(sender) and not isinstance(sender, type):
+            handler: AroundHandler = sender  # type: ignore
+            with self._lock:
+                if None not in self._handlers:
+                    self._handlers[None] = []
+                if handler not in self._handlers[None]:
+                    self._handlers[None].append(handler)
+            return handler
+
+        return decorator
+
+    def disconnect(
+        self,
+        receiver: AroundHandler,
+        sender: type | None = None,
+    ) -> bool:
+        """Disconnect a receiver from this signal."""
+        with self._lock:
+            if sender in self._handlers:
+                try:
+                    self._handlers[sender].remove(receiver)
+                    return True
+                except ValueError:
+                    pass
+        return False
+
+    def disconnect_all(self, sender: type | None = None) -> int:
+        """Disconnect all receivers for a sender."""
+        with self._lock:
+            if sender in self._handlers:
+                count = len(self._handlers[sender])
+                self._handlers[sender] = []
+                return count
+        return 0
+
+    def clear(self) -> None:
+        """Disconnect all handlers from this signal."""
+        with self._lock:
+            self._handlers.clear()
+
+    @asynccontextmanager
+    async def wrap(
+        self,
+        sender: type[T],
+        **kwargs: Any,
+    ) -> AsyncIterator[None]:
+        """
+        Context manager that wraps an operation with all connected handlers.
+
+        Usage in model_base.py:
+            async with around_save.wrap(self.__class__, instance=self, created=created):
+                # The actual save operation happens here
+                await client.upsert(thing, data)
+
+        Args:
+            sender: The model class.
+            **kwargs: Arguments passed to handlers.
+
+        Yields:
+            Control back to caller to perform the wrapped operation.
+        """
+        handlers: list[AroundHandler] = []
+
+        with self._lock:
+            if sender in self._handlers:
+                handlers.extend(self._handlers[sender])
+            if None in self._handlers:
+                handlers.extend(self._handlers[None])
+
+        if not handlers:
+            # No handlers - just yield control
+            yield
+            return
+
+        # Start all generators (run "before" code)
+        active_generators: list[AsyncGenerator[None, None]] = []
+        for handler in handlers:
+            try:
+                gen = handler(sender=sender, **kwargs)
+                await gen.__anext__()  # Run code before yield
+                active_generators.append(gen)
+            except StopAsyncIteration:
+                # Handler didn't yield - that's OK, just means no "after" code
+                pass
+            except Exception as e:
+                logger.exception(
+                    f"Around handler {handler.__name__} raised an exception "
+                    f"(before phase) for signal {self.name} on {sender.__name__}: {e}"
+                )
+
+        try:
+            # Yield control to perform the actual operation
+            yield
+        finally:
+            # Run "after" code for all handlers (in reverse order for proper cleanup)
+            for gen in reversed(active_generators):
+                try:
+                    await gen.__anext__()
+                except StopAsyncIteration:
+                    # Normal - generator finished
+                    pass
+                except Exception as e:
+                    logger.exception(
+                        f"Around handler raised an exception (after phase) for signal {self.name} on {sender.__name__}: {e}"
+                    )
+
+    @property
+    def receivers(self) -> dict[type | None, list[AroundHandler]]:
+        """Get a copy of all registered handlers."""
+        with self._lock:
+            return {k: list(v) for k, v in self._handlers.items()}
+
+    def has_receivers(self, sender: type | None = None) -> bool:
+        """Check if there are any receivers for the given sender."""
+        with self._lock:
+            if sender is None:
+                return bool(self._handlers)
+            return bool(self._handlers.get(sender)) or bool(self._handlers.get(None))
+
+
+# =============================================================================
 # Pre-defined Signals
 # =============================================================================
 
@@ -378,8 +602,90 @@ Example:
         })
 """
 
+# =============================================================================
+# Pre-defined Around Signals
+# =============================================================================
+
+around_save = AroundSignal("around_save")
+"""
+Wraps a model's save() method with before/after logic.
+
+The handler is an async generator that yields once. Code before yield
+runs before the save, code after yield runs after the save completes.
+
+Arguments passed to handler:
+    sender: The model class.
+    instance: The model instance being saved.
+    created: Boolean; True if a new record is being created.
+    tx: The transaction context, if save() was called with tx parameter.
+
+Example:
+    @around_save.connect(Player)
+    async def time_save(sender, instance, created, **kwargs):
+        start = time.time()
+        yield  # save happens here
+        duration = time.time() - start
+        logger.info(f"Saved {instance.id} in {duration:.3f}s")
+
+    @around_save.connect(Order)
+    async def save_with_lock(sender, instance, **kwargs):
+        async with acquire_lock(f"order:{instance.id}"):
+            yield  # save happens while lock is held
+"""
+
+around_delete = AroundSignal("around_delete")
+"""
+Wraps a model's delete() method with before/after logic.
+
+Arguments passed to handler:
+    sender: The model class.
+    instance: The model instance being deleted.
+    tx: The transaction context, if delete() was called with tx parameter.
+
+Example:
+    @around_delete.connect(File)
+    async def delete_with_backup(sender, instance, **kwargs):
+        # Before delete - create backup
+        backup = await create_backup(instance)
+        try:
+            yield  # delete happens here
+        except Exception:
+            # Restore if delete failed
+            await restore_backup(backup)
+            raise
+        finally:
+            # Cleanup backup reference
+            await cleanup_backup_metadata(backup)
+"""
+
+around_update = AroundSignal("around_update")
+"""
+Wraps a model's update() or merge() method with before/after logic.
+
+Arguments passed to handler:
+    sender: The model class.
+    instance: The model instance being updated.
+    update_fields: Dictionary of fields being updated.
+    tx: The transaction context, if method was called with tx parameter.
+
+Example:
+    @around_update.connect(Player)
+    async def track_field_changes(sender, instance, update_fields, **kwargs):
+        # Capture state before update
+        old_values = {f: getattr(instance, f, None) for f in update_fields}
+
+        yield  # update happens here
+
+        # Compare after update
+        for field, old_val in old_values.items():
+            new_val = update_fields.get(field)
+            if old_val != new_val:
+                await log_change(instance.id, field, old_val, new_val)
+"""
+
 
 __all__ = [
+    # Regular signals
     "Signal",
     "SignalHandler",
     "pre_save",
@@ -388,4 +694,10 @@ __all__ = [
     "post_delete",
     "pre_update",
     "post_update",
+    # Around signals (generator-based)
+    "AroundSignal",
+    "AroundHandler",
+    "around_save",
+    "around_delete",
+    "around_update",
 ]
