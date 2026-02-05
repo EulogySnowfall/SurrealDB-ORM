@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
@@ -61,6 +62,7 @@ class Signal:
 
     name: str
     _handlers: dict[type | None, list[SignalHandler]] = field(default_factory=dict, repr=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def connect(
         self,
@@ -101,12 +103,13 @@ class Signal:
             if sender is not None and isinstance(sender, type):
                 actual_sender = sender
 
-            if actual_sender not in self._handlers:
-                self._handlers[actual_sender] = []
+            with self._lock:
+                if actual_sender not in self._handlers:
+                    self._handlers[actual_sender] = []
 
-            # Avoid duplicate handlers
-            if func not in self._handlers[actual_sender]:
-                self._handlers[actual_sender].append(func)
+                # Avoid duplicate handlers
+                if func not in self._handlers[actual_sender]:
+                    self._handlers[actual_sender].append(func)
 
             return func
 
@@ -114,10 +117,11 @@ class Signal:
         if sender is not None and callable(sender) and not isinstance(sender, type):
             # @signal.connect used without parentheses - sender is the function
             handler: SignalHandler = sender  # type: ignore
-            if None not in self._handlers:
-                self._handlers[None] = []
-            if handler not in self._handlers[None]:
-                self._handlers[None].append(handler)
+            with self._lock:
+                if None not in self._handlers:
+                    self._handlers[None] = []
+                if handler not in self._handlers[None]:
+                    self._handlers[None].append(handler)
             return handler
 
         return decorator
@@ -138,12 +142,13 @@ class Signal:
         Returns:
             True if the handler was found and removed, False otherwise.
         """
-        if sender in self._handlers:
-            try:
-                self._handlers[sender].remove(receiver)
-                return True
-            except ValueError:
-                pass
+        with self._lock:
+            if sender in self._handlers:
+                try:
+                    self._handlers[sender].remove(receiver)
+                    return True
+                except ValueError:
+                    pass
         return False
 
     def disconnect_all(self, sender: type | None = None) -> int:
@@ -157,15 +162,17 @@ class Signal:
         Returns:
             Number of handlers disconnected.
         """
-        if sender in self._handlers:
-            count = len(self._handlers[sender])
-            self._handlers[sender] = []
-            return count
+        with self._lock:
+            if sender in self._handlers:
+                count = len(self._handlers[sender])
+                self._handlers[sender] = []
+                return count
         return 0
 
     def clear(self) -> None:
         """Disconnect all handlers from this signal."""
-        self._handlers.clear()
+        with self._lock:
+            self._handlers.clear()
 
     async def send(
         self,
@@ -191,13 +198,15 @@ class Signal:
         """
         handlers: list[SignalHandler] = []
 
-        # Get handlers registered for this specific sender
-        if sender in self._handlers:
-            handlers.extend(self._handlers[sender])
+        # Get a copy of handlers while holding the lock to ensure thread-safety
+        with self._lock:
+            # Get handlers registered for this specific sender
+            if sender in self._handlers:
+                handlers.extend(self._handlers[sender])
 
-        # Get handlers registered for any sender (None key)
-        if None in self._handlers:
-            handlers.extend(self._handlers[None])
+            # Get handlers registered for any sender (None key)
+            if None in self._handlers:
+                handlers.extend(self._handlers[None])
 
         if not handlers:
             return []
@@ -243,7 +252,8 @@ class Signal:
     @property
     def receivers(self) -> dict[type | None, list[SignalHandler]]:
         """Get a copy of all registered handlers."""
-        return {k: list(v) for k, v in self._handlers.items()}
+        with self._lock:
+            return {k: list(v) for k, v in self._handlers.items()}
 
     def has_receivers(self, sender: type | None = None) -> bool:
         """
@@ -255,11 +265,12 @@ class Signal:
         Returns:
             True if there are receivers registered.
         """
-        if sender is None:
-            return bool(self._handlers)
+        with self._lock:
+            if sender is None:
+                return bool(self._handlers)
 
-        # Check specific sender and global handlers
-        return bool(self._handlers.get(sender)) or bool(self._handlers.get(None))
+            # Check specific sender and global handlers
+            return bool(self._handlers.get(sender)) or bool(self._handlers.get(None))
 
 
 # =============================================================================
