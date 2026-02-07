@@ -149,11 +149,22 @@ def retry_on_conflict(
     Returns:
         Decorated async function with retry logic.
 
+    Raises:
+        ValueError: If any parameter is negative or zero (for delays/factor).
+
     Example:
         @retry_on_conflict(max_retries=5)
         async def claim_event(event_id: str, pod_id: str):
             await Event.atomic_set_add(event_id, "processed_by", pod_id)
     """
+    if max_retries < 0:
+        raise ValueError(f"max_retries must be >= 0, got {max_retries}")
+    if base_delay <= 0:
+        raise ValueError(f"base_delay must be > 0, got {base_delay}")
+    if max_delay <= 0:
+        raise ValueError(f"max_delay must be > 0, got {max_delay}")
+    if backoff_factor <= 0:
+        raise ValueError(f"backoff_factor must be > 0, got {backoff_factor}")
 
     def decorator(func: F) -> F:
         @functools.wraps(func)

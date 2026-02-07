@@ -1043,6 +1043,9 @@ class BaseSurrealModel(BaseModel):
         SurrealQL equivalent:
             RELATE users:alice->follows->users:bob SET since = '2025-01-01';
         """
+        if not _SAFE_IDENTIFIER_RE.match(relation):
+            raise ValueError(f"Invalid relation name: {relation!r}")
+
         source_id = self.get_id()
         target_id = to.get_id()
 
@@ -1118,6 +1121,9 @@ class BaseSurrealModel(BaseModel):
                 await alice.remove_relation("follows", bob, tx=tx)
                 await alice.remove_relation("follows", "users:charlie", tx=tx)
         """
+        if not _SAFE_IDENTIFIER_RE.match(relation):
+            raise ValueError(f"Invalid relation name: {relation!r}")
+
         source_id = self.get_id()
 
         if not source_id:
@@ -1208,6 +1214,9 @@ class BaseSurrealModel(BaseModel):
             - out: SELECT VALUE out.* FROM follows WHERE in = users:alice;
             - in: SELECT VALUE in.* FROM follows WHERE out = users:alice;
         """
+        if not _SAFE_IDENTIFIER_RE.match(relation):
+            raise ValueError(f"Invalid relation name: {relation!r}")
+
         source_id = self.get_id()
         if not source_id:
             raise SurrealDbError("Cannot query relations from unsaved instance")

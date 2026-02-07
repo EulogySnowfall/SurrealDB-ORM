@@ -313,8 +313,8 @@ users = await User.objects().filter(status="active", age=30).exec()
 | `containsany`  | `CONTAINSANY` | `filter(tags__containsany=["python", "rust"])`  |
 | `like`         | `LIKE`        | `filter(name__like="Ali%")`                     |
 | `ilike`        | `ILIKE`       | `filter(name__ilike="ali%")` (case-insensitive) |
-| `startswith`   | `LIKE 'x%'`   | `filter(name__startswith="Ali")`                |
-| `endswith`     | `LIKE '%x'`   | `filter(name__endswith="ce")`                   |
+| `startswith`   | `STARTSWITH`  | `filter(name__startswith="Ali")`                |
+| `endswith`     | `ENDSWITH`    | `filter(name__endswith="ce")`                   |
 | `isnull`       | `IS NULL`     | `filter(deleted_at__isnull=True)`               |
 | `regex`        | `~`           | `filter(email__regex=r".*@gmail\.com")`         |
 

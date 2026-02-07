@@ -275,3 +275,53 @@ def test_retry_on_conflict_ignores_non_surreal_errors() -> None:
 
     # Should NOT have retried — only called once
     assert call_count == 1
+
+
+# ==================== v0.5.9: Copilot review round 2 fixes ====================
+
+
+def test_retry_on_conflict_rejects_invalid_params() -> None:
+    """retry_on_conflict should reject negative/invalid parameters."""
+    from src.surreal_orm.utils import retry_on_conflict
+
+    with pytest.raises(ValueError, match="max_retries must be >= 0"):
+        retry_on_conflict(max_retries=-1)
+
+    with pytest.raises(ValueError, match="base_delay must be > 0"):
+        retry_on_conflict(base_delay=0)
+
+    with pytest.raises(ValueError, match="base_delay must be > 0"):
+        retry_on_conflict(base_delay=-0.5)
+
+    with pytest.raises(ValueError, match="max_delay must be > 0"):
+        retry_on_conflict(max_delay=0)
+
+    with pytest.raises(ValueError, match="backoff_factor must be > 0"):
+        retry_on_conflict(backoff_factor=-1)
+
+
+def test_retry_on_conflict_accepts_zero_retries() -> None:
+    """max_retries=0 is valid (execute once, no retries)."""
+    from src.surreal_orm.utils import retry_on_conflict
+
+    @retry_on_conflict(max_retries=0)
+    async def do_nothing() -> str:
+        return "ok"
+
+    assert callable(do_nothing)
+
+
+def test_relation_methods_reject_invalid_names() -> None:
+    """relate(), remove_relation(), get_related() must reject invalid relation names."""
+    from src.surreal_orm.model_base import _SAFE_IDENTIFIER_RE
+
+    # Valid relation names
+    assert _SAFE_IDENTIFIER_RE.match("follows")
+    assert _SAFE_IDENTIFIER_RE.match("has_player")
+    assert _SAFE_IDENTIFIER_RE.match("_internal_edge")
+
+    # Invalid / injectable relation names
+    assert not _SAFE_IDENTIFIER_RE.match("bad;DROP TABLE users")
+    assert not _SAFE_IDENTIFIER_RE.match("has-player")
+    assert not _SAFE_IDENTIFIER_RE.match("123edge")
+    assert not _SAFE_IDENTIFIER_RE.match("")
