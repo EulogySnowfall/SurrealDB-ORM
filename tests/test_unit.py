@@ -221,13 +221,13 @@ def test_atomic_ops_reject_invalid_field_name() -> None:
 
     # The methods themselves should raise ValueError
     with pytest.raises(ValueError, match="Invalid field name"):
-        asyncio.get_event_loop().run_until_complete(ModelTest.atomic_append("1", "bad field!", "val"))
+        asyncio.run(ModelTest.atomic_append("1", "bad field!", "val"))
 
     with pytest.raises(ValueError, match="Invalid field name"):
-        asyncio.get_event_loop().run_until_complete(ModelTest.atomic_remove("1", "x;DROP", "val"))
+        asyncio.run(ModelTest.atomic_remove("1", "x;DROP", "val"))
 
     with pytest.raises(ValueError, match="Invalid field name"):
-        asyncio.get_event_loop().run_until_complete(ModelTest.atomic_set_add("1", "123bad", "val"))
+        asyncio.run(ModelTest.atomic_set_add("1", "123bad", "val"))
 
 
 def test_array_lookup_rejects_string_value() -> None:
@@ -271,7 +271,7 @@ def test_retry_on_conflict_ignores_non_surreal_errors() -> None:
         raise RuntimeError("some conflict happened")
 
     with pytest.raises(RuntimeError, match="some conflict happened"):
-        asyncio.get_event_loop().run_until_complete(always_fails())
+        asyncio.run(always_fails())
 
     # Should NOT have retried — only called once
     assert call_count == 1
