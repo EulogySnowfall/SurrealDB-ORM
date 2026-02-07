@@ -38,6 +38,7 @@ from .fields import (
 )
 from .auth import AuthenticatedUserMixin
 from .aggregations import Aggregation, Count, Sum, Avg, Min, Max
+from .utils import retry_on_conflict
 from .signals import (
     Signal,
     pre_save,
@@ -103,6 +104,8 @@ __all__ = [
     "around_save",
     "around_delete",
     "around_update",
+    # Utilities
+    "retry_on_conflict",
 ]
 
-__version__ = "0.5.8"
+__version__ = "0.5.9"

@@ -496,8 +496,13 @@ class QuerySet:
         where_clauses = []
         for field_name, lookup_name, value in self._filters:
             op = LOOKUP_OPERATORS.get(lookup_name, "=")
-            if lookup_name == "in":
-                # Assuming value is iterable for 'IN' operations
+            if lookup_name in ("in", "not_in", "containsall", "containsany"):
+                # These operators take array values
+                if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set)):
+                    raise TypeError(
+                        f"Value for lookup '{lookup_name}' on field '{field_name}' "
+                        f"must be a list, tuple, or set, got {type(value).__name__!r}."
+                    )
                 formatted_values = ", ".join(repr(v) for v in value)
                 where_clauses.append(f"{field_name} {op} [{formatted_values}]")
             else:
@@ -693,7 +698,13 @@ class QuerySet:
         where_clauses = []
         for field_name, lookup_name, value in self._filters:
             op = LOOKUP_OPERATORS.get(lookup_name, "=")
-            if lookup_name == "in":
+            if lookup_name in ("in", "not_in", "containsall", "containsany"):
+                # These operators take array values
+                if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set)):
+                    raise TypeError(
+                        f"Value for lookup '{lookup_name}' on field '{field_name}' "
+                        f"must be a list, tuple, or set, got {type(value).__name__!r}."
+                    )
                 formatted_values = ", ".join(repr(v) for v in value)
                 where_clauses.append(f"{field_name} {op} [{formatted_values}]")
             else:

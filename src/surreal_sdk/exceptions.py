@@ -69,3 +69,24 @@ class TransactionError(SurrealDBError):
     ):
         self.rollback_succeeded = rollback_succeeded
         super().__init__(message, code)
+
+
+class TransactionConflictError(TransactionError):
+    """Raised when a transaction fails due to a retryable conflict.
+
+    SurrealDB returns specific error messages when concurrent modifications
+    conflict. These errors are safe to retry with backoff.
+    """
+
+    _CONFLICT_PATTERNS = [
+        "can be retried",
+        "failed transaction",
+        "conflict",
+        "document changed",
+    ]
+
+    @staticmethod
+    def is_conflict_error(error: Exception) -> bool:
+        """Check if an exception represents a retryable transaction conflict."""
+        msg = str(error).lower()
+        return any(p in msg for p in TransactionConflictError._CONFLICT_PATTERNS)

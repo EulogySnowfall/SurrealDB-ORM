@@ -311,6 +311,7 @@ async with conn.transaction() as tx:
 ```
 
 **How it works:**
+
 1. Statements are collected in memory
 2. On context exit (or explicit `commit()`), all statements are wrapped in `BEGIN TRANSACTION; ... COMMIT TRANSACTION;`
 3. If an exception occurs, no statements are sent (rollback is automatic)
@@ -328,6 +329,7 @@ async with ws_conn.transaction() as tx:
 ```
 
 **How it works:**
+
 1. `BEGIN TRANSACTION` is sent when entering the context
 2. Each statement executes immediately on the server
 3. `COMMIT TRANSACTION` is sent on success, `CANCEL TRANSACTION` on exception
@@ -449,23 +451,23 @@ result = await db.fn.process_order(user_id, order_data, options)
 
 The SDK supports all SurrealDB built-in function namespaces:
 
-| Namespace | Description | Examples |
-|-----------|-------------|----------|
-| `array` | Array operations | `len`, `concat`, `distinct`, `flatten` |
-| `crypto` | Cryptographic functions | `sha256`, `sha512`, `md5`, `argon2` |
-| `duration` | Duration operations | `days`, `hours`, `mins`, `secs` |
-| `geo` | Geospatial functions | `distance`, `area`, `bearing` |
-| `http` | HTTP requests | `get`, `post`, `put`, `delete` |
-| `math` | Mathematical functions | `sqrt`, `pow`, `abs`, `round`, `floor` |
-| `meta` | Metadata functions | `id`, `table`, `tb` |
-| `object` | Object operations | `keys`, `values`, `entries` |
-| `parse` | Parsing functions | `email`, `url`, `domain` |
-| `rand` | Random generation | `int`, `float`, `string`, `uuid` |
-| `session` | Session information | `db`, `id`, `ip`, `ns` |
-| `string` | String operations | `len`, `lowercase`, `uppercase`, `trim` |
-| `time` | Time functions | `now`, `floor`, `round`, `format` |
-| `type` | Type conversion | `bool`, `int`, `float`, `string` |
-| `vector` | Vector operations | `add`, `magnitude`, `normalize` |
+| Namespace  | Description             | Examples                                |
+| ---------- | ----------------------- | --------------------------------------- |
+| `array`    | Array operations        | `len`, `concat`, `distinct`, `flatten`  |
+| `crypto`   | Cryptographic functions | `sha256`, `sha512`, `md5`, `argon2`     |
+| `duration` | Duration operations     | `days`, `hours`, `mins`, `secs`         |
+| `geo`      | Geospatial functions    | `distance`, `area`, `bearing`           |
+| `http`     | HTTP requests           | `get`, `post`, `put`, `delete`          |
+| `math`     | Mathematical functions  | `sqrt`, `pow`, `abs`, `round`, `floor`  |
+| `meta`     | Metadata functions      | `id`, `table`, `tb`                     |
+| `object`   | Object operations       | `keys`, `values`, `entries`             |
+| `parse`    | Parsing functions       | `email`, `url`, `domain`                |
+| `rand`     | Random generation       | `int`, `float`, `string`, `uuid`        |
+| `session`  | Session information     | `db`, `id`, `ip`, `ns`                  |
+| `string`   | String operations       | `len`, `lowercase`, `uppercase`, `trim` |
+| `time`     | Time functions          | `now`, `floor`, `round`, `format`       |
+| `type`     | Type conversion         | `bool`, `int`, `float`, `string`        |
+| `vector`   | Vector operations       | `add`, `magnitude`, `normalize`         |
 
 ### How It Works
 
@@ -563,14 +565,14 @@ async with db.live_select("users", diff=True) as stream:
 
 **LiveChange dataclass properties:**
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `id` | `str` | Live query UUID |
-| `action` | `LiveAction` | CREATE, UPDATE, or DELETE |
-| `record_id` | `str` | The affected record ID (e.g., "users:alice") |
-| `result` | `dict` | The full record after the change |
-| `before` | `dict \| None` | Record before change (DIFF mode) |
-| `changed_fields` | `list[str]` | Changed field names (DIFF mode) |
+| Property         | Type           | Description                                  |
+| ---------------- | -------------- | -------------------------------------------- |
+| `id`             | `str`          | Live query UUID                              |
+| `action`         | `LiveAction`   | CREATE, UPDATE, or DELETE                    |
+| `record_id`      | `str`          | The affected record ID (e.g., "users:alice") |
+| `result`         | `dict`         | The full record after the change             |
+| `before`         | `dict \| None` | Record before change (DIFF mode)             |
+| `changed_fields` | `list[str]`    | Changed field names (DIFF mode)              |
 
 ### Live Select Manager
 
@@ -789,12 +791,13 @@ response.success  # bool - Any records deleted
 
 ```python
 from surreal_sdk.exceptions import (
-    SurrealDBError,       # Base exception
-    ConnectionError,      # Connection failed
-    AuthenticationError,  # Auth failed
-    QueryError,           # Query execution failed
-    TimeoutError,         # Request timed out
-    TransactionError,     # Transaction failed
+    SurrealDBError,              # Base exception
+    ConnectionError,             # Connection failed
+    AuthenticationError,         # Auth failed
+    QueryError,                  # Query execution failed
+    TimeoutError,                # Request timed out
+    TransactionError,            # Transaction failed
+    TransactionConflictError,    # Retryable transaction conflict (v0.5.9)
 )
 
 try:
@@ -814,6 +817,15 @@ try:
 except TransactionError as e:
     print(f"Transaction error: {e}")
     print(f"Rollback status: {e.rollback_succeeded}")
+
+# Detect retryable conflicts (v0.5.9)
+try:
+    await conn.merge("events:1", {"processed_by": ["pod-a"]})
+except Exception as e:
+    if TransactionConflictError.is_conflict_error(e):
+        print("Conflict detected - safe to retry")
+    else:
+        raise
 ```
 
 ---
@@ -822,9 +834,9 @@ except TransactionError as e:
 
 The SDK automatically handles URL conversion:
 
-| Input | HTTP Connection | WebSocket Connection |
-|-------|-----------------|----------------------|
-| `http://host:8000` | `http://host:8000/sql` | `ws://host:8000/rpc` |
+| Input               | HTTP Connection         | WebSocket Connection  |
+| ------------------- | ----------------------- | --------------------- |
+| `http://host:8000`  | `http://host:8000/sql`  | `ws://host:8000/rpc`  |
 | `https://host:8000` | `https://host:8000/sql` | `wss://host:8000/rpc` |
-| `ws://host:8000` | `http://host:8000/sql` | `ws://host:8000/rpc` |
-| `wss://host:8000` | `https://host:8000/sql` | `wss://host:8000/rpc` |
+| `ws://host:8000`    | `http://host:8000/sql`  | `ws://host:8000/rpc`  |
+| `wss://host:8000`   | `https://host:8000/sql` | `wss://host:8000/rpc` |

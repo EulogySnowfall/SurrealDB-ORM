@@ -1,4 +1,13 @@
+import asyncio
+import functools
+import logging
+import random
 import re
+from typing import Any, Callable, TypeVar
+
+logger = logging.getLogger(__name__)
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 def remove_quotes_for_variables(query: str) -> str:
@@ -118,3 +127,77 @@ def parse_record_id(full_id: str) -> tuple[str | None, str]:
         id_part = id_part[1:-1].replace("``", "`")
 
     return table, id_part
+
+
+def retry_on_conflict(
+    max_retries: int = 3,
+    base_delay: float = 0.05,
+    max_delay: float = 2.0,
+    backoff_factor: float = 2.0,
+) -> Callable[[F], F]:
+    """Decorator that retries an async function on transaction conflict errors.
+
+    Uses exponential backoff with jitter to avoid thundering herd problems
+    in multi-pod deployments.
+
+    Args:
+        max_retries: Maximum number of retry attempts (default: 3).
+        base_delay: Initial delay in seconds between retries (default: 0.05).
+        max_delay: Maximum delay in seconds (default: 2.0).
+        backoff_factor: Multiplier for delay on each retry (default: 2.0).
+
+    Returns:
+        Decorated async function with retry logic.
+
+    Raises:
+        ValueError: If any parameter is negative or zero (for delays/factor).
+
+    Example:
+        @retry_on_conflict(max_retries=5)
+        async def claim_event(event_id: str, pod_id: str):
+            await Event.atomic_set_add(event_id, "processed_by", pod_id)
+    """
+    if max_retries < 0:
+        raise ValueError(f"max_retries must be >= 0, got {max_retries}")
+    if base_delay <= 0:
+        raise ValueError(f"base_delay must be > 0, got {base_delay}")
+    if max_delay <= 0:
+        raise ValueError(f"max_delay must be > 0, got {max_delay}")
+    if backoff_factor <= 0:
+        raise ValueError(f"backoff_factor must be > 0, got {backoff_factor}")
+
+    def decorator(func: F) -> F:
+        @functools.wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            from surreal_sdk.exceptions import SurrealDBError, TransactionConflictError
+
+            last_error: SurrealDBError | None = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return await func(*args, **kwargs)
+                except SurrealDBError as e:
+                    if not TransactionConflictError.is_conflict_error(e):
+                        raise
+                    last_error = e
+                    if attempt < max_retries:
+                        delay = min(
+                            base_delay * (backoff_factor**attempt),
+                            max_delay,
+                        )
+                        jitter = delay * random.uniform(0.5, 1.0)
+                        logger.warning(
+                            "Transaction conflict on %s (attempt %d/%d), retrying in %.3fs...",
+                            func.__name__,
+                            attempt + 1,
+                            max_retries,
+                            jitter,
+                        )
+                        await asyncio.sleep(jitter)
+
+            raise TransactionConflictError(
+                f"Transaction conflict persisted after {max_retries} retries in {func.__name__}: {last_error}"
+            )
+
+        return wrapper  # type: ignore[return-value]
+
+    return decorator

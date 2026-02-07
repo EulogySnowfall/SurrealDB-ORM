@@ -10,7 +10,77 @@
 
 ---
 
-## Current Version: 0.5.8 (Alpha)
+## Current Version: 0.5.9 (Alpha)
+
+### What's New in 0.5.9
+
+- **Atomic Array Operations** - Server-side array mutations that avoid read-modify-write conflicts
+
+  - **`atomic_append(record_id, field, value)`** - Append a value to an array using `array::append()` (allows duplicates)
+  - **`atomic_remove(record_id, field, value)`** - Remove a value from an array using `-=` operator
+  - **`atomic_set_add(record_id, field, value)`** - Add a value to an array only if not already present using `+=` operator
+  - **Use case**: Multi-pod deployments where concurrent workers update the same array field
+
+    ```python
+    # Instead of read-modify-write (causes transaction conflicts):
+    #   event = await Event.objects().get(event_id)
+    #   event.processed_by.append(pod_id)
+    #   await event.save()
+
+    # Use atomic operations (no conflicts):
+    await Event.atomic_append(event_id, "processed_by", pod_id)
+    await Event.atomic_set_add(event_id, "processed_by", pod_id)  # no duplicates
+    await Event.atomic_remove(event_id, "tags", "deprecated")
+    ```
+
+- **Transaction Conflict Retry** - Automatic retry decorator for conflict errors
+
+  - **`retry_on_conflict(max_retries=3)`** - Decorator with exponential backoff + jitter
+  - **`TransactionConflictError`** - New exception subclass for conflict detection
+
+    ```python
+    from surreal_orm import retry_on_conflict
+
+    @retry_on_conflict(max_retries=5, base_delay=0.05)
+    async def process_event(event_id: str, pod_id: str):
+        await Event.atomic_set_add(event_id, "processed_by", pod_id)
+    ```
+
+- **Relation Direction Control** - `reverse` parameter for `relate()` and `remove_relation()`
+
+  - **`reverse=True`** swaps the direction: `to -> relation -> self` instead of `self -> relation -> to`
+  - **Use case**: When schema defines edges in opposite direction from the calling context
+
+    ```python
+    # Normal: game_tables:abc -> created -> users:xyz
+    await table.relate("created", creator)
+
+    # Reverse: users:xyz -> created -> game_tables:abc
+    await table.relate("created", creator, reverse=True)
+
+    # Also works with remove_relation
+    await table.remove_relation("created", creator, reverse=True)
+    ```
+
+- **New Query Lookup Operators** - Server-side array filtering
+
+  - **`not_contains`** - Generates `CONTAINSNOT` for excluding array values
+  - **`containsall`** - Generates `CONTAINSALL` for matching all values
+  - **`containsany`** - Generates `CONTAINSANY` for matching any value
+  - **`not_in`** - Generates `NOT IN` for exclusion sets
+
+    ```python
+    # Server-side filter: events NOT containing this pod_id
+    events = await Event.objects().filter(
+        processed_by__not_contains=pod_id,
+        status="pending",
+    ).exec()
+
+    # Events containing ALL required tags
+    events = await Event.objects().filter(
+        tags__containsall=["urgent", "production"],
+    ).exec()
+    ```
 
 ### What's New in 0.5.8
 

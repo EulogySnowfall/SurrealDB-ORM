@@ -1,7 +1,10 @@
+import inspect
+
 import pytest
 from pydantic import Field
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict, SurrealDbError
 from src.surreal_orm.query_set import QuerySet
+from src.surreal_sdk.exceptions import TransactionConflictError, TransactionError
 
 
 class ModelTest(BaseSurrealModel):
@@ -96,3 +99,229 @@ def test_class_with_key_specify() -> None:
     model = ModelTest3(name="Test", age=45, email="test@test.com")  # type: ignore
 
     assert model.get_id() == "test@test.com"  # type: ignore
+
+
+# ==================== v0.5.9: New lookup operators ====================
+
+
+def test_queryset_filter_not_contains() -> None:
+    qs = ModelTest.objects().filter(name__not_contains="test")
+    assert qs._filters == [("name", "not_contains", "test")]
+
+
+def test_queryset_filter_containsall() -> None:
+    qs = ModelTest.objects().filter(name__containsall=["a", "b"])
+    assert qs._filters == [("name", "containsall", ["a", "b"])]
+
+
+def test_queryset_filter_containsany() -> None:
+    qs = ModelTest.objects().filter(name__containsany=["a", "b"])
+    assert qs._filters == [("name", "containsany", ["a", "b"])]
+
+
+def test_queryset_filter_not_in() -> None:
+    qs = ModelTest.objects().filter(age__not_in=[1, 2, 3])
+    assert qs._filters == [("age", "not_in", [1, 2, 3])]
+
+
+def test_queryset_compile_not_contains() -> None:
+    qs = ModelTest.objects().filter(name__not_contains="test")
+    query = qs._compile_query()
+    assert "CONTAINSNOT" in query
+    assert "name CONTAINSNOT 'test'" in query
+
+
+def test_queryset_compile_containsall() -> None:
+    qs = ModelTest.objects().filter(name__containsall=["a", "b"])
+    query = qs._compile_query()
+    assert "CONTAINSALL" in query
+    assert "name CONTAINSALL ['a', 'b']" in query
+
+
+def test_queryset_compile_containsany() -> None:
+    qs = ModelTest.objects().filter(name__containsany=["a", "b"])
+    query = qs._compile_query()
+    assert "CONTAINSANY" in query
+    assert "name CONTAINSANY ['a', 'b']" in query
+
+
+def test_queryset_compile_not_in() -> None:
+    qs = ModelTest.objects().filter(age__not_in=[1, 2])
+    query = qs._compile_query()
+    assert "NOT IN" in query
+    assert "age NOT IN [1, 2]" in query
+
+
+# ==================== v0.5.9: TransactionConflictError ====================
+
+
+def test_transaction_conflict_error_detection() -> None:
+    assert TransactionConflictError.is_conflict_error(Exception("Transaction failed: can be retried"))
+    assert TransactionConflictError.is_conflict_error(Exception("failed transaction due to conflict"))
+    assert TransactionConflictError.is_conflict_error(Exception("document changed by another client"))
+    assert not TransactionConflictError.is_conflict_error(Exception("connection timeout"))
+    assert not TransactionConflictError.is_conflict_error(Exception("authentication failed"))
+
+
+def test_transaction_conflict_error_is_transaction_error() -> None:
+    assert issubclass(TransactionConflictError, TransactionError)
+
+
+# ==================== v0.5.9: retry_on_conflict ====================
+
+
+def test_retry_on_conflict_import() -> None:
+    from src.surreal_orm import retry_on_conflict
+
+    assert callable(retry_on_conflict)
+
+
+def test_retry_on_conflict_decorator() -> None:
+    from src.surreal_orm.utils import retry_on_conflict
+
+    @retry_on_conflict(max_retries=3)
+    async def dummy() -> str:
+        return "ok"
+
+    assert callable(dummy)
+    assert dummy.__name__ == "dummy"
+
+
+# ==================== v0.5.9: relate() / remove_relation() reverse ====================
+
+
+def test_relate_signature_has_reverse() -> None:
+    sig = inspect.signature(ModelTest.relate)
+    assert "reverse" in sig.parameters
+
+
+def test_remove_relation_signature_has_reverse() -> None:
+    sig = inspect.signature(ModelTest.remove_relation)
+    assert "reverse" in sig.parameters
+
+
+# ==================== v0.5.9: Copilot review fixes ====================
+
+
+def test_atomic_ops_reject_invalid_field_name() -> None:
+    """Atomic ops must reject field names that could cause SurrealQL injection."""
+    import asyncio
+    from src.surreal_orm.model_base import _SAFE_IDENTIFIER_RE
+
+    # Valid field names should pass the regex
+    assert _SAFE_IDENTIFIER_RE.match("processed_by")
+    assert _SAFE_IDENTIFIER_RE.match("tags")
+    assert _SAFE_IDENTIFIER_RE.match("_internal")
+
+    # Invalid / injectable field names should be rejected
+    assert not _SAFE_IDENTIFIER_RE.match("field; DROP TABLE users")
+    assert not _SAFE_IDENTIFIER_RE.match("a-b")
+    assert not _SAFE_IDENTIFIER_RE.match("123field")
+    assert not _SAFE_IDENTIFIER_RE.match("")
+
+    # The methods themselves should raise ValueError
+    with pytest.raises(ValueError, match="Invalid field name"):
+        asyncio.run(ModelTest.atomic_append("1", "bad field!", "val"))
+
+    with pytest.raises(ValueError, match="Invalid field name"):
+        asyncio.run(ModelTest.atomic_remove("1", "x;DROP", "val"))
+
+    with pytest.raises(ValueError, match="Invalid field name"):
+        asyncio.run(ModelTest.atomic_set_add("1", "123bad", "val"))
+
+
+def test_array_lookup_rejects_string_value() -> None:
+    """Array lookup operators must reject non-sequence values like strings."""
+    qs = ModelTest.objects().filter(name__containsall="not_a_list")
+    with pytest.raises(TypeError, match="must be a list, tuple, or set"):
+        qs._compile_query()
+
+
+def test_array_lookup_rejects_string_value_where_clause() -> None:
+    """Same validation in _compile_where_clause."""
+    qs = ModelTest.objects().filter(name__in="bad")
+    with pytest.raises(TypeError, match="must be a list, tuple, or set"):
+        qs._compile_where_clause()
+
+
+def test_array_lookup_accepts_tuple_and_set() -> None:
+    """Array lookups should accept tuples and sets, not just lists."""
+    qs = ModelTest.objects().filter(name__in=("a", "b"))
+    query = qs._compile_query()
+    assert "IN" in query
+
+    qs2 = ModelTest.objects().filter(name__not_in={"x", "y"})
+    query2 = qs2._compile_query()
+    assert "NOT IN" in query2
+
+
+def test_retry_on_conflict_ignores_non_surreal_errors() -> None:
+    """retry_on_conflict should NOT catch non-SurrealDBError exceptions."""
+    import asyncio
+
+    from src.surreal_orm.utils import retry_on_conflict
+
+    call_count = 0
+
+    @retry_on_conflict(max_retries=3)
+    async def always_fails() -> None:
+        nonlocal call_count
+        call_count += 1
+        # This contains "conflict" but is NOT a SurrealDBError
+        raise RuntimeError("some conflict happened")
+
+    with pytest.raises(RuntimeError, match="some conflict happened"):
+        asyncio.run(always_fails())
+
+    # Should NOT have retried — only called once
+    assert call_count == 1
+
+
+# ==================== v0.5.9: Copilot review round 2 fixes ====================
+
+
+def test_retry_on_conflict_rejects_invalid_params() -> None:
+    """retry_on_conflict should reject negative/invalid parameters."""
+    from src.surreal_orm.utils import retry_on_conflict
+
+    with pytest.raises(ValueError, match="max_retries must be >= 0"):
+        retry_on_conflict(max_retries=-1)
+
+    with pytest.raises(ValueError, match="base_delay must be > 0"):
+        retry_on_conflict(base_delay=0)
+
+    with pytest.raises(ValueError, match="base_delay must be > 0"):
+        retry_on_conflict(base_delay=-0.5)
+
+    with pytest.raises(ValueError, match="max_delay must be > 0"):
+        retry_on_conflict(max_delay=0)
+
+    with pytest.raises(ValueError, match="backoff_factor must be > 0"):
+        retry_on_conflict(backoff_factor=-1)
+
+
+def test_retry_on_conflict_accepts_zero_retries() -> None:
+    """max_retries=0 is valid (execute once, no retries)."""
+    from src.surreal_orm.utils import retry_on_conflict
+
+    @retry_on_conflict(max_retries=0)
+    async def do_nothing() -> str:
+        return "ok"
+
+    assert callable(do_nothing)
+
+
+def test_relation_methods_reject_invalid_names() -> None:
+    """relate(), remove_relation(), get_related() must reject invalid relation names."""
+    from src.surreal_orm.model_base import _SAFE_IDENTIFIER_RE
+
+    # Valid relation names
+    assert _SAFE_IDENTIFIER_RE.match("follows")
+    assert _SAFE_IDENTIFIER_RE.match("has_player")
+    assert _SAFE_IDENTIFIER_RE.match("_internal_edge")
+
+    # Invalid / injectable relation names
+    assert not _SAFE_IDENTIFIER_RE.match("bad;DROP TABLE users")
+    assert not _SAFE_IDENTIFIER_RE.match("has-player")
+    assert not _SAFE_IDENTIFIER_RE.match("123edge")
+    assert not _SAFE_IDENTIFIER_RE.match("")

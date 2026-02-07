@@ -6,20 +6,23 @@
 
 ## Version History
 
-| Version   | Status       | Focus                                                         |
-| --------- | ------------ | ------------------------------------------------------------- |
-| 0.1.x     | Released     | Basic ORM (Models, QuerySet, CRUD)                            |
-| 0.2.x     | Released     | Custom SDK, Migrations, JWT Auth, CLI                         |
-| 0.3.0     | Released     | ORM Transactions + Aggregations                               |
-| 0.3.1     | Released     | Bulk Operations + Bug Fixes                                   |
-| 0.4.0     | Released     | Relations & Graph Traversal                                   |
-| 0.5.0     | Released     | SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls     |
-| 0.5.1     | Released     | Security Workflows (Dependabot, SurrealDB monitoring)         |
-| 0.5.2     | Released     | Bug Fixes & FieldType Improvements                            |
-| **0.5.3** | **Released** | **ORM Improvements: Upsert, server_fields, merge() fix**      |
+| Version     | Status       | Focus                                                       |
+| ----------- | ------------ | ----------------------------------------------------------- |
+| 0.1.x       | Released     | Basic ORM (Models, QuerySet, CRUD)                          |
+| 0.2.x       | Released     | Custom SDK, Migrations, JWT Auth, CLI                       |
+| 0.3.0       | Released     | ORM Transactions + Aggregations                             |
+| 0.3.1       | Released     | Bulk Operations + Bug Fixes                                 |
+| 0.4.0       | Released     | Relations & Graph Traversal                                 |
+| 0.5.0       | Released     | SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls   |
+| 0.5.1       | Released     | Security Workflows (Dependabot, SurrealDB monitoring)       |
+| 0.5.2       | Released     | Bug Fixes & FieldType Improvements                          |
+| **0.5.3**   | **Released** | **ORM Improvements: Upsert, server_fields, merge() fix**    |
 | **0.5.5.1** | **Released** | **Critical Bug Fixes: ID escaping, CBOR HTTP, get_related** |
-| 0.5.x     | Planned      | Computed Fields                                               |
-| 0.6.x     | Planned      | ORM Live Models + Signals                                     |
+| **0.5.7**   | **Released** | **Django-style Model Signals**                              |
+| **0.5.8**   | **Released** | **Around Signals (Generator-based middleware)**             |
+| **0.5.9**   | **Released** | **Atomic Array Ops, Relation Direction, Array Filtering**   |
+| 0.5.x       | Planned      | Computed Fields                                             |
+| 0.6.x       | Planned      | ORM Live Models                                             |
 
 ---
 
@@ -591,9 +594,14 @@ users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
 | Record ID Escaping           | 0.5.5.1 | Critical | Done    | -                |
 | CBOR HTTP Protocol           | 0.5.5.1 | High     | Done    | SDK CBOR         |
 | get_related() direction fix  | 0.5.5.1 | Medium   | Done    | Relations        |
-| Computed Fields              | 0.5.5   | Medium   | Planned | SDK functions    |
+| Model Signals                | 0.5.7   | High     | Done    | -                |
+| Around Signals               | 0.5.8   | Medium   | Done    | Model Signals    |
+| Atomic Array Ops             | 0.5.9   | High     | Done    | -                |
+| Relation Direction Control   | 0.5.9   | Medium   | Done    | Relations        |
+| Array Filtering Operators    | 0.5.9   | Medium   | Done    | -                |
+| Transaction Conflict Retry   | 0.5.9   | High     | Done    | -                |
+| Computed Fields              | 0.5.x   | Medium   | Planned | SDK functions    |
 | ORM Live Models              | 0.6.0   | Medium   | Planned | SDK live queries |
-| Model Signals                | 0.6.0   | Low      | Planned | Live Models      |
 
 ---
 
