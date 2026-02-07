@@ -198,3 +198,80 @@ def test_relate_signature_has_reverse() -> None:
 def test_remove_relation_signature_has_reverse() -> None:
     sig = inspect.signature(ModelTest.remove_relation)
     assert "reverse" in sig.parameters
+
+
+# ==================== v0.5.9: Copilot review fixes ====================
+
+
+def test_atomic_ops_reject_invalid_field_name() -> None:
+    """Atomic ops must reject field names that could cause SurrealQL injection."""
+    import asyncio
+    from src.surreal_orm.model_base import _SAFE_IDENTIFIER_RE
+
+    # Valid field names should pass the regex
+    assert _SAFE_IDENTIFIER_RE.match("processed_by")
+    assert _SAFE_IDENTIFIER_RE.match("tags")
+    assert _SAFE_IDENTIFIER_RE.match("_internal")
+
+    # Invalid / injectable field names should be rejected
+    assert not _SAFE_IDENTIFIER_RE.match("field; DROP TABLE users")
+    assert not _SAFE_IDENTIFIER_RE.match("a-b")
+    assert not _SAFE_IDENTIFIER_RE.match("123field")
+    assert not _SAFE_IDENTIFIER_RE.match("")
+
+    # The methods themselves should raise ValueError
+    with pytest.raises(ValueError, match="Invalid field name"):
+        asyncio.get_event_loop().run_until_complete(ModelTest.atomic_append("1", "bad field!", "val"))
+
+    with pytest.raises(ValueError, match="Invalid field name"):
+        asyncio.get_event_loop().run_until_complete(ModelTest.atomic_remove("1", "x;DROP", "val"))
+
+    with pytest.raises(ValueError, match="Invalid field name"):
+        asyncio.get_event_loop().run_until_complete(ModelTest.atomic_set_add("1", "123bad", "val"))
+
+
+def test_array_lookup_rejects_string_value() -> None:
+    """Array lookup operators must reject non-sequence values like strings."""
+    qs = ModelTest.objects().filter(name__containsall="not_a_list")
+    with pytest.raises(TypeError, match="must be a list, tuple, or set"):
+        qs._compile_query()
+
+
+def test_array_lookup_rejects_string_value_where_clause() -> None:
+    """Same validation in _compile_where_clause."""
+    qs = ModelTest.objects().filter(name__in="bad")
+    with pytest.raises(TypeError, match="must be a list, tuple, or set"):
+        qs._compile_where_clause()
+
+
+def test_array_lookup_accepts_tuple_and_set() -> None:
+    """Array lookups should accept tuples and sets, not just lists."""
+    qs = ModelTest.objects().filter(name__in=("a", "b"))
+    query = qs._compile_query()
+    assert "IN" in query
+
+    qs2 = ModelTest.objects().filter(name__not_in={"x", "y"})
+    query2 = qs2._compile_query()
+    assert "NOT IN" in query2
+
+
+def test_retry_on_conflict_ignores_non_surreal_errors() -> None:
+    """retry_on_conflict should NOT catch non-SurrealDBError exceptions."""
+    import asyncio
+
+    from src.surreal_orm.utils import retry_on_conflict
+
+    call_count = 0
+
+    @retry_on_conflict(max_retries=3)
+    async def always_fails() -> None:
+        nonlocal call_count
+        call_count += 1
+        # This contains "conflict" but is NOT a SurrealDBError
+        raise RuntimeError("some conflict happened")
+
+    with pytest.raises(RuntimeError, match="some conflict happened"):
+        asyncio.get_event_loop().run_until_complete(always_fails())
+
+    # Should NOT have retried — only called once
+    assert call_count == 1

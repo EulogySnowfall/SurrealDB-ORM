@@ -1,3 +1,5 @@
+import logging
+import re as _re
 from datetime import datetime, timezone
 from typing import Any, Literal, Self, TYPE_CHECKING, get_args, get_origin
 
@@ -11,7 +13,7 @@ from . import signals as model_signals
 if TYPE_CHECKING:
     from surreal_sdk.transaction import BaseTransaction, HTTPTransaction
 
-import logging
+_SAFE_IDENTIFIER_RE = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class SurrealDbError(Exception):
@@ -918,6 +920,8 @@ class BaseSurrealModel(BaseModel):
         Example:
             await Event.atomic_append(event_id, "processed_by", pod_id)
         """
+        if not _SAFE_IDENTIFIER_RE.match(field):
+            raise ValueError(f"Invalid field name: {field!r}")
         _, id_part = parse_record_id(str(record_id))
         thing = format_thing(cls.get_table_name(), id_part)
 
@@ -948,6 +952,8 @@ class BaseSurrealModel(BaseModel):
         Example:
             await Event.atomic_remove(event_id, "tags", "deprecated")
         """
+        if not _SAFE_IDENTIFIER_RE.match(field):
+            raise ValueError(f"Invalid field name: {field!r}")
         _, id_part = parse_record_id(str(record_id))
         thing = format_thing(cls.get_table_name(), id_part)
 
@@ -980,6 +986,8 @@ class BaseSurrealModel(BaseModel):
         Example:
             await Event.atomic_set_add(event_id, "processed_by", pod_id)
         """
+        if not _SAFE_IDENTIFIER_RE.match(field):
+            raise ValueError(f"Invalid field name: {field!r}")
         _, id_part = parse_record_id(str(record_id))
         thing = format_thing(cls.get_table_name(), id_part)
 

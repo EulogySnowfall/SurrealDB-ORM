@@ -158,13 +158,13 @@ def retry_on_conflict(
     def decorator(func: F) -> F:
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
-            from surreal_sdk.exceptions import TransactionConflictError
+            from surreal_sdk.exceptions import SurrealDBError, TransactionConflictError
 
-            last_error: Exception | None = None
+            last_error: SurrealDBError | None = None
             for attempt in range(max_retries + 1):
                 try:
                     return await func(*args, **kwargs)
-                except Exception as e:
+                except SurrealDBError as e:
                     if not TransactionConflictError.is_conflict_error(e):
                         raise
                     last_error = e
