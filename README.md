@@ -15,6 +15,42 @@
 
 ## What's New in 0.5.x
 
+### v0.5.9 - Concurrent Safety, Relation Direction & Array Filtering
+
+- **Atomic Array Operations** - Server-side array mutations avoiding read-modify-write conflicts
+  - `atomic_append()`, `atomic_remove()`, `atomic_set_add()` class methods
+  - Ideal for multi-pod K8s deployments with concurrent workers
+
+  ```python
+  # No more transaction conflicts on concurrent array updates:
+  await Event.atomic_set_add(event_id, "processed_by", pod_id)
+  ```
+
+- **Transaction Conflict Retry** - `retry_on_conflict()` decorator with exponential backoff + jitter
+  - `TransactionConflictError` exception for conflict detection
+
+  ```python
+  from surreal_orm import retry_on_conflict
+
+  @retry_on_conflict(max_retries=5)
+  async def process_event(event_id, pod_id):
+      await Event.atomic_set_add(event_id, "processed_by", pod_id)
+  ```
+
+- **Relation Direction Control** - `reverse` parameter on `relate()` and `remove_relation()`
+
+  ```python
+  # Reverse: users:xyz -> created -> game_tables:abc
+  await table.relate("created", creator, reverse=True)
+  ```
+
+- **New Query Lookup Operators** - Server-side array filtering
+  - `not_contains` (`CONTAINSNOT`), `containsall` (`CONTAINSALL`), `containsany` (`CONTAINSANY`), `not_in` (`NOT IN`)
+
+  ```python
+  events = await Event.objects().filter(processed_by__not_contains=pod_id).exec()
+  ```
+
 ### v0.5.8 - Around Signals (Generator-based middleware)
 
 - **Around Signals** - Generator-based middleware pattern for wrapping DB operations
@@ -387,7 +423,8 @@ print(result.success, result.count)  # Typed access
 users = await User.objects().filter(age__gte=18, name__startswith="A").exec()
 
 # Supported lookups
-# exact, gt, gte, lt, lte, in, like, ilike, contains, icontains,
+# exact, gt, gte, lt, lte, in, not_in, like, ilike,
+# contains, icontains, not_contains, containsall, containsany,
 # startswith, istartswith, endswith, iendswith, match, regex, isnull
 ```
 

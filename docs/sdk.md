@@ -789,12 +789,13 @@ response.success  # bool - Any records deleted
 
 ```python
 from surreal_sdk.exceptions import (
-    SurrealDBError,       # Base exception
-    ConnectionError,      # Connection failed
-    AuthenticationError,  # Auth failed
-    QueryError,           # Query execution failed
-    TimeoutError,         # Request timed out
-    TransactionError,     # Transaction failed
+    SurrealDBError,              # Base exception
+    ConnectionError,             # Connection failed
+    AuthenticationError,         # Auth failed
+    QueryError,                  # Query execution failed
+    TimeoutError,                # Request timed out
+    TransactionError,            # Transaction failed
+    TransactionConflictError,    # Retryable transaction conflict (v0.5.9)
 )
 
 try:
@@ -814,6 +815,15 @@ try:
 except TransactionError as e:
     print(f"Transaction error: {e}")
     print(f"Rollback status: {e.rollback_succeeded}")
+
+# Detect retryable conflicts (v0.5.9)
+try:
+    await conn.merge("events:1", {"processed_by": ["pod-a"]})
+except Exception as e:
+    if TransactionConflictError.is_conflict_error(e):
+        print("Conflict detected - safe to retry")
+    else:
+        raise
 ```
 
 ---

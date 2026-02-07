@@ -893,12 +893,108 @@ class BaseSurrealModel(BaseModel):
         result = await client.query(query, variables or {})
         return list(result.all_records) if result.all_records else []
 
+    # ==================== Atomic Array Operations ====================
+
+    @classmethod
+    async def atomic_append(
+        cls,
+        record_id: str,
+        field: str,
+        value: Any,
+    ) -> list[dict[str, Any]]:
+        """Atomically append a value to an array field (allows duplicates).
+
+        Uses SurrealDB's ``array::append()`` in an UPDATE statement,
+        avoiding read-modify-write conflicts in concurrent environments.
+
+        Args:
+            record_id: The record ID (just ID or "table:id" format).
+            field: The array field name to append to.
+            value: The value to append.
+
+        Returns:
+            The updated record(s) as a list of dicts.
+
+        Example:
+            await Event.atomic_append(event_id, "processed_by", pod_id)
+        """
+        _, id_part = parse_record_id(str(record_id))
+        thing = format_thing(cls.get_table_name(), id_part)
+
+        query = f"UPDATE {thing} SET {field} = array::append({field}, $value);"
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(query, {"value": value})
+        return list(result.all_records) if result.all_records else []
+
+    @classmethod
+    async def atomic_remove(
+        cls,
+        record_id: str,
+        field: str,
+        value: Any,
+    ) -> list[dict[str, Any]]:
+        """Atomically remove all occurrences of a value from an array field.
+
+        Uses SurrealDB's ``-=`` operator in an UPDATE statement.
+
+        Args:
+            record_id: The record ID (just ID or "table:id" format).
+            field: The array field name to remove from.
+            value: The value to remove.
+
+        Returns:
+            The updated record(s) as a list of dicts.
+
+        Example:
+            await Event.atomic_remove(event_id, "tags", "deprecated")
+        """
+        _, id_part = parse_record_id(str(record_id))
+        thing = format_thing(cls.get_table_name(), id_part)
+
+        query = f"UPDATE {thing} SET {field} -= $value;"
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(query, {"value": value})
+        return list(result.all_records) if result.all_records else []
+
+    @classmethod
+    async def atomic_set_add(
+        cls,
+        record_id: str,
+        field: str,
+        value: Any,
+    ) -> list[dict[str, Any]]:
+        """Atomically add a value to an array field only if not already present.
+
+        Uses SurrealDB's ``+=`` operator which performs set-like addition
+        (no duplicates). Ideal for "claim" patterns where each worker marks
+        a record as processed.
+
+        Args:
+            record_id: The record ID (just ID or "table:id" format).
+            field: The array field name.
+            value: The value to add (skipped if already present).
+
+        Returns:
+            The updated record(s) as a list of dicts.
+
+        Example:
+            await Event.atomic_set_add(event_id, "processed_by", pod_id)
+        """
+        _, id_part = parse_record_id(str(record_id))
+        thing = format_thing(cls.get_table_name(), id_part)
+
+        query = f"UPDATE {thing} SET {field} += $value;"
+        client = await SurrealDBConnectionManager.get_client()
+        result = await client.query(query, {"value": value})
+        return list(result.all_records) if result.all_records else []
+
     # ==================== Graph Relation Methods ====================
 
     async def relate(
         self,
         relation: str,
         to: "BaseSurrealModel",
+        reverse: bool = False,
         tx: "BaseTransaction | None" = None,
         **edge_data: Any,
     ) -> dict[str, Any]:
@@ -911,6 +1007,10 @@ class BaseSurrealModel(BaseModel):
         Args:
             relation: Name of the edge table (e.g., "follows", "likes")
             to: Target model instance to relate to
+            reverse: If True, creates the relation in reverse direction
+                (to -> relation -> self instead of self -> relation -> to).
+                Useful when the schema defines the edge with a different
+                direction than the calling context. Default: False.
             tx: Optional transaction to use for this operation
             **edge_data: Additional data to store on the edge record
 
@@ -918,8 +1018,11 @@ class BaseSurrealModel(BaseModel):
             dict: The created edge record
 
         Example:
-            # Simple relation
-            await alice.relate("follows", bob)
+            # Normal: game_tables:abc -> created -> users:xyz
+            await table.relate("created", creator)
+
+            # Reverse: users:xyz -> created -> game_tables:abc
+            await table.relate("created", creator, reverse=True)
 
             # With edge data
             await alice.relate("follows", bob, since="2025-01-01", strength="strong")
@@ -946,6 +1049,10 @@ class BaseSurrealModel(BaseModel):
         from_thing = format_thing(source_table, source_id)
         to_thing = format_thing(target_table, target_id)
 
+        # When reverse=True, swap direction: to -> relation -> self
+        if reverse:
+            from_thing, to_thing = to_thing, from_thing
+
         if tx is not None:
             await tx.relate(from_thing, relation, to_thing, edge_data if edge_data else None)
             return {"in": from_thing, "out": to_thing, **edge_data}
@@ -966,6 +1073,7 @@ class BaseSurrealModel(BaseModel):
         self,
         relation: str,
         to: "BaseSurrealModel | str",
+        reverse: bool = False,
         tx: "BaseTransaction | None" = None,
     ) -> None:
         """
@@ -980,11 +1088,18 @@ class BaseSurrealModel(BaseModel):
                 String IDs can be in any format:
                 - Just the ID: "abc123"
                 - Full SurrealDB format: "table:abc123"
+            reverse: If True, looks for the relation in reverse direction
+                (to -> relation -> self instead of self -> relation -> to).
+                Must match the direction used when creating the relation.
+                Default: False.
             tx: Optional transaction to use for this operation
 
         Example:
             # Remove relation with model instance
             await alice.remove_relation("follows", bob)
+
+            # Remove reverse relation
+            await table.remove_relation("created", creator, reverse=True)
 
             # Remove relation with string ID
             await table.remove_relation("has_player", "players:abc123")
@@ -1015,7 +1130,10 @@ class BaseSurrealModel(BaseModel):
                 # Just ID - we don't know the target table, so we query by out ID only
                 # Use record::id() to extract the ID part from the record link
                 # Use parameterized query to safely pass the ID
-                query = f"DELETE {relation} WHERE in = {source_thing} AND record::id(out) = $target_id;"
+                if reverse:
+                    query = f"DELETE {relation} WHERE out = {source_thing} AND record::id(in) = $target_id;"
+                else:
+                    query = f"DELETE {relation} WHERE in = {source_thing} AND record::id(out) = $target_id;"
 
                 if tx is not None:
                     await tx.query(query, {"target_id": target_id})
@@ -1032,8 +1150,11 @@ class BaseSurrealModel(BaseModel):
             target_table = to.get_table_name()
             target_thing = format_thing(target_table, model_target_id)
 
-        # Delete edge where in=source and out=target
-        query = f"DELETE {relation} WHERE in = {source_thing} AND out = {target_thing};"
+        # Delete edge where in=source and out=target (or reversed)
+        if reverse:
+            query = f"DELETE {relation} WHERE in = {target_thing} AND out = {source_thing};"
+        else:
+            query = f"DELETE {relation} WHERE in = {source_thing} AND out = {target_thing};"
 
         if tx is not None:
             await tx.query(query)

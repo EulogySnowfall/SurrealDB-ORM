@@ -54,6 +54,7 @@ from .exceptions import (
     QueryError,
     TimeoutError,
     TransactionError,
+    TransactionConflictError,
 )
 from .transaction import (
     BaseTransaction,
@@ -71,7 +72,7 @@ from .functions import (
     CryptoFunctions,
 )
 
-__version__ = "0.5.7"
+__version__ = "0.5.9"
 __all__ = [
     # Connections
     "BaseSurrealConnection",
@@ -129,6 +130,7 @@ __all__ = [
     "QueryError",
     "TimeoutError",
     "TransactionError",
+    "TransactionConflictError",
 ]
 
 

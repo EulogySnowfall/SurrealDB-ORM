@@ -1,7 +1,10 @@
+import inspect
+
 import pytest
 from pydantic import Field
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict, SurrealDbError
 from src.surreal_orm.query_set import QuerySet
+from src.surreal_sdk.exceptions import TransactionConflictError, TransactionError
 
 
 class ModelTest(BaseSurrealModel):
@@ -96,3 +99,102 @@ def test_class_with_key_specify() -> None:
     model = ModelTest3(name="Test", age=45, email="test@test.com")  # type: ignore
 
     assert model.get_id() == "test@test.com"  # type: ignore
+
+
+# ==================== v0.5.9: New lookup operators ====================
+
+
+def test_queryset_filter_not_contains() -> None:
+    qs = ModelTest.objects().filter(name__not_contains="test")
+    assert qs._filters == [("name", "not_contains", "test")]
+
+
+def test_queryset_filter_containsall() -> None:
+    qs = ModelTest.objects().filter(name__containsall=["a", "b"])
+    assert qs._filters == [("name", "containsall", ["a", "b"])]
+
+
+def test_queryset_filter_containsany() -> None:
+    qs = ModelTest.objects().filter(name__containsany=["a", "b"])
+    assert qs._filters == [("name", "containsany", ["a", "b"])]
+
+
+def test_queryset_filter_not_in() -> None:
+    qs = ModelTest.objects().filter(age__not_in=[1, 2, 3])
+    assert qs._filters == [("age", "not_in", [1, 2, 3])]
+
+
+def test_queryset_compile_not_contains() -> None:
+    qs = ModelTest.objects().filter(name__not_contains="test")
+    query = qs._compile_query()
+    assert "CONTAINSNOT" in query
+    assert "name CONTAINSNOT 'test'" in query
+
+
+def test_queryset_compile_containsall() -> None:
+    qs = ModelTest.objects().filter(name__containsall=["a", "b"])
+    query = qs._compile_query()
+    assert "CONTAINSALL" in query
+    assert "name CONTAINSALL ['a', 'b']" in query
+
+
+def test_queryset_compile_containsany() -> None:
+    qs = ModelTest.objects().filter(name__containsany=["a", "b"])
+    query = qs._compile_query()
+    assert "CONTAINSANY" in query
+    assert "name CONTAINSANY ['a', 'b']" in query
+
+
+def test_queryset_compile_not_in() -> None:
+    qs = ModelTest.objects().filter(age__not_in=[1, 2])
+    query = qs._compile_query()
+    assert "NOT IN" in query
+    assert "age NOT IN [1, 2]" in query
+
+
+# ==================== v0.5.9: TransactionConflictError ====================
+
+
+def test_transaction_conflict_error_detection() -> None:
+    assert TransactionConflictError.is_conflict_error(Exception("Transaction failed: can be retried"))
+    assert TransactionConflictError.is_conflict_error(Exception("failed transaction due to conflict"))
+    assert TransactionConflictError.is_conflict_error(Exception("document changed by another client"))
+    assert not TransactionConflictError.is_conflict_error(Exception("connection timeout"))
+    assert not TransactionConflictError.is_conflict_error(Exception("authentication failed"))
+
+
+def test_transaction_conflict_error_is_transaction_error() -> None:
+    assert issubclass(TransactionConflictError, TransactionError)
+
+
+# ==================== v0.5.9: retry_on_conflict ====================
+
+
+def test_retry_on_conflict_import() -> None:
+    from src.surreal_orm import retry_on_conflict
+
+    assert callable(retry_on_conflict)
+
+
+def test_retry_on_conflict_decorator() -> None:
+    from src.surreal_orm.utils import retry_on_conflict
+
+    @retry_on_conflict(max_retries=3)
+    async def dummy() -> str:
+        return "ok"
+
+    assert callable(dummy)
+    assert dummy.__name__ == "dummy"
+
+
+# ==================== v0.5.9: relate() / remove_relation() reverse ====================
+
+
+def test_relate_signature_has_reverse() -> None:
+    sig = inspect.signature(ModelTest.relate)
+    assert "reverse" in sig.parameters
+
+
+def test_remove_relation_signature_has_reverse() -> None:
+    sig = inspect.signature(ModelTest.remove_relation)
+    assert "reverse" in sig.parameters
