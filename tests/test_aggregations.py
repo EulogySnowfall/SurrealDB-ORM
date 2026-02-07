@@ -166,7 +166,8 @@ def test_compile_where_clause_single_filter() -> None:
     where = qs._compile_where_clause()
     assert "WHERE" in where
     assert "status" in where
-    assert "'paid'" in where
+    assert "$_f0" in where
+    assert qs._variables["_f0"] == "paid"
 
 
 def test_compile_where_clause_multiple_filters() -> None:
@@ -182,8 +183,8 @@ def test_compile_where_clause_in_operator() -> None:
     qs = Order.objects().filter(status__in=["paid", "pending"])
     where = qs._compile_where_clause()
     assert "IN" in where
-    assert "'paid'" in where
-    assert "'pending'" in where
+    assert "$_f0" in where
+    assert qs._variables["_f0"] == ["paid", "pending"]
 
 
 # ==================== Import/Export Tests ====================
