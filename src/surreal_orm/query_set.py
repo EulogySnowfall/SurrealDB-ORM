@@ -155,6 +155,8 @@ class QuerySet:
         for arg in args:
             if isinstance(arg, Q):
                 self._q_filters.append(arg)
+            else:
+                raise TypeError(f"filter() positional arguments must be Q objects, got {type(arg).__name__!r}.")
         for key, value in kwargs.items():
             field_name, lookup = self._parse_lookup(key)
             self._filters.append((field_name, lookup, value))
@@ -524,6 +526,10 @@ class QuerySet:
         op = LOOKUP_OPERATORS.get(lookup_name, "=")
 
         if lookup_name == "isnull":
+            if not isinstance(value, bool):
+                raise TypeError(
+                    f"Value for 'isnull' lookup on field '{field_name}' must be a bool, got {type(value).__name__!r}."
+                )
             return f"{field_name} IS {'NULL' if value else 'NOT NULL'}"
 
         # Backwards compat: strings starting with $ are variable references

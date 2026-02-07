@@ -553,7 +553,7 @@ class BaseSurrealModel(BaseModel):
             })
 
             # With transaction
-            async with SurrealDBConnectionManager.transaction() as tx:
+            async with await SurrealDBConnectionManager.transaction() as tx:
                 await user.save(tx=tx)
         """
         # Determine if this is a create or update
@@ -614,6 +614,8 @@ class BaseSurrealModel(BaseModel):
         set_parts: list[str] = []
         variables: dict[str, Any] = {}
         for field, value in data.items():
+            if not _SAFE_IDENTIFIER_RE.match(field):
+                raise ValueError(f"Invalid field name: {field!r}")
             if isinstance(value, SurrealFunc):
                 set_parts.append(f"{field} = {value.expression}")
             else:

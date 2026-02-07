@@ -19,12 +19,12 @@ class SurrealFunc:
 
         from surreal_orm import SurrealFunc
 
-        player = Player(
-            seat_position=1,
-            joined_at=SurrealFunc("time::now()"),
-        )
-        await player.save()
-        # Generates: UPSERT players:... SET seat_position = $_sv_seat_position, joined_at = time::now()
+        player = Player(seat_position=1)
+        await player.save(server_values={
+            "joined_at": SurrealFunc("time::now()"),
+            "last_ping": SurrealFunc("time::now()"),
+        })
+        # Generates: UPSERT players:... SET seat_position = $_sv_seat_position, joined_at = time::now(), last_ping = time::now()
     """
 
     def __init__(self, expression: str) -> None:
