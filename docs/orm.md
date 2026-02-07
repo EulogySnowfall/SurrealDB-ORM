@@ -298,25 +298,25 @@ users = await User.objects().filter(status="active", age=30).exec()
 
 ### Lookup Operators
 
-| Lookup         | Operator       | Example                                         |
-| -------------- | -------------- | ----------------------------------------------- |
-| `exact`        | `=`            | `filter(name="Alice")`                          |
-| `gt`           | `>`            | `filter(age__gt=18)`                            |
-| `gte`          | `>=`           | `filter(age__gte=18)`                           |
-| `lt`           | `<`            | `filter(age__lt=65)`                            |
-| `lte`          | `<=`           | `filter(age__lte=65)`                           |
-| `in`           | `IN`           | `filter(status__in=["active", "pending"])`      |
-| `not_in`       | `NOT IN`       | `filter(status__not_in=["banned", "deleted"])`  |
-| `contains`     | `CONTAINS`     | `filter(tags__contains="python")`               |
-| `not_contains` | `CONTAINSNOT`  | `filter(tags__not_contains="deprecated")`       |
-| `containsall`  | `CONTAINSALL`  | `filter(tags__containsall=["python", "async"])` |
-| `containsany`  | `CONTAINSANY`  | `filter(tags__containsany=["python", "rust"])`  |
-| `like`         | `LIKE`         | `filter(name__like="Ali%")`                     |
-| `ilike`        | `ILIKE`        | `filter(name__ilike="ali%")` (case-insensitive) |
+| Lookup         | Operator      | Example                                         |
+| -------------- | ------------- | ----------------------------------------------- |
+| `exact`        | `=`           | `filter(name="Alice")`                          |
+| `gt`           | `>`           | `filter(age__gt=18)`                            |
+| `gte`          | `>=`          | `filter(age__gte=18)`                           |
+| `lt`           | `<`           | `filter(age__lt=65)`                            |
+| `lte`          | `<=`          | `filter(age__lte=65)`                           |
+| `in`           | `IN`          | `filter(status__in=["active", "pending"])`      |
+| `not_in`       | `NOT IN`      | `filter(status__not_in=["banned", "deleted"])`  |
+| `contains`     | `CONTAINS`    | `filter(tags__contains="python")`               |
+| `not_contains` | `CONTAINSNOT` | `filter(tags__not_contains="deprecated")`       |
+| `containsall`  | `CONTAINSALL` | `filter(tags__containsall=["python", "async"])` |
+| `containsany`  | `CONTAINSANY` | `filter(tags__containsany=["python", "rust"])`  |
+| `like`         | `LIKE`        | `filter(name__like="Ali%")`                     |
+| `ilike`        | `ILIKE`       | `filter(name__ilike="ali%")` (case-insensitive) |
 | `startswith`   | `LIKE 'x%'`   | `filter(name__startswith="Ali")`                |
 | `endswith`     | `LIKE '%x'`   | `filter(name__endswith="ce")`                   |
-| `isnull`       | `IS NULL`      | `filter(deleted_at__isnull=True)`               |
-| `regex`        | `~`            | `filter(email__regex=r".*@gmail\.com")`         |
+| `isnull`       | `IS NULL`     | `filter(deleted_at__isnull=True)`               |
+| `regex`        | `~`           | `filter(email__regex=r".*@gmail\.com")`         |
 
 ### Examples
 

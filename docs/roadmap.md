@@ -6,23 +6,23 @@
 
 ## Version History
 
-| Version   | Status       | Focus                                                         |
-| --------- | ------------ | ------------------------------------------------------------- |
-| 0.1.x     | Released     | Basic ORM (Models, QuerySet, CRUD)                            |
-| 0.2.x     | Released     | Custom SDK, Migrations, JWT Auth, CLI                         |
-| 0.3.0     | Released     | ORM Transactions + Aggregations                               |
-| 0.3.1     | Released     | Bulk Operations + Bug Fixes                                   |
-| 0.4.0     | Released     | Relations & Graph Traversal                                   |
-| 0.5.0     | Released     | SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls     |
-| 0.5.1     | Released     | Security Workflows (Dependabot, SurrealDB monitoring)         |
-| 0.5.2     | Released     | Bug Fixes & FieldType Improvements                            |
-| **0.5.3** | **Released** | **ORM Improvements: Upsert, server_fields, merge() fix**      |
+| Version     | Status       | Focus                                                       |
+| ----------- | ------------ | ----------------------------------------------------------- |
+| 0.1.x       | Released     | Basic ORM (Models, QuerySet, CRUD)                          |
+| 0.2.x       | Released     | Custom SDK, Migrations, JWT Auth, CLI                       |
+| 0.3.0       | Released     | ORM Transactions + Aggregations                             |
+| 0.3.1       | Released     | Bulk Operations + Bug Fixes                                 |
+| 0.4.0       | Released     | Relations & Graph Traversal                                 |
+| 0.5.0       | Released     | SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls   |
+| 0.5.1       | Released     | Security Workflows (Dependabot, SurrealDB monitoring)       |
+| 0.5.2       | Released     | Bug Fixes & FieldType Improvements                          |
+| **0.5.3**   | **Released** | **ORM Improvements: Upsert, server_fields, merge() fix**    |
 | **0.5.5.1** | **Released** | **Critical Bug Fixes: ID escaping, CBOR HTTP, get_related** |
-| **0.5.7** | **Released** | **Django-style Model Signals**                                 |
-| **0.5.8** | **Released** | **Around Signals (Generator-based middleware)**                 |
-| **0.5.9** | **Released** | **Atomic Array Ops, Relation Direction, Array Filtering**      |
-| 0.5.x     | Planned      | Computed Fields                                               |
-| 0.6.x     | Planned      | ORM Live Models                                               |
+| **0.5.7**   | **Released** | **Django-style Model Signals**                              |
+| **0.5.8**   | **Released** | **Around Signals (Generator-based middleware)**             |
+| **0.5.9**   | **Released** | **Atomic Array Ops, Relation Direction, Array Filtering**   |
+| 0.5.x       | Planned      | Computed Fields                                             |
+| 0.6.x       | Planned      | ORM Live Models                                             |
 
 ---
 
