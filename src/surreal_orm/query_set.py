@@ -1,5 +1,6 @@
 from .constants import LOOKUP_OPERATORS
 from .enum import OrderBy
+from .q import Q
 from .utils import remove_quotes_for_variables, format_thing, parse_record_id
 from . import BaseSurrealModel, SurrealDBConnectionManager
 from .aggregations import Aggregation
@@ -57,6 +58,7 @@ class QuerySet:
         """
         self.model = model
         self._filters: list[tuple[str, str, Any]] = []
+        self._q_filters: list[Q] = []
         self.select_item: list[str] = []
         self._limit: int | None = None
         self._offset: int | None = None
@@ -112,35 +114,47 @@ class QuerySet:
         self._variables = {key: value for key, value in kwargs.items()}
         return self
 
-    def filter(self, **kwargs: Any) -> Self:
+    def filter(self, *args: Q, **kwargs: Any) -> Self:
         """
         Add filter conditions to the query.
 
         This method allows adding one or multiple filter conditions to narrow down the query results.
-        Filters are added using keyword arguments where the key represents the field and the lookup type,
-        and the value represents the value to filter by.
+        Accepts both Q objects (for complex OR/NOT logic) and keyword arguments (for simple AND conditions).
 
         Supported lookup types include:
-            - exact
-            - contains
-            - gt (greater than)
-            - lt (less than)
-            - gte (greater than or equal)
-            - lte (less than or equal)
-            - in (within a list of values)
+            - exact, gt, gte, lt, lte, in, not_in
+            - like, ilike, contains, icontains, not_contains
+            - containsall, containsany
+            - startswith, istartswith, endswith, iendswith
+            - match, regex, iregex, isnull
 
         Args:
-            **kwargs (Any): Arbitrary keyword arguments representing filter conditions. The key should be in the format
-                `field__lookup` (e.g., `age__gt=30`). If no lookup is provided, `exact` is assumed.
+            *args (Q): Q objects for complex query expressions (OR, NOT).
+            **kwargs (Any): Keyword arguments representing filter conditions. The key should be in the format
+                ``field__lookup`` (e.g., ``age__gt=30``). If no lookup is provided, ``exact`` is assumed.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
 
         Example:
             ```python
+            # Simple AND filters
             queryset.filter(age__gt=21, status='active')
+
+            # OR with Q objects
+            from surreal_orm import Q
+            queryset.filter(Q(name__contains="alice") | Q(email__contains="alice"))
+
+            # Mixed: Q objects AND keyword filters
+            queryset.filter(
+                Q(name__contains=search) | Q(email__contains=search),
+                role="admin",
+            )
             ```
         """
+        for arg in args:
+            if isinstance(arg, Q):
+                self._q_filters.append(arg)
         for key, value in kwargs.items():
             field_name, lookup = self._parse_lookup(key)
             self._filters.append((field_name, lookup, value))
@@ -218,11 +232,13 @@ class QuerySet:
         Set the field and direction to order the results by.
 
         This method allows sorting the query results based on a specified field and direction
-        (ascending or descending).
+        (ascending or descending). Supports Django-style ``-field`` prefix for descending order.
 
         Args:
-            field_name (str): The name of the field to sort by.
-            type (OrderBy, optional): The direction to sort by. Defaults to `OrderBy.ASC`.
+            field_name (str): The name of the field to sort by. Prefix with ``-`` for descending
+                order (e.g., ``"-created_at"``).
+            order_type (OrderBy, optional): The direction to sort by. Defaults to `OrderBy.ASC`.
+                Ignored when ``field_name`` starts with ``-``.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
@@ -230,8 +246,12 @@ class QuerySet:
         Example:
             ```python
             queryset.order_by('name', OrderBy.DESC)
+            queryset.order_by('-created_at')  # Django-style descending
             ```
         """
+        if field_name.startswith("-"):
+            field_name = field_name[1:]
+            order_type = OrderBy.DESC
         self._order_by = f"{field_name} {order_type}"
         return self
 
@@ -476,12 +496,132 @@ class QuerySet:
 
         return cast(list[dict[str, Any]], result.all_records)
 
+    @staticmethod
+    def _render_condition(
+        field_name: str,
+        lookup_name: str,
+        value: Any,
+        variables: dict[str, Any],
+        counter: list[int],
+    ) -> str:
+        """
+        Render a single filter condition to a parameterized SurrealQL expression.
+
+        Values are bound as ``$_fN`` variables to prevent injection, unless the value
+        is a string starting with ``$`` (treated as a user-provided variable reference
+        for backwards compatibility with ``.variables()``).
+
+        Args:
+            field_name: The database field name.
+            lookup_name: The lookup type (e.g., "exact", "gt", "isnull").
+            value: The filter value.
+            variables: Mutable dict to collect parameterized variables.
+            counter: Mutable single-element list ``[int]`` used as auto-increment counter.
+
+        Returns:
+            str: The rendered SurrealQL condition.
+        """
+        op = LOOKUP_OPERATORS.get(lookup_name, "=")
+
+        if lookup_name == "isnull":
+            return f"{field_name} IS {'NULL' if value else 'NOT NULL'}"
+
+        # Backwards compat: strings starting with $ are variable references
+        if isinstance(value, str) and value.startswith("$"):
+            return f"{field_name} {op} {value}"
+
+        if lookup_name in ("in", "not_in", "containsall", "containsany"):
+            if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set)):
+                raise TypeError(
+                    f"Value for lookup '{lookup_name}' on field '{field_name}' "
+                    f"must be a list, tuple, or set, got {type(value).__name__!r}."
+                )
+            var_name = f"_f{counter[0]}"
+            counter[0] += 1
+            variables[var_name] = list(value)
+            return f"{field_name} {op} ${var_name}"
+
+        var_name = f"_f{counter[0]}"
+        counter[0] += 1
+        variables[var_name] = value
+        return f"{field_name} {op} ${var_name}"
+
+    def _render_q(
+        self,
+        q: Q,
+        variables: dict[str, Any],
+        counter: list[int],
+    ) -> str:
+        """
+        Recursively render a Q object tree to a parameterized SurrealQL expression.
+
+        Args:
+            q: The Q object to render.
+            variables: Mutable dict to collect parameterized variables.
+            counter: Mutable single-element list ``[int]`` used as auto-increment counter.
+
+        Returns:
+            str: The rendered SurrealQL expression with proper parenthesization.
+        """
+        if not q.children:
+            return ""
+
+        parts: list[str] = []
+        for child in q.children:
+            if isinstance(child, Q):
+                rendered = self._render_q(child, variables, counter)
+                if rendered:
+                    parts.append(rendered)
+            else:
+                field_name, lookup_name, value = child
+                parts.append(self._render_condition(field_name, lookup_name, value, variables, counter))
+
+        if not parts:
+            return ""
+
+        connector = f" {q.connector} "
+        result = connector.join(parts)
+
+        if len(parts) > 1:
+            result = f"({result})"
+
+        if q.negated:
+            result = f"NOT ({result})"
+
+        return result
+
+    def _build_where_parts(self) -> tuple[list[str], dict[str, Any]]:
+        """
+        Build all WHERE clause parts from both keyword filters and Q objects.
+
+        Returns:
+            A tuple of (parts, filter_variables) where parts is a list of SurrealQL
+            condition strings to be joined with AND, and filter_variables is a dict
+            of parameterized variable bindings.
+        """
+        variables: dict[str, Any] = {}
+        counter: list[int] = [0]
+        parts: list[str] = []
+
+        # Keyword-based filters (always AND-joined)
+        for field_name, lookup_name, value in self._filters:
+            parts.append(self._render_condition(field_name, lookup_name, value, variables, counter))
+
+        # Q object filters
+        for q in self._q_filters:
+            rendered = self._render_q(q, variables, counter)
+            if rendered:
+                parts.append(rendered)
+
+        return parts, variables
+
     def _compile_query(self) -> str:
         """
-        Compile the QuerySet parameters into a SQL query string.
+        Compile the QuerySet parameters into a parameterized SQL query string.
 
-        This method constructs the final SQL query by combining the selected fields, filters,
-        ordering, limit, and offset parameters.
+        Filter values are bound as ``$_fN`` variables (merged into ``self._variables``)
+        to prevent injection. This method constructs the final SQL query by combining
+        the selected fields, filters, ordering, limit, and offset parameters.
 
         Returns:
             str: The compiled SQL query string.
@@ -490,24 +630,9 @@ class QuerySet:
             ```python
             query = queryset._compile_query()
             # Returns something like:
-            # "SELECT id, name FROM users WHERE age > 21 AND status = 'active' ORDER BY name ASC LIMIT 10 START 20;"
+            # "SELECT id, name FROM users WHERE age > $_f0 AND status = $_f1 ORDER BY name ASC LIMIT 10 START 20;"
             ```
         """
-        where_clauses = []
-        for field_name, lookup_name, value in self._filters:
-            op = LOOKUP_OPERATORS.get(lookup_name, "=")
-            if lookup_name in ("in", "not_in", "containsall", "containsany"):
-                # These operators take array values
-                if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set)):
-                    raise TypeError(
-                        f"Value for lookup '{lookup_name}' on field '{field_name}' "
-                        f"must be a list, tuple, or set, got {type(value).__name__!r}."
-                    )
-                formatted_values = ", ".join(repr(v) for v in value)
-                where_clauses.append(f"{field_name} {op} [{formatted_values}]")
-            else:
-                where_clauses.append(f"{field_name} {op} {repr(value)}")
-
         # Construct the SELECT clause
         if self.select_item:
             fields = ", ".join(self.select_item)
@@ -515,9 +640,12 @@ class QuerySet:
         else:
             query = f"SELECT * FROM {self._model_table}"
 
-        # Append WHERE clauses if any
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
+        # Append WHERE clauses if any (parameterized)
+        where_parts, filter_vars = self._build_where_parts()
+        if filter_vars:
+            self._variables.update(filter_vars)
+        if where_parts:
+            query += " WHERE " + " AND ".join(where_parts)
 
         # Append ORDER BY if set (must come before LIMIT/START in SurrealQL)
         if self._order_by:
@@ -687,30 +815,20 @@ class QuerySet:
 
     def _compile_where_clause(self) -> str:
         """
-        Compile the WHERE clause from filters.
+        Compile the WHERE clause from filters and Q objects (parameterized).
+
+        Filter variables are merged into ``self._variables``.
 
         Returns:
             str: The WHERE clause string (including WHERE keyword) or empty string.
         """
-        if not self._filters:
+        where_parts, filter_vars = self._build_where_parts()
+        if filter_vars:
+            self._variables.update(filter_vars)
+        if not where_parts:
             return ""
 
-        where_clauses = []
-        for field_name, lookup_name, value in self._filters:
-            op = LOOKUP_OPERATORS.get(lookup_name, "=")
-            if lookup_name in ("in", "not_in", "containsall", "containsany"):
-                # These operators take array values
-                if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set)):
-                    raise TypeError(
-                        f"Value for lookup '{lookup_name}' on field '{field_name}' "
-                        f"must be a list, tuple, or set, got {type(value).__name__!r}."
-                    )
-                formatted_values = ", ".join(repr(v) for v in value)
-                where_clauses.append(f"{field_name} {op} [{formatted_values}]")
-            else:
-                where_clauses.append(f"{field_name} {op} {repr(value)}")
-
-        return " WHERE " + " AND ".join(where_clauses)
+        return " WHERE " + " AND ".join(where_parts)
 
     async def count(self) -> int:
         """

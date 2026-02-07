@@ -10,7 +10,113 @@
 
 ---
 
-## Current Version: 0.5.9 (Alpha)
+## Current Version: 0.6.0 (Alpha)
+
+### What's New in 0.6.0
+
+- **Q Objects for Complex Queries** - Django-style composable query expressions
+
+  - **`Q` class** - Combine conditions with `|` (OR), `&` (AND), and `~` (NOT) operators
+  - **Use case**: Complex WHERE clauses that require OR logic or negation
+
+    ```python
+    from surreal_orm import Q
+
+    # OR query
+    users = await User.objects().filter(
+        Q(name__contains="alice") | Q(email__contains="alice"),
+    ).exec()
+
+    # AND with OR
+    users = await User.objects().filter(
+        Q(role="admin") & (Q(age__gte=18) | Q(is_verified=True)),
+    ).exec()
+
+    # NOT
+    users = await User.objects().filter(~Q(status="banned")).exec()
+
+    # Q objects + regular kwargs (mixed)
+    users = await User.objects().filter(
+        Q(id__contains=search) | Q(email__contains=search),
+        role="admin",
+    ).order_by("-created_at").limit(10).exec()
+    ```
+
+- **Parameterized Filters (Security)** - All filter values are now bound as query variables
+
+  - **Automatic parameterization** - Filter values use `$_fN` variables instead of string interpolation
+  - **Prevents injection** - Values are never directly embedded in query strings
+  - **Backwards compatible** - Existing `$variable` references still work via `.variables()`
+
+    ```python
+    # Before (v0.5.x): values were string-interpolated with repr()
+    # SELECT * FROM users WHERE age > 18;
+
+    # After (v0.6.0): values are parameterized
+    # SELECT * FROM users WHERE age > $_f0;  with {"_f0": 18}
+
+    # Explicit variable references still work
+    users = await User.objects().filter(age__gte="$min_age").variables(min_age=18).exec()
+    ```
+
+- **SurrealFunc for Server-Side Functions** - Embed raw SurrealQL expressions in save/update
+
+  - **`SurrealFunc(expression)`** - Marker for server-side function calls
+  - **Use case**: Using `time::now()`, `crypto::argon2::generate()`, or other SurrealQL functions
+
+    ```python
+    from surreal_orm import SurrealFunc
+
+    # In save() with server_values parameter
+    player = Player(seat_position=1)
+    await player.save(server_values={
+        "joined_at": SurrealFunc("time::now()"),
+    })
+    # Generates: UPSERT players:... SET seat_position = $_sv_seat_position, joined_at = time::now()
+
+    # In merge() - SurrealFunc values detected automatically
+    await player.merge(last_ping=SurrealFunc("time::now()"))
+    # Generates: UPDATE players:... SET last_ping = time::now()
+    ```
+
+- **`remove_all_relations()`** - Bulk relation deletion on model instances
+
+  - **Direction support**: `"out"`, `"in"`, or `"both"`
+  - **Transaction support** via `tx` parameter
+  - **Use case**: Cleaning up all edges of a type before deletion or reset
+
+    ```python
+    # Remove all outgoing "has_player" edges from this table
+    await table.remove_all_relations("has_player", direction="out")
+
+    # Remove all incoming "follows" edges (who follows this user)
+    await user.remove_all_relations("follows", direction="in")
+
+    # Remove both directions
+    await user.remove_all_relations("follows", direction="both")
+
+    # Within a transaction
+    async with SurrealDBConnectionManager.transaction() as tx:
+        await table.remove_all_relations("has_player", direction="out", tx=tx)
+    ```
+
+- **Django-style `-field` Ordering** - Shorthand for descending order
+
+  ```python
+  # New shorthand (v0.6.0)
+  users = await User.objects().order_by("-created_at").exec()
+
+  # Equivalent to (still works)
+  users = await User.objects().order_by("created_at", OrderBy.DESC).exec()
+  ```
+
+- **Bug Fix: `isnull` Lookup** - Fixed `filter(field__isnull=True)` generating `field IS True` instead of `field IS NULL`
+
+  ```python
+  # Before (broken): WHERE deleted_at IS True
+  # After (fixed):   WHERE deleted_at IS NULL
+  users = await User.objects().filter(deleted_at__isnull=True).exec()
+  ```
 
 ### What's New in 0.5.9
 
@@ -451,6 +557,7 @@ src/
 │   ├── connection_manager.py    # Connection singleton (uses surreal_sdk)
 │   ├── model_base.py            # BaseSurrealModel with CRUD + relation methods
 │   ├── query_set.py             # Fluent query builder + graph traversal
+│   ├── q.py                     # Q objects for complex OR/AND/NOT queries
 │   ├── relations.py             # RelationManager, RelationQuerySet, RelationDescriptor
 │   ├── aggregations.py          # Count, Sum, Avg, Min, Max
 │   ├── auth.py                  # JWT authentication mixin
@@ -775,10 +882,18 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `LiveChange` dataclass with `record_id`, `action`, `changed_fields`
 - [x] Typed function calls with Pydantic/dataclass support
 
-### v0.6.x (Next) - ORM Real-time Integration
+### Completed (0.6.0) - Query Power & Security
+
+- [x] Q objects for OR/AND/NOT query composition
+- [x] Parameterized filters (security: `$_fN` variable binding)
+- [x] `SurrealFunc` for server-side function expressions in save/update
+- [x] `remove_all_relations()` for bulk edge deletion
+- [x] Django-style `-field` descending ordering
+- [x] Bug fix: `isnull` lookup now generates correct `IS NULL`
+
+### v0.7.x (Next) - ORM Real-time Integration
 
 - [ ] Live Models (real-time sync at ORM level)
-- [ ] Model signals (pre_save, post_save, etc.)
 - [ ] Change Feed integration for ORM
 
 ---

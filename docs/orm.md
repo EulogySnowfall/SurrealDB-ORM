@@ -344,6 +344,31 @@ alice_variants = await User.objects().filter(name__ilike="alice").exec()
 
 ## Ordering, Limit & Offset
 
+### Q Objects (OR/AND/NOT Queries)
+
+```python
+from surreal_orm import Q
+
+# OR query
+users = await User.objects().filter(
+    Q(name__contains="alice") | Q(email__contains="alice"),
+).exec()
+
+# AND with OR
+users = await User.objects().filter(
+    Q(role="admin") & (Q(age__gte=18) | Q(is_verified=True)),
+).exec()
+
+# NOT
+users = await User.objects().filter(~Q(status="banned")).exec()
+
+# Q objects + regular kwargs (mixed)
+users = await User.objects().filter(
+    Q(id__contains=search) | Q(email__contains=search),
+    role="admin",
+).order_by("-created_at").limit(10).exec()
+```
+
 ### Order By
 
 ```python
@@ -352,7 +377,10 @@ from surreal_orm import OrderBy
 # Ascending (default)
 users = await User.objects().order_by("name").exec()
 
-# Descending
+# Descending (Django-style shorthand)
+users = await User.objects().order_by("-created_at").exec()
+
+# Descending (explicit enum)
 users = await User.objects().order_by("created_at", OrderBy.DESC).exec()
 ```
 
@@ -377,7 +405,7 @@ users = await User.objects().offset(20).limit(10).exec()
 users = await (
     User.objects()
     .filter(status="active")
-    .order_by("created_at", OrderBy.DESC)
+    .order_by("-created_at")
     .limit(10)
     .offset(0)
     .exec()
@@ -654,6 +682,61 @@ from surreal_orm import retry_on_conflict
 @retry_on_conflict(max_retries=5, base_delay=0.05)
 async def claim_event(event_id: str, pod_id: str):
     await Event.atomic_set_add(event_id, "processed_by", pod_id)
+```
+
+---
+
+## Server-Side Functions (SurrealFunc)
+
+Embed raw SurrealQL expressions in save/update operations for using server-side
+functions like `time::now()` or `crypto::argon2::generate()`.
+
+### In save()
+
+```python
+from surreal_orm import SurrealFunc
+
+# Pass server-side expressions via server_values parameter
+player = Player(seat_position=1)
+await player.save(server_values={
+    "joined_at": SurrealFunc("time::now()"),
+    "password_hash": SurrealFunc("crypto::argon2::generate('secret')"),
+})
+# Generates: UPSERT players:... SET seat_position = $_sv_seat_position, joined_at = time::now(), ...
+```
+
+### In merge()
+
+```python
+# SurrealFunc values are detected automatically in merge()
+await player.merge(last_ping=SurrealFunc("time::now()"))
+# Generates: UPDATE players:... SET last_ping = time::now()
+```
+
+> **Warning:** The expression is inserted directly into the query string.
+> Only use with developer-controlled values, **never** with user input.
+
+---
+
+## Bulk Relation Deletion
+
+### remove_all_relations()
+
+Remove all edges of a given type from a model instance.
+
+```python
+# Remove all outgoing "has_player" edges
+await table.remove_all_relations("has_player", direction="out")
+
+# Remove all incoming "follows" edges (who follows this user)
+await user.remove_all_relations("follows", direction="in")
+
+# Remove both directions at once
+await user.remove_all_relations("follows", direction="both")
+
+# Within a transaction
+async with await SurrealDBConnectionManager.transaction() as tx:
+    await table.remove_all_relations("has_player", direction="out", tx=tx)
 ```
 
 ---

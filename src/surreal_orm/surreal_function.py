@@ -1,4 +1,45 @@
 from enum import StrEnum
+from typing import Any
+
+
+class SurrealFunc:
+    """
+    Marker for embedding a raw SurrealQL expression as a field value.
+
+    When a field value is a ``SurrealFunc``, the ORM will generate a raw
+    ``SET field = expression`` query instead of using the RPC data-dict path.
+    This allows using server-side functions like ``time::now()`` or
+    ``crypto::argon2::generate()`` in save/update operations.
+
+    Warning:
+        The expression is inserted **directly** into the query string.
+        Only use with developer-controlled values, **never** with user input.
+
+    Example::
+
+        from surreal_orm import SurrealFunc
+
+        player = Player(
+            seat_position=1,
+            joined_at=SurrealFunc("time::now()"),
+        )
+        await player.save()
+        # Generates: UPSERT players:... SET seat_position = $_sv_seat_position, joined_at = time::now()
+    """
+
+    def __init__(self, expression: str) -> None:
+        self.expression = expression
+
+    def __repr__(self) -> str:
+        return f"SurrealFunc({self.expression!r})"
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, SurrealFunc):
+            return self.expression == other.expression
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.expression)
 
 
 class SurealFunction(StrEnum): ...

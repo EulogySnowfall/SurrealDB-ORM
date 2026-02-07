@@ -128,28 +128,32 @@ def test_queryset_compile_not_contains() -> None:
     qs = ModelTest.objects().filter(name__not_contains="test")
     query = qs._compile_query()
     assert "CONTAINSNOT" in query
-    assert "name CONTAINSNOT 'test'" in query
+    assert "name CONTAINSNOT $_f0" in query
+    assert qs._variables["_f0"] == "test"
 
 
 def test_queryset_compile_containsall() -> None:
     qs = ModelTest.objects().filter(name__containsall=["a", "b"])
     query = qs._compile_query()
     assert "CONTAINSALL" in query
-    assert "name CONTAINSALL ['a', 'b']" in query
+    assert "name CONTAINSALL $_f0" in query
+    assert qs._variables["_f0"] == ["a", "b"]
 
 
 def test_queryset_compile_containsany() -> None:
     qs = ModelTest.objects().filter(name__containsany=["a", "b"])
     query = qs._compile_query()
     assert "CONTAINSANY" in query
-    assert "name CONTAINSANY ['a', 'b']" in query
+    assert "name CONTAINSANY $_f0" in query
+    assert qs._variables["_f0"] == ["a", "b"]
 
 
 def test_queryset_compile_not_in() -> None:
     qs = ModelTest.objects().filter(age__not_in=[1, 2])
     query = qs._compile_query()
     assert "NOT IN" in query
-    assert "age NOT IN [1, 2]" in query
+    assert "age NOT IN $_f0" in query
+    assert qs._variables["_f0"] == [1, 2]
 
 
 # ==================== v0.5.9: TransactionConflictError ====================

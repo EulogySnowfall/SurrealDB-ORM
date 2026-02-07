@@ -6,6 +6,53 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.6.0] - 2026-02-07
+
+### Added
+
+- **Q Objects for Complex Queries** - Django-style composable query expressions
+  - `Q` class with `|` (OR), `&` (AND), and `~` (NOT) operators
+  - Mix Q objects with regular kwargs in `filter()` calls
+  - Recursive rendering of nested Q trees into SurrealQL WHERE clauses
+  - New file: `src/surreal_orm/q.py`
+
+- **Parameterized Filters (Security)** - All filter values bound as query variables
+  - Filter values use `$_fN` auto-generated variable names instead of `repr()` string interpolation
+  - Prevents SQL injection by never embedding values directly in query strings
+  - Existing `$variable` references via `.variables()` remain fully backwards compatible
+  - New shared `_render_condition()` method factored from `_compile_query()` and `_compile_where_clause()`
+
+- **SurrealFunc for Server-Side Functions** - Embed raw SurrealQL expressions in save/update
+  - `SurrealFunc(expression)` marker class for server-side function calls
+  - `save(server_values={"field": SurrealFunc("time::now()")})` for save operations
+  - `merge(field=SurrealFunc("time::now()"))` with automatic detection
+  - `_build_set_clause()` helper generates `SET field = expression` with mixed parameterized/raw values
+  - Falls back to raw `UPSERT/UPDATE ... SET ...` query when SurrealFunc values are present
+
+- **`remove_all_relations()`** - Bulk relation deletion on model instances
+  - `direction` parameter: `"out"` (default), `"in"`, or `"both"`
+  - Transaction support via `tx` parameter
+  - Identifier validation with `_SAFE_IDENTIFIER_RE`
+  - Proper ID escaping with `format_thing()`
+
+- **Django-style `-field` Ordering** - Shorthand for descending order
+  - `order_by("-created_at")` is equivalent to `order_by("created_at", OrderBy.DESC)`
+  - Fully backwards compatible: existing `order_by("field", OrderBy.DESC)` still works
+
+### Fixed
+
+- **`isnull` Lookup** - `filter(field__isnull=True)` now generates `field IS NULL` instead of `field IS True`
+  - `filter(field__isnull=False)` correctly generates `field IS NOT NULL`
+
+### Changed
+
+- `_compile_query()` and `_compile_where_clause()` now use shared `_build_where_parts()` method
+- Filter rendering extracted into `_render_condition()` static method (was duplicated)
+- `_render_q()` added for recursive Q object compilation
+- Version bump to 0.6.0
+
+---
+
 ## [0.5.5.3] - 2026-02-04
 
 ### Fixed
