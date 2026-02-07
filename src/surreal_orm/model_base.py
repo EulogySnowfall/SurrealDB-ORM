@@ -575,6 +575,15 @@ class BaseSurrealModel(BaseModel):
 
         # Merge server-side function values
         if server_values:
+            for key, val in server_values.items():
+                if not _SAFE_IDENTIFIER_RE.match(key):
+                    raise ValueError(f"Invalid server_values key {key!r}; keys must be valid identifiers.")
+                if key in exclude_fields:
+                    raise ValueError(f"server_values may not set reserved or server-generated field: {key!r}")
+                if not isinstance(val, SurrealFunc):
+                    raise TypeError(
+                        f"All server_values must be SurrealFunc instances; got {type(val).__name__!r} for key {key!r}."
+                    )
             data.update(server_values)
 
         # Wrap the DB operation with around_save signal
@@ -1309,7 +1318,7 @@ class BaseSurrealModel(BaseModel):
             await table.remove_all_relations("has_player", direction="both")
 
             # In a transaction
-            async with GameTable.transaction() as tx:
+            async with await GameTable.transaction() as tx:
                 await table.remove_all_relations("has_player", tx=tx)
                 await table.remove_all_relations("has_action", tx=tx)
                 await table.remove_all_relations("has_state", tx=tx)
@@ -1329,6 +1338,9 @@ class BaseSurrealModel(BaseModel):
             queries.append(f"DELETE {relation} WHERE in = {source_thing};")
         if direction in ("in", "both"):
             queries.append(f"DELETE {relation} WHERE out = {source_thing};")
+
+        if not queries:
+            raise ValueError(f"Invalid direction: {direction!r}. Expected one of 'out', 'in', or 'both'.")
 
         if tx is not None:
             for query in queries:

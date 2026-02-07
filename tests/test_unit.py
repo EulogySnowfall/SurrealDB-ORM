@@ -522,3 +522,53 @@ def test_order_by_asc_default() -> None:
     """order_by('field') keeps ASC ordering."""
     qs = ModelTest.objects().order_by("name")
     assert qs._order_by == "name ASC"
+
+
+# ==================== v0.6.0: Copilot review round 2 fixes ====================
+
+
+def test_server_values_rejects_invalid_key() -> None:
+    """save(server_values=) must reject invalid field names."""
+    from src.surreal_orm.surreal_function import SurrealFunc
+
+    model = ModelTest(id="1", name="Test", age=45)
+    with pytest.raises(ValueError, match="Invalid server_values key"):
+        import asyncio
+
+        asyncio.run(model.save(server_values={"bad;DROP": SurrealFunc("time::now()")}))
+
+
+def test_server_values_rejects_reserved_field() -> None:
+    """save(server_values=) must reject reserved fields like 'id'."""
+    from src.surreal_orm.surreal_function import SurrealFunc
+
+    model = ModelTest(id="1", name="Test", age=45)
+    with pytest.raises(ValueError, match="server-generated field"):
+        import asyncio
+
+        asyncio.run(model.save(server_values={"id": SurrealFunc("rand::uuid()")}))
+
+
+def test_server_values_rejects_non_surreal_func() -> None:
+    """save(server_values=) must reject non-SurrealFunc values."""
+    model = ModelTest(id="1", name="Test", age=45)
+    with pytest.raises(TypeError, match="must be SurrealFunc instances"):
+        import asyncio
+
+        asyncio.run(model.save(server_values={"name": "plain_string"}))  # type: ignore
+
+
+def test_remove_all_relations_rejects_invalid_direction() -> None:
+    """remove_all_relations() must reject invalid direction values."""
+    import asyncio
+
+    model = ModelTest(id="1", name="Test", age=45)
+    with pytest.raises(ValueError, match="Invalid direction"):
+        asyncio.run(model.remove_all_relations("follows", direction="sideways"))  # type: ignore
+
+
+def test_surreal_function_typo_alias() -> None:
+    """SurealFunction (old name) still works as backward-compat alias."""
+    from src.surreal_orm.surreal_function import SurealFunction, SurrealFunction
+
+    assert SurealFunction is SurrealFunction

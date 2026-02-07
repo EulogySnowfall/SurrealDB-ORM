@@ -42,16 +42,20 @@ class SurrealFunc:
         return hash(self.expression)
 
 
-class SurealFunction(StrEnum): ...
+class SurrealFunction(StrEnum): ...
+
+
+# Backward-compatible alias for the typo in the original name
+SurealFunction = SurrealFunction
 
 
 # XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-class SurrealArrayFunction(SurealFunction):
+class SurrealArrayFunction(SurrealFunction):
     APPEND = "array::append"
 
 
 # https://surrealdb.com/docs/surrealql/functions/database/time
-class SurrealTimeFunction(SurealFunction):
+class SurrealTimeFunction(SurrealFunction):
     CEIL = "time::ceil"
     DAY = "time::day"
     FLOOR = "time::floor"
@@ -84,7 +88,7 @@ class SurrealTimeFunction(SurealFunction):
 
 
 # https://surrealdb.com/docs/surrealql/functions/database/math
-class SurrealMathFunction(SurealFunction):
+class SurrealMathFunction(SurrealFunction):
     ABS = "math::abs"
     ACOS = "math::acos"
     ACOT = "math::acot"
