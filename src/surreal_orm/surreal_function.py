@@ -1,16 +1,61 @@
 from enum import StrEnum
+from typing import Any
 
 
-class SurealFunction(StrEnum): ...
+class SurrealFunc:
+    """
+    Marker for embedding a raw SurrealQL expression as a field value.
+
+    When a field value is a ``SurrealFunc``, the ORM will generate a raw
+    ``SET field = expression`` query instead of using the RPC data-dict path.
+    This allows using server-side functions like ``time::now()`` or
+    ``crypto::argon2::generate()`` in save/update operations.
+
+    Warning:
+        The expression is inserted **directly** into the query string.
+        Only use with developer-controlled values, **never** with user input.
+
+    Example::
+
+        from surreal_orm import SurrealFunc
+
+        player = Player(seat_position=1)
+        await player.save(server_values={
+            "joined_at": SurrealFunc("time::now()"),
+            "last_ping": SurrealFunc("time::now()"),
+        })
+        # Generates: UPSERT players:... SET seat_position = $_sv_seat_position, joined_at = time::now(), last_ping = time::now()
+    """
+
+    def __init__(self, expression: str) -> None:
+        self.expression = expression
+
+    def __repr__(self) -> str:
+        return f"SurrealFunc({self.expression!r})"
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, SurrealFunc):
+            return self.expression == other.expression
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.expression)
+
+
+class SurrealFunction(StrEnum): ...
+
+
+# Backward-compatible alias for the typo in the original name
+SurealFunction = SurrealFunction
 
 
 # XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-class SurrealArrayFunction(SurealFunction):
+class SurrealArrayFunction(SurrealFunction):
     APPEND = "array::append"
 
 
 # https://surrealdb.com/docs/surrealql/functions/database/time
-class SurrealTimeFunction(SurealFunction):
+class SurrealTimeFunction(SurrealFunction):
     CEIL = "time::ceil"
     DAY = "time::day"
     FLOOR = "time::floor"
@@ -43,7 +88,7 @@ class SurrealTimeFunction(SurealFunction):
 
 
 # https://surrealdb.com/docs/surrealql/functions/database/math
-class SurrealMathFunction(SurealFunction):
+class SurrealMathFunction(SurrealFunction):
     ABS = "math::abs"
     ACOS = "math::acos"
     ACOT = "math::acot"

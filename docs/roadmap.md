@@ -21,8 +21,9 @@
 | **0.5.7**   | **Released** | **Django-style Model Signals**                              |
 | **0.5.8**   | **Released** | **Around Signals (Generator-based middleware)**             |
 | **0.5.9**   | **Released** | **Atomic Array Ops, Relation Direction, Array Filtering**   |
-| 0.5.x       | Planned      | Computed Fields                                             |
-| 0.6.x       | Planned      | ORM Live Models                                             |
+| **0.6.0**   | **Released** | **Q Objects, Parameterized Filters, SurrealFunc**           |
+| 0.6.x       | Planned      | Computed Fields                                             |
+| 0.7.x       | Planned      | ORM Live Models                                             |
 
 ---
 
@@ -455,7 +456,62 @@ class MyModel(BaseSurrealModel):
 
 ---
 
-## v0.5.5 - Computed Fields (Planned)
+## v0.6.0 - Query Power, Security & Server-Side Functions (Released)
+
+**Goal:** Eliminate raw queries in ORM consumers by adding complex query composition, parameterized filters, and server-side function support.
+
+**Status:** Implemented and released.
+
+### Q Objects for Complex Queries
+
+```python
+from surreal_orm import Q
+
+# OR query
+users = await User.objects().filter(
+    Q(name__contains="alice") | Q(email__contains="alice"),
+).exec()
+
+# AND with OR + NOT
+users = await User.objects().filter(
+    ~Q(status="banned"),
+    Q(role="admin") & (Q(age__gte=18) | Q(is_verified=True)),
+).exec()
+
+# Mix Q objects with regular kwargs
+users = await User.objects().filter(
+    Q(id__contains=search) | Q(email__contains=search),
+    role="admin",
+).order_by("-created_at").limit(10).exec()
+```
+
+### Parameterized Filters (Security)
+
+All filter values are now automatically bound as query variables (`$_fN`), preventing injection:
+
+```python
+# Generates: WHERE age > $_f0  with {"_f0": 18}
+users = await User.objects().filter(age__gt=18).exec()
+```
+
+### SurrealFunc for Server-Side Functions
+
+```python
+from surreal_orm import SurrealFunc
+
+await player.save(server_values={"joined_at": SurrealFunc("time::now()")})
+await player.merge(last_ping=SurrealFunc("time::now()"))
+```
+
+### Other Improvements
+
+- **`remove_all_relations()`** - Bulk edge deletion with direction support (`out`, `in`, `both`)
+- **Django-style `-field` ordering** - `order_by("-created_at")` shorthand
+- **Bug fix: `isnull` lookup** - Now generates `IS NULL` instead of `IS True`
+
+---
+
+## v0.6.x - Computed Fields (Planned)
 
 **Goal:** Server-side computed fields using SurrealDB functions.
 
@@ -483,7 +539,7 @@ class User(BaseSurrealModel):
 
 ---
 
-## v0.6.0 - ORM Real-time Features (Planned)
+## v0.7.0 - ORM Real-time Features (Planned)
 
 **Goal:** Live model synchronization and event-driven architecture at the ORM level.
 
@@ -533,7 +589,7 @@ async for change in User.objects().changes(since="2026-01-01"):
 
 ---
 
-## v0.7.0 - Advanced Features (Future)
+## v0.8.0 - Advanced Features (Future)
 
 ### Schema Introspection
 
@@ -600,8 +656,14 @@ users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
 | Relation Direction Control   | 0.5.9   | Medium   | Done    | Relations        |
 | Array Filtering Operators    | 0.5.9   | Medium   | Done    | -                |
 | Transaction Conflict Retry   | 0.5.9   | High     | Done    | -                |
-| Computed Fields              | 0.5.x   | Medium   | Planned | SDK functions    |
-| ORM Live Models              | 0.6.0   | Medium   | Planned | SDK live queries |
+| Q Objects (OR/AND/NOT)       | 0.6.0   | High     | Done    | -                |
+| Parameterized Filters        | 0.6.0   | High     | Done    | -                |
+| SurrealFunc                  | 0.6.0   | High     | Done    | -                |
+| remove_all_relations()       | 0.6.0   | Medium   | Done    | Relations        |
+| `-field` ordering            | 0.6.0   | Low      | Done    | -                |
+| isnull bug fix               | 0.6.0   | Medium   | Done    | -                |
+| Computed Fields              | 0.6.x   | Medium   | Planned | SDK functions    |
+| ORM Live Models              | 0.7.0   | Medium   | Planned | SDK live queries |
 
 ---
 

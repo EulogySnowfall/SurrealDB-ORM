@@ -6,6 +6,7 @@ from typing import Any, Literal, Self, TYPE_CHECKING, get_args, get_origin
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
 from .connection_manager import SurrealDBConnectionManager
+from .surreal_function import SurrealFunc
 from .types import SchemaMode, TableType
 from .utils import format_thing, parse_record_id
 from . import signals as model_signals
@@ -514,7 +515,11 @@ class BaseSurrealModel(BaseModel):
         self._update_from_db(record)
         return None
 
-    async def save(self, tx: "BaseTransaction | None" = None) -> Self:
+    async def save(
+        self,
+        tx: "BaseTransaction | None" = None,
+        server_values: dict[str, "SurrealFunc"] | None = None,
+    ) -> Self:
         """
         Save the model instance to the database.
 
@@ -531,13 +536,24 @@ class BaseSurrealModel(BaseModel):
         Args:
             tx: Optional transaction to use for this operation.
                 If provided, the operation will be part of the transaction.
+            server_values: Optional dict of field names to :class:`SurrealFunc`
+                instances. These values are embedded as raw SurrealQL expressions
+                in the query (e.g., ``time::now()``). Only use with developer-controlled
+                values, never with user input.
 
         Example:
             # Without transaction
             await user.save()
 
+            # With server-side functions
+            from surreal_orm import SurrealFunc
+            await player.save(server_values={
+                "joined_at": SurrealFunc("time::now()"),
+                "last_ping": SurrealFunc("time::now()"),
+            })
+
             # With transaction
-            async with SurrealDBConnectionManager.transaction() as tx:
+            async with await SurrealDBConnectionManager.transaction() as tx:
                 await user.save(tx=tx)
         """
         # Determine if this is a create or update
@@ -557,6 +573,19 @@ class BaseSurrealModel(BaseModel):
         table = self.get_table_name()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
 
+        # Merge server-side function values
+        if server_values:
+            for key, val in server_values.items():
+                if not _SAFE_IDENTIFIER_RE.match(key):
+                    raise ValueError(f"Invalid server_values key {key!r}; keys must be valid identifiers.")
+                if key in exclude_fields:
+                    raise ValueError(f"server_values may not set reserved or server-generated field: {key!r}")
+                if not isinstance(val, SurrealFunc):
+                    raise TypeError(
+                        f"All server_values must be SurrealFunc instances; got {type(val).__name__!r} for key {key!r}."
+                    )
+            data.update(server_values)
+
         # Wrap the DB operation with around_save signal
         async with model_signals.around_save.wrap(
             sender=self.__class__,
@@ -575,6 +604,68 @@ class BaseSurrealModel(BaseModel):
         )
         return self
 
+    @staticmethod
+    def _has_surreal_funcs(data: dict[str, Any]) -> bool:
+        """Check if any values in the data dict are SurrealFunc instances."""
+        return any(isinstance(v, SurrealFunc) for v in data.values())
+
+    @staticmethod
+    def _build_set_clause(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """
+        Build a ``SET field = value, ...`` clause from a data dict.
+
+        SurrealFunc values are inlined as raw expressions; other values are
+        bound as ``$_sv_<field>`` parameters.
+
+        Returns:
+            A tuple of (set_clause_str, variables_dict).
+        """
+        set_parts: list[str] = []
+        variables: dict[str, Any] = {}
+        for field, value in data.items():
+            if not _SAFE_IDENTIFIER_RE.match(field):
+                raise ValueError(f"Invalid field name: {field!r}")
+            if isinstance(value, SurrealFunc):
+                set_parts.append(f"{field} = {value.expression}")
+            else:
+                var_name = f"_sv_{field}"
+                set_parts.append(f"{field} = ${var_name}")
+                variables[var_name] = value
+        return ", ".join(set_parts), variables
+
+    async def _execute_save_with_funcs(
+        self,
+        tx: "BaseTransaction | None",
+        table: str,
+        id: str | None,
+        data: dict[str, Any],
+        created: bool,
+    ) -> None:
+        """Execute save using raw query when data contains SurrealFunc values."""
+        set_clause, variables = self._build_set_clause(data)
+
+        if self._db_persisted and id is not None:
+            thing = format_thing(table, id)
+            query = f"UPDATE {thing} SET {set_clause};"
+        elif id is not None:
+            thing = format_thing(table, id)
+            query = f"UPSERT {thing} SET {set_clause};"
+        else:
+            query = f"CREATE {table} SET {set_clause};"
+
+        if tx is not None:
+            result = await tx.query(query, variables)
+        else:
+            client = await SurrealDBConnectionManager.get_client()
+            result = await client.query(query, variables)
+
+        if not self._db_persisted and result.all_records:
+            record = result.all_records[0]
+            if isinstance(record, dict):
+                self._update_from_db(record)
+
+        self._db_persisted = True
+
     async def _execute_save(
         self,
         tx: "BaseTransaction | None",
@@ -584,6 +675,10 @@ class BaseSurrealModel(BaseModel):
         created: bool,
     ) -> None:
         """Execute the actual save operation (wrapped by around_save signal)."""
+        # If data contains SurrealFunc values, use raw query path
+        if self._has_surreal_funcs(data):
+            await self._execute_save_with_funcs(tx, table, id, data, created)
+            return
         if tx is not None:
             # Use transaction
             if self._db_persisted and id is not None:
@@ -700,6 +795,10 @@ class BaseSurrealModel(BaseModel):
         """
         Merge (partial update) the model instance in the database.
 
+        Supports :class:`SurrealFunc` values for server-side expressions::
+
+            await player.merge(last_ping=SurrealFunc("time::now()"))
+
         Signals:
             - pre_update: Sent before the merge operation.
             - around_update: Wraps the DB operation (generator-based).
@@ -707,7 +806,8 @@ class BaseSurrealModel(BaseModel):
 
         Args:
             tx: Optional transaction to use for this operation.
-            **data: Fields to update.
+            **data: Fields to update. Values may be :class:`SurrealFunc` instances
+                for server-side expressions.
 
         Returns:
             Self: The updated model instance.
@@ -735,7 +835,17 @@ class BaseSurrealModel(BaseModel):
             update_fields=data_set,
             tx=tx,
         ):
-            if tx is not None:
+            if self._has_surreal_funcs(data_set):
+                # Use raw query path for SurrealFunc values
+                set_clause, variables = self._build_set_clause(data_set)
+                query = f"UPDATE {thing} SET {set_clause};"
+                if tx is not None:
+                    await tx.query(query, variables)
+                else:
+                    client = await SurrealDBConnectionManager.get_client()
+                    await client.query(query, variables)
+                await self.refresh()
+            elif tx is not None:
                 await tx.merge(thing, data_set)
                 # Update local instance with merged data
                 for key, value in data_set.items():
@@ -1176,6 +1286,70 @@ class BaseSurrealModel(BaseModel):
 
         client = await SurrealDBConnectionManager.get_client()
         await client.query(query)
+
+    async def remove_all_relations(
+        self,
+        relation: str,
+        direction: Literal["out", "in", "both"] = "out",
+        tx: "BaseTransaction | None" = None,
+    ) -> None:
+        """
+        Remove all graph relations (edges) of a given type from this record.
+
+        This deletes all edge records of the specified relation type
+        connected to this record, without needing to specify individual targets.
+
+        Args:
+            relation: Name of the edge table (e.g., "has_player", "created")
+            direction: Which edges to delete:
+                - "out": Edges going FROM this record (``self -> relation -> *``)
+                - "in": Edges coming TO this record (``* -> relation -> self``)
+                - "both": All edges in both directions
+            tx: Optional transaction to use for this operation
+
+        Example:
+            # Delete all has_player edges from this table
+            await table.remove_all_relations("has_player")
+
+            # Delete all 'created' edges pointing to this table
+            await table.remove_all_relations("created", direction="in")
+
+            # Delete both directions
+            await table.remove_all_relations("has_player", direction="both")
+
+            # In a transaction
+            async with await GameTable.transaction() as tx:
+                await table.remove_all_relations("has_player", tx=tx)
+                await table.remove_all_relations("has_action", tx=tx)
+                await table.remove_all_relations("has_state", tx=tx)
+        """
+        if not _SAFE_IDENTIFIER_RE.match(relation):
+            raise ValueError(f"Invalid relation name: {relation!r}")
+
+        source_id = self.get_id()
+        if not source_id:
+            raise SurrealDbError("Cannot remove relations from unsaved instance")
+
+        source_table = self.get_table_name()
+        source_thing = format_thing(source_table, source_id)
+
+        queries: list[str] = []
+        if direction in ("out", "both"):
+            queries.append(f"DELETE {relation} WHERE in = {source_thing};")
+        if direction in ("in", "both"):
+            queries.append(f"DELETE {relation} WHERE out = {source_thing};")
+
+        if not queries:
+            raise ValueError(f"Invalid direction: {direction!r}. Expected one of 'out', 'in', or 'both'.")
+
+        if tx is not None:
+            for query in queries:
+                await tx.query(query)
+            return
+
+        client = await SurrealDBConnectionManager.get_client()
+        for query in queries:
+            await client.query(query)
 
     async def get_related(
         self,

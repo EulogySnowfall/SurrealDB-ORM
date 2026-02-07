@@ -13,6 +13,56 @@
 
 ---
 
+## What's New in 0.6.0
+
+### v0.6.0 - Query Power, Security & Server-Side Functions
+
+- **Q Objects for Complex Queries** - Django-style composable query expressions with OR/AND/NOT
+
+  ```python
+  from surreal_orm import Q
+
+  # OR query
+  users = await User.objects().filter(
+      Q(name__contains="alice") | Q(email__contains="alice"),
+  ).exec()
+
+  # NOT + mixed with regular kwargs
+  users = await User.objects().filter(
+      ~Q(status="banned"), role="admin",
+  ).order_by("-created_at").exec()
+  ```
+
+- **Parameterized Filters (Security)** - All filter values are now query variables (`$_fN`)
+  - Prevents SQL injection by never embedding values in query strings
+  - Existing `$variable` references via `.variables()` still work
+
+- **SurrealFunc for Server-Side Functions** - Embed SurrealQL expressions in save/update
+
+  ```python
+  from surreal_orm import SurrealFunc
+
+  await player.save(server_values={"joined_at": SurrealFunc("time::now()")})
+  await player.merge(last_ping=SurrealFunc("time::now()"))
+  ```
+
+- **`remove_all_relations()`** - Bulk relation deletion with direction support
+
+  ```python
+  await table.remove_all_relations("has_player", direction="out")
+  await user.remove_all_relations("follows", direction="both")
+  ```
+
+- **Django-style `-field` Ordering** - Shorthand for descending order
+
+  ```python
+  users = await User.objects().order_by("-created_at").exec()
+  ```
+
+- **Bug Fix: `isnull` Lookup** - `filter(field__isnull=True)` now generates `IS NULL` instead of `IS True`
+
+---
+
 ## What's New in 0.5.x
 
 ### v0.5.9 - Concurrent Safety, Relation Direction & Array Filtering
@@ -426,6 +476,13 @@ users = await User.objects().filter(age__gte=18, name__startswith="A").exec()
 # exact, gt, gte, lt, lte, in, not_in, like, ilike,
 # contains, icontains, not_contains, containsall, containsany,
 # startswith, istartswith, endswith, iendswith, match, regex, isnull
+
+# Q objects for complex OR/AND/NOT queries
+from surreal_orm import Q
+users = await User.objects().filter(
+    Q(name__contains="alice") | Q(email__contains="alice"),
+    role="admin",
+).order_by("-created_at").limit(10).exec()
 ```
 
 ### ORM Transactions

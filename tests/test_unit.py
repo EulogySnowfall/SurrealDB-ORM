@@ -128,28 +128,32 @@ def test_queryset_compile_not_contains() -> None:
     qs = ModelTest.objects().filter(name__not_contains="test")
     query = qs._compile_query()
     assert "CONTAINSNOT" in query
-    assert "name CONTAINSNOT 'test'" in query
+    assert "name CONTAINSNOT $_f0" in query
+    assert qs._variables["_f0"] == "test"
 
 
 def test_queryset_compile_containsall() -> None:
     qs = ModelTest.objects().filter(name__containsall=["a", "b"])
     query = qs._compile_query()
     assert "CONTAINSALL" in query
-    assert "name CONTAINSALL ['a', 'b']" in query
+    assert "name CONTAINSALL $_f0" in query
+    assert qs._variables["_f0"] == ["a", "b"]
 
 
 def test_queryset_compile_containsany() -> None:
     qs = ModelTest.objects().filter(name__containsany=["a", "b"])
     query = qs._compile_query()
     assert "CONTAINSANY" in query
-    assert "name CONTAINSANY ['a', 'b']" in query
+    assert "name CONTAINSANY $_f0" in query
+    assert qs._variables["_f0"] == ["a", "b"]
 
 
 def test_queryset_compile_not_in() -> None:
     qs = ModelTest.objects().filter(age__not_in=[1, 2])
     query = qs._compile_query()
     assert "NOT IN" in query
-    assert "age NOT IN [1, 2]" in query
+    assert "age NOT IN $_f0" in query
+    assert qs._variables["_f0"] == [1, 2]
 
 
 # ==================== v0.5.9: TransactionConflictError ====================
@@ -325,3 +329,246 @@ def test_relation_methods_reject_invalid_names() -> None:
     assert not _SAFE_IDENTIFIER_RE.match("has-player")
     assert not _SAFE_IDENTIFIER_RE.match("123edge")
     assert not _SAFE_IDENTIFIER_RE.match("")
+
+
+# ==================== v0.6.0: Q objects ====================
+
+
+def test_q_basic_or() -> None:
+    """Q objects can be combined with | (OR)."""
+    from src.surreal_orm.q import Q
+
+    q = Q(name="alice") | Q(name="bob")
+    assert q.connector == Q.OR
+    assert len(q.children) == 2
+
+
+def test_q_basic_and() -> None:
+    """Q objects can be combined with & (AND)."""
+    from src.surreal_orm.q import Q
+
+    q = Q(name="alice") & Q(age__gt=18)
+    assert q.connector == Q.AND
+    assert len(q.children) == 2
+
+
+def test_q_negation() -> None:
+    """Q objects can be negated with ~."""
+    from src.surreal_orm.q import Q
+
+    q = ~Q(status="banned")
+    assert q.negated is True
+    assert len(q.children) == 1
+
+
+def test_q_nested_or_and() -> None:
+    """Q objects can be nested: (A | B) & C."""
+    from src.surreal_orm.q import Q
+
+    q = (Q(name="alice") | Q(name="bob")) & Q(active=True)
+    assert q.connector == Q.AND
+    assert len(q.children) == 2
+
+
+def test_q_filter_integration() -> None:
+    """Q objects work in filter() and produce correct parameterized SQL."""
+    from src.surreal_orm.q import Q
+
+    qs = ModelTest.objects().filter(
+        Q(name="alice") | Q(name="bob"),
+    )
+    query = qs._compile_query()
+    assert "OR" in query
+    assert "$_f0" in query
+    assert "$_f1" in query
+    assert qs._variables["_f0"] == "alice"
+    assert qs._variables["_f1"] == "bob"
+
+
+def test_q_mixed_with_kwargs() -> None:
+    """Q objects + keyword filters produce AND-joined conditions."""
+    from src.surreal_orm.q import Q
+
+    qs = ModelTest.objects().filter(
+        Q(name="alice") | Q(name="bob"),
+        age__gt=18,
+    )
+    query = qs._compile_query()
+    assert "OR" in query
+    assert "AND" in query
+    assert "age" in query
+
+
+def test_q_negation_in_query() -> None:
+    """~Q produces NOT(...) in the compiled query."""
+    from src.surreal_orm.q import Q
+
+    qs = ModelTest.objects().filter(~Q(name="banned"))
+    query = qs._compile_query()
+    assert "NOT" in query
+
+
+# ==================== v0.6.0: filter() validation ====================
+
+
+def test_filter_rejects_non_q_positional_args() -> None:
+    """filter() must raise TypeError for non-Q positional arguments."""
+    with pytest.raises(TypeError, match="positional arguments must be Q objects"):
+        ModelTest.objects().filter("not_a_q_object")  # type: ignore
+
+
+def test_filter_isnull_rejects_non_bool() -> None:
+    """isnull lookup must raise TypeError for non-bool values."""
+    qs = ModelTest.objects().filter(name__isnull="yes")  # type: ignore
+    with pytest.raises(TypeError, match="must be a bool"):
+        qs._compile_query()
+
+
+def test_filter_isnull_true() -> None:
+    """isnull=True generates IS NULL."""
+    qs = ModelTest.objects().filter(name__isnull=True)
+    query = qs._compile_query()
+    assert "name IS NULL" in query
+
+
+def test_filter_isnull_false() -> None:
+    """isnull=False generates IS NOT NULL."""
+    qs = ModelTest.objects().filter(name__isnull=False)
+    query = qs._compile_query()
+    assert "name IS NOT NULL" in query
+
+
+# ==================== v0.6.0: SurrealFunc ====================
+
+
+def test_surreal_func_repr() -> None:
+    """SurrealFunc has a useful repr."""
+    from src.surreal_orm.surreal_function import SurrealFunc
+
+    sf = SurrealFunc("time::now()")
+    assert repr(sf) == "SurrealFunc('time::now()')"
+
+
+def test_surreal_func_equality() -> None:
+    """SurrealFunc equality based on expression."""
+    from src.surreal_orm.surreal_function import SurrealFunc
+
+    assert SurrealFunc("time::now()") == SurrealFunc("time::now()")
+    assert SurrealFunc("time::now()") != SurrealFunc("rand::uuid()")
+
+
+def test_build_set_clause_plain_values() -> None:
+    """_build_set_clause binds plain values as $_sv_field parameters."""
+    clause, variables = ModelTest._build_set_clause({"name": "alice", "age": 25})
+    assert "name = $_sv_name" in clause
+    assert "age = $_sv_age" in clause
+    assert variables["_sv_name"] == "alice"
+    assert variables["_sv_age"] == 25
+
+
+def test_build_set_clause_surreal_func() -> None:
+    """_build_set_clause inlines SurrealFunc expressions."""
+    from src.surreal_orm.surreal_function import SurrealFunc
+
+    clause, variables = ModelTest._build_set_clause(
+        {
+            "name": "alice",
+            "joined_at": SurrealFunc("time::now()"),
+        }
+    )
+    assert "name = $_sv_name" in clause
+    assert "joined_at = time::now()" in clause
+    assert "_sv_name" in variables
+    assert "_sv_joined_at" not in variables  # SurrealFunc is NOT parameterized
+
+
+def test_build_set_clause_rejects_invalid_field() -> None:
+    """_build_set_clause must reject invalid field names."""
+    with pytest.raises(ValueError, match="Invalid field name"):
+        ModelTest._build_set_clause({"bad;DROP TABLE": "value"})
+
+
+# ==================== v0.6.0: remove_all_relations ====================
+
+
+def test_remove_all_relations_signature() -> None:
+    """remove_all_relations exists with correct parameters."""
+    sig = inspect.signature(ModelTest.remove_all_relations)
+    params = list(sig.parameters.keys())
+    assert "relation" in params
+    assert "direction" in params
+    assert "tx" in params
+
+
+def test_remove_all_relations_rejects_invalid_name() -> None:
+    """remove_all_relations must reject invalid relation names."""
+    import asyncio
+
+    model = ModelTest(id="1", name="Test", age=45)
+    with pytest.raises(ValueError, match="Invalid relation name"):
+        asyncio.run(model.remove_all_relations("bad;DROP TABLE"))
+
+
+# ==================== v0.6.0: order_by -field ====================
+
+
+def test_order_by_desc_shorthand() -> None:
+    """order_by('-field') sets DESC ordering."""
+    qs = ModelTest.objects().order_by("-name")
+    assert qs._order_by == "name DESC"
+
+
+def test_order_by_asc_default() -> None:
+    """order_by('field') keeps ASC ordering."""
+    qs = ModelTest.objects().order_by("name")
+    assert qs._order_by == "name ASC"
+
+
+# ==================== v0.6.0: Copilot review round 2 fixes ====================
+
+
+def test_server_values_rejects_invalid_key() -> None:
+    """save(server_values=) must reject invalid field names."""
+    from src.surreal_orm.surreal_function import SurrealFunc
+
+    model = ModelTest(id="1", name="Test", age=45)
+    with pytest.raises(ValueError, match="Invalid server_values key"):
+        import asyncio
+
+        asyncio.run(model.save(server_values={"bad;DROP": SurrealFunc("time::now()")}))
+
+
+def test_server_values_rejects_reserved_field() -> None:
+    """save(server_values=) must reject reserved fields like 'id'."""
+    from src.surreal_orm.surreal_function import SurrealFunc
+
+    model = ModelTest(id="1", name="Test", age=45)
+    with pytest.raises(ValueError, match="server-generated field"):
+        import asyncio
+
+        asyncio.run(model.save(server_values={"id": SurrealFunc("rand::uuid()")}))
+
+
+def test_server_values_rejects_non_surreal_func() -> None:
+    """save(server_values=) must reject non-SurrealFunc values."""
+    model = ModelTest(id="1", name="Test", age=45)
+    with pytest.raises(TypeError, match="must be SurrealFunc instances"):
+        import asyncio
+
+        asyncio.run(model.save(server_values={"name": "plain_string"}))  # type: ignore
+
+
+def test_remove_all_relations_rejects_invalid_direction() -> None:
+    """remove_all_relations() must reject invalid direction values."""
+    import asyncio
+
+    model = ModelTest(id="1", name="Test", age=45)
+    with pytest.raises(ValueError, match="Invalid direction"):
+        asyncio.run(model.remove_all_relations("follows", direction="sideways"))  # type: ignore
+
+
+def test_surreal_function_typo_alias() -> None:
+    """SurealFunction (old name) still works as backward-compat alias."""
+    from src.surreal_orm.surreal_function import SurealFunction, SurrealFunction
+
+    assert SurealFunction is SurrealFunction

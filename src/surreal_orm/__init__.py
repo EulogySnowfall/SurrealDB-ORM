@@ -38,6 +38,8 @@ from .fields import (
 )
 from .auth import AuthenticatedUserMixin
 from .aggregations import Aggregation, Count, Sum, Avg, Min, Max
+from .q import Q
+from .surreal_function import SurrealFunc
 from .utils import retry_on_conflict
 from .signals import (
     Signal,
@@ -65,6 +67,7 @@ __all__ = [
     # Query
     "QuerySet",
     "OrderBy",
+    "Q",
     # Aggregations
     "Aggregation",
     "Count",
@@ -104,8 +107,10 @@ __all__ = [
     "around_save",
     "around_delete",
     "around_update",
+    # Server-side functions
+    "SurrealFunc",
     # Utilities
     "retry_on_conflict",
 ]
 
-__version__ = "0.5.9"
+__version__ = "0.6.0"
