@@ -8,6 +8,9 @@ from typing import Self, Any, Sequence, cast
 from pydantic_core import ValidationError
 
 import logging
+import re as _re
+
+_SAFE_IDENTIFIER_RE = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class SurrealDbError(Exception):
@@ -343,7 +346,17 @@ class QuerySet:
             posts = await Post.objects().select_related("author").exec()
             for post in posts:
                 print(post.author.name)  # Full record, not just an ID
+
+        Raises:
+            ValueError: If any relation name is not a valid SurrealQL identifier.
         """
+        for r in relations:
+            if not _SAFE_IDENTIFIER_RE.match(r):
+                raise ValueError(
+                    f"Invalid FETCH target: {r!r}. "
+                    "Only valid SurrealQL identifiers are allowed "
+                    "(letters, digits, underscores; must start with a letter or underscore)."
+                )
         self._select_related = list(relations)
         return self
 
@@ -402,7 +415,17 @@ class QuerySet:
 
             # Multiple fields
             orders = await Order.objects().fetch("customer", "items").exec()
+
+        Raises:
+            ValueError: If any field name is not a valid SurrealQL identifier.
         """
+        for f in fields:
+            if not _SAFE_IDENTIFIER_RE.match(f):
+                raise ValueError(
+                    f"Invalid FETCH target: {f!r}. "
+                    "Only valid SurrealQL identifiers are allowed "
+                    "(letters, digits, underscores; must start with a letter or underscore)."
+                )
         self._fetch_fields = list(fields)
         return self
 
@@ -706,8 +729,13 @@ class QuerySet:
         # Append FETCH clause.
         # Both explicit fetch() calls and select_related() paths are emitted
         # as SurrealQL FETCH targets, causing SurrealDB to eagerly resolve
-        # record links inline.
-        fetch_targets = list(self._fetch_fields) + list(self._select_related)
+        # record links inline.  Dedup while preserving order.
+        fetch_targets: list[str] = []
+        seen: set[str] = set()
+        for t in list(self._fetch_fields) + list(self._select_related):
+            if t not in seen:
+                fetch_targets.append(t)
+                seen.add(t)
         if fetch_targets:
             query += f" FETCH {', '.join(fetch_targets)}"
 

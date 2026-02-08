@@ -774,6 +774,27 @@ class TestFR4FetchClause:
         qs = ModelTest.objects()
         assert qs._fetch_fields == []
 
+    def test_fetch_rejects_invalid_identifier(self) -> None:
+        """fetch() must reject names that are not valid SurrealQL identifiers."""
+        with pytest.raises(ValueError, match="Invalid FETCH target"):
+            ModelTest.objects().fetch("valid", "DROP TABLE users; --")
+
+    def test_fetch_rejects_identifier_starting_with_digit(self) -> None:
+        """fetch() must reject names starting with a digit."""
+        with pytest.raises(ValueError, match="Invalid FETCH target"):
+            ModelTest.objects().fetch("1author")
+
+    def test_select_related_rejects_invalid_identifier(self) -> None:
+        """select_related() must reject invalid SurrealQL identifiers."""
+        with pytest.raises(ValueError, match="Invalid FETCH target"):
+            ModelTest.objects().select_related("ok_field", "bad field!")
+
+    def test_fetch_dedup_preserves_order(self) -> None:
+        """Duplicate FETCH targets from fetch() + select_related() are deduped."""
+        qs = ModelTest.objects().fetch("author", "tags").select_related("tags", "comments")
+        query = qs._compile_query()
+        assert "FETCH author, tags, comments" in query
+
 
 class TestFR5RemoveAllRelationsList:
     """FR5: remove_all_relations() accepts str | list[str]."""
