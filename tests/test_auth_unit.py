@@ -994,7 +994,9 @@ class TestBug4AuthenticateAndValidateToken:
             password: Encrypted
 
         mock_ephemeral = AsyncMock()
-        mock_ephemeral.authenticate = AsyncMock(side_effect=Exception("invalid token"))
+        mock_response = MagicMock()
+        mock_response.success = False
+        mock_ephemeral.authenticate = AsyncMock(return_value=mock_response)
         mock_ephemeral.close = AsyncMock()
 
         with patch.object(TestUser, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)):

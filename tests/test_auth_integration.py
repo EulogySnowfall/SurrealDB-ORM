@@ -11,6 +11,7 @@ from src import surreal_orm
 from src.surreal_orm.model_base import (
     BaseSurrealModel,
     SurrealConfigDict,
+    SurrealDbError,
     clear_model_registry,
 )
 from src.surreal_orm.types import TableType
@@ -607,7 +608,7 @@ class TestMixinAuthWorkflow:
             name="WP",
         )
 
-        with pytest.raises(Exception):
+        with pytest.raises(SurrealDbError):
             await MixinUser.signin(
                 email="wrong_pass_int@example.com",
                 password="wrong_password",

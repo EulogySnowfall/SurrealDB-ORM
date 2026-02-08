@@ -7,6 +7,8 @@ SurrealDB's native JWT authentication.
 
 from typing import TYPE_CHECKING, Any, Self
 
+from surreal_sdk.exceptions import AuthenticationError, QueryError, SurrealDBError
+
 if TYPE_CHECKING:
     from surreal_sdk import HTTPConnection
 
@@ -73,7 +75,10 @@ class AuthenticatedUserMixin:
         if not url or not ns or not db:
             raise SurrealDbError("Connection not configured. Call SurrealDBConnectionManager.set_connection() first.")
 
-        client = HTTPConnection(url, ns, db)
+        # Respect the protocol configured on the connection manager
+        protocol = SurrealDBConnectionManager.get_protocol()
+
+        client = HTTPConnection(url, ns, db, protocol=protocol)
         await client.connect()
         return client
 
@@ -137,7 +142,11 @@ class AuthenticatedUserMixin:
             if not response.success:
                 raise SurrealDbError(f"Signup failed: {response.raw}")
 
-            token = response.token or ""
+            token = response.token
+            if not token:
+                raise SurrealDbError("Signup succeeded but no JWT token was returned by the server.")
+        except (SurrealDBError, AuthenticationError, QueryError) as e:
+            raise SurrealDbError(f"Signup failed: {e}") from e
         finally:
             await client.close()
 
@@ -220,6 +229,8 @@ class AuthenticatedUserMixin:
                 raise SurrealDbError(f"Signin failed: {response.raw}")
 
             token = response.token
+        except (SurrealDBError, AuthenticationError, QueryError) as e:
+            raise SurrealDbError(f"Signin failed: {e}") from e
         finally:
             await client.close()
 
@@ -286,7 +297,7 @@ class AuthenticatedUserMixin:
 
             raw_auth = first_qr.result  # RecordId object from CBOR
             record_id = str(raw_auth)
-        except Exception:
+        except (SurrealDBError, AuthenticationError, QueryError):
             return None
         finally:
             await client.close()
@@ -297,8 +308,8 @@ class AuthenticatedUserMixin:
 
         root_client = await SurrealDBConnectionManager.get_client()
         result = await root_client.query(
-            f"SELECT * FROM {table_name} WHERE id = $record_id",
-            {"record_id": raw_auth},  # Pass RecordId object, not string
+            f"SELECT * FROM {table_name} WHERE id = type::thing($record_id)",
+            {"record_id": record_id},
         )
 
         if result.is_empty:  # type: ignore[attr-defined]
@@ -345,7 +356,7 @@ class AuthenticatedUserMixin:
                 return None
 
             return str(first_qr.result)
-        except Exception:
+        except (SurrealDBError, AuthenticationError, QueryError):
             return None
         finally:
             await client.close()
