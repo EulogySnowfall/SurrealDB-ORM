@@ -658,6 +658,13 @@ class BaseSurrealModel(BaseModel):
         """Execute save using raw query when data contains SurrealFunc values."""
         set_clause, variables = self._build_set_clause(data)
         if extra_vars:
+            conflicting = set(variables) & set(extra_vars)
+            if conflicting:
+                raise ValueError(
+                    "extra_vars contains keys that conflict with internal "
+                    f"bindings: {sorted(conflicting)}. "
+                    "Use different variable names."
+                )
             variables.update(extra_vars)
 
         if self._db_persisted and id is not None:
@@ -870,6 +877,13 @@ class BaseSurrealModel(BaseModel):
                 # Use raw query path for SurrealFunc values
                 set_clause, variables = self._build_set_clause(data_set)
                 if extra_vars:
+                    conflicting = set(variables) & set(extra_vars)
+                    if conflicting:
+                        raise ValueError(
+                            "extra_vars contains keys that conflict with "
+                            f"internal bindings: {sorted(conflicting)}. "
+                            "Use different variable names."
+                        )
                     variables.update(extra_vars)
                 query = f"UPDATE {thing} SET {set_clause};"
                 if tx is not None:

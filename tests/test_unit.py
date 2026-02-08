@@ -672,6 +672,50 @@ class TestFR3ExtraVars:
         sig = inspect.signature(BaseSurrealModel._execute_save_with_funcs)
         assert "extra_vars" in sig.parameters
 
+    def test_extra_vars_collision_rejected_in_save(self) -> None:
+        """extra_vars keys that clash with _sv_* bindings raise ValueError."""
+        import asyncio
+
+        from src.surreal_orm.surreal_function import SurrealFunc
+
+        model = ModelTest(id="1", name="Test", age=45)
+        # _sv_name is generated internally by _build_set_clause for "name"
+        with pytest.raises(ValueError, match="conflict with internal bindings"):
+            asyncio.run(
+                model.save(
+                    server_values={"joined_at": SurrealFunc("time::now()")},
+                    extra_vars={"_sv_name": "clash"},
+                )
+            )
+
+    def test_extra_vars_collision_rejected_in_merge(self) -> None:
+        """extra_vars keys that clash with _sv_* bindings raise ValueError in merge."""
+        import asyncio
+
+        from src.surreal_orm.surreal_function import SurrealFunc
+
+        model = ModelTest(id="1", name="Test", age=45)
+        model._db_persisted = True
+        # Need a regular value ("name") to create _sv_name binding,
+        # plus a SurrealFunc so the raw-query path is taken.
+        with pytest.raises(ValueError, match="conflict with internal bindings"):
+            asyncio.run(
+                model.merge(
+                    extra_vars={"_sv_name": "clash"},
+                    name="Alice",
+                    last_ping=SurrealFunc("time::now()"),
+                )
+            )
+
+    def test_extra_vars_no_collision_succeeds(self) -> None:
+        """extra_vars with non-conflicting keys do not raise."""
+        # Just verify _build_set_clause + merge doesn't error
+        clause, variables = ModelTest._build_set_clause({"name": "alice"})
+        extra = {"password": "secret123"}
+        # No overlap → no error
+        conflicting = set(variables) & set(extra)
+        assert len(conflicting) == 0
+
 
 class TestFR4FetchClause:
     """FR4: fetch() + FETCH clause in QuerySet."""

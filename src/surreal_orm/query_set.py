@@ -318,13 +318,18 @@ class QuerySet:
 
     def select_related(self, *relations: str) -> Self:
         """
-        Eagerly load related objects in the same query.
+        Eagerly load related objects using SurrealDB's FETCH clause.
 
-        This method optimizes queries by loading related objects alongside
-        the main query results, avoiding N+1 query problems for forward relations.
+        The specified relation names are appended to the ``FETCH`` clause
+        of the compiled query, causing SurrealDB to resolve record links
+        inline and return the full referenced records instead of bare IDs.
 
-        Note: SurrealDB handles this through graph traversal syntax.
-        The actual loading happens during query execution.
+        .. note::
+
+            Like :meth:`fetch`, this only takes effect when the query is
+            executed via :meth:`exec` or :meth:`first`.  The :meth:`all`
+            and :meth:`get` shortcuts use the SDK ``select()`` directly
+            and will not apply FETCH.
 
         Args:
             *relations: Names of relations to load eagerly.
@@ -332,13 +337,12 @@ class QuerySet:
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
 
-        Example:
-            ```python
-            # Load posts with their authors in one query
-            posts = await Post.objects().select_related("author").all()
+        Example::
+
+            # Load posts with their authors resolved inline
+            posts = await Post.objects().select_related("author").exec()
             for post in posts:
-                print(post.author.name)  # No additional query
-            ```
+                print(post.author.name)  # Full record, not just an ID
         """
         self._select_related = list(relations)
         return self
@@ -375,6 +379,14 @@ class QuerySet:
 
         SurrealDB's ``FETCH`` clause replaces record link values with the
         actual referenced records in a single query, avoiding N+1 problems.
+
+        .. note::
+
+            FETCH is only applied when the query is executed via
+            :meth:`exec` or :meth:`first` (which use ``_compile_query()``).
+            The :meth:`all` and :meth:`get` shortcuts bypass the compiled
+            query and call the SDK ``select()`` directly, so FETCH will
+            have no effect there.
 
         Args:
             *fields: Field names or relation edge names to fetch.
@@ -691,7 +703,10 @@ class QuerySet:
         if self._offset is not None:
             query += f" START {self._offset}"
 
-        # Append FETCH clause (combines explicit fetch() and select_related())
+        # Append FETCH clause.
+        # Both explicit fetch() calls and select_related() paths are emitted
+        # as SurrealQL FETCH targets, causing SurrealDB to eagerly resolve
+        # record links inline.
         fetch_targets = list(self._fetch_fields) + list(self._select_related)
         if fetch_targets:
             query += f" FETCH {', '.join(fetch_targets)}"
