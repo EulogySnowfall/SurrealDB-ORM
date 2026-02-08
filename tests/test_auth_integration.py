@@ -50,6 +50,7 @@ async def clean_auth_database():
         ("authuser_auth", "AuthUser"),
         ("testuser_auth", "TestUser"),
         ("appuser_auth", "AppUser"),
+        ("account", "MixinUser"),
     ]
 
     async def cleanup() -> None:
@@ -462,3 +463,254 @@ class TestAuthWithModel:
         assert user.email == "fulltest@example.com"
         assert user.name == "Full Test User"
         assert user.is_active is True
+
+
+@pytest.mark.integration
+class TestMixinAuthWorkflow:
+    """
+    v0.8.0 integration tests — exercise the actual AuthenticatedUserMixin
+    methods (signup, signin, authenticate_token, validate_token) against a
+    real SurrealDB instance.
+
+    These tests prove that:
+    - Bug 1: Ephemeral connections don't corrupt the root singleton
+    - Bug 2: Custom access_name is respected
+    - Bug 3: signup() returns (user, token)
+    - Bug 4: authenticate_token / validate_token work end-to-end
+    """
+
+    @pytest.fixture(autouse=True)
+    async def _setup_mixin_schema(self, clean_auth_database: None) -> None:
+        """Create schema + ACCESS definition for MixinUser before each test."""
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        await client.query("""
+            DEFINE TABLE MixinUser SCHEMAFULL;
+            DEFINE FIELD email ON MixinUser TYPE string;
+            DEFINE FIELD password ON MixinUser TYPE string;
+            DEFINE FIELD name ON MixinUser TYPE string;
+            DEFINE INDEX email_unique ON MixinUser FIELDS email UNIQUE;
+
+            DEFINE ACCESS account ON DATABASE TYPE RECORD
+                SIGNUP (CREATE MixinUser SET
+                    email = $email,
+                    password = crypto::argon2::generate($password),
+                    name = $name
+                )
+                SIGNIN (SELECT * FROM MixinUser WHERE
+                    email = $email AND
+                    crypto::argon2::compare(password, $password)
+                )
+                DURATION FOR TOKEN 1h, FOR SESSION 24h;
+        """)
+
+    def _make_model(self):
+        """Create a fresh MixinUser model class (avoids registry conflicts)."""
+        clear_model_registry()
+
+        class MixinUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(
+                table_type=TableType.USER,
+                table_name="MixinUser",
+                identifier_field="email",
+                password_field="password",
+                access_name="account",
+            )
+            id: str | None = None
+            email: str
+            password: Encrypted
+            name: str
+
+        return MixinUser
+
+    async def test_signup_returns_user_and_token(self) -> None:
+        """signup() must return (user_instance, jwt_token)."""
+        MixinUser = self._make_model()
+
+        user, token = await MixinUser.signup(
+            email="signup_int@example.com",
+            password="secret123",
+            name="Signup Test",
+        )
+
+        # Bug 3: tuple returned
+        assert isinstance(user, MixinUser)
+        assert user.email == "signup_int@example.com"
+        assert user.name == "Signup Test"
+        assert isinstance(token, str)
+        assert len(token.split(".")) == 3  # JWT format
+
+    async def test_signup_does_not_corrupt_root_singleton(self) -> None:
+        """After signup(), the root singleton must still work (Bug 1)."""
+        MixinUser = self._make_model()
+
+        await MixinUser.signup(
+            email="nocorrupt@example.com",
+            password="secret",
+            name="No Corrupt",
+        )
+
+        # Root singleton should still be functional
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        result = await client.query("SELECT * FROM MixinUser WHERE email = 'nocorrupt@example.com';")
+        assert not result.is_empty
+        assert result.first["email"] == "nocorrupt@example.com"
+
+    async def test_signin_returns_user_and_token(self) -> None:
+        """signin() must return (user_instance, jwt_token)."""
+        MixinUser = self._make_model()
+
+        # First, create the user
+        await MixinUser.signup(
+            email="signin_int@example.com",
+            password="mypassword",
+            name="Signin Test",
+        )
+
+        # Now signin
+        user, token = await MixinUser.signin(
+            email="signin_int@example.com",
+            password="mypassword",
+        )
+
+        assert isinstance(user, MixinUser)
+        assert user.email == "signin_int@example.com"
+        assert isinstance(token, str)
+        assert len(token.split(".")) == 3
+
+    async def test_signin_does_not_corrupt_root_singleton(self) -> None:
+        """After signin(), the root singleton must still work (Bug 1)."""
+        MixinUser = self._make_model()
+
+        await MixinUser.signup(
+            email="signin_nocorrupt@example.com",
+            password="pass",
+            name="NC",
+        )
+
+        await MixinUser.signin(
+            email="signin_nocorrupt@example.com",
+            password="pass",
+        )
+
+        # Root singleton should still be functional
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        result = await client.query("INFO FOR DATABASE;")
+        assert result is not None
+
+    async def test_signin_wrong_password_raises(self) -> None:
+        """signin() must raise SurrealDbError on wrong password."""
+        MixinUser = self._make_model()
+
+        await MixinUser.signup(
+            email="wrong_pass_int@example.com",
+            password="correct",
+            name="WP",
+        )
+
+        with pytest.raises(Exception):
+            await MixinUser.signin(
+                email="wrong_pass_int@example.com",
+                password="wrong_password",
+            )
+
+    async def test_authenticate_token_returns_user_and_record_id(self) -> None:
+        """authenticate_token() must return (user, record_id) for a valid token (Bug 4)."""
+        MixinUser = self._make_model()
+
+        _, token = await MixinUser.signup(
+            email="authtoken@example.com",
+            password="secret",
+            name="Auth Token",
+        )
+
+        result = await MixinUser.authenticate_token(token)
+
+        assert result is not None
+        user, record_id = result
+        assert isinstance(user, MixinUser)
+        assert user.email == "authtoken@example.com"
+        assert isinstance(record_id, str)
+        assert "MixinUser:" in record_id
+
+    async def test_authenticate_token_invalid_returns_none(self) -> None:
+        """authenticate_token() must return None for an invalid token (Bug 4)."""
+        MixinUser = self._make_model()
+
+        result = await MixinUser.authenticate_token("invalid.jwt.token")
+        assert result is None
+
+    async def test_validate_token_returns_record_id(self) -> None:
+        """validate_token() must return the record ID string for a valid token (Bug 4)."""
+        MixinUser = self._make_model()
+
+        _, token = await MixinUser.signup(
+            email="validatetok@example.com",
+            password="secret",
+            name="Validate",
+        )
+
+        record_id = await MixinUser.validate_token(token)
+
+        assert record_id is not None
+        assert isinstance(record_id, str)
+        assert "MixinUser:" in record_id
+
+    async def test_validate_token_invalid_returns_none(self) -> None:
+        """validate_token() must return None for an invalid token (Bug 4)."""
+        MixinUser = self._make_model()
+
+        result = await MixinUser.validate_token("bad.jwt.token")
+        assert result is None
+
+    async def test_custom_access_name_is_used(self) -> None:
+        """Bug 2: The custom access_name='account' must be used, not 'mixinuser_auth'."""
+        MixinUser = self._make_model()
+
+        # This would fail if the mixin tried to use 'mixinuser_auth' instead of 'account'
+        user, token = await MixinUser.signup(
+            email="accessname@example.com",
+            password="secret",
+            name="Access Name Test",
+        )
+
+        assert user.email == "accessname@example.com"
+        assert len(token.split(".")) == 3
+
+    async def test_full_auth_lifecycle(self) -> None:
+        """End-to-end: signup -> signin -> authenticate_token -> validate_token."""
+        MixinUser = self._make_model()
+
+        # 1. Signup
+        user, signup_token = await MixinUser.signup(
+            email="lifecycle@example.com",
+            password="lifecycle_pass",
+            name="Lifecycle",
+        )
+        assert user.email == "lifecycle@example.com"
+        assert len(signup_token.split(".")) == 3
+
+        # 2. Signin
+        user2, signin_token = await MixinUser.signin(
+            email="lifecycle@example.com",
+            password="lifecycle_pass",
+        )
+        assert user2.email == "lifecycle@example.com"
+        assert len(signin_token.split(".")) == 3
+
+        # 3. Authenticate token (returns user + record_id)
+        auth_result = await MixinUser.authenticate_token(signin_token)
+        assert auth_result is not None
+        auth_user, record_id = auth_result
+        assert auth_user.email == "lifecycle@example.com"
+        assert "MixinUser:" in record_id
+
+        # 4. Validate token (lightweight — returns just record_id)
+        validated_id = await MixinUser.validate_token(signin_token)
+        assert validated_id is not None
+        assert "MixinUser:" in validated_id
+        assert validated_id == record_id
+
+        # 5. Root singleton still works (Bug 1 — no corruption)
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        result = await client.query("SELECT count() FROM MixinUser GROUP ALL;")
+        assert result is not None

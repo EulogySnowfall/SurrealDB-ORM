@@ -23,8 +23,9 @@
 | **0.5.9**   | **Released** | **Atomic Array Ops, Relation Direction, Array Filtering**   |
 | **0.6.0**   | **Released** | **Q Objects, Parameterized Filters, SurrealFunc**           |
 | **0.7.0**   | **Released** | **Performance & DX: refresh, call_function, FETCH, extras** |
-| 0.7.x       | Planned      | Computed Fields                                             |
-| 0.8.x       | Planned      | ORM Live Models                                             |
+| **0.8.0**   | **Released** | **Auth Module Fixes: Ephemeral Connections, Token Returns** |
+| 0.8.x       | Planned      | Computed Fields                                             |
+| 0.9.x       | Planned      | ORM Live Models                                             |
 
 ---
 
@@ -563,7 +564,73 @@ await table.remove_all_relations(["has_player", "has_action", "has_state"], dire
 
 ---
 
-## v0.7.x - Computed Fields (Planned)
+## v0.8.0 - Auth Module Fixes (Released)
+
+**Goal:** Fix 4 critical/high bugs in `AuthenticatedUserMixin` so users can drop the official `surrealdb` SDK and use `surrealdb-orm` as their single database dependency for both CRUD and auth.
+
+**Status:** Implemented and released.
+
+### Bug 1 (Critical): Singleton Connection Corruption
+
+`signup()` and `signin()` mutated the root singleton connection, breaking all concurrent ORM operations. Auth operations now use **ephemeral connections** that are created and closed per-call, leaving the root singleton untouched.
+
+```python
+# Internal: auth methods now create isolated connections
+client = await cls._create_auth_client()  # ephemeral, never the singleton
+try:
+    response = await client.signup(...)
+finally:
+    await client.close()
+```
+
+### Bug 2 (High): Access Name Not Configurable
+
+Access name was hardcoded as `{table}_auth`. Now configurable via `access_name` in `SurrealConfigDict`:
+
+```python
+class User(AuthenticatedUserMixin, BaseSurrealModel):
+    model_config = SurrealConfigDict(
+        table_type=TableType.USER,
+        access_name="account",  # Custom access name (default: "{table}_auth")
+    )
+```
+
+### Bug 3 (High): signup() Discards JWT Token
+
+`signup()` now returns `tuple[Self, str]` (user instance + JWT token), matching `signin()`:
+
+```python
+# Before (v0.7.0): token was discarded
+user = await User.signup(email="alice@example.com", password="secret", name="Alice")
+
+# After (v0.8.0): token is returned
+user, token = await User.signup(email="alice@example.com", password="secret", name="Alice")
+```
+
+### Bug 4 (Medium): authenticate_token() + Missing SDK Method
+
+`authenticate_token()` called `client.authenticate(token)` but the SDK method didn't exist. Fixed by:
+
+1. Adding `authenticate()` to `BaseSurrealConnection` in the SDK
+2. Fixing `authenticate_token()` to use ephemeral connections and return `tuple[Self, str] | None`
+3. Adding new `validate_token()` lightweight method (returns just the record ID)
+
+```python
+# authenticate_token() - returns full user + record_id
+result = await User.authenticate_token(token)
+if result:
+    user, record_id = result
+    print(f"Authenticated: {user.email} ({record_id})")
+
+# validate_token() - lightweight, returns just record_id string
+record_id = await User.validate_token(token)
+if record_id:
+    print(f"Token valid for: {record_id}")
+```
+
+---
+
+## v0.8.x - Computed Fields (Planned)
 
 **Goal:** Server-side computed fields using SurrealDB functions.
 
@@ -591,7 +658,7 @@ class User(BaseSurrealModel):
 
 ---
 
-## v0.8.0 - ORM Real-time Features (Planned)
+## v0.9.0 - ORM Real-time Features (Planned)
 
 **Goal:** Live model synchronization and event-driven architecture at the ORM level.
 
@@ -610,22 +677,6 @@ async for event in User.objects().filter(role="admin").live():
         print(f"Admin removed: {event.instance.id}")
 ```
 
-### Model Signals
-
-```python
-from surreal_orm.signals import pre_save, post_save, pre_delete, post_delete
-
-@post_save.connect(User)
-async def on_user_saved(sender, instance, created):
-    if created:
-        await send_welcome_email(instance.email)
-    await update_search_index(instance)
-
-@pre_delete.connect(Order)
-async def on_order_deleting(sender, instance):
-    await archive_order(instance)
-```
-
 ### Change Feed Integration
 
 ```python
@@ -641,7 +692,7 @@ async for change in User.objects().changes(since="2026-01-01"):
 
 ---
 
-## v0.9.0 - Advanced Features (Future)
+## v0.10.0 - Advanced Features (Future)
 
 ### Schema Introspection
 
@@ -719,8 +770,13 @@ users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
 | extra_vars for SurrealFunc   | 0.7.0   | Medium   | Done    | SurrealFunc      |
 | FETCH clause (N+1 fix)       | 0.7.0   | Medium   | Done    | -                |
 | remove_all_relations() list  | 0.7.0   | Low      | Done    | Relations        |
-| Computed Fields              | 0.7.x   | Medium   | Planned | SDK functions    |
-| ORM Live Models              | 0.8.0   | Medium   | Planned | SDK live queries |
+| Auth: Ephemeral connections  | 0.8.0   | Critical | Done    | -                |
+| Auth: Configurable access    | 0.8.0   | High     | Done    | -                |
+| Auth: signup returns token   | 0.8.0   | High     | Done    | -                |
+| Auth: authenticate/validate  | 0.8.0   | Medium   | Done    | SDK authenticate |
+| SDK: authenticate() method   | 0.8.0   | Medium   | Done    | -                |
+| Computed Fields              | 0.8.x   | Medium   | Planned | SDK functions    |
+| ORM Live Models              | 0.9.x   | Medium   | Planned | SDK live queries |
 
 ---
 

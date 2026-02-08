@@ -84,8 +84,8 @@ DEFINE ACCESS user_auth ON DATABASE TYPE RECORD
 ### 3. Use Authentication
 
 ```python
-# Signup (creates user with hashed password)
-user = await User.signup(
+# Signup (creates user with hashed password, returns user + JWT token)
+user, token = await User.signup(
     email="alice@example.com",
     password="secure_password",
     name="Alice"
@@ -99,6 +99,9 @@ user, token = await User.signin(
 
 # Use token for authenticated requests
 print(f"JWT Token: {token}")
+
+# Validate token later (lightweight, returns record ID or None)
+record_id = await User.validate_token(token)
 ```
 
 ---
@@ -160,6 +163,7 @@ class User(AuthenticatedUserMixin, BaseSurrealModel):
         table_name="app_users",           # Custom table name
         identifier_field="email",          # Field for signin (default: "email")
         password_field="password",         # Password field (default: "password")
+        access_name="account",            # Access definition name (default: "{table}_auth")
         token_duration="30m",              # JWT lifetime (default: "15m")
         session_duration="24h",            # Session lifetime (default: "12h")
         encryption_algorithm="argon2",     # Hash algorithm (default: "argon2")
@@ -194,16 +198,17 @@ admin, token = await Admin.signin(username="admin", password="secret")
 
 ### signup()
 
-Create a new user with hashed password:
+Create a new user with hashed password. Returns a tuple of `(user, token)`:
 
 ```python
-user = await User.signup(
+user, token = await User.signup(
     email="user@example.com",
     password="plain_text_password",  # Will be hashed
     name="New User",
 )
 
 print(f"Created user: {user.id}")
+print(f"Token: {token}")  # JWT token for immediate authentication
 ```
 
 ### signin()
@@ -223,17 +228,31 @@ print(f"Token: {token}")
 
 ### authenticate_token()
 
-Validate an existing JWT token:
+Validate an existing JWT token and get the full user instance:
 
 ```python
 # Store token (e.g., in session, cookie, header)
 stored_token = "eyJhbGciOiJIUzI1NiIs..."
 
-# Later, validate token
-user = await User.authenticate_token(stored_token)
+# Later, validate token - returns (user, record_id) or None
+result = await User.authenticate_token(stored_token)
 
-if user:
-    print(f"Authenticated as: {user.email}")
+if result:
+    user, record_id = result
+    print(f"Authenticated as: {user.email} ({record_id})")
+else:
+    print("Invalid or expired token")
+```
+
+### validate_token()
+
+Lightweight token validation that returns just the record ID (no database fetch):
+
+```python
+record_id = await User.validate_token(stored_token)
+
+if record_id:
+    print(f"Token valid for: {record_id}")  # e.g., "users:abc123"
 else:
     print("Invalid or expired token")
 ```
@@ -259,8 +278,10 @@ Get the access definition name:
 
 ```python
 access_name = User.get_access_name()
-print(access_name)  # "user_auth" or "app_users_auth" if custom table_name
+print(access_name)  # "user_auth" or custom value from access_name config
 ```
+
+If `access_name` is set in `model_config`, that value is returned. Otherwise falls back to `{table_name}_auth`.
 
 ---
 
@@ -411,13 +432,14 @@ async def main():
     # === SIGNUP ===
     print("=== Creating new user ===")
     try:
-        user = await User.signup(
+        user, signup_token = await User.signup(
             email="alice@example.com",
             password="super_secure_123",
             name="Alice Smith",
         )
         print(f"Created user: {user.name} ({user.email})")
         print(f"User ID: {user.id}")
+        print(f"Signup token: {signup_token[:50]}...")
     except Exception as e:
         print(f"Signup failed: {e}")
         # User might already exist
@@ -437,11 +459,20 @@ async def main():
 
     # === TOKEN VALIDATION ===
     print("\n=== Validating token ===")
-    validated_user = await User.authenticate_token(token)
-    if validated_user:
-        print(f"Token valid for: {validated_user.email}")
+    result = await User.authenticate_token(token)
+    if result:
+        validated_user, record_id = result
+        print(f"Token valid for: {validated_user.email} ({record_id})")
     else:
         print("Token invalid or expired")
+
+    # === LIGHTWEIGHT VALIDATION ===
+    print("\n=== Lightweight token check ===")
+    record_id = await User.validate_token(token)
+    if record_id:
+        print(f"Token maps to: {record_id}")
+    else:
+        print("Token invalid")
 
     # === CHANGE PASSWORD ===
     print("\n=== Changing password ===")

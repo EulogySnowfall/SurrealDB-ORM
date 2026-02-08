@@ -2,18 +2,12 @@
 
 ## Supported Versions
 
-The following versions of SurrealDB-ORM are currently supported with security updates:
+Only the **latest released version** receives security updates until v1.0.0:
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.7.x   | :white_check_mark: |
-| 0.6.x   | :white_check_mark: |
-| 0.5.x   | :x:                |
-| 0.4.x   | :x:                |
-| 0.3.x   | :x:                |
-| 0.2.x   | :x:                |
-| 0.1.x   | :x:                |
-| 0.0.x   | :x:                |
+| Version   | Supported          |
+| --------- | ------------------ |
+| **0.8.x** | :white_check_mark: |
+| < 0.8.x   | :x:                |
 
 ## Versioning Scheme
 

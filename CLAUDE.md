@@ -10,7 +10,47 @@
 
 ---
 
-## Current Version: 0.7.0 (Alpha)
+## Current Version: 0.8.0 (Alpha)
+
+### What's New in 0.8.0
+
+- **Auth Module: Ephemeral Connections** (Bug 1 - Critical) — `signup()`, `signin()`, and `authenticate_token()` no longer mutate the root singleton connection. They create isolated ephemeral `HTTPConnection` instances that are closed after each call, preventing concurrent ORM operation failures.
+
+- **Auth Module: Configurable Access Name** (Bug 2 - High) — Access name is no longer hardcoded to `{table}_auth`. Configure it via `access_name` in `SurrealConfigDict`:
+
+  ```python
+  class User(AuthenticatedUserMixin, BaseSurrealModel):
+      model_config = SurrealConfigDict(
+          table_type=TableType.USER,
+          access_name="account",  # Custom DEFINE ACCESS name
+      )
+  ```
+
+- **Auth Module: `signup()` Returns Token** (Bug 3 - High) — `signup()` now returns `tuple[Self, str]` (user + JWT token), matching `signin()`:
+
+  ```python
+  # Before (v0.7.0)
+  user = await User.signup(email="alice@example.com", password="secret", name="Alice")
+
+  # After (v0.8.0)
+  user, token = await User.signup(email="alice@example.com", password="secret", name="Alice")
+  ```
+
+- **Auth Module: `authenticate_token()` Fixed + `validate_token()`** (Bug 4 - Medium)
+
+  - Added `authenticate()` RPC method to `BaseSurrealConnection` in the SDK
+  - Fixed `authenticate_token()` — now returns `tuple[Self, str] | None` (user + record_id)
+  - Added `validate_token()` — lightweight method returning `str | None` (just the record ID)
+
+  ```python
+  # Full validation (fetches user from DB)
+  result = await User.authenticate_token(token)
+  if result:
+      user, record_id = result
+
+  # Lightweight validation (just checks token + gets record ID)
+  record_id = await User.validate_token(token)
+  ```
 
 ### What's New in 0.7.0
 
@@ -785,11 +825,14 @@ from surreal_orm.auth import AuthenticatedUserMixin
 class User(AuthenticatedUserMixin, BaseSurrealModel):
     # ...
 
-# Signup
-user = await User.signup(email="alice@example.com", password="secret", name="Alice")
+# Signup (returns user + token)
+user, token = await User.signup(email="alice@example.com", password="secret", name="Alice")
 
-# Signin
+# Signin (returns user + token)
 user, token = await User.signin(email="alice@example.com", password="secret")
+
+# Validate token (lightweight)
+record_id = await User.validate_token(token)
 ```
 
 ### 3. Migration System
@@ -948,7 +991,20 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `fetch()` + FETCH clause — resolve record links inline (N+1 fix)
 - [x] `remove_all_relations()` list support — multiple relation types at once
 
-### v0.8.x (Next) - ORM Real-time Integration
+### Completed (0.8.0) - Auth Module Fixes
+
+- [x] Ephemeral connections for auth ops (singleton no longer corrupted)
+- [x] Configurable `access_name` in `SurrealConfigDict`
+- [x] `signup()` returns `tuple[Self, str]` (user + JWT token)
+- [x] SDK `authenticate()` method on `BaseSurrealConnection`
+- [x] `authenticate_token()` fixed — returns `tuple[Self, str] | None`
+- [x] `validate_token()` — lightweight token validation returning record ID
+
+### v0.8.x - Computed Fields
+
+- [ ] Computed fields with server-side SurrealDB expressions
+
+### v0.9.x - ORM Real-time Integration
 
 - [ ] Live Models (real-time sync at ORM level)
 - [ ] Change Feed integration for ORM

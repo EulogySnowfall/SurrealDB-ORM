@@ -154,6 +154,7 @@ class SurrealConfigDict(ConfigDict):
         permissions: Table-level permissions dict {"select": "...", "update": "..."}
         identifier_field: Field used for signin (USER type, default: "email")
         password_field: Field containing password (USER type, default: "password")
+        access_name: Custom DEFINE ACCESS name (USER type, default: "{table}_auth")
         token_duration: JWT token duration (USER type, default: "15m")
         session_duration: Session duration (USER type, default: "12h")
         server_fields: List of field names that are server-generated and should
@@ -170,6 +171,7 @@ class SurrealConfigDict(ConfigDict):
     permissions: dict[str, str] | None
     identifier_field: str | None
     password_field: str | None
+    access_name: str | None
     token_duration: str | None
     session_duration: str | None
     server_fields: list[str] | None

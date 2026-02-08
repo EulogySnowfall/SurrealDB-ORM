@@ -214,6 +214,29 @@ class BaseSurrealConnection(ABC):
         self._authenticated = response.success
         return response
 
+    async def authenticate(self, token: str) -> AuthResponse:
+        """
+        Authenticate using an existing JWT token.
+
+        This validates the token with SurrealDB and sets the connection's
+        auth state so that subsequent queries run under the token's identity.
+
+        Args:
+            token: JWT token from a previous signup/signin
+
+        Returns:
+            AuthResponse with success status
+        """
+        from ..exceptions import AuthenticationError
+
+        try:
+            result = await self.rpc("authenticate", [token])
+            self._token = token
+            self._authenticated = True
+            return AuthResponse(token=token, success=True, raw=result)
+        except Exception as e:
+            raise AuthenticationError(f"Token authentication failed: {e}")
+
     async def use(self, namespace: str, database: str) -> None:
         """
         Set the namespace and database to use.

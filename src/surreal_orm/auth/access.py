@@ -137,8 +137,10 @@ class AccessGenerator:
         token_duration = config.get("token_duration", "15m")
         session_duration = config.get("session_duration", "12h")
 
+        access_name = config.get("access_name") or f"{table_name.lower()}_auth"
+
         return AccessDefinition(
-            name=f"{table_name.lower()}_auth",
+            name=access_name,
             table=table_name,
             identifier_field=identifier_field,
             password_field=password_field,

@@ -72,7 +72,7 @@ from .functions import (
     CryptoFunctions,
 )
 
-__version__ = "0.5.9"
+__version__ = "0.8.0"
 __all__ = [
     # Connections
     "BaseSurrealConnection",
