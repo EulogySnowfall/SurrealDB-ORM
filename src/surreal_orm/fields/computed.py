@@ -57,8 +57,11 @@ class _ComputedMarker:
         _schema: CoreSchema,
         handler: GetJsonSchemaHandler,
     ) -> JsonSchemaValue:
-        """Generate JSON schema (nullable inner type)."""
-        return {"anyOf": [{"type": "null"}, {}]}
+        """Generate JSON schema matching the nullable inner type and default."""
+        json_schema = handler(_schema)
+        if isinstance(json_schema, dict) and "default" not in json_schema:
+            json_schema["default"] = None
+        return json_schema
 
 
 class _ComputedDefault:

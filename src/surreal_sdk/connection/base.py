@@ -235,7 +235,9 @@ class BaseSurrealConnection(ABC):
             self._authenticated = True
             return AuthResponse(token=token, success=True, raw=result)
         except Exception as e:
-            raise AuthenticationError(f"Token authentication failed: {e}")
+            self._token = None
+            self._authenticated = False
+            raise AuthenticationError(f"Token authentication failed: {e}") from e
 
     async def use(self, namespace: str, database: str) -> None:
         """

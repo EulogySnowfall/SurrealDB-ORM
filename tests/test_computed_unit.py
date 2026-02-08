@@ -374,7 +374,7 @@ class TestAddFieldValueClause:
         ddl = op.forwards()
         assert "VALUE" not in ddl
 
-    def test_add_field_value_takes_precedence_over_encrypted(self) -> None:
+    def test_add_field_encrypted_takes_precedence_over_value(self) -> None:
         """When both encrypted and value are set, encrypted takes priority."""
         op = AddField(
             table="users",

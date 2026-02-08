@@ -100,12 +100,14 @@ async def cleanup_tables() -> AsyncGenerator[Any, Any]:
         await client.query("DELETE person_computed;")
         await client.query("DELETE order_computed;")
     except Exception:
+        # Best-effort pre-test cleanup: ignore if tables don't exist yet
         pass
     yield
     try:
         await client.query("DELETE person_computed;")
         await client.query("DELETE order_computed;")
     except Exception:
+        # Best-effort post-test cleanup: ignore if tables or connection are unavailable
         pass
 
 
