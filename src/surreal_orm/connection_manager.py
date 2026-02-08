@@ -379,6 +379,41 @@ class SurrealDBConnectionManager:
         return cls.__client is not None
 
     @classmethod
+    async def call_function(
+        cls,
+        function: str,
+        params: dict[str, Any] | None = None,
+        return_type: type | None = None,
+    ) -> Any:
+        """
+        Call a SurrealDB stored function.
+
+        Delegates to the SDK's ``call()`` method, providing a convenient
+        ORM-level API for invoking custom server-side functions defined
+        with ``DEFINE FUNCTION fn::...``.
+
+        Args:
+            function: Function name (e.g., ``"acquire_game_lock"`` or
+                ``"fn::acquire_game_lock"``). The ``fn::`` prefix is added
+                automatically if not present.
+            params: Named parameters to pass to the function.
+            return_type: Optional Pydantic model or dataclass to convert
+                the result to.
+
+        Returns:
+            The function return value, optionally converted to *return_type*.
+
+        Example::
+
+            result = await SurrealDBConnectionManager.call_function(
+                "acquire_game_lock",
+                params={"table_id": table_id, "pod_id": pod_id, "ttl": 30},
+            )
+        """
+        client = await cls.get_client()
+        return await client.call(function, params=params, return_type=return_type)
+
+    @classmethod
     async def transaction(cls) -> HTTPTransaction:
         """
         Create a transaction context manager for atomic operations.

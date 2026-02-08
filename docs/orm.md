@@ -711,6 +711,33 @@ await player.save(server_values={
 # SurrealFunc values are detected automatically in merge()
 await player.merge(last_ping=SurrealFunc("time::now()"))
 # Generates: UPDATE players:... SET last_ping = time::now()
+
+# Skip the extra SELECT after UPDATE (fire-and-forget)
+await player.merge(last_seen=SurrealFunc("time::now()"), refresh=False)
+# Generates only: UPDATE players:... SET last_seen = time::now()
+# No subsequent SELECT — useful for high-frequency ops like presence pings
+```
+
+### With Bound Parameters (`extra_vars`)
+
+When a `SurrealFunc` expression references a bound parameter, pass additional
+variables via `extra_vars`:
+
+```python
+# The $password variable is bound separately
+await user.save(
+    server_values={
+        "password_hash": SurrealFunc("crypto::argon2::generate($password)"),
+        "created_at": SurrealFunc("time::now()"),
+    },
+    extra_vars={"password": raw_password},
+)
+
+# Also works with merge()
+await user.merge(
+    password_hash=SurrealFunc("crypto::argon2::generate($password)"),
+    extra_vars={"password": new_password},
+)
 ```
 
 > **Warning:** The expression is inserted directly into the query string.
@@ -722,11 +749,18 @@ await player.merge(last_ping=SurrealFunc("time::now()"))
 
 ### remove_all_relations()
 
-Remove all edges of a given type from a model instance.
+Remove all edges of a given type from a model instance. Accepts a single
+relation name or a list of names.
 
 ```python
 # Remove all outgoing "has_player" edges
 await table.remove_all_relations("has_player", direction="out")
+
+# Remove multiple relation types at once
+await table.remove_all_relations(
+    ["has_player", "has_action", "has_state"],
+    direction="out",
+)
 
 # Remove all incoming "follows" edges (who follows this user)
 await user.remove_all_relations("follows", direction="in")
@@ -736,7 +770,65 @@ await user.remove_all_relations("follows", direction="both")
 
 # Within a transaction
 async with await SurrealDBConnectionManager.transaction() as tx:
-    await table.remove_all_relations("has_player", direction="out", tx=tx)
+    await table.remove_all_relations(
+        ["has_player", "has_action", "has_state"], direction="out", tx=tx,
+    )
+```
+
+---
+
+## Calling Stored Functions
+
+Invoke custom SurrealDB functions defined with `DEFINE FUNCTION fn::...`.
+
+```python
+from surreal_orm import SurrealDBConnectionManager
+
+# Via the connection manager
+result = await SurrealDBConnectionManager.call_function(
+    "acquire_game_lock",
+    params={"table_id": table_id, "pod_id": pod_id, "ttl": 30},
+)
+
+# Via any model class (convenience shortcut)
+result = await GameTable.call_function(
+    "release_game_lock",
+    params={"table_id": table_id, "pod_id": pod_id},
+)
+
+# With a typed return value (Pydantic model or dataclass)
+from pydantic import BaseModel
+
+class LockResult(BaseModel):
+    acquired: bool
+    expires_at: str
+
+result = await SurrealDBConnectionManager.call_function(
+    "acquire_game_lock",
+    params={"table_id": "t1", "pod_id": "p1", "ttl": 30},
+    return_type=LockResult,
+)
+```
+
+---
+
+## FETCH Clause (Resolving Record Links)
+
+Use `fetch()` to resolve record link fields inline, avoiding N+1 queries.
+Maps to SurrealDB's `FETCH` clause.
+
+```python
+# Resolve the 'author' record link in a single query
+posts = await Post.objects().fetch("author").exec()
+# Generates: SELECT * FROM posts FETCH author;
+
+# Multiple fields
+orders = await Order.objects().fetch("customer", "items").limit(50).exec()
+# Generates: SELECT * FROM orders LIMIT 50 FETCH customer, items;
+
+# select_related() also maps to FETCH
+stats = await PlayerStats.objects().select_related("user").order_by("-wins").limit(100).exec()
+# Generates: SELECT * FROM player_stats ORDER BY wins DESC LIMIT 100 FETCH user;
 ```
 
 ---

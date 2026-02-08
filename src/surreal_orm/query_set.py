@@ -8,6 +8,9 @@ from typing import Self, Any, Sequence, cast
 from pydantic_core import ValidationError
 
 import logging
+import re as _re
+
+_SAFE_IDENTIFIER_RE = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class SurrealDbError(Exception):
@@ -70,6 +73,7 @@ class QuerySet:
         # Relation query options
         self._select_related: list[str] = []
         self._prefetch_related: list[str] = []
+        self._fetch_fields: list[str] = []
         self._traversal_path: str | None = None
 
     def select(self, *fields: str) -> Self:
@@ -317,13 +321,18 @@ class QuerySet:
 
     def select_related(self, *relations: str) -> Self:
         """
-        Eagerly load related objects in the same query.
+        Eagerly load related objects using SurrealDB's FETCH clause.
 
-        This method optimizes queries by loading related objects alongside
-        the main query results, avoiding N+1 query problems for forward relations.
+        The specified relation names are appended to the ``FETCH`` clause
+        of the compiled query, causing SurrealDB to resolve record links
+        inline and return the full referenced records instead of bare IDs.
 
-        Note: SurrealDB handles this through graph traversal syntax.
-        The actual loading happens during query execution.
+        .. note::
+
+            Like :meth:`fetch`, this only takes effect when the query is
+            executed via :meth:`exec` or :meth:`first`.  The :meth:`all`
+            and :meth:`get` shortcuts use the SDK ``select()`` directly
+            and will not apply FETCH.
 
         Args:
             *relations: Names of relations to load eagerly.
@@ -331,14 +340,23 @@ class QuerySet:
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
 
-        Example:
-            ```python
-            # Load posts with their authors in one query
-            posts = await Post.objects().select_related("author").all()
+        Example::
+
+            # Load posts with their authors resolved inline
+            posts = await Post.objects().select_related("author").exec()
             for post in posts:
-                print(post.author.name)  # No additional query
-            ```
+                print(post.author.name)  # Full record, not just an ID
+
+        Raises:
+            ValueError: If any relation name is not a valid SurrealQL identifier.
         """
+        for r in relations:
+            if not _SAFE_IDENTIFIER_RE.match(r):
+                raise ValueError(
+                    f"Invalid FETCH target: {r!r}. "
+                    "Only valid SurrealQL identifiers are allowed "
+                    "(letters, digits, underscores; must start with a letter or underscore)."
+                )
         self._select_related = list(relations)
         return self
 
@@ -366,6 +384,49 @@ class QuerySet:
             ```
         """
         self._prefetch_related = list(relations)
+        return self
+
+    def fetch(self, *fields: str) -> Self:
+        """
+        Add a FETCH clause to resolve record links inline.
+
+        SurrealDB's ``FETCH`` clause replaces record link values with the
+        actual referenced records in a single query, avoiding N+1 problems.
+
+        .. note::
+
+            FETCH is only applied when the query is executed via
+            :meth:`exec` or :meth:`first` (which use ``_compile_query()``).
+            The :meth:`all` and :meth:`get` shortcuts bypass the compiled
+            query and call the SDK ``select()`` directly, so FETCH will
+            have no effect there.
+
+        Args:
+            *fields: Field names or relation edge names to fetch.
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example::
+
+            # Resolve the 'author' record link inline
+            posts = await Post.objects().fetch("author").exec()
+            # Each post['author'] is the full record, not just a record ID
+
+            # Multiple fields
+            orders = await Order.objects().fetch("customer", "items").exec()
+
+        Raises:
+            ValueError: If any field name is not a valid SurrealQL identifier.
+        """
+        for f in fields:
+            if not _SAFE_IDENTIFIER_RE.match(f):
+                raise ValueError(
+                    f"Invalid FETCH target: {f!r}. "
+                    "Only valid SurrealQL identifiers are allowed "
+                    "(letters, digits, underscores; must start with a letter or underscore)."
+                )
+        self._fetch_fields = list(fields)
         return self
 
     def traverse(self, path: str) -> Self:
@@ -664,6 +725,19 @@ class QuerySet:
         # Append OFFSET (START) if set
         if self._offset is not None:
             query += f" START {self._offset}"
+
+        # Append FETCH clause.
+        # Both explicit fetch() calls and select_related() paths are emitted
+        # as SurrealQL FETCH targets, causing SurrealDB to eagerly resolve
+        # record links inline.  Dedup while preserving order.
+        fetch_targets: list[str] = []
+        seen: set[str] = set()
+        for t in list(self._fetch_fields) + list(self._select_related):
+            if t not in seen:
+                fetch_targets.append(t)
+                seen.add(t)
+        if fetch_targets:
+            query += f" FETCH {', '.join(fetch_targets)}"
 
         query += ";"
         return query

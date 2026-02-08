@@ -402,23 +402,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Calculate next patch version
+          # Calculate next security patch version
+          # Versioning: X.Y.Z where Z = security patches
           CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-          BASE_TAG="v${CURRENT_VERSION}"
 
-          HIGHEST_PATCH=0
-          for tag in $(git tag -l "${BASE_TAG}*"); do
-            if [[ "$tag" =~ ^v${CURRENT_VERSION}\.([0-9]+)$ ]]; then
-              PATCH="${BASH_REMATCH[1]}"
-              if [[ $PATCH -gt $HIGHEST_PATCH ]]; then
-                HIGHEST_PATCH=$PATCH
-              fi
-            fi
-          done
+          MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
 
-          NEXT_PATCH=$((HIGHEST_PATCH + 1))
-          NEW_TAG="v${CURRENT_VERSION}.${NEXT_PATCH}"
-          NEW_VERSION="${NEW_TAG#v}"
+          NEXT_PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+          NEW_TAG="v${NEW_VERSION}"
 
           echo "Updating version to: $NEW_VERSION"
           echo "Creating tag: $NEW_TAG"

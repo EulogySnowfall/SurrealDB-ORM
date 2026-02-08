@@ -6,13 +6,26 @@ The following versions of SurrealDB-ORM are currently supported with security up
 
 | Version | Supported          |
 | ------- | ------------------ |
+| 0.7.x   | :white_check_mark: |
 | 0.6.x   | :white_check_mark: |
-| 0.5.x   | :white_check_mark: |
+| 0.5.x   | :x:                |
 | 0.4.x   | :x:                |
 | 0.3.x   | :x:                |
 | 0.2.x   | :x:                |
 | 0.1.x   | :x:                |
 | 0.0.x   | :x:                |
+
+## Versioning Scheme
+
+We follow a 3-digit versioning scheme: **X.Y.Z**
+
+| Digit | Purpose                       | Example        |
+| ----- | ----------------------------- | -------------- |
+| X     | LTS / breaking changes        | 1.0.0          |
+| Y     | Feature updates               | 0.7.0 -> 0.8.0 |
+| Z     | Security & dependency patches | 0.7.0 -> 0.7.1 |
+
+Security patches automatically bump the **patch (Z)** digit via CI workflows.
 
 ## Reporting a Vulnerability
 

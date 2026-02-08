@@ -1,5 +1,6 @@
 # Auto-merge Dependabot PRs after successful tests
-# Creates patch version tags (x.x.x.1, x.x.x.2, etc.) for security updates
+# Bumps the patch (3rd) digit for security updates: x.y.z → x.y.(z+1)
+# Versioning: X=LTS/breaking, Y=features, Z=security patches
 
 name: Dependabot Auto-merge
 
@@ -147,61 +148,43 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Calculate next patch version
+      - name: Calculate next security patch version
         id: version
         run: |
+          # Versioning scheme: X.Y.Z
+          #   X = LTS / breaking changes
+          #   Y = feature updates
+          #   Z = security patches (bumped here)
+          #
+          # Example: 0.7.0 → 0.7.1 → 0.7.2, etc.
+
           # Get current version from pyproject.toml
           CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
           echo "Current version: $CURRENT_VERSION"
 
-          # Extract the semantic base version (x.y.z) from current version
-          # Examples:
-          #   0.5.2     -> 0.5.2
-          #   0.5.2.1   -> 0.5.2
-          #   0.5.2.1.1 -> 0.5.2 (invalid, but handle gracefully)
-          BASE_VERSION=$(echo "$CURRENT_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
-          echo "Base semantic version: $BASE_VERSION"
+          # Extract major.minor.patch
+          MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
 
-          if [[ -z "$BASE_VERSION" ]]; then
-            echo "Error: Could not extract base version from $CURRENT_VERSION"
+          if [[ -z "$MAJOR" || -z "$MINOR" || -z "$PATCH" ]]; then
+            echo "Error: Could not parse version from $CURRENT_VERSION"
             exit 1
           fi
 
-          # Find the highest patch number for this base version
-          # Tags can be: v0.5.2, v0.5.2.1, v0.5.2.2, etc.
-          HIGHEST_PATCH=0
+          # Bump the patch (3rd) digit for security update
+          NEXT_PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+          NEW_TAG="v${NEW_VERSION}"
 
-          for tag in $(git tag -l "v${BASE_VERSION}*"); do
-            echo "Checking tag: $tag"
-
-            # Extract the patch number if it exists (e.g., v0.5.2.3 -> 3)
-            if [[ "$tag" =~ ^v${BASE_VERSION}\.([0-9]+)$ ]]; then
-              PATCH="${BASH_REMATCH[1]}"
-              echo "  Found patch number: $PATCH"
-              if [[ $PATCH -gt $HIGHEST_PATCH ]]; then
-                HIGHEST_PATCH=$PATCH
-              fi
-            elif [[ "$tag" == "v${BASE_VERSION}" ]]; then
-              # Base tag exists (v0.5.2), patches will start at .1
-              echo "  Base tag exists"
-            fi
-          done
-
-          NEXT_PATCH=$((HIGHEST_PATCH + 1))
-          NEW_TAG="v${BASE_VERSION}.${NEXT_PATCH}"
-          NEW_VERSION="${BASE_VERSION}.${NEXT_PATCH}"
-
-          echo "Base version: $BASE_VERSION"
-          echo "Highest existing patch: $HIGHEST_PATCH"
-          echo "Next patch number: $NEXT_PATCH"
-          echo "New tag: $NEW_TAG"
+          echo "Major: $MAJOR, Minor: $MINOR, Patch: $PATCH"
+          echo "Next patch: $NEXT_PATCH"
           echo "New version: $NEW_VERSION"
+          echo "New tag: $NEW_TAG"
 
-          echo "base-version=$BASE_VERSION" >> $GITHUB_OUTPUT
           echo "current-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "new-tag=$NEW_TAG" >> $GITHUB_OUTPUT
           echo "new-version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "patch-number=$NEXT_PATCH" >> $GITHUB_OUTPUT
 
       - name: Enable auto-merge
         run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}"
