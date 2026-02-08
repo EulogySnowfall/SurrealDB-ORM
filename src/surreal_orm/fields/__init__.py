@@ -5,6 +5,7 @@ This module provides specialized field types that leverage SurrealDB's
 built-in functions for encryption, validation, and other operations.
 """
 
+from .computed import Computed, get_computed_expression, is_computed_field
 from .encrypted import Encrypted, EncryptedField, EncryptedFieldInfo
 from .relation import (
     ForeignKey,
@@ -19,6 +20,10 @@ from .relation import (
 )
 
 __all__ = [
+    # Computed fields
+    "Computed",
+    "is_computed_field",
+    "get_computed_expression",
     # Encrypted fields
     "Encrypted",
     "EncryptedField",

@@ -1,6 +1,6 @@
 [project]
 name = "surreal-sdk"
-version = "0.5.9"
+version = "0.8.0"
 description = "Custom Python SDK for SurrealDB with HTTP and WebSocket support. No dependency on official surrealdb package."
 readme = "README.md"
 requires-python = ">=3.12"

@@ -360,6 +360,15 @@ class SurrealDBConnectionManager:
         return cls.__database
 
     @classmethod
+    def get_protocol(cls) -> Literal["json", "cbor"]:
+        """
+        Get the configured protocol (``"cbor"`` or ``"json"``).
+
+        :return: The protocol string.
+        """
+        return cls.__protocol
+
+    @classmethod
     def is_password_set(cls) -> bool:
         """
         Get the database to use.

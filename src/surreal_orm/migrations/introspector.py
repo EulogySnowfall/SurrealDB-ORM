@@ -11,6 +11,7 @@ import types
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
+from ..fields.computed import _ComputedMarker, get_computed_expression, is_computed_field
 from ..fields.encrypted import is_encrypted_field
 from ..types import PYTHON_TO_SURREAL_TYPE, FieldType, TableType
 from .state import AccessState, FieldState, SchemaState, TableState
@@ -124,6 +125,18 @@ class ModelIntrospector:
         Returns:
             FieldState representing the field definition
         """
+        # Check for Computed type
+        computed_expression: str | None = None
+        if is_computed_field(type_hint):
+            computed_expression = get_computed_expression(type_hint)
+            # Unwrap Annotated[T | None, _ComputedMarker] to get inner type
+            args = get_args(type_hint)
+            non_marker = [a for a in args if not isinstance(a, _ComputedMarker)]
+            if non_marker:
+                type_hint = non_marker[0]  # e.g., str | None
+            else:
+                type_hint = str  # pragma: no cover
+
         # Check for Encrypted type
         encrypted = is_encrypted_field(type_hint)
 
@@ -153,13 +166,14 @@ class ModelIntrospector:
         # Map Python type to SurrealDB type
         surreal_type = self._map_type(type_hint)
 
-        # Get default value
+        # Get default value (skip for computed fields — they have VALUE clause)
         default = None
-        if field_info.default is not None and field_info.default is not ... and field_info.default is not PydanticUndefined:
-            default = field_info.default
-        elif field_info.default_factory is not None:
-            # Can't serialize factory, skip default
-            pass
+        if not computed_expression:
+            if field_info.default is not None and field_info.default is not ... and field_info.default is not PydanticUndefined:
+                default = field_info.default
+            elif field_info.default_factory is not None:
+                # Can't serialize factory, skip default
+                pass
 
         # Check for flexible type
         flexible = False
@@ -175,6 +189,7 @@ class ModelIntrospector:
             default=default,
             encrypted=encrypted,
             flexible=flexible,
+            value=computed_expression,
         )
 
     def _map_type(self, python_type: Any) -> str:
@@ -253,9 +268,10 @@ class ModelIntrospector:
         # Build signup fields
         signup_fields: dict[str, str] = {}
 
-        # Get all model fields
+        # Get all model fields (skip computed — they have VALUE clauses)
+        computed_fields = getattr(model, "_computed_expressions", {})
         for field_name in model.model_fields:
-            if field_name == "id":
+            if field_name == "id" or field_name in computed_fields:
                 continue
 
             if field_name == password_field:

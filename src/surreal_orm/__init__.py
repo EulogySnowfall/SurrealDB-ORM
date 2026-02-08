@@ -24,7 +24,7 @@ from .types import (
     SchemaMode,
     TableType,
 )
-from .fields import Encrypted
+from .fields import Computed, Encrypted
 from .fields import (
     ForeignKey,
     ManyToMany,
@@ -81,6 +81,7 @@ __all__ = [
     "FieldType",
     "EncryptionAlgorithm",
     # Fields
+    "Computed",
     "Encrypted",
     # Relations
     "ForeignKey",
@@ -113,4 +114,4 @@ __all__ = [
     "retry_on_conflict",
 ]
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"

@@ -154,6 +154,7 @@ class SurrealConfigDict(ConfigDict):
         permissions: Table-level permissions dict {"select": "...", "update": "..."}
         identifier_field: Field used for signin (USER type, default: "email")
         password_field: Field containing password (USER type, default: "password")
+        access_name: Custom DEFINE ACCESS name (USER type, default: "{table}_auth")
         token_duration: JWT token duration (USER type, default: "15m")
         session_duration: Session duration (USER type, default: "12h")
         server_fields: List of field names that are server-generated and should
@@ -170,6 +171,7 @@ class SurrealConfigDict(ConfigDict):
     permissions: dict[str, str] | None
     identifier_field: str | None
     password_field: str | None
+    access_name: str | None
     token_duration: str | None
     session_duration: str | None
     server_fields: list[str] | None
@@ -212,7 +214,28 @@ class BaseSurrealModel(BaseModel):
     _db_persisted: bool = PrivateAttr(default=False)
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
-        """Register subclasses in the model registry for migration introspection."""
+        """Register subclasses and process computed field defaults."""
+        # Process computed fields BEFORE Pydantic processes the class.
+        # __init_subclass__ runs inside type.__new__, before ModelMetaclass
+        # calls complete_model_class(), so modifications here are visible
+        # to Pydantic's field processing.
+        from .fields.computed import _ComputedDefault, _get_computed_marker
+
+        _computed: dict[str, str] = {}
+        annotations = getattr(cls, "__annotations__", {})
+        for name in list(vars(cls)):
+            val = vars(cls).get(name)
+            if isinstance(val, _ComputedDefault):
+                _computed[name] = val.expression
+                # Replace sentinel with None so Pydantic sees a valid default
+                setattr(cls, name, None)
+                # Store the expression on the marker inside the annotation
+                marker = _get_computed_marker(annotations.get(name))
+                if marker is not None:
+                    marker.expression = val.expression
+        if _computed:
+            cls._computed_expressions = _computed  # type: ignore[attr-defined]
+
         super().__init_subclass__(**kwargs)
         # Only register concrete models, not intermediate base classes
         if cls.__name__ != "BaseSurrealModel" and not cls.__name__.startswith("_"):
@@ -349,16 +372,23 @@ class BaseSurrealModel(BaseModel):
         Get the list of server-generated field names.
 
         Server fields are populated by SurrealDB (e.g., via VALUE time::now())
-        and should be excluded from save/update operations.
+        and should be excluded from save/update operations.  Computed fields
+        (defined with :class:`~surreal_orm.fields.Computed`) are automatically
+        included.
 
         Returns:
             Set of field names to exclude from save/update operations.
         """
+        fields: set[str] = set()
         if hasattr(cls, "model_config"):
             server_fields = cls.model_config.get("server_fields", None)
             if isinstance(server_fields, list):
-                return set(server_fields)
-        return set()
+                fields.update(server_fields)
+        # Auto-include computed fields
+        computed = getattr(cls, "_computed_expressions", None)
+        if computed:
+            fields.update(computed.keys())
+        return fields
 
     def get_id(self) -> str | None:
         """
