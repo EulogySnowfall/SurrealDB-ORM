@@ -22,8 +22,9 @@
 | **0.5.8**   | **Released** | **Around Signals (Generator-based middleware)**             |
 | **0.5.9**   | **Released** | **Atomic Array Ops, Relation Direction, Array Filtering**   |
 | **0.6.0**   | **Released** | **Q Objects, Parameterized Filters, SurrealFunc**           |
-| 0.6.x       | Planned      | Computed Fields                                             |
-| 0.7.x       | Planned      | ORM Live Models                                             |
+| **0.7.0**   | **Released** | **Performance & DX: refresh, call_function, FETCH, extras** |
+| 0.7.x       | Planned      | Computed Fields                                             |
+| 0.8.x       | Planned      | ORM Live Models                                             |
 
 ---
 
@@ -511,7 +512,58 @@ await player.merge(last_ping=SurrealFunc("time::now()"))
 
 ---
 
-## v0.6.x - Computed Fields (Planned)
+## v0.7.0 - Performance & Developer Experience (Released)
+
+**Goal:** Eliminate more raw queries and improve performance for high-frequency operations, based on community feedback from the Games'n'Cards project.
+
+### FR1: `merge(refresh=False)` — Skip Extra SELECT
+
+```python
+# Fire-and-forget: only UPDATE, no SELECT round-trip
+await user.merge(last_seen=SurrealFunc("time::now()"), refresh=False)
+```
+
+### FR2: `call_function()` — Invoke Custom Stored Functions
+
+```python
+# On connection manager
+result = await SurrealDBConnectionManager.call_function(
+    "acquire_game_lock",
+    params={"table_id": table_id, "pod_id": pod_id, "ttl": 30},
+)
+
+# On any model
+result = await GameTable.call_function("release_game_lock", params={"table_id": tid})
+```
+
+### FR3: `extra_vars` — Bound Parameters in SurrealFunc
+
+```python
+await user.save(
+    server_values={"password_hash": SurrealFunc("crypto::argon2::generate($password)")},
+    extra_vars={"password": raw_password},
+)
+```
+
+### FR4: `fetch()` — FETCH Clause for N+1 Prevention
+
+```python
+# Resolve record links inline (single query)
+posts = await Post.objects().fetch("author", "tags").exec()
+# select_related() also maps to FETCH
+stats = await PlayerStats.objects().select_related("user").exec()
+```
+
+### FR5: `remove_all_relations()` — List Support
+
+```python
+# Remove multiple relation types in one call
+await table.remove_all_relations(["has_player", "has_action", "has_state"], direction="out")
+```
+
+---
+
+## v0.7.x - Computed Fields (Planned)
 
 **Goal:** Server-side computed fields using SurrealDB functions.
 
@@ -539,7 +591,7 @@ class User(BaseSurrealModel):
 
 ---
 
-## v0.7.0 - ORM Real-time Features (Planned)
+## v0.8.0 - ORM Real-time Features (Planned)
 
 **Goal:** Live model synchronization and event-driven architecture at the ORM level.
 
@@ -589,7 +641,7 @@ async for change in User.objects().changes(since="2026-01-01"):
 
 ---
 
-## v0.8.0 - Advanced Features (Future)
+## v0.9.0 - Advanced Features (Future)
 
 ### Schema Introspection
 
@@ -662,8 +714,13 @@ users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
 | remove_all_relations()       | 0.6.0   | Medium   | Done    | Relations        |
 | `-field` ordering            | 0.6.0   | Low      | Done    | -                |
 | isnull bug fix               | 0.6.0   | Medium   | Done    | -                |
-| Computed Fields              | 0.6.x   | Medium   | Planned | SDK functions    |
-| ORM Live Models              | 0.7.0   | Medium   | Planned | SDK live queries |
+| merge(refresh=False)         | 0.7.0   | High     | Done    | -                |
+| call_function()              | 0.7.0   | High     | Done    | SDK call()       |
+| extra_vars for SurrealFunc   | 0.7.0   | Medium   | Done    | SurrealFunc      |
+| FETCH clause (N+1 fix)       | 0.7.0   | Medium   | Done    | -                |
+| remove_all_relations() list  | 0.7.0   | Low      | Done    | Relations        |
+| Computed Fields              | 0.7.x   | Medium   | Planned | SDK functions    |
+| ORM Live Models              | 0.8.0   | Medium   | Planned | SDK live queries |
 
 ---
 

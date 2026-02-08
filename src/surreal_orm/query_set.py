@@ -70,6 +70,7 @@ class QuerySet:
         # Relation query options
         self._select_related: list[str] = []
         self._prefetch_related: list[str] = []
+        self._fetch_fields: list[str] = []
         self._traversal_path: str | None = None
 
     def select(self, *fields: str) -> Self:
@@ -368,6 +369,31 @@ class QuerySet:
         self._prefetch_related = list(relations)
         return self
 
+    def fetch(self, *fields: str) -> Self:
+        """
+        Add a FETCH clause to resolve record links inline.
+
+        SurrealDB's ``FETCH`` clause replaces record link values with the
+        actual referenced records in a single query, avoiding N+1 problems.
+
+        Args:
+            *fields: Field names or relation edge names to fetch.
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example::
+
+            # Resolve the 'author' record link inline
+            posts = await Post.objects().fetch("author").exec()
+            # Each post['author'] is the full record, not just a record ID
+
+            # Multiple fields
+            orders = await Order.objects().fetch("customer", "items").exec()
+        """
+        self._fetch_fields = list(fields)
+        return self
+
     def traverse(self, path: str) -> Self:
         """
         Add a graph traversal path to the query.
@@ -664,6 +690,11 @@ class QuerySet:
         # Append OFFSET (START) if set
         if self._offset is not None:
             query += f" START {self._offset}"
+
+        # Append FETCH clause (combines explicit fetch() and select_related())
+        fetch_targets = list(self._fetch_fields) + list(self._select_related)
+        if fetch_targets:
+            query += f" FETCH {', '.join(fetch_targets)}"
 
         query += ";"
         return query

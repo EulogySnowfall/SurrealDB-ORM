@@ -10,7 +10,56 @@
 
 ---
 
-## Current Version: 0.6.0 (Alpha)
+## Current Version: 0.7.0 (Alpha)
+
+### What's New in 0.7.0
+
+- **`merge(refresh=False)`** — Skip the extra SELECT after UPDATE for fire-and-forget operations
+
+  ```python
+  # Only generates UPDATE, skips the SELECT round-trip
+  await user.merge(last_seen=SurrealFunc("time::now()"), refresh=False)
+  ```
+
+- **`call_function()`** — Invoke custom SurrealDB stored functions from the ORM
+
+  ```python
+  # On connection manager
+  result = await SurrealDBConnectionManager.call_function(
+      "acquire_game_lock",
+      params={"table_id": tid, "pod_id": pid, "ttl": 30},
+  )
+
+  # On any model class
+  result = await GameTable.call_function("release_game_lock", params={...})
+  ```
+
+- **`extra_vars` on `save()` and `merge()`** — Bind additional query variables for SurrealFunc expressions that reference parameters
+
+  ```python
+  await user.save(
+      server_values={"password_hash": SurrealFunc("crypto::argon2::generate($password)")},
+      extra_vars={"password": raw_password},
+  )
+  ```
+
+- **`fetch()` + FETCH clause** — Resolve record links inline to avoid N+1 queries
+
+  ```python
+  posts = await Post.objects().fetch("author", "tags").exec()
+  # Generates: SELECT * FROM posts FETCH author, tags;
+
+  # select_related() also maps to FETCH
+  stats = await PlayerStats.objects().select_related("user").exec()
+  ```
+
+- **`remove_all_relations()` with list support** — Remove multiple relation types in one call
+
+  ```python
+  await table.remove_all_relations(
+      ["has_player", "has_action", "has_state"], direction="out",
+  )
+  ```
 
 ### What's New in 0.6.0
 
@@ -891,7 +940,15 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] Django-style `-field` descending ordering
 - [x] Bug fix: `isnull` lookup now generates correct `IS NULL`
 
-### v0.7.x (Next) - ORM Real-time Integration
+### Completed (0.7.0) - Performance & Developer Experience
+
+- [x] `merge(refresh=False)` — skip extra SELECT for fire-and-forget ops
+- [x] `call_function()` — invoke custom stored functions from ORM
+- [x] `extra_vars` on `save()` / `merge()` — bound params in SurrealFunc
+- [x] `fetch()` + FETCH clause — resolve record links inline (N+1 fix)
+- [x] `remove_all_relations()` list support — multiple relation types at once
+
+### v0.8.x (Next) - ORM Real-time Integration
 
 - [ ] Live Models (real-time sync at ORM level)
 - [ ] Change Feed integration for ORM

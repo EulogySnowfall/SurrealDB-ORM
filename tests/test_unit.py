@@ -572,3 +572,204 @@ def test_surreal_function_typo_alias() -> None:
     from src.surreal_orm.surreal_function import SurealFunction, SurrealFunction
 
     assert SurealFunction is SurrealFunction
+
+
+# ── v0.7.0 FR tests ────────────────────────────────────────────────────
+
+
+class TestFR1MergeRefresh:
+    """FR1: merge(refresh=False) — skip extra SELECT after UPDATE."""
+
+    def test_merge_has_refresh_param(self) -> None:
+        """merge() must accept a 'refresh' keyword parameter."""
+        sig = inspect.signature(BaseSurrealModel.merge)
+        assert "refresh" in sig.parameters
+
+    def test_merge_refresh_default_true(self) -> None:
+        """refresh defaults to True (backward-compatible)."""
+        sig = inspect.signature(BaseSurrealModel.merge)
+        assert sig.parameters["refresh"].default is True
+
+    def test_merge_is_coroutine(self) -> None:
+        """merge() must be a coroutine function."""
+        assert inspect.iscoroutinefunction(BaseSurrealModel.merge)
+
+
+class TestFR2CallFunction:
+    """FR2: call_function() on ConnectionManager and BaseSurrealModel."""
+
+    def test_call_function_on_connection_manager(self) -> None:
+        """SurrealDBConnectionManager must have call_function classmethod."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        assert hasattr(SurrealDBConnectionManager, "call_function")
+        assert inspect.iscoroutinefunction(SurrealDBConnectionManager.call_function)
+
+    def test_call_function_on_model(self) -> None:
+        """BaseSurrealModel must have call_function classmethod."""
+        assert hasattr(BaseSurrealModel, "call_function")
+        assert inspect.iscoroutinefunction(BaseSurrealModel.call_function)
+
+    def test_call_function_connection_manager_params(self) -> None:
+        """call_function() signature: function, params, return_type."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        sig = inspect.signature(SurrealDBConnectionManager.call_function)
+        params = list(sig.parameters.keys())
+        assert "function" in params
+        assert "params" in params
+        assert "return_type" in params
+
+    def test_call_function_model_params(self) -> None:
+        """BaseSurrealModel.call_function() has same params."""
+        sig = inspect.signature(BaseSurrealModel.call_function)
+        params = list(sig.parameters.keys())
+        assert "function" in params
+        assert "params" in params
+        assert "return_type" in params
+
+
+class TestFR3ExtraVars:
+    """FR3: extra_vars on save() and merge() for SurrealFunc bound params."""
+
+    def test_save_has_extra_vars_param(self) -> None:
+        """save() must accept 'extra_vars' keyword parameter."""
+        sig = inspect.signature(BaseSurrealModel.save)
+        assert "extra_vars" in sig.parameters
+
+    def test_save_extra_vars_default_none(self) -> None:
+        """extra_vars defaults to None."""
+        sig = inspect.signature(BaseSurrealModel.save)
+        assert sig.parameters["extra_vars"].default is None
+
+    def test_merge_has_extra_vars_param(self) -> None:
+        """merge() must accept 'extra_vars' keyword parameter."""
+        sig = inspect.signature(BaseSurrealModel.merge)
+        assert "extra_vars" in sig.parameters
+
+    def test_merge_extra_vars_default_none(self) -> None:
+        """extra_vars defaults to None."""
+        sig = inspect.signature(BaseSurrealModel.merge)
+        assert sig.parameters["extra_vars"].default is None
+
+    def test_build_set_clause_with_surreal_func(self) -> None:
+        """_build_set_clause separates SurrealFunc from regular values."""
+        from src.surreal_orm.surreal_function import SurrealFunc
+
+        model = ModelTest(id="1", name="Test", age=45)
+        data = {
+            "name": "Alice",
+            "updated_at": SurrealFunc("time::now()"),
+        }
+        set_clause, variables = model._build_set_clause(data)
+        # SurrealFunc should be inlined, regular value should be parameterized
+        assert "time::now()" in set_clause
+        assert "name = $_sv_name" in set_clause
+        assert variables["_sv_name"] == "Alice"
+
+    def test_execute_save_with_funcs_has_extra_vars(self) -> None:
+        """_execute_save_with_funcs must accept extra_vars."""
+        sig = inspect.signature(BaseSurrealModel._execute_save_with_funcs)
+        assert "extra_vars" in sig.parameters
+
+
+class TestFR4FetchClause:
+    """FR4: fetch() + FETCH clause in QuerySet."""
+
+    def test_fetch_method_exists(self) -> None:
+        """QuerySet must have a fetch() method."""
+        assert hasattr(QuerySet, "fetch")
+
+    def test_fetch_stores_fields(self) -> None:
+        """fetch() should store field names."""
+        qs = ModelTest.objects().fetch("author", "comments")
+        assert qs._fetch_fields == ["author", "comments"]
+
+    def test_fetch_returns_self(self) -> None:
+        """fetch() should return the QuerySet for chaining."""
+        qs = ModelTest.objects()
+        result = qs.fetch("author")
+        assert result is qs
+
+    def test_compile_query_with_fetch(self) -> None:
+        """_compile_query() includes FETCH clause when fetch() is called."""
+        qs = ModelTest.objects().fetch("author", "tags")
+        query = qs._compile_query()
+        assert "FETCH author, tags" in query
+
+    def test_compile_query_fetch_after_limit(self) -> None:
+        """FETCH clause comes after LIMIT/START, before semicolon."""
+        qs = ModelTest.objects().limit(10).offset(5).fetch("author")
+        query = qs._compile_query()
+        # FETCH should come after LIMIT and START
+        assert query.endswith("FETCH author;")
+        limit_pos = query.index("LIMIT")
+        fetch_pos = query.index("FETCH")
+        assert fetch_pos > limit_pos
+
+    def test_compile_query_no_fetch_by_default(self) -> None:
+        """No FETCH clause when fetch() is not called."""
+        qs = ModelTest.objects().filter(age__gt=18)
+        query = qs._compile_query()
+        assert "FETCH" not in query
+
+    def test_select_related_maps_to_fetch(self) -> None:
+        """select_related() names should appear in the FETCH clause."""
+        qs = ModelTest.objects().select_related("author")
+        query = qs._compile_query()
+        assert "FETCH author" in query
+
+    def test_fetch_and_select_related_combined(self) -> None:
+        """Both fetch() and select_related() fields appear in FETCH clause."""
+        qs = ModelTest.objects().fetch("tags").select_related("author")
+        query = qs._compile_query()
+        assert "FETCH tags, author" in query
+
+    def test_fetch_fields_init_empty(self) -> None:
+        """_fetch_fields is empty by default."""
+        qs = ModelTest.objects()
+        assert qs._fetch_fields == []
+
+
+class TestFR5RemoveAllRelationsList:
+    """FR5: remove_all_relations() accepts str | list[str]."""
+
+    def test_accepts_single_string(self) -> None:
+        """Single string still works (backward compatible)."""
+        import asyncio
+
+        model = ModelTest(id="1", name="Test", age=45)
+        # Will fail at DB call, but should not fail at validation
+        with pytest.raises(Exception, match="(?:Connection|connect)"):
+            asyncio.run(model.remove_all_relations("has_player"))
+
+    def test_accepts_list_of_strings(self) -> None:
+        """List of strings is accepted."""
+        import asyncio
+
+        model = ModelTest(id="1", name="Test", age=45)
+        with pytest.raises(Exception, match="(?:Connection|connect)"):
+            asyncio.run(model.remove_all_relations(["has_player", "has_action"]))
+
+    def test_rejects_invalid_name_in_list(self) -> None:
+        """Invalid relation name in list raises ValueError."""
+        import asyncio
+
+        model = ModelTest(id="1", name="Test", age=45)
+        with pytest.raises(ValueError, match="Invalid relation name"):
+            asyncio.run(model.remove_all_relations(["has_player", "DROP TABLE;--"]))
+
+    def test_rejects_invalid_single_name(self) -> None:
+        """Invalid single relation name still raises ValueError."""
+        import asyncio
+
+        model = ModelTest(id="1", name="Test", age=45)
+        with pytest.raises(ValueError, match="Invalid relation name"):
+            asyncio.run(model.remove_all_relations("DROP TABLE;--"))
+
+    def test_type_annotation_accepts_list(self) -> None:
+        """The 'relation' param type annotation includes list[str]."""
+        sig = inspect.signature(BaseSurrealModel.remove_all_relations)
+        param = sig.parameters["relation"]
+        annotation = str(param.annotation)
+        assert "list" in annotation or "list[str]" in annotation
