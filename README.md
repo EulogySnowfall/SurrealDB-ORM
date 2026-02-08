@@ -13,9 +13,96 @@
 
 ---
 
+## What's New in 0.8.0
+
+### Auth Module Fixes + Computed Fields
+
+- **Ephemeral Auth Connections** (Critical) - `signup()`, `signin()`, and `authenticate_token()` no longer corrupt the singleton connection. They use isolated ephemeral connections.
+
+- **Configurable Access Name** - Access name is configurable via `access_name` in `SurrealConfigDict` (was hardcoded to `{table}_auth`)
+
+- **`signup()` Returns Token** - Now returns `tuple[Self, str]` (user + JWT token), matching `signin()`
+
+  ```python
+  user, token = await User.signup(email="alice@example.com", password="secret", name="Alice")
+  ```
+
+- **`authenticate_token()` Fixed + `validate_token()`** - Fixed token validation with new `validate_token()` lightweight method
+
+  ```python
+  result = await User.authenticate_token(token)  # Full: (user, record_id)
+  record_id = await User.validate_token(token)    # Lightweight: just record_id
+  ```
+
+- **Computed Fields** - Server-side computed fields using SurrealDB's `DEFINE FIELD ... VALUE <expression>`
+
+  ```python
+  from surreal_orm import Computed
+
+  class User(BaseSurrealModel):
+      first_name: str
+      last_name: str
+      full_name: Computed[str] = Computed("string::concat(first_name, ' ', last_name)")
+
+  class Order(BaseSurrealModel):
+      items: list[dict]
+      discount: float = 0.0
+      subtotal: Computed[float] = Computed("math::sum(items.*.price * items.*.qty)")
+      total: Computed[float] = Computed("subtotal * (1 - discount)")
+  ```
+
+  - `Computed[T]` defaults to `None` (server computes the value)
+  - Auto-excluded from `save()`/`merge()` via `get_server_fields()`
+  - Migration introspector auto-generates `DEFINE FIELD ... VALUE <expression>`
+
+---
+
+## What's New in 0.7.0
+
+### Performance & Developer Experience
+
+- **`merge(refresh=False)`** - Skip the extra SELECT round-trip for fire-and-forget updates
+
+  ```python
+  await user.merge(last_seen=SurrealFunc("time::now()"), refresh=False)
+  ```
+
+- **`call_function()`** - Invoke custom SurrealDB stored functions from the ORM
+
+  ```python
+  result = await SurrealDBConnectionManager.call_function(
+      "acquire_game_lock", params={"table_id": tid, "pod_id": pid},
+  )
+  result = await GameTable.call_function("release_game_lock", params={...})
+  ```
+
+- **`extra_vars` on `save()`** - Bind additional query variables for SurrealFunc expressions
+
+  ```python
+  await user.save(
+      server_values={"password_hash": SurrealFunc("crypto::argon2::generate($password)")},
+      extra_vars={"password": raw_password},
+  )
+  ```
+
+- **`fetch()` / FETCH clause** - Resolve record links inline to prevent N+1 queries
+
+  ```python
+  posts = await Post.objects().fetch("author", "tags").exec()
+  # Generates: SELECT * FROM posts FETCH author, tags;
+  ```
+
+- **`remove_all_relations()` list support** - Remove multiple relation types in one call
+
+  ```python
+  await table.remove_all_relations(["has_player", "has_action"], direction="out")
+  ```
+
+---
+
 ## What's New in 0.6.0
 
-### v0.6.0 - Query Power, Security & Server-Side Functions
+### Query Power, Security & Server-Side Functions
 
 - **Q Objects for Complex Queries** - Django-style composable query expressions with OR/AND/NOT
 

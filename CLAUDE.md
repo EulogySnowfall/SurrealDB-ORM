@@ -52,6 +52,28 @@
   record_id = await User.validate_token(token)
   ```
 
+- **Computed Fields** — Server-side computed fields using SurrealDB's `DEFINE FIELD ... VALUE <expression>` syntax. Computed fields default to `None` in Python and are auto-computed by SurrealDB on write.
+
+  ```python
+  from surreal_orm import Computed
+
+  class User(BaseSurrealModel):
+      first_name: str
+      last_name: str
+      full_name: Computed[str] = Computed("string::concat(first_name, ' ', last_name)")
+
+  class Order(BaseSurrealModel):
+      items: list[dict]
+      discount: float = 0.0
+      subtotal: Computed[float] = Computed("math::sum(items.*.price * items.*.qty)")
+      total: Computed[float] = Computed("subtotal * (1 - discount)")
+      item_count: Computed[int] = Computed("array::len(items)")
+  ```
+
+  - **Auto-excluded from writes** — `get_server_fields()` auto-includes computed fields
+  - **Migration support** — Introspector generates `DEFINE FIELD ... VALUE <expression>`
+  - **Dual-use API** — `Computed[T]` for type annotation, `Computed("expr")` for default value
+
 ### What's New in 0.7.0
 
 - **`merge(refresh=False)`** — Skip the extra SELECT after UPDATE for fire-and-forget operations
@@ -651,6 +673,7 @@ src/
 │   ├── aggregations.py          # Count, Sum, Avg, Min, Max
 │   ├── auth.py                  # JWT authentication mixin
 │   ├── fields/                  # Field types
+│   │   ├── computed.py          # Computed field type (VALUE expressions)
 │   │   ├── encrypted.py         # Encrypted field type
 │   │   └── relation.py          # ForeignKey, ManyToMany, Relation
 │   ├── types.py                 # TableType enum, SurrealConfigDict
@@ -991,20 +1014,19 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `fetch()` + FETCH clause — resolve record links inline (N+1 fix)
 - [x] `remove_all_relations()` list support — multiple relation types at once
 
-### Completed (0.8.0) - Auth Module Fixes
+### Completed (0.8.0) - Auth Fixes + Computed Fields
 
-- [x] Ephemeral connections for auth ops (singleton no longer corrupted)
+- [x] Ephemeral connections for auth methods (no singleton corruption)
 - [x] Configurable `access_name` in `SurrealConfigDict`
 - [x] `signup()` returns `tuple[Self, str]` (user + JWT token)
 - [x] SDK `authenticate()` method on `BaseSurrealConnection`
 - [x] `authenticate_token()` fixed — returns `tuple[Self, str] | None`
 - [x] `validate_token()` — lightweight token validation returning record ID
+- [x] `Computed[T] = Computed("expression")` — server-side computed fields
+- [x] Auto-excluded from writes via `get_server_fields()`
+- [x] Migration introspector generates VALUE clauses
 
-### v0.8.x - Computed Fields
-
-- [ ] Computed fields with server-side SurrealDB expressions
-
-### v0.9.x - ORM Real-time Integration
+### v0.9.x (Next) - ORM Real-time Integration
 
 - [ ] Live Models (real-time sync at ORM level)
 - [ ] Change Feed integration for ORM

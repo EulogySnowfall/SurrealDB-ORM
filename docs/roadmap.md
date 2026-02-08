@@ -23,8 +23,7 @@
 | **0.5.9**   | **Released** | **Atomic Array Ops, Relation Direction, Array Filtering**   |
 | **0.6.0**   | **Released** | **Q Objects, Parameterized Filters, SurrealFunc**           |
 | **0.7.0**   | **Released** | **Performance & DX: refresh, call_function, FETCH, extras** |
-| **0.8.0**   | **Released** | **Auth Module Fixes: Ephemeral Connections, Token Returns** |
-| 0.8.x       | Planned      | Computed Fields                                             |
+| **0.8.0**   | **Released** | **Auth Module Fixes + Computed Fields**                     |
 | 0.9.x       | Planned      | ORM Live Models                                             |
 
 ---
@@ -630,11 +629,9 @@ if record_id:
 
 ---
 
-## v0.8.x - Computed Fields (Planned)
+### Computed Fields
 
-**Goal:** Server-side computed fields using SurrealDB functions.
-
-### Computed Field Definition
+Server-side computed fields using SurrealDB's `DEFINE FIELD ... VALUE <expression>` syntax. Computed fields are auto-excluded from writes and auto-populated by SurrealDB.
 
 ```python
 from surreal_orm import BaseSurrealModel, Computed
@@ -643,7 +640,7 @@ class Order(BaseSurrealModel):
     items: list[dict]  # [{"price": 10, "qty": 2}, ...]
     discount: float = 0.0
 
-    # Computed at read time
+    # Computed by SurrealDB on write
     subtotal: Computed[float] = Computed("math::sum(items.*.price * items.*.qty)")
     total: Computed[float] = Computed("subtotal * (1 - discount)")
     item_count: Computed[int] = Computed("array::len(items)")
@@ -655,6 +652,13 @@ class User(BaseSurrealModel):
     # String computation
     full_name: Computed[str] = Computed("string::concat(first_name, ' ', last_name)")
 ```
+
+**Key behaviors:**
+
+- `Computed[T]` defaults to `None` in Python (server computes the value)
+- Auto-excluded from `save()`/`merge()` via `get_server_fields()`
+- Migration introspector auto-generates `DEFINE FIELD ... VALUE <expression>`
+- Computed fields skipped in signup_fields for USER tables
 
 ---
 
@@ -775,7 +779,7 @@ users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
 | Auth: signup returns token   | 0.8.0   | High     | Done    | -                |
 | Auth: authenticate/validate  | 0.8.0   | Medium   | Done    | SDK authenticate |
 | SDK: authenticate() method   | 0.8.0   | Medium   | Done    | -                |
-| Computed Fields              | 0.8.x   | Medium   | Planned | SDK functions    |
+| Computed Fields              | 0.8.0   | Medium   | Done    | SDK functions    |
 | ORM Live Models              | 0.9.x   | Medium   | Planned | SDK live queries |
 
 ---
