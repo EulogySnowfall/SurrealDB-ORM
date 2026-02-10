@@ -10,7 +10,77 @@
 
 ---
 
-## Current Version: 0.10.0 (Alpha)
+## Current Version: 0.11.0 (Alpha)
+
+### What's New in 0.11.0
+
+- **Subqueries** — Embed a `QuerySet` as a filter value in another `QuerySet`
+
+  ```python
+  from surreal_orm import Subquery
+
+  # Users who placed orders above $100
+  top_ids = Order.objects().filter(total__gte=100).select("user_id")
+  users = await User.objects().filter(id__in=Subquery(top_ids)).exec()
+  # SELECT * FROM users WHERE id IN (SELECT VALUE user_id FROM orders WHERE total >= $_f0);
+
+  # Scalar subquery in annotate
+  users = await User.objects().annotate(
+      order_count=Subquery(Order.objects().select("count()")),
+  ).exec()
+  ```
+
+  - **`Subquery(queryset)`** — Wraps a `QuerySet` for inline sub-SELECT
+  - Parameterized variables remapped via shared counter — no collisions
+  - Works with all filter operators (`__in`, `=`, etc.) and Q objects
+  - Nested subqueries supported (subquery within a subquery)
+  - Usable in `annotate()` for scalar sub-SELECT expressions
+
+- **Query Cache** — TTL-based query result caching with signal-based auto-invalidation
+
+  ```python
+  from surreal_orm import QueryCache
+
+  # Configure cache at startup
+  QueryCache.configure(default_ttl=120, max_size=500)
+
+  # Cache a query result for 30 seconds
+  users = await User.objects().filter(role="admin").cache(ttl=30).exec()
+
+  # Automatic invalidation on save/update/delete
+  await user.save()  # clears all cached entries for this table
+
+  # Manual invalidation
+  QueryCache.invalidate(User)
+  QueryCache.clear()
+  ```
+
+  - **`QueryCache.configure()`** — Global settings: `default_ttl`, `max_size`, `enabled`
+  - **`QuerySet.cache(ttl=N)`** — Opt-in caching per query
+  - SHA-256 cache keys from query + variables + table
+  - FIFO eviction at `max_size`
+  - Auto-invalidation via `post_save`, `post_delete`, `post_update` signals
+
+- **Prefetch Objects** — Fine-grained control over `prefetch_related()` batching
+
+  ```python
+  from surreal_orm import Prefetch
+
+  # Simple string prefetch (existing behavior, now executes)
+  users = await User.objects().prefetch_related("wrote").exec()
+
+  # Prefetch with custom queryset and custom attribute
+  users = await User.objects().prefetch_related(
+      Prefetch("wrote", queryset=Post.objects().filter(published=True), to_attr="published_posts"),
+  ).exec()
+  for user in users:
+      print(user.published_posts)  # Already loaded
+  ```
+
+  - **`Prefetch(relation_name, queryset=None, to_attr=None)`** — Descriptor class
+  - `prefetch_related()` now accepts both strings and `Prefetch` objects
+  - `_execute_prefetch()` batch-fetches related records after main query
+  - Results attached to parent instances via `object.__setattr__`
 
 ### What's New in 0.10.0
 
@@ -782,6 +852,9 @@ src/
 │   │   ├── computed.py          # Computed field type (VALUE expressions)
 │   │   ├── encrypted.py         # Encrypted field type
 │   │   └── relation.py          # ForeignKey, ManyToMany, Relation
+│   ├── subquery.py              # Subquery class for inline sub-SELECT
+│   ├── cache.py                 # QueryCache with TTL + auto-invalidation
+│   ├── prefetch.py              # Prefetch class for prefetch_related()
 │   ├── types.py                 # TableType enum, SurrealConfigDict
 │   ├── introspection.py         # Public API: generate_models_from_db, schema_diff
 │   └── migrations/              # Migration system
@@ -1159,11 +1232,13 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `get_connection_name()` with priority: context var > model config > "default"
 - [x] All query paths route through named connection (model, queryset, live, auth, relations)
 
-### v0.11.x (Next) - Advanced Queries & Caching
+### Completed (0.11.0) - Advanced Queries & Caching
 
-- [ ] Subqueries
-- [ ] Query cache
-- [ ] Prefetch objects
+- [x] `Subquery` class for inline sub-SELECT in filters and annotations
+- [x] `QueryCache` with TTL, FIFO eviction, and signal-based auto-invalidation
+- [x] `Prefetch` objects for fine-grained `prefetch_related()` control
+- [x] `QuerySet.cache(ttl=N)` opt-in caching method
+- [x] `_execute_prefetch()` batch-fetching after main query
 
 ---
 

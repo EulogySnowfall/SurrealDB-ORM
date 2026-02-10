@@ -40,6 +40,9 @@ from .fields import (
 from .auth import AuthenticatedUserMixin
 from .aggregations import Aggregation, Count, Sum, Avg, Min, Max
 from .q import Q
+from .subquery import Subquery
+from .cache import QueryCache
+from .prefetch import Prefetch
 from .surreal_function import SurrealFunc
 from .utils import retry_on_conflict
 from .live import LiveModelStream, ModelChangeEvent, ChangeModelStream
@@ -122,6 +125,12 @@ __all__ = [
     "ModelChangeEvent",
     "ChangeModelStream",
     "LiveAction",
+    # Subqueries
+    "Subquery",
+    # Cache
+    "QueryCache",
+    # Prefetch
+    "Prefetch",
     # Server-side functions
     "SurrealFunc",
     # Introspection
@@ -131,4 +140,4 @@ __all__ = [
     "retry_on_conflict",
 ]
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"

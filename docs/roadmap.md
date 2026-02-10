@@ -822,9 +822,15 @@ SurrealDBConnectionManager.remove_connection("analytics")
 
 ---
 
-## v0.11.0 - Advanced Queries & Caching (Planned)
+## v0.11.0 - Advanced Queries & Caching (Released)
 
 **Goal:** Subqueries, query result caching, and `Prefetch` objects for complex data loading.
+
+- [x] `Subquery` class for inline sub-SELECT in filters and annotations
+- [x] `QueryCache` with TTL, FIFO eviction, and signal-based auto-invalidation
+- [x] `QuerySet.cache(ttl=N)` opt-in caching method
+- [x] `Prefetch` objects for fine-grained `prefetch_related()` control
+- [x] `_execute_prefetch()` batch-fetching after main query
 
 ### Subqueries
 
@@ -834,16 +840,9 @@ Nest QuerySets inside filters for server-side subquery evaluation:
 from surreal_orm import Subquery
 
 # Users who placed orders above $100
-big_spenders = await User.objects().filter(
-    id__in=Subquery(Order.objects().filter(total__gt=100).values("user_id")),
-).exec()
-
-# Correlated subqueries
-users = await User.objects().annotate(
-    order_count=Subquery(
-        Order.objects().filter(user_id="$parent.id").count(),
-    ),
-).exec()
+top_ids = Order.objects().filter(total__gte=100).select("user_id")
+users = await User.objects().filter(id__in=Subquery(top_ids)).exec()
+# SELECT * FROM users WHERE id IN (SELECT VALUE user_id FROM orders WHERE total >= $_f0);
 ```
 
 ### Query Cache
@@ -851,16 +850,16 @@ users = await User.objects().annotate(
 Transparent caching layer for frequently executed read queries:
 
 ```python
-from surreal_orm.cache import QueryCache
+from surreal_orm import QueryCache
 
-# Configure cache backend
-QueryCache.configure(backend="memory", ttl=60)  # 60s TTL
+# Configure cache at startup
+QueryCache.configure(default_ttl=120, max_size=500)
 
 # Cached queries
 users = await User.objects().filter(role="admin").cache(ttl=30).exec()
 
-# Cache invalidation on write
-await user.save()  # Automatically invalidates related cache entries
+# Automatic invalidation on save/update/delete via signals
+await user.save()  # Clears all cached entries for this table
 
 # Manual invalidation
 QueryCache.invalidate(User)
@@ -874,10 +873,9 @@ Fine-grained control over related data prefetching:
 ```python
 from surreal_orm import Prefetch
 
-# Prefetch with filtering and ordering
+# Prefetch with filtering and custom attribute name
 users = await User.objects().prefetch_related(
-    Prefetch("orders", queryset=Order.objects().filter(status="active").order_by("-created_at")),
-    Prefetch("reviews", queryset=Review.objects().filter(rating__gte=4)),
+    Prefetch("wrote", queryset=Post.objects().filter(published=True), to_attr="published_posts"),
 ).exec()
 ```
 

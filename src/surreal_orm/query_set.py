@@ -6,6 +6,8 @@ from .q import Q
 from .utils import remove_quotes_for_variables, format_thing, parse_record_id
 from . import BaseSurrealModel, SurrealDBConnectionManager
 from .aggregations import Aggregation
+from .subquery import Subquery
+from .prefetch import Prefetch
 from typing import TYPE_CHECKING, Self, Any, Sequence, cast
 from datetime import datetime
 from pydantic_core import ValidationError
@@ -76,12 +78,14 @@ class QuerySet:
         self._model_table: str = model.get_table_name()
         self._variables: dict = {}
         self._group_by_fields: list[str] = []
-        self._annotations: dict[str, Aggregation] = {}
+        self._annotations: dict[str, Aggregation | Subquery] = {}
         # Relation query options
         self._select_related: list[str] = []
-        self._prefetch_related: list[str] = []
+        self._prefetch_related: list[str | Prefetch] = []
         self._fetch_fields: list[str] = []
         self._traversal_path: str | None = None
+        # Cache
+        self._cache_ttl: int | None = None
 
     def select(self, *fields: str) -> Self:
         """
@@ -295,16 +299,17 @@ class QuerySet:
         self._group_by_fields = list(fields)
         return self
 
-    def annotate(self, **aggregations: Aggregation) -> Self:
+    def annotate(self, **aggregations: Aggregation | Subquery) -> Self:
         """
-        Add aggregation functions to compute values for each group.
+        Add aggregation functions or subqueries to compute values for each group.
 
         This method is used in conjunction with `values()` to perform GROUP BY operations.
-        Each keyword argument should be an Aggregation instance (Count, Sum, Avg, Min, Max).
+        Each keyword argument should be an Aggregation instance (Count, Sum, Avg, Min, Max)
+        or a Subquery instance for scalar sub-SELECT expressions.
 
         Args:
-            **aggregations (Aggregation): Keyword arguments where keys are alias names
-                and values are Aggregation instances.
+            **aggregations (Aggregation | Subquery): Keyword arguments where keys are alias
+                names and values are Aggregation or Subquery instances.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
@@ -312,6 +317,7 @@ class QuerySet:
         Example:
             ```python
             from surreal_orm.aggregations import Count, Sum, Avg
+            from surreal_orm import Subquery
 
             # Calculate statistics per status
             stats = await Order.objects().values("status").annotate(
@@ -319,6 +325,13 @@ class QuerySet:
                 total=Sum("amount"),
                 avg_amount=Avg("amount"),
             )
+
+            # Scalar subquery annotation
+            users = await User.objects().annotate(
+                order_count=Subquery(
+                    Order.objects().filter(user_id="$parent.id").select("count()")
+                ),
+            ).exec()
             ```
         """
         self._annotations = aggregations
@@ -367,28 +380,35 @@ class QuerySet:
         self._select_related = list(relations)
         return self
 
-    def prefetch_related(self, *relations: str) -> Self:
+    def prefetch_related(self, *relations: str | Prefetch) -> Self:
         """
         Prefetch related objects using separate optimized queries.
 
         This method reduces N+1 query problems by fetching related objects
-        in batches after the main query completes. This is more efficient
-        than select_related for many-to-many and reverse relations.
+        in batches after the main query completes.  Each argument can be a
+        plain relation name (string) or a ``Prefetch`` object for fine-grained
+        control over the queryset and target attribute.
+
+        After ``exec()``, each parent instance will have the prefetched list
+        attached as an attribute (the relation name or ``Prefetch.to_attr``).
 
         Args:
-            *relations: Names of relations to prefetch.
+            *relations: Relation names or ``Prefetch`` objects.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
 
-        Example:
-            ```python
-            # Load users and prefetch their followers
-            users = await User.objects().prefetch_related("followers", "posts").all()
-            for user in users:
-                print(user.followers)  # Already loaded
-                print(user.posts)      # Already loaded
-            ```
+        Example::
+
+            # Simple string prefetch
+            users = await User.objects().prefetch_related("posts").exec()
+
+            # Prefetch with custom queryset
+            from surreal_orm import Prefetch
+
+            users = await User.objects().prefetch_related(
+                Prefetch("posts", queryset=Post.objects().filter(published=True)),
+            ).exec()
         """
         self._prefetch_related = list(relations)
         return self
@@ -434,6 +454,37 @@ class QuerySet:
                     "(letters, digits, underscores; must start with a letter or underscore)."
                 )
         self._fetch_fields = list(fields)
+        return self
+
+    def cache(self, ttl: int | None = None) -> Self:
+        """
+        Enable caching for this query.
+
+        When the query is executed via :meth:`exec`, the compiled query and
+        variables are hashed to produce a cache key.  If a cached result
+        exists and has not expired, it is returned without hitting the
+        database.  Otherwise the result is stored for future calls.
+
+        Args:
+            ttl: Time-to-live in seconds.  If ``None``, the global default
+                from ``QueryCache.configure()`` is used.
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example::
+
+            # Cache for 30 seconds
+            users = await User.objects().filter(role="admin").cache(ttl=30).exec()
+
+            # Cache with default TTL
+            users = await User.objects().cache().exec()
+        """
+        from .cache import QueryCache
+
+        if not QueryCache._enabled:
+            logger.warning("QueryCache is disabled — .cache() has no effect")
+        self._cache_ttl = ttl if ttl is not None else QueryCache._default_ttl
         return self
 
     def traverse(self, path: str) -> Self:
@@ -539,19 +590,39 @@ class QuerySet:
         """
         Execute the GROUP BY query with annotations.
 
+        Annotations may be ``Aggregation`` instances (Count, Sum, …) or
+        ``Subquery`` instances (compiled to inline sub-SELECTs).
+
         Returns:
             list[dict[str, Any]]: A list of dictionaries containing grouped results.
         """
-        # Build SELECT clause with group fields and aggregations
+        # Build WHERE clause first so the shared counter is advanced before
+        # subquery annotations — prevents $_fN variable collisions.
+        where_parts, filter_vars = self._build_where_parts()
+        if filter_vars:
+            self._variables.update(filter_vars)
+        where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        # Build SELECT clause with group fields and aggregations/subqueries.
+        # Re-use the counter from _build_where_parts() so annotation subqueries
+        # continue numbering where the filters left off.
         select_parts: list[str] = list(self._group_by_fields)
 
-        for alias, aggregation in self._annotations.items():
-            select_parts.append(aggregation.to_surql(alias))
+        # Determine the next counter value after WHERE clause variables
+        next_counter = max((int(k[2:]) for k in filter_vars if k.startswith("_f")), default=-1) + 1
+        counter: list[int] = [next_counter]
+        sub_vars: dict[str, Any] = {}
+
+        for alias, annotation in self._annotations.items():
+            if isinstance(annotation, Subquery):
+                select_parts.append(f"{annotation.to_surql(sub_vars, counter)} AS {alias}")
+            else:
+                select_parts.append(annotation.to_surql(alias))
+
+        if sub_vars:
+            self._variables.update(sub_vars)
 
         select_clause = ", ".join(select_parts)
-
-        # Build WHERE clause
-        where_clause = self._compile_where_clause()
 
         # Build GROUP BY clause
         if self._group_by_fields:
@@ -565,6 +636,91 @@ class QuerySet:
         result = await client.query(remove_quotes_for_variables(query), self._variables)
 
         return cast(list[dict[str, Any]], result.all_records)
+
+    async def _execute_prefetch(
+        self,
+        instances: list[Any],
+    ) -> None:
+        """
+        Batch-fetch related objects for a list of parent instances.
+
+        For each entry in ``_prefetch_related`` (string or ``Prefetch``), this
+        queries the relation edge table in a single batch call and attaches the
+        results to each parent instance.
+
+        Args:
+            instances: The parent model instances returned by the main query.
+        """
+        if not instances:
+            return
+
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+
+        for item in self._prefetch_related:
+            if isinstance(item, Prefetch):
+                relation_name = item.relation_name
+                to_attr = item.to_attr
+                custom_qs = item.queryset
+            else:
+                relation_name = item
+                to_attr = item
+                custom_qs = None
+
+            if not _SAFE_IDENTIFIER_RE.match(relation_name):
+                raise ValueError(f"Invalid prefetch relation name: {relation_name!r}")
+
+            # Collect source IDs
+            source_ids: list[str] = []
+            for inst in instances:
+                if isinstance(inst, BaseSurrealModel):
+                    sid = inst.get_id()
+                    if sid:
+                        source_ids.append(format_thing(self._model_table, sid))
+
+            if not source_ids:
+                for inst in instances:
+                    object.__setattr__(inst, to_attr, [])
+                continue
+
+            # Build batch query for this relation (treated as edge table).
+            # Use ``out.*`` to dereference the target node so callers get
+            # the related records (not raw edge records).  The ``in`` field
+            # is kept for grouping results by source instance.
+            id_list = ", ".join(source_ids)
+            query = f"SELECT in, out.* FROM {relation_name} WHERE in IN [{id_list}];"
+
+            # If custom queryset has filters, append them as AND conditions.
+            # Note: filters apply to the *edge* table fields.
+            extra_where = ""
+            extra_vars: dict[str, Any] = {}
+            if custom_qs is not None:
+                parts, fvars = custom_qs._build_where_parts()
+                if parts:
+                    extra_where = " AND " + " AND ".join(parts)
+                    extra_vars = fvars
+                query = f"SELECT in, out.* FROM {relation_name} WHERE in IN [{id_list}]{extra_where};"
+
+            result = await client.query(remove_quotes_for_variables(query), extra_vars)
+
+            # Group results by source (the 'in' field)
+            grouped: dict[str, list[dict[str, Any]]] = {}
+            for record in result.all_records or []:
+                if isinstance(record, dict):
+                    in_ref = record.get("in", "")
+                    if hasattr(in_ref, "__str__"):
+                        in_ref = str(in_ref)
+                    # Remove the 'in' key so the attached dict only has
+                    # target-node fields.
+                    node = {k: v for k, v in record.items() if k != "in"}
+                    grouped.setdefault(in_ref, []).append(node)
+
+            # Attach to instances
+            for inst in instances:
+                if isinstance(inst, BaseSurrealModel):
+                    sid = inst.get_id()
+                    thing = format_thing(self._model_table, sid) if sid else ""
+                    related = grouped.get(thing, [])
+                    object.__setattr__(inst, to_attr, related)
 
     @staticmethod
     def _render_condition(
@@ -592,6 +748,16 @@ class QuerySet:
             str: The rendered SurrealQL condition.
         """
         op = LOOKUP_OPERATORS.get(lookup_name, "=")
+
+        # Subquery values: compile to inline sub-SELECT.
+        # Collection operators (IN, NOT IN, etc.) use the array directly;
+        # scalar operators (=, !=, >, etc.) wrap with array::first().
+        if isinstance(value, Subquery):
+            sub_sql = value.to_surql(variables, counter)
+            _COLLECTION_LOOKUPS = {"in", "not_in", "containsall", "containsany"}
+            if lookup_name in _COLLECTION_LOOKUPS:
+                return f"{field_name} {op} {sub_sql}"
+            return f"{field_name} {op} array::first({sub_sql})"
 
         if lookup_name == "isnull":
             if not isinstance(value, bool):
@@ -785,13 +951,49 @@ class QuerySet:
             return await self._execute_annotate()
 
         query = self._compile_query()
+
+        # ── Cache: check for hit ────────────────────────────────────────
+        cache_key: str | None = None
+        if self._cache_ttl is not None:
+            from .cache import QueryCache
+
+            # Include prefetch config in key so different prefetch combos
+            # get separate cache entries.
+            prefetch_fp = ""
+            if self._prefetch_related:
+                parts = []
+                for p in self._prefetch_related:
+                    if isinstance(p, Prefetch):
+                        parts.append(f"{p.relation_name}:{p.to_attr}")
+                    else:
+                        parts.append(str(p))
+                prefetch_fp = "|".join(parts)
+
+            key_vars = {**self._variables, "_pfp": prefetch_fp} if prefetch_fp else self._variables
+            cache_key = QueryCache.make_key(query, key_vars, self._model_table)
+            cached = QueryCache.get(cache_key)
+            if cached is not None:
+                return cached
+
         results = await self._execute_query(query)
         try:
             # surrealdb SDK 1.0.8 returns records directly, not wrapped in {"result": ...}
-            return self.model.from_db(cast(dict | list | None, results))
+            parsed = self.model.from_db(cast(dict | list | None, results))
         except ValidationError as e:
             logger.info(f"Pydantic invalid format for the class, returning dict value: {e}")
-            return results
+            parsed = results
+
+        # ── Prefetch related ─────────────────────────────────────────────
+        if self._prefetch_related and isinstance(parsed, list):
+            await self._execute_prefetch(parsed)
+
+        # ── Cache: store result (after prefetch, so hits include prefetched data)
+        if cache_key is not None:
+            from .cache import QueryCache
+
+            QueryCache.set(cache_key, parsed, self._model_table, self._cache_ttl)  # type: ignore[arg-type]
+
+        return parsed
 
     async def first(self) -> Any:
         """
