@@ -16,7 +16,7 @@
 | 0.5.0   | Released | SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls |
 | 0.5.1   | Released | Security Workflows (Dependabot, SurrealDB monitoring)     |
 | 0.5.2   | Released | Bug Fixes & FieldType Improvements                        |
-| 0.5.3   | Released | ORM Improvements: Upsert, server_fields, merge() fix     |
+| 0.5.3   | Released | ORM Improvements: Upsert, server_fields, merge() fix      |
 | 0.5.5.1 | Released | Critical Bug Fixes: ID escaping, CBOR HTTP, get_related   |
 | 0.5.7   | Released | Django-style Model Signals                                |
 | 0.5.8   | Released | Around Signals (Generator-based middleware)               |
@@ -25,6 +25,9 @@
 | 0.7.0   | Released | Performance & DX: refresh, call_function, FETCH, extras   |
 | 0.8.0   | Released | Auth Module Fixes + Computed Fields                       |
 | 0.9.0   | Released | ORM Live Models + Change Feed Integration                 |
+| 0.10.0  | Planned  | Schema Introspection & Multi-DB                           |
+| 0.11.0  | Planned  | Advanced Queries & Caching                                |
+| 0.12.0  | Planned  | Testing & Developer Experience                            |
 
 ---
 
@@ -690,6 +693,7 @@ async with User.objects().filter(role="admin").live() as stream:
 ```
 
 **Features:**
+
 - `ModelChangeEvent` with typed `instance: T`, `action`, `record_id`, `changed_fields`
 - `LiveModelStream` wraps SDK `LiveSelectStream` with automatic `Model.from_db()` conversion
 - `auto_resubscribe=True` for seamless WebSocket reconnect recovery
@@ -712,6 +716,7 @@ async for event in User.objects().changes(since="2026-01-01"):
 ```
 
 **Features:**
+
 - `ChangeModelStream` wraps SDK `ChangeFeedStream` with model conversion
 - Cursor tracking via `.cursor` property for resumability
 - Configurable `poll_interval` and `batch_size`
@@ -743,30 +748,46 @@ ws_conn = await SurrealDBConnectionManager.get_ws_client()
 
 ---
 
-## v0.10.0 - Advanced Features (Future)
+## v0.10.0 - Schema Introspection & Multi-DB (Planned)
+
+**Goal:** Auto-detect existing schemas and support multiple database routing.
 
 ### Schema Introspection
 
+Generate ORM model files from an existing SurrealDB schema:
+
 ```python
+from surreal_orm.introspection import generate_models_from_db
+
 # Generate models from existing database
 await generate_models_from_db(
     output_dir="models/",
     tables=["users", "orders", "products"],
 )
+
+# Diff existing models against live schema
+diff = await schema_diff(models=[User, Order, Product])
+for change in diff:
+    print(change)  # e.g. "Field 'email' missing in model User"
 ```
 
 ### Multi-Database Support
 
+Route models to different namespaces/databases:
+
 ```python
 class User(BaseSurrealModel):
-    class Meta:
-        database = "users_db"
+    model_config = SurrealConfigDict(
+        database="users_db",
+        namespace="production",
+    )
 
-class Order(BaseSurrealModel):
-    class Meta:
-        database = "orders_db"
+class AnalyticsEvent(BaseSurrealModel):
+    model_config = SurrealConfigDict(
+        database="analytics_db",
+    )
 
-# Or runtime switching
+# Runtime database switching
 async with SurrealDBConnectionManager.using("analytics_db"):
     stats = await AnalyticsEvent.objects().all()
 ```
@@ -785,52 +806,192 @@ users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
 
 ---
 
+## v0.11.0 - Advanced Queries & Caching (Planned)
+
+**Goal:** Subqueries, query result caching, and `Prefetch` objects for complex data loading.
+
+### Subqueries
+
+Nest QuerySets inside filters for server-side subquery evaluation:
+
+```python
+from surreal_orm import Subquery
+
+# Users who placed orders above $100
+big_spenders = await User.objects().filter(
+    id__in=Subquery(Order.objects().filter(total__gt=100).values("user_id")),
+).exec()
+
+# Correlated subqueries
+users = await User.objects().annotate(
+    order_count=Subquery(
+        Order.objects().filter(user_id="$parent.id").count(),
+    ),
+).exec()
+```
+
+### Query Cache
+
+Transparent caching layer for frequently executed read queries:
+
+```python
+from surreal_orm.cache import QueryCache
+
+# Configure cache backend
+QueryCache.configure(backend="memory", ttl=60)  # 60s TTL
+
+# Cached queries
+users = await User.objects().filter(role="admin").cache(ttl=30).exec()
+
+# Cache invalidation on write
+await user.save()  # Automatically invalidates related cache entries
+
+# Manual invalidation
+QueryCache.invalidate(User)
+QueryCache.clear()
+```
+
+### Prefetch Objects
+
+Fine-grained control over related data prefetching:
+
+```python
+from surreal_orm import Prefetch
+
+# Prefetch with filtering and ordering
+users = await User.objects().prefetch_related(
+    Prefetch("orders", queryset=Order.objects().filter(status="active").order_by("-created_at")),
+    Prefetch("reviews", queryset=Review.objects().filter(rating__gte=4)),
+).exec()
+```
+
+---
+
+## v0.12.0 - Testing & Developer Experience (Planned)
+
+**Goal:** First-class testing utilities and developer tooling.
+
+### Test Fixtures
+
+Declarative fixtures for integration tests:
+
+```python
+from surreal_orm.testing import SurrealFixture, fixture
+
+@fixture
+class UserFixtures(SurrealFixture):
+    alice = User(name="Alice", email="alice@example.com", role="admin")
+    bob = User(name="Bob", email="bob@example.com", role="player")
+
+# In pytest
+@pytest.fixture
+async def users(surreal_db):
+    async with UserFixtures.load() as fixtures:
+        yield fixtures
+
+async def test_admin_query(users):
+    admins = await User.objects().filter(role="admin").exec()
+    assert len(admins) == 1
+    assert admins[0].name == "Alice"
+```
+
+### Model Factories
+
+Factory Boy-style model factories for generating test data:
+
+```python
+from surreal_orm.testing import ModelFactory, Faker
+
+class UserFactory(ModelFactory):
+    class Meta:
+        model = User
+
+    name = Faker("name")
+    email = Faker("email")
+    age = Faker("random_int", min=18, max=80)
+    role = "player"
+
+# Generate test data
+user = await UserFactory.create()
+users = await UserFactory.create_batch(50)
+admin = await UserFactory.create(role="admin")
+```
+
+### Debug Toolbar
+
+Query inspection and performance profiling:
+
+```python
+from surreal_orm.debug import QueryLogger
+
+# Log all queries with timing
+async with QueryLogger() as logger:
+    users = await User.objects().filter(role="admin").exec()
+    orders = await Order.objects().filter(user_id=users[0].id).exec()
+
+for query in logger.queries:
+    print(f"{query.sql} — {query.duration_ms:.1f}ms")
+
+print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
+```
+
+---
+
 ## Implementation Priority
 
-| Feature                      | Version | Priority | Status  | Dependencies     |
-| ---------------------------- | ------- | -------- | ------- | ---------------- |
-| Model Transactions           | 0.3.0   | Critical | Done    | SDK transactions |
-| Aggregations (count/sum/avg) | 0.3.0   | High     | Done    | SDK functions    |
-| GROUP BY                     | 0.3.0   | High     | Done    | Aggregations     |
-| Bulk Operations              | 0.3.1   | Medium   | Done    | Transactions     |
-| Relations (ForeignKey)       | 0.4.0   | High     | Done    | -                |
-| Graph Traversal              | 0.4.0   | High     | Done    | Relations        |
-| Live Select Stream           | 0.5.0   | High     | Done    | SDK WebSocket    |
-| Auto-Resubscribe             | 0.5.0   | High     | Done    | Live Select      |
-| Typed Function Calls         | 0.5.0   | Medium   | Done    | SDK functions    |
-| Security Workflows           | 0.5.1   | High     | Done    | -                |
-| FieldType Improvements       | 0.5.2   | Medium   | Done    | -                |
-| Upsert & server_fields       | 0.5.3   | High     | Done    | -                |
-| Record ID Escaping           | 0.5.5.1 | Critical | Done    | -                |
-| CBOR HTTP Protocol           | 0.5.5.1 | High     | Done    | SDK CBOR         |
-| get_related() direction fix  | 0.5.5.1 | Medium   | Done    | Relations        |
-| Model Signals                | 0.5.7   | High     | Done    | -                |
-| Around Signals               | 0.5.8   | Medium   | Done    | Model Signals    |
-| Atomic Array Ops             | 0.5.9   | High     | Done    | -                |
-| Relation Direction Control   | 0.5.9   | Medium   | Done    | Relations        |
-| Array Filtering Operators    | 0.5.9   | Medium   | Done    | -                |
-| Transaction Conflict Retry   | 0.5.9   | High     | Done    | -                |
-| Q Objects (OR/AND/NOT)       | 0.6.0   | High     | Done    | -                |
-| Parameterized Filters        | 0.6.0   | High     | Done    | -                |
-| SurrealFunc                  | 0.6.0   | High     | Done    | -                |
-| remove_all_relations()       | 0.6.0   | Medium   | Done    | Relations        |
-| `-field` ordering            | 0.6.0   | Low      | Done    | -                |
-| isnull bug fix               | 0.6.0   | Medium   | Done    | -                |
-| merge(refresh=False)         | 0.7.0   | High     | Done    | -                |
-| call_function()              | 0.7.0   | High     | Done    | SDK call()       |
-| extra_vars for SurrealFunc   | 0.7.0   | Medium   | Done    | SurrealFunc      |
-| FETCH clause (N+1 fix)       | 0.7.0   | Medium   | Done    | -                |
-| remove_all_relations() list  | 0.7.0   | Low      | Done    | Relations        |
-| Auth: Ephemeral connections  | 0.8.0   | Critical | Done    | -                |
-| Auth: Configurable access    | 0.8.0   | High     | Done    | -                |
-| Auth: signup returns token   | 0.8.0   | High     | Done    | -                |
-| Auth: authenticate/validate  | 0.8.0   | Medium   | Done    | SDK authenticate |
-| SDK: authenticate() method   | 0.8.0   | Medium   | Done    | -                |
-| Computed Fields              | 0.8.0   | Medium   | Done    | SDK functions    |
-| ORM Live Models              | 0.9.0   | Medium   | Done    | SDK live queries  |
-| Change Feed ORM Integration  | 0.9.0   | Medium   | Done    | SDK change feeds  |
-| post_live_change signal      | 0.9.0   | Low      | Done    | Live Models       |
-| WebSocket ConnectionManager  | 0.9.0   | Medium   | Done    | SDK WebSocket     |
+| Feature                      | Version | Priority | Status | Dependencies     |
+| ---------------------------- | ------- | -------- | ------ | ---------------- |
+| Model Transactions           | 0.3.0   | Critical | Done   | SDK transactions |
+| Aggregations (count/sum/avg) | 0.3.0   | High     | Done   | SDK functions    |
+| GROUP BY                     | 0.3.0   | High     | Done   | Aggregations     |
+| Bulk Operations              | 0.3.1   | Medium   | Done   | Transactions     |
+| Relations (ForeignKey)       | 0.4.0   | High     | Done   | -                |
+| Graph Traversal              | 0.4.0   | High     | Done   | Relations        |
+| Live Select Stream           | 0.5.0   | High     | Done   | SDK WebSocket    |
+| Auto-Resubscribe             | 0.5.0   | High     | Done   | Live Select      |
+| Typed Function Calls         | 0.5.0   | Medium   | Done   | SDK functions    |
+| Security Workflows           | 0.5.1   | High     | Done   | -                |
+| FieldType Improvements       | 0.5.2   | Medium   | Done   | -                |
+| Upsert & server_fields       | 0.5.3   | High     | Done   | -                |
+| Record ID Escaping           | 0.5.5.1 | Critical | Done   | -                |
+| CBOR HTTP Protocol           | 0.5.5.1 | High     | Done   | SDK CBOR         |
+| get_related() direction fix  | 0.5.5.1 | Medium   | Done   | Relations        |
+| Model Signals                | 0.5.7   | High     | Done   | -                |
+| Around Signals               | 0.5.8   | Medium   | Done   | Model Signals    |
+| Atomic Array Ops             | 0.5.9   | High     | Done   | -                |
+| Relation Direction Control   | 0.5.9   | Medium   | Done   | Relations        |
+| Array Filtering Operators    | 0.5.9   | Medium   | Done   | -                |
+| Transaction Conflict Retry   | 0.5.9   | High     | Done   | -                |
+| Q Objects (OR/AND/NOT)       | 0.6.0   | High     | Done   | -                |
+| Parameterized Filters        | 0.6.0   | High     | Done   | -                |
+| SurrealFunc                  | 0.6.0   | High     | Done   | -                |
+| remove_all_relations()       | 0.6.0   | Medium   | Done   | Relations        |
+| `-field` ordering            | 0.6.0   | Low      | Done   | -                |
+| isnull bug fix               | 0.6.0   | Medium   | Done   | -                |
+| merge(refresh=False)         | 0.7.0   | High     | Done   | -                |
+| call_function()              | 0.7.0   | High     | Done   | SDK call()       |
+| extra_vars for SurrealFunc   | 0.7.0   | Medium   | Done   | SurrealFunc      |
+| FETCH clause (N+1 fix)       | 0.7.0   | Medium   | Done   | -                |
+| remove_all_relations() list  | 0.7.0   | Low      | Done   | Relations        |
+| Auth: Ephemeral connections  | 0.8.0   | Critical | Done   | -                |
+| Auth: Configurable access    | 0.8.0   | High     | Done   | -                |
+| Auth: signup returns token   | 0.8.0   | High     | Done   | -                |
+| Auth: authenticate/validate  | 0.8.0   | Medium   | Done   | SDK authenticate |
+| SDK: authenticate() method   | 0.8.0   | Medium   | Done   | -                |
+| Computed Fields              | 0.8.0   | Medium   | Done   | SDK functions    |
+| ORM Live Models              | 0.9.0   | Medium   | Done   | SDK live queries |
+| Change Feed ORM Integration  | 0.9.0   | Medium   | Done   | SDK change feeds |
+| post_live_change signal      | 0.9.0   | Low      | Done   | Live Models      |
+| WebSocket ConnectionManager  | 0.9.0   | Medium   | Done   | SDK WebSocket    |
+| Schema Introspection         | 0.10.0  | High     | -      | Migrations       |
+| Multi-Database Routing       | 0.10.0  | High     | -      | ConnectionManager|
+| Query Explain / Optimization | 0.10.0  | Medium   | -      | QuerySet         |
+| Subqueries                   | 0.11.0  | High     | -      | QuerySet         |
+| Query Cache                  | 0.11.0  | Medium   | -      | -                |
+| Prefetch Objects             | 0.11.0  | Medium   | -      | Relations        |
+| Test Fixtures                | 0.12.0  | High     | -      | -                |
+| Model Factories              | 0.12.0  | High     | -      | -                |
+| Debug Toolbar / QueryLogger  | 0.12.0  | Medium   | -      | -                |
 
 ---
 
