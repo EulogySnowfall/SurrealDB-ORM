@@ -211,7 +211,7 @@ class RelationQuerySet:
         """
         query, variables = self._build_traversal_query()
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self._instance.get_connection_name())
         result = await client.query(query, variables)
 
         # Convert results to model instances
@@ -315,7 +315,7 @@ class RelationManager:
         if not self._instance.get_id():
             raise ValueError("Cannot add relations to unsaved instance")
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self._instance.get_connection_name())
         source_table = self._instance.get_table_name()
         source_id = self._instance.get_id()
 
@@ -375,7 +375,7 @@ class RelationManager:
         if not self._instance.get_id():
             raise ValueError("Cannot remove relations from unsaved instance")
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self._instance.get_connection_name())
         source_table = self._instance.get_table_name()
         source_id = self._instance.get_id()
 
@@ -429,7 +429,7 @@ class RelationManager:
         if not self._instance.get_id():
             raise ValueError("Cannot clear relations from unsaved instance")
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self._instance.get_connection_name())
         source_table = self._instance.get_table_name()
         source_id = self._instance.get_id()
 

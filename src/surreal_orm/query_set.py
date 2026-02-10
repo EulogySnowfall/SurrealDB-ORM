@@ -497,7 +497,7 @@ class QuerySet:
                 source_id = value
                 break
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
 
         if source_id:
             # Use specific record as starting point with proper escaping
@@ -561,7 +561,7 @@ class QuerySet:
 
         query = f"SELECT {select_clause} FROM {self._model_table}{where_clause}{group_clause};"
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
 
         return cast(list[dict[str, Any]], result.all_records)
@@ -862,7 +862,7 @@ class QuerySet:
             _, id_part = parse_record_id(record_id_str)
             # Format the thing reference with proper escaping for special IDs
             thing = format_thing(self._model_table, id_part)
-            client = await SurrealDBConnectionManager.get_client()
+            client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
             result = await client.select(thing)
             # SDK returns RecordsResponse
             if result.is_empty:
@@ -894,7 +894,7 @@ class QuerySet:
             all_users = await queryset.all()
             ```
         """
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.select(self._model_table)
         return self.model.from_db(cast(dict | list | None, result.records))
 
@@ -933,7 +933,7 @@ class QuerySet:
         where_clause = self._compile_where_clause()
         query = f"SELECT count() FROM {self._model_table}{where_clause} GROUP ALL;"
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
 
         if result.all_records:
@@ -960,7 +960,7 @@ class QuerySet:
         where_clause = self._compile_where_clause()
         query = f"SELECT math::sum({field}) AS total FROM {self._model_table}{where_clause} GROUP ALL;"
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
 
         if result.all_records:
@@ -988,7 +988,7 @@ class QuerySet:
         where_clause = self._compile_where_clause()
         query = f"SELECT math::mean({field}) AS average FROM {self._model_table}{where_clause} GROUP ALL;"
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
 
         if result.all_records:
@@ -1016,7 +1016,7 @@ class QuerySet:
         where_clause = self._compile_where_clause()
         query = f"SELECT math::min({field}) AS minimum FROM {self._model_table}{where_clause} GROUP ALL;"
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
 
         if result.all_records:
@@ -1043,7 +1043,7 @@ class QuerySet:
         where_clause = self._compile_where_clause()
         query = f"SELECT math::max({field}) AS maximum FROM {self._model_table}{where_clause} GROUP ALL;"
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
 
         if result.all_records:
@@ -1073,7 +1073,7 @@ class QuerySet:
             results = await self._execute_query("SELECT * FROM users;")
             ```
         """
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         return await self._run_query_on_client(client, query)
 
     async def _run_query_on_client(self, client: Any, query: str) -> list[Any]:
@@ -1120,7 +1120,7 @@ class QuerySet:
             success = await queryset.delete_table()
             ```
         """
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         await client.delete(self._model_table)
         return True
 
@@ -1151,7 +1151,7 @@ class QuerySet:
         """
         if f"FROM {self._model_table}" not in query:
             raise SurrealDbError(f"The query must include 'FROM {self._model_table}' to reference the correct table.")
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), variables)
         # SDK returns QueryResponse, extract all records
         return self.model.from_db(cast(dict | list | None, result.all_records))
@@ -1263,7 +1263,7 @@ class QuerySet:
                 await tx.query(remove_quotes_for_variables(query), self._variables)
             return current_count
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
         return len(result.all_records)
 
@@ -1300,7 +1300,7 @@ class QuerySet:
                 await tx.query(remove_quotes_for_variables(delete_query), self._variables)
             return current_count
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
         return len(result.all_records)
 

@@ -13,6 +13,54 @@
 
 ---
 
+## What's New in 0.10.0
+
+### Schema Introspection & Multi-Database Support
+
+- **Schema Introspection** - Generate Python model code from an existing SurrealDB database
+
+  ```python
+  from surreal_orm import generate_models_from_db, schema_diff
+
+  # Generate Python model code from existing database
+  code = await generate_models_from_db(output_path="models.py")
+
+  # Compare Python models against live database schema
+  operations = await schema_diff(models=[User, Order, Product])
+  for op in operations:
+      print(op)  # Migration operations needed to sync
+  ```
+
+  - `DatabaseIntrospector` parses `INFO FOR DB` / `INFO FOR TABLE` into `SchemaState`
+  - `ModelCodeGenerator` converts `SchemaState` to fully-typed Python model source code
+  - Handles generic types (`array<string>`, `option<int>`, `record<users>`), VALUE/ASSERT expressions, encrypted fields, FLEXIBLE, READONLY
+  - CLI: `surreal-orm inspectdb` and `surreal-orm schemadiff`
+
+- **Multi-Database Support** - Named connection registry for routing models to different databases
+
+  ```python
+  from surreal_orm import SurrealDBConnectionManager
+
+  # Register named connections
+  SurrealDBConnectionManager.add_connection("default", url=..., ns=..., db=...)
+  SurrealDBConnectionManager.add_connection("analytics", url=..., ns=..., db=...)
+
+  # Model-level routing
+  class AnalyticsEvent(BaseSurrealModel):
+      model_config = SurrealConfigDict(connection="analytics")
+
+  # Context manager override (async-safe)
+  async with SurrealDBConnectionManager.using("analytics"):
+      events = await AnalyticsEvent.objects().all()
+  ```
+
+  - `ConnectionConfig` frozen dataclass for immutable connection settings
+  - `using()` async context manager with `contextvars` for async safety
+  - Full backward compatibility: `set_connection()` delegates to `add_connection("default", ...)`
+  - `list_connections()`, `get_config()`, `remove_connection()` registry management
+
+---
+
 ## What's New in 0.9.0
 
 ### ORM Real-time Features: Live Models + Change Feed
@@ -760,13 +808,15 @@ user = await User.authenticate_token(token)
 
 Requires `pip install surrealdb-orm[cli]`
 
-| Command             | Description                 |
-| ------------------- | --------------------------- |
-| `makemigrations`    | Generate migration files    |
-| `migrate`           | Apply schema migrations     |
-| `rollback <target>` | Rollback to migration       |
-| `status`            | Show migration status       |
-| `shell`             | Interactive SurrealQL shell |
+| Command             | Description                            |
+| ------------------- | -------------------------------------- |
+| `makemigrations`    | Generate migration files               |
+| `migrate`           | Apply schema migrations                |
+| `rollback <target>` | Rollback to migration                  |
+| `status`            | Show migration status                  |
+| `shell`             | Interactive SurrealQL shell            |
+| `inspectdb`         | Generate models from existing database |
+| `schemadiff`        | Compare models against live schema     |
 
 ```bash
 # Generate and apply migrations

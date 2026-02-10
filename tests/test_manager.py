@@ -84,7 +84,7 @@ async def test_get_client(setup_connection_manager: AsyncGenerator[Any, Any]) ->
     await SurrealDBConnectionManager.unset_connection()
     with pytest.raises(ValueError) as exc2:
         await SurrealDBConnectionManager.get_client()
-    assert str(exc2.value) == "Connection not been set."
+    assert "not configured" in str(exc2.value)
 
     # Restore connection for subsequent tests (fixture teardown will also handle this)
     SurrealDBConnectionManager.set_connection(

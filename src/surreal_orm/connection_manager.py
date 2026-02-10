@@ -1,11 +1,44 @@
-from typing import Any, Literal
+"""
+Connection manager with multi-database support.
+
+Provides a named connection registry so that different models can route
+to different SurrealDB namespaces/databases.  The ``"default"`` connection
+is used when no explicit name is given, preserving full backward
+compatibility with the single-connection API from earlier versions.
+
+Usage::
+
+    # Legacy (still works, equivalent to add_connection("default", ...))
+    SurrealDBConnectionManager.set_connection(url=..., ...)
+
+    # Multi-DB
+    SurrealDBConnectionManager.add_connection("analytics", url=..., ns=..., db=...)
+
+    class AnalyticsEvent(BaseSurrealModel):
+        model_config = SurrealConfigDict(connection="analytics")
+
+    # Context-manager override (async-safe via contextvars)
+    async with SurrealDBConnectionManager.using("analytics"):
+        events = await AnalyticsEvent.objects().all()
+"""
+
+from __future__ import annotations
+
+import contextvars
 import logging
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Literal
 
 from surreal_sdk import HTTPConnection, WebSocketConnection
 from surreal_sdk.exceptions import SurrealDBError
 from surreal_sdk.transaction import HTTPTransaction
 
+from .connection_config import ConnectionConfig
+
 logger = logging.getLogger(__name__)
+
+# Async-safe context variable for ``using()`` overrides.
+_active_connection: contextvars.ContextVar[str | None] = contextvars.ContextVar("active_connection", default=None)
 
 
 class SurrealDbConnectionError(Exception):
@@ -15,6 +48,20 @@ class SurrealDbConnectionError(Exception):
 
 
 class SurrealDBConnectionManager:
+    """Named connection registry for SurrealDB.
+
+    Stores ``ConnectionConfig`` objects keyed by name.  ``"default"`` is
+    the implicit name used by ``set_connection()`` and all legacy callers.
+    """
+
+    # --- registry ----------------------------------------------------------
+    _configs: dict[str, ConnectionConfig] = {}
+    _clients: dict[str, HTTPConnection] = {}
+    _ws_clients: dict[str, WebSocketConnection] = {}
+
+    # --- legacy class-level getters (kept in sync for backward compat) -----
+    # These mirror the "default" config so that code like
+    # ``SurrealDBConnectionManager.get_url()`` keeps working.
     __url: str | None = None
     __user: str | None = None
     __password: str | None = None
@@ -24,11 +71,114 @@ class SurrealDBConnectionManager:
     __client: HTTPConnection | None = None
     __ws_client: WebSocketConnection | None = None
 
+    # -----------------------------------------------------------------------
+    # Async context-manager (unchanged public API)
+    # -----------------------------------------------------------------------
+
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await SurrealDBConnectionManager.close_connection()
 
     async def __aenter__(self) -> HTTPConnection:
         return await SurrealDBConnectionManager.get_client()
+
+    # -----------------------------------------------------------------------
+    # Multi-DB public API
+    # -----------------------------------------------------------------------
+
+    @classmethod
+    def add_connection(
+        cls,
+        name: str,
+        *,
+        url: str,
+        user: str,
+        password: str,
+        namespace: str,
+        database: str,
+        protocol: Literal["json", "cbor"] = "cbor",
+    ) -> None:
+        """Register a named connection configuration.
+
+        Args:
+            name: Connection name (e.g. ``"default"``, ``"analytics"``).
+            url: SurrealDB URL.
+            user: Username for authentication.
+            password: Password for authentication.
+            namespace: SurrealDB namespace.
+            database: SurrealDB database.
+            protocol: ``"json"`` or ``"cbor"`` (default).
+        """
+        config = ConnectionConfig(
+            url=url,
+            user=user,
+            password=password,
+            namespace=namespace,
+            database=database,
+            protocol=protocol,
+        )
+        cls._configs[name] = config
+
+        # Keep legacy class vars in sync when touching "default"
+        if name == "default":
+            cls._sync_legacy_vars(config)
+
+    @classmethod
+    def remove_connection(cls, name: str) -> None:
+        """Remove a named connection and close its clients."""
+        cls._configs.pop(name, None)
+        client = cls._clients.pop(name, None)
+        ws_client = cls._ws_clients.pop(name, None)
+
+        if name == "default":
+            cls._clear_legacy_vars()
+
+        # Best-effort close (sync context — callers should prefer close_connection)
+        if client is not None:
+            logger.debug("Connection '%s' removed; HTTP client discarded.", name)
+        if ws_client is not None:
+            logger.debug("Connection '%s' removed; WS client discarded.", name)
+
+    @classmethod
+    def get_config(cls, name: str = "default") -> ConnectionConfig | None:
+        """Return the ``ConnectionConfig`` for *name*, or ``None``."""
+        return cls._configs.get(name)
+
+    @classmethod
+    def list_connections(cls) -> list[str]:
+        """Return the names of all registered connections."""
+        return list(cls._configs.keys())
+
+    @classmethod
+    def get_active_connection_name(cls) -> str:
+        """Return the currently active connection name.
+
+        Priority:
+        1. ``using()`` context-manager override (contextvars)
+        2. Falls back to ``"default"``
+        """
+        return _active_connection.get() or "default"
+
+    @classmethod
+    @asynccontextmanager
+    async def using(cls, name: str) -> AsyncIterator[None]:
+        """Temporarily override the active connection name.
+
+        Async-safe via :mod:`contextvars`::
+
+            async with SurrealDBConnectionManager.using("analytics"):
+                events = await AnalyticsEvent.objects().all()
+        """
+        if name not in cls._configs:
+            raise ValueError(f"Unknown connection: {name!r}. Register it with add_connection() first.")
+        token = _active_connection.set(name)
+        try:
+            yield
+        finally:
+            _active_connection.reset(token)
+
+    # -----------------------------------------------------------------------
+    # Legacy single-connection API (delegates to "default")
+    # -----------------------------------------------------------------------
 
     @classmethod
     def set_connection(
@@ -45,6 +195,8 @@ class SurrealDBConnectionManager:
         """
         Set the connection kwargs for the SurrealDB instance.
 
+        This is sugar for ``add_connection("default", ...)``.
+
         :param url: The URL of the SurrealDB instance.
         :param user: The username for authentication.
         :param password: The password for authentication.
@@ -55,15 +207,16 @@ class SurrealDBConnectionManager:
                          which properly handles string values that might be misinterpreted
                          as record links (e.g., data URLs like "data:image/png;base64,...").
         """
-        # Allow 'username' keyword to override 'user' for API flexibility
         actual_user = username if username is not None else user
-
-        cls.__url = url
-        cls.__user = actual_user
-        cls.__password = password
-        cls.__namespace = namespace
-        cls.__database = database
-        cls.__protocol = protocol
+        cls.add_connection(
+            "default",
+            url=url,
+            user=actual_user,
+            password=password,
+            namespace=namespace,
+            database=database,
+            protocol=protocol,
+        )
 
     @classmethod
     async def unset_connection(cls) -> None:
@@ -74,12 +227,9 @@ class SurrealDBConnectionManager:
         clearing the settings. Use unset_connection_sync() if you need a
         synchronous version (e.g., in atexit handlers or non-async contexts).
         """
-        cls.__url = None
-        cls.__user = None
-        cls.__password = None
-        cls.__namespace = None
-        cls.__database = None
         await cls.close_connection()
+        cls._configs.pop("default", None)
+        cls._clear_legacy_vars()
 
     @classmethod
     def unset_connection_sync(cls) -> None:
@@ -99,14 +249,10 @@ class SurrealDBConnectionManager:
         WebSocket/HTTP session may not be cleanly closed. If possible, prefer
         calling unset_connection() in an async context.
         """
-        cls.__url = None
-        cls.__user = None
-        cls.__password = None
-        cls.__namespace = None
-        cls.__database = None
-        cls.__protocol = "cbor"
-        cls.__client = None
-        cls.__ws_client = None
+        cls._configs.pop("default", None)
+        cls._clients.pop("default", None)
+        cls._ws_clients.pop("default", None)
+        cls._clear_legacy_vars()
 
     @classmethod
     def is_connection_set(cls) -> bool:
@@ -115,57 +261,60 @@ class SurrealDBConnectionManager:
 
         :return: True if the connection kwargs are set, False otherwise.
         """
-        return all([cls.__url, cls.__user, cls.__password, cls.__namespace, cls.__database])
+        return "default" in cls._configs
+
+    # -----------------------------------------------------------------------
+    # Client accessors (HTTP / WebSocket)
+    # -----------------------------------------------------------------------
 
     @classmethod
-    async def get_client(cls) -> HTTPConnection:
+    async def get_client(cls, name: str | None = None) -> HTTPConnection:
         """
         Connect to the SurrealDB instance using the custom SDK.
 
+        Args:
+            name: Connection name.  ``None`` means use the active connection
+                  (context var → ``"default"``).
+
         :return: The HTTPConnection instance.
         """
+        name = name or cls.get_active_connection_name()
 
-        if cls.__client is not None and cls.__client.is_connected:
-            return cls.__client
+        # Fast path: reuse existing connected client
+        existing = cls._clients.get(name)
+        if existing is not None and existing.is_connected:
+            return existing
 
-        if not cls.is_connection_set():
-            raise ValueError("Connection not been set.")
+        config = cls._configs.get(name)
+        if config is None:
+            raise ValueError(f"Connection {name!r} not configured. Call set_connection() or add_connection() first.")
 
-        # Establish connection
         try:
-            url = cls.get_connection_string()
-            assert url is not None  # Already validated by is_connection_set()
-            assert cls.__namespace is not None
-            assert cls.__database is not None
-            assert cls.__user is not None
-            assert cls.__password is not None
-
             _client = HTTPConnection(
-                url,
-                cls.__namespace,
-                cls.__database,
-                protocol=cls.__protocol,
+                config.url,
+                config.namespace,
+                config.database,
+                protocol=config.protocol,
             )
             await _client.connect()
-            await _client.signin(cls.__user, cls.__password)
+            await _client.signin(config.user, config.password)
 
-            cls.__client = _client
-            return cls.__client
+            cls._clients[name] = _client
+
+            # Keep legacy alias in sync
+            if name == "default":
+                cls.__client = _client
+
+            return _client
         except SurrealDBError as e:
-            logger.warning(f"Can't get connection: {e}")
-            if cls.__client is not None:  # pragma: no cover
-                await cls.__client.close()
-                cls.__client = None
+            logger.warning("Can't get connection '%s': %s", name, e)
             raise SurrealDbConnectionError(f"Can't connect to the database: {e}")
         except Exception as e:
-            logger.warning(f"Can't get connection: {e}")
-            if cls.__client is not None:  # pragma: no cover
-                await cls.__client.close()
-                cls.__client = None
+            logger.warning("Can't get connection '%s': %s", name, e)
             raise SurrealDbConnectionError("Can't connect to the database.")
 
     @classmethod
-    async def get_ws_client(cls) -> WebSocketConnection:
+    async def get_ws_client(cls, name: str | None = None) -> WebSocketConnection:
         """
         Get or create a WebSocket connection to SurrealDB.
 
@@ -176,86 +325,95 @@ class SurrealDBConnectionManager:
 
         Required for Live Queries (``QuerySet.live()``).
 
+        Args:
+            name: Connection name.  ``None`` means use the active connection.
+
         :return: The WebSocketConnection instance.
         :raises ValueError: If connection settings have not been configured.
         :raises SurrealDbConnectionError: If the WebSocket connection fails.
         """
-        if cls.__ws_client is not None and cls.__ws_client.is_connected:
-            return cls.__ws_client
+        name = name or cls.get_active_connection_name()
 
-        if not cls.is_connection_set():
-            raise ValueError("Connection not been set.")
+        existing = cls._ws_clients.get(name)
+        if existing is not None and existing.is_connected:
+            return existing
+
+        config = cls._configs.get(name)
+        if config is None:
+            raise ValueError(f"Connection {name!r} not configured. Call set_connection() or add_connection() first.")
 
         # Close stale disconnected client before creating a new one
-        if cls.__ws_client is not None:
+        stale = cls._ws_clients.pop(name, None)
+        if stale is not None:
             try:
-                await cls.__ws_client.close()
+                await stale.close()
             except Exception:
-                logger.debug("Failed to close stale WebSocket client.", exc_info=True)
-            cls.__ws_client = None
+                logger.debug("Failed to close stale WebSocket client for '%s'.", name, exc_info=True)
 
         _ws_client: WebSocketConnection | None = None
         try:
-            url = cls.get_connection_string()
-            assert url is not None
-            assert cls.__namespace is not None
-            assert cls.__database is not None
-            assert cls.__user is not None
-            assert cls.__password is not None
-
             _ws_client = WebSocketConnection(
-                url,
-                cls.__namespace,
-                cls.__database,
-                protocol=cls.__protocol,
+                config.url,
+                config.namespace,
+                config.database,
+                protocol=config.protocol,
             )
             await _ws_client.connect()
-            await _ws_client.signin(cls.__user, cls.__password)
+            await _ws_client.signin(config.user, config.password)
 
-            cls.__ws_client = _ws_client
-            return cls.__ws_client
+            cls._ws_clients[name] = _ws_client
+
+            if name == "default":
+                cls.__ws_client = _ws_client
+
+            return _ws_client
         except SurrealDBError as e:
-            logger.warning(f"Can't get WebSocket connection: {e}")
+            logger.warning("Can't get WebSocket connection '%s': %s", name, e)
             if _ws_client is not None:  # pragma: no cover
                 await _ws_client.close()
             raise SurrealDbConnectionError(f"Can't connect to the database via WebSocket: {e}")
         except Exception as e:
-            logger.warning(f"Can't get WebSocket connection: {e}")
+            logger.warning("Can't get WebSocket connection '%s': %s", name, e)
             if _ws_client is not None:  # pragma: no cover
                 await _ws_client.close()
             raise SurrealDbConnectionError("Can't connect to the database via WebSocket.")
 
     @classmethod
-    async def close_connection(cls) -> None:
+    async def close_connection(cls, name: str | None = None) -> None:
         """
-        Close all connections to the SurrealDB instance (HTTP and WebSocket).
+        Close connections to SurrealDB.
+
+        Args:
+            name: Connection name to close.  ``None`` closes **all** connections.
         """
-        # Close WebSocket connection if active
-        if cls.__ws_client is not None:
-            try:
-                await cls.__ws_client.close()
-            except Exception:
-                logger.warning("Failed to close WebSocket connection cleanly.", exc_info=True)
+        if name is None:
+            # Close all connections
+            names = list(cls._clients.keys()) + list(cls._ws_clients.keys())
+            for n in set(names):
+                await cls._close_single(n)
+            cls._clients.clear()
+            cls._ws_clients.clear()
+            cls.__client = None
             cls.__ws_client = None
+        else:
+            await cls._close_single(name)
+            cls._clients.pop(name, None)
+            cls._ws_clients.pop(name, None)
+            if name == "default":
+                cls.__client = None
+                cls.__ws_client = None
 
-        # Close HTTP connection
-        if cls.__client is None:
-            return
-
-        try:
-            await cls.__client.close()
-        except NotImplementedError:
-            # close() is not implemented for HTTP connections in surrealdb SDK 1.0.8
-            pass
-        cls.__client = None
+    # -----------------------------------------------------------------------
+    # Convenience helpers (unchanged public API)
+    # -----------------------------------------------------------------------
 
     @classmethod
     async def reconnect(cls) -> HTTPConnection | None:
         """
         Reconnect to the SurrealDB instance.
         """
-        await cls.close_connection()
-        return await cls.get_client()
+        await cls.close_connection("default")
+        return await cls.get_client("default")
 
     @classmethod
     async def validate_connection(cls) -> bool:
@@ -264,7 +422,6 @@ class SurrealDBConnectionManager:
 
         :return: True if the connection is valid, False otherwise.
         """
-        # Valider la connexion
         try:
             await cls.reconnect()
             return True
@@ -305,11 +462,21 @@ class SurrealDBConnectionManager:
         if not cls.is_connection_set():
             raise ValueError("You can't change the URL when the others setting are not already set.")
 
-        cls.__url = url
+        config = cls._configs["default"]
+        cls.add_connection(
+            "default",
+            url=url,
+            user=config.user,
+            password=config.password,
+            namespace=config.namespace,
+            database=config.database,
+            protocol=config.protocol,
+        )
 
         if reconnect:
             if not await cls.validate_connection():  # pragma: no cover
-                cls.__url = None
+                cls._configs.pop("default", None)
+                cls._clear_legacy_vars()
                 return False
 
         return True
@@ -325,11 +492,21 @@ class SurrealDBConnectionManager:
         if not cls.is_connection_set():
             raise ValueError("You can't change the User when the others setting are not already set.")
 
-        cls.__user = user
+        config = cls._configs["default"]
+        cls.add_connection(
+            "default",
+            url=config.url,
+            user=user,
+            password=config.password,
+            namespace=config.namespace,
+            database=config.database,
+            protocol=config.protocol,
+        )
 
         if reconnect:
             if not await cls.validate_connection():  # pragma: no cover
-                cls.__user = None
+                cls._configs.pop("default", None)
+                cls._clear_legacy_vars()
                 return False
 
         return True
@@ -345,11 +522,21 @@ class SurrealDBConnectionManager:
         if not cls.is_connection_set():
             raise ValueError("You can't change the password when the others setting are not already set.")
 
-        cls.__password = password
+        config = cls._configs["default"]
+        cls.add_connection(
+            "default",
+            url=config.url,
+            user=config.user,
+            password=password,
+            namespace=config.namespace,
+            database=config.database,
+            protocol=config.protocol,
+        )
 
         if reconnect:
             if not await cls.validate_connection():  # pragma: no cover
-                cls.__password = None
+                cls._configs.pop("default", None)
+                cls._clear_legacy_vars()
                 return False
 
         return True
@@ -365,11 +552,21 @@ class SurrealDBConnectionManager:
         if not cls.is_connection_set():
             raise ValueError("You can't change the namespace when the others setting are not already set.")
 
-        cls.__namespace = namespace
+        config = cls._configs["default"]
+        cls.add_connection(
+            "default",
+            url=config.url,
+            user=config.user,
+            password=config.password,
+            namespace=namespace,
+            database=config.database,
+            protocol=config.protocol,
+        )
 
         if reconnect:
             if not await cls.validate_connection():  # pragma: no cover
-                cls.__namespace = None
+                cls._configs.pop("default", None)
+                cls._clear_legacy_vars()
                 return False
 
         return True
@@ -384,11 +581,21 @@ class SurrealDBConnectionManager:
         if not cls.is_connection_set():
             raise ValueError("You can't change the database when the others setting are not already set.")
 
-        cls.__database = database
+        config = cls._configs["default"]
+        cls.add_connection(
+            "default",
+            url=config.url,
+            user=config.user,
+            password=config.password,
+            namespace=config.namespace,
+            database=database,
+            protocol=config.protocol,
+        )
 
         if reconnect:
             if not await cls.validate_connection():  # pragma: no cover
-                cls.__database = None
+                cls._configs.pop("default", None)
+                cls._clear_legacy_vars()
                 return False
 
         return True
@@ -509,3 +716,46 @@ class SurrealDBConnectionManager:
         """
         client = await cls.get_client()
         return client.transaction()
+
+    # -----------------------------------------------------------------------
+    # Internal helpers
+    # -----------------------------------------------------------------------
+
+    @classmethod
+    def _sync_legacy_vars(cls, config: ConnectionConfig) -> None:
+        """Keep the legacy class-level variables in sync with the default config."""
+        cls.__url = config.url
+        cls.__user = config.user
+        cls.__password = config.password
+        cls.__namespace = config.namespace
+        cls.__database = config.database
+        cls.__protocol = config.protocol
+
+    @classmethod
+    def _clear_legacy_vars(cls) -> None:
+        """Reset all legacy class-level variables."""
+        cls.__url = None
+        cls.__user = None
+        cls.__password = None
+        cls.__namespace = None
+        cls.__database = None
+        cls.__protocol = "cbor"
+        cls.__client = None
+        cls.__ws_client = None
+
+    @classmethod
+    async def _close_single(cls, name: str) -> None:
+        """Close HTTP and WS clients for a single named connection."""
+        ws = cls._ws_clients.get(name)
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                logger.warning("Failed to close WebSocket connection '%s' cleanly.", name, exc_info=True)
+
+        http = cls._clients.get(name)
+        if http is not None:
+            try:
+                await http.close()
+            except NotImplementedError:
+                pass

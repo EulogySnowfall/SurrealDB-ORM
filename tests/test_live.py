@@ -514,8 +514,14 @@ class TestConnectionManagerWebSocket:
         """get_ws_client() raises ValueError without set_connection()."""
         from src.surreal_orm.connection_manager import SurrealDBConnectionManager
 
-        with pytest.raises(ValueError, match="Connection not been set"):
-            asyncio.run(SurrealDBConnectionManager.get_ws_client())
+        # Save and clear the registry to test the error path
+        saved = dict(SurrealDBConnectionManager._configs)
+        SurrealDBConnectionManager._configs.clear()
+        try:
+            with pytest.raises(ValueError, match="not configured"):
+                asyncio.run(SurrealDBConnectionManager.get_ws_client())
+        finally:
+            SurrealDBConnectionManager._configs.update(saved)
 
 
 # ==================== Version ====================
@@ -525,16 +531,16 @@ class TestVersion:
     """Verify version was bumped."""
 
     def test_orm_version(self) -> None:
-        """ORM version is 0.9.0."""
+        """ORM version is 0.10.0."""
         from src.surreal_orm import __version__
 
-        assert __version__ == "0.9.0"
+        assert __version__ == "0.10.0"
 
     def test_sdk_version(self) -> None:
-        """SDK version is 0.9.0."""
+        """SDK version is 0.10.0."""
         from src.surreal_sdk import __version__
 
-        assert __version__ == "0.9.0"
+        assert __version__ == "0.10.0"
 
 
 # ==================== LiveModelStream Edge Cases ====================

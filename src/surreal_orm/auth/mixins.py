@@ -48,6 +48,11 @@ class AuthenticatedUserMixin:
             email="test@example.com", password="secret"
         )
 
+    # Stub for mypy — overridden by BaseSurrealModel.get_connection_name()
+    @classmethod
+    def get_connection_name(cls) -> str:  # pragma: no cover
+        return "default"
+
         # Validate a token and get the record ID
         record_id = await User.validate_token(token)
         # "users:johndoe"
@@ -151,7 +156,7 @@ class AuthenticatedUserMixin:
             await client.close()
 
         # Fetch the created user via the root singleton (guaranteed access)
-        root_client = await SurrealDBConnectionManager.get_client()
+        root_client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())  # type: ignore[attr-defined]
 
         identifier_field = config.get("identifier_field", "email")
         identifier_value = credentials.get(identifier_field)
@@ -235,7 +240,7 @@ class AuthenticatedUserMixin:
             await client.close()
 
         # Fetch user via root singleton (guaranteed access)
-        root_client = await SurrealDBConnectionManager.get_client()
+        root_client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())  # type: ignore[attr-defined]
 
         identifier_field = config.get("identifier_field", "email")
         identifier_value = credentials.get(identifier_field)
@@ -306,7 +311,7 @@ class AuthenticatedUserMixin:
         config = getattr(cls, "model_config", {})
         table_name = config.get("table_name") or cls.__name__
 
-        root_client = await SurrealDBConnectionManager.get_client()
+        root_client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())  # type: ignore[attr-defined]
         result = await root_client.query(
             f"SELECT * FROM {table_name} WHERE id = type::thing($record_id)",
             {"record_id": record_id},
@@ -399,7 +404,7 @@ class AuthenticatedUserMixin:
             raise SurrealDbError("Invalid current password") from None
 
         # Update the password via root singleton (needs root permissions)
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())  # type: ignore[attr-defined]
         table_name = config.get("table_name") or cls.__name__
 
         # Get encryption algorithm
