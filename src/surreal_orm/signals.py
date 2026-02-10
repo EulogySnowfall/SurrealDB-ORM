@@ -694,6 +694,38 @@ Example:
                 await log_change(instance.id, field, old_val, new_val)
 """
 
+# =============================================================================
+# Live Change Signal
+# =============================================================================
+
+post_live_change = Signal("post_live_change")
+"""
+Sent when a live query event is received from the database.
+
+Unlike post_save/post_update/post_delete which fire from local CRUD operations,
+this signal fires for *external* changes detected via Live Queries. This allows
+applications to react to changes made by other clients or services.
+
+Arguments sent with this signal:
+    sender: The model class.
+    instance: The model instance constructed from the change data.
+    action: LiveAction (CREATE, UPDATE, or DELETE).
+    record_id: The affected record ID string (e.g., "users:abc123").
+    changed_fields: List of changed field names (only in DIFF mode).
+
+Example:
+    @post_live_change.connect(Player)
+    async def on_player_live_change(sender, instance, action, **kwargs):
+        from surreal_sdk.streaming.live_select import LiveAction
+
+        if action == LiveAction.CREATE:
+            await ws_manager.broadcast({"type": "player_joined", "name": instance.name})
+        elif action == LiveAction.UPDATE:
+            await ws_manager.broadcast({"type": "player_updated", "id": instance.id})
+        elif action == LiveAction.DELETE:
+            await ws_manager.broadcast({"type": "player_left", "id": kwargs["record_id"]})
+"""
+
 
 __all__ = [
     # Regular signals
@@ -705,6 +737,8 @@ __all__ = [
     "post_delete",
     "pre_update",
     "post_update",
+    # Live change signal
+    "post_live_change",
     # Around signals (generator-based)
     "AroundSignal",
     "AroundHandler",

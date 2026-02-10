@@ -6,8 +6,8 @@ Only the **latest released version** receives security updates until v1.0.0:
 
 | Version   | Supported          |
 | --------- | ------------------ |
-| **0.8.x** | :white_check_mark: |
-| < 0.8.x   | :x:                |
+| **0.9.x** | :white_check_mark: |
+| < 0.9.x   | :x:                |
 
 ## Versioning Scheme
 
@@ -16,8 +16,8 @@ We follow a 3-digit versioning scheme: **X.Y.Z**
 | Digit | Purpose                       | Example        |
 | ----- | ----------------------------- | -------------- |
 | X     | LTS / breaking changes        | 1.0.0          |
-| Y     | Feature updates               | 0.7.0 -> 0.8.0 |
-| Z     | Security & dependency patches | 0.7.0 -> 0.7.1 |
+| Y     | Feature updates               | 0.8.0 -> 0.9.0 |
+| Z     | Security & dependency patches | 0.9.0 -> 0.9.1 |
 
 Security patches automatically bump the **patch (Z)** digit via CI workflows.
 

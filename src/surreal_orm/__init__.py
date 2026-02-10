@@ -41,6 +41,7 @@ from .aggregations import Aggregation, Count, Sum, Avg, Min, Max
 from .q import Q
 from .surreal_function import SurrealFunc
 from .utils import retry_on_conflict
+from .live import LiveModelStream, ModelChangeEvent, ChangeModelStream
 from .signals import (
     Signal,
     pre_save,
@@ -49,12 +50,16 @@ from .signals import (
     post_delete,
     pre_update,
     post_update,
+    post_live_change,
     # Around signals (generator-based middleware pattern)
     AroundSignal,
     around_save,
     around_delete,
     around_update,
 )
+
+# Re-export LiveAction from SDK for convenience
+from surreal_sdk.streaming.live_select import LiveAction
 
 __all__ = [
     # Connection
@@ -103,15 +108,21 @@ __all__ = [
     "post_delete",
     "pre_update",
     "post_update",
+    "post_live_change",
     # Around Signals (generator-based)
     "AroundSignal",
     "around_save",
     "around_delete",
     "around_update",
+    # Live / Real-time
+    "LiveModelStream",
+    "ModelChangeEvent",
+    "ChangeModelStream",
+    "LiveAction",
     # Server-side functions
     "SurrealFunc",
     # Utilities
     "retry_on_conflict",
 ]
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"

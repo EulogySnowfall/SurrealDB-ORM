@@ -6,25 +6,25 @@
 
 ## Version History
 
-| Version     | Status       | Focus                                                       |
-| ----------- | ------------ | ----------------------------------------------------------- |
-| 0.1.x       | Released     | Basic ORM (Models, QuerySet, CRUD)                          |
-| 0.2.x       | Released     | Custom SDK, Migrations, JWT Auth, CLI                       |
-| 0.3.0       | Released     | ORM Transactions + Aggregations                             |
-| 0.3.1       | Released     | Bulk Operations + Bug Fixes                                 |
-| 0.4.0       | Released     | Relations & Graph Traversal                                 |
-| 0.5.0       | Released     | SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls   |
-| 0.5.1       | Released     | Security Workflows (Dependabot, SurrealDB monitoring)       |
-| 0.5.2       | Released     | Bug Fixes & FieldType Improvements                          |
-| **0.5.3**   | **Released** | **ORM Improvements: Upsert, server_fields, merge() fix**    |
-| **0.5.5.1** | **Released** | **Critical Bug Fixes: ID escaping, CBOR HTTP, get_related** |
-| **0.5.7**   | **Released** | **Django-style Model Signals**                              |
-| **0.5.8**   | **Released** | **Around Signals (Generator-based middleware)**             |
-| **0.5.9**   | **Released** | **Atomic Array Ops, Relation Direction, Array Filtering**   |
-| **0.6.0**   | **Released** | **Q Objects, Parameterized Filters, SurrealFunc**           |
-| **0.7.0**   | **Released** | **Performance & DX: refresh, call_function, FETCH, extras** |
-| **0.8.0**   | **Released** | **Auth Module Fixes + Computed Fields**                     |
-| 0.9.x       | Planned      | ORM Live Models                                             |
+| Version | Status   | Focus                                                     |
+| ------- | -------- | --------------------------------------------------------- |
+| 0.1.x   | Released | Basic ORM (Models, QuerySet, CRUD)                        |
+| 0.2.x   | Released | Custom SDK, Migrations, JWT Auth, CLI                     |
+| 0.3.0   | Released | ORM Transactions + Aggregations                           |
+| 0.3.1   | Released | Bulk Operations + Bug Fixes                               |
+| 0.4.0   | Released | Relations & Graph Traversal                               |
+| 0.5.0   | Released | SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls |
+| 0.5.1   | Released | Security Workflows (Dependabot, SurrealDB monitoring)     |
+| 0.5.2   | Released | Bug Fixes & FieldType Improvements                        |
+| 0.5.3   | Released | ORM Improvements: Upsert, server_fields, merge() fix     |
+| 0.5.5.1 | Released | Critical Bug Fixes: ID escaping, CBOR HTTP, get_related   |
+| 0.5.7   | Released | Django-style Model Signals                                |
+| 0.5.8   | Released | Around Signals (Generator-based middleware)               |
+| 0.5.9   | Released | Atomic Array Ops, Relation Direction, Array Filtering     |
+| 0.6.0   | Released | Q Objects, Parameterized Filters, SurrealFunc             |
+| 0.7.0   | Released | Performance & DX: refresh, call_function, FETCH, extras   |
+| 0.8.0   | Released | Auth Module Fixes + Computed Fields                       |
+| 0.9.0   | Released | ORM Live Models + Change Feed Integration                 |
 
 ---
 
@@ -662,36 +662,83 @@ class User(BaseSurrealModel):
 
 ---
 
-## v0.9.0 - ORM Real-time Features (Planned)
+## v0.9.0 - ORM Real-time Features (Released)
 
 **Goal:** Live model synchronization and event-driven architecture at the ORM level.
 
+**Status:** Implemented and released.
+
 ### Live Models
+
+ORM-level live query subscriptions that yield typed Pydantic model instances
+instead of raw dicts. Uses WebSocket connections (created lazily by the
+connection manager).
 
 ```python
 from surreal_orm import LiveAction
 
-# Async iterator for model changes
-async for event in User.objects().filter(role="admin").live():
-    if event.action == LiveAction.CREATE:
-        print(f"New admin: {event.instance.name}")
-    elif event.action == LiveAction.UPDATE:
-        print(f"Admin updated: {event.instance}")
-    elif event.action == LiveAction.DELETE:
-        print(f"Admin removed: {event.instance.id}")
+# Async context manager + iterator for model changes
+async with User.objects().filter(role="admin").live() as stream:
+    async for event in stream:
+        match event.action:
+            case LiveAction.CREATE:
+                print(f"New admin: {event.instance.name}")
+            case LiveAction.UPDATE:
+                print(f"Admin updated: {event.instance}")
+            case LiveAction.DELETE:
+                print(f"Admin removed: {event.record_id}")
 ```
+
+**Features:**
+- `ModelChangeEvent` with typed `instance: T`, `action`, `record_id`, `changed_fields`
+- `LiveModelStream` wraps SDK `LiveSelectStream` with automatic `Model.from_db()` conversion
+- `auto_resubscribe=True` for seamless WebSocket reconnect recovery
+- `diff=True` for receiving only changed fields
+- `on_reconnect` callback support
+- Full QuerySet filter integration (WHERE clause + parameterized variables)
 
 ### Change Feed Integration
 
+HTTP-based change data capture for event-driven microservices. Stateless and
+resumable with cursor tracking.
+
 ```python
 # For event-driven microservices
-async for change in User.objects().changes(since="2026-01-01"):
-    event = {
-        "type": f"user.{change.action.lower()}",
-        "data": change.record,
-        "timestamp": change.timestamp,
-    }
-    await publish_to_queue(event)
+async for event in User.objects().changes(since="2026-01-01"):
+    await publish_to_queue({
+        "type": f"user.{event.action.value.lower()}",
+        "data": event.raw,
+    })
+```
+
+**Features:**
+- `ChangeModelStream` wraps SDK `ChangeFeedStream` with model conversion
+- Cursor tracking via `.cursor` property for resumability
+- Configurable `poll_interval` and `batch_size`
+- Works over HTTP (no WebSocket required)
+
+### post_live_change Signal
+
+New signal for reacting to external database changes detected via Live Queries:
+
+```python
+from surreal_orm import post_live_change, LiveAction
+
+@post_live_change.connect(Player)
+async def on_player_change(sender, instance, action, record_id, **kwargs):
+    if action == LiveAction.CREATE:
+        await ws_manager.broadcast({"type": "player_joined", "name": instance.name})
+```
+
+### WebSocket Connection Manager
+
+`SurrealDBConnectionManager` now manages an optional WebSocket connection
+alongside the existing HTTP connection:
+
+```python
+# WebSocket connection is created lazily on first .live() call
+# Uses same URL/credentials as HTTP (http → ws auto-conversion)
+ws_conn = await SurrealDBConnectionManager.get_ws_client()
 ```
 
 ---
@@ -780,7 +827,10 @@ users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
 | Auth: authenticate/validate  | 0.8.0   | Medium   | Done    | SDK authenticate |
 | SDK: authenticate() method   | 0.8.0   | Medium   | Done    | -                |
 | Computed Fields              | 0.8.0   | Medium   | Done    | SDK functions    |
-| ORM Live Models              | 0.9.x   | Medium   | Planned | SDK live queries |
+| ORM Live Models              | 0.9.0   | Medium   | Done    | SDK live queries  |
+| Change Feed ORM Integration  | 0.9.0   | Medium   | Done    | SDK change feeds  |
+| post_live_change signal      | 0.9.0   | Low      | Done    | Live Models       |
+| WebSocket ConnectionManager  | 0.9.0   | Medium   | Done    | SDK WebSocket     |
 
 ---
 
