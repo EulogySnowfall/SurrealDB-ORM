@@ -245,13 +245,25 @@ class WebSocketConnection(BaseSurrealConnection):
                     future.set_result(response)
                 return
 
-        # Check if this is a live query notification
+        # Check if this is a live query notification.
+        # SurrealDB may send notifications in two formats:
+        #   1. Top-level: {"action": "CREATE", "id": <uuid>, "result": {...}}
+        #   2. Wrapped:   {"result": {"action": "CREATE", "id": <uuid>, "result": {...}}}
+        notification = None
         if "action" in message:
-            live_id = message.get("id")
+            notification = message
+        elif isinstance(message.get("result"), dict) and "action" in message["result"]:
+            notification = message["result"]
+
+        if notification is not None:
+            live_id = notification.get("id")
+            # CBOR returns UUID objects; callbacks are keyed by str
+            if live_id is not None:
+                live_id = str(live_id)
             if live_id and live_id in self._live_callbacks:
                 callback = self._live_callbacks[live_id]
                 # Track task for proper cleanup on connection close
-                task = asyncio.create_task(callback(message))
+                task = asyncio.create_task(callback(notification))
                 self._callback_tasks.add(task)
                 task.add_done_callback(self._callback_tasks.discard)
 
@@ -308,16 +320,18 @@ class WebSocketConnection(BaseSurrealConnection):
 
     async def _resubscribe_one(self, params: "LiveSubscriptionParams") -> str:
         """Resubscribe a single live query."""
-        # Set session variables for parameters
-        for key, value in params.params.items():
-            await self.let(key, value)
-
         # Build query
         sql = f"LIVE SELECT * FROM {params.table}"
         if params.where:
             sql += f" WHERE {params.where}"
         if params.diff:
             sql += " DIFF"
+
+        # Inline params (LIVE SELECT does not support session variables)
+        if params.params:
+            from ..streaming.live_select import LiveSelectStream
+
+            sql = LiveSelectStream._inline_params_static(sql, params.params)
 
         response = await self.query(sql)
 

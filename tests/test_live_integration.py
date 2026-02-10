@@ -104,10 +104,9 @@ async def setup_live_integration() -> AsyncGenerator[None, Any]:
 @pytest.mark.integration
 async def test_get_ws_client_returns_connection() -> None:
     """get_ws_client() returns a connected WebSocketConnection."""
-    from src.surreal_sdk.connection.websocket import WebSocketConnection
-
     ws = await SurrealDBConnectionManager.get_ws_client()
-    assert isinstance(ws, WebSocketConnection)
+    # Use class name check to avoid import-path mismatch (src.surreal_sdk vs surreal_sdk)
+    assert type(ws).__name__ == "WebSocketConnection"
     assert ws.is_connected
 
 
