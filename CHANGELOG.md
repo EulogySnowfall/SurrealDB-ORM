@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-02-10
+
+### Added
+
+- **Schema Introspection** - Generate Python model code from an existing SurrealDB database
+  - `generate_models_from_db()` public API to introspect live DB and produce Python source
+  - `schema_diff()` to compare Python models against live database schema
+  - `DatabaseIntrospector` parses `INFO FOR DB` / `INFO FOR TABLE` results
+  - `ModelCodeGenerator` converts `SchemaState` to Python model source code
+  - `define_parser` module with `parse_define_table()`, `parse_define_field()`, `parse_define_index()`, `parse_define_access()`
+  - Handles generic types (`array<string>`, `option<int>`, `record<users>`), VALUE/ASSERT expressions, encrypted fields, FLEXIBLE, READONLY
+  - CLI: `surreal-orm inspectdb` command to generate models from database
+  - CLI: `surreal-orm schemadiff` command to compare models against live schema
+
+- **Multi-Database Support** - Named connection registry for routing models to different databases
+  - `ConnectionConfig` frozen dataclass for immutable connection settings
+  - `SurrealDBConnectionManager.add_connection("name", ...)` to register named connections
+  - `SurrealDBConnectionManager.using("name")` async context manager (async-safe via `contextvars`)
+  - `SurrealConfigDict(connection="name")` for model-level connection routing
+  - `BaseSurrealModel.get_connection_name()` with priority: context var > model config > "default"
+  - All `get_client()` / `get_ws_client()` calls now route through the named connection
+  - Full backward compatibility: `set_connection()` delegates to `add_connection("default", ...)`
+  - `list_connections()`, `get_config()`, `remove_connection()` registry management methods
+
+### Changed
+
+- `SurrealDBConnectionManager` refactored from single-connection class vars to named registry
+- `get_client()` and `get_ws_client()` now accept optional `name` parameter
+- `close_connection()` now accepts optional `name` parameter (None closes all)
+- Error messages updated for named connections
+- Bumped version to 0.10.0
+
+---
+
 ## [0.9.0] - 2026-02-09
 
 ### Added

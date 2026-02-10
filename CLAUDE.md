@@ -10,7 +10,51 @@
 
 ---
 
-## Current Version: 0.9.0 (Alpha)
+## Current Version: 0.10.0 (Alpha)
+
+### What's New in 0.10.0
+
+- **Schema Introspection** — Generate Python model code from an existing SurrealDB database. Parses `INFO FOR DB` / `INFO FOR TABLE` results and produces fully-typed Pydantic model source code.
+
+  ```python
+  from surreal_orm import generate_models_from_db, schema_diff
+
+  # Generate Python model code from existing database
+  code = await generate_models_from_db(output_path="models.py")
+
+  # Compare Python models against live database schema
+  operations = await schema_diff(models=[User, Order, Product])
+  ```
+
+  - **`DatabaseIntrospector`** — Parses `INFO FOR DB` / `INFO FOR TABLE` into `SchemaState`
+  - **`ModelCodeGenerator`** — Converts `SchemaState` to Python model source code
+  - **`define_parser`** module — Parses DEFINE TABLE, FIELD, INDEX, ACCESS statements
+  - Handles generic types (`array<string>`, `option<int>`, `record<users>`), VALUE/ASSERT expressions, encrypted fields, FLEXIBLE, READONLY
+  - **CLI:** `surreal-orm inspectdb` and `surreal-orm schemadiff` commands
+
+- **Multi-Database Support** — Named connection registry for routing models to different databases.
+
+  ```python
+  # Register named connections
+  SurrealDBConnectionManager.add_connection("default", url=..., ns=..., db=...)
+  SurrealDBConnectionManager.add_connection("analytics", url=..., ns=..., db=...)
+
+  # Model-level routing
+  class AnalyticsEvent(BaseSurrealModel):
+      model_config = SurrealConfigDict(connection="analytics")
+
+  # Context manager override (async-safe via contextvars)
+  async with SurrealDBConnectionManager.using("analytics"):
+      events = await AnalyticsEvent.objects().all()
+  ```
+
+  - **`ConnectionConfig`** — Frozen dataclass for immutable connection settings
+  - **`add_connection("name", ...)`** — Register named connections
+  - **`using("name")`** — Async context manager override (async-safe via `contextvars`)
+  - **`SurrealConfigDict(connection="name")`** — Model-level connection routing
+  - **`get_connection_name()`** — Priority: context var > model config > `"default"`
+  - Full backward compatibility: `set_connection()` delegates to `add_connection("default", ...)`
+  - `list_connections()`, `get_config()`, `remove_connection()` registry management
 
 ### What's New in 0.9.0
 
@@ -726,7 +770,8 @@
 src/
 ├── surreal_orm/                 # Django-style ORM
 │   ├── __init__.py              # Public API exports
-│   ├── connection_manager.py    # Connection singleton (uses surreal_sdk)
+│   ├── connection_config.py     # ConnectionConfig frozen dataclass
+│   ├── connection_manager.py    # Named connection registry (uses surreal_sdk)
 │   ├── model_base.py            # BaseSurrealModel with CRUD + relation methods
 │   ├── query_set.py             # Fluent query builder + graph traversal
 │   ├── q.py                     # Q objects for complex OR/AND/NOT queries
@@ -738,11 +783,15 @@ src/
 │   │   ├── encrypted.py         # Encrypted field type
 │   │   └── relation.py          # ForeignKey, ManyToMany, Relation
 │   ├── types.py                 # TableType enum, SurrealConfigDict
+│   ├── introspection.py         # Public API: generate_models_from_db, schema_diff
 │   └── migrations/              # Migration system
 │       ├── operations.py        # CreateTable, AddField, etc.
 │       ├── state.py             # SchemaState with diff algorithm
 │       ├── generator.py         # Migration file generator
-│       └── executor.py          # Migration executor
+│       ├── executor.py          # Migration executor
+│       ├── define_parser.py     # Parse DEFINE TABLE/FIELD/INDEX/ACCESS
+│       ├── db_introspector.py   # Reverse introspection (DB → SchemaState)
+│       └── model_generator.py   # SchemaState → Python model source code
 │
 └── surreal_sdk/                 # Custom SDK (zero external dependencies)
     ├── __init__.py              # SurrealDB.http() / .ws() / .pool()
@@ -1096,10 +1145,25 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `post_live_change` signal for external database change events
 - [x] `SurrealDBConnectionManager.get_ws_client()` — Lazy WebSocket connection management
 
-### v0.10.x (Next) - Advanced Features
+### Completed (0.10.0) - Schema Introspection & Multi-DB
 
-- [ ] Schema introspection (generate models from existing DB)
-- [ ] Multi-database support
+- [x] `generate_models_from_db()` — Generate Python model code from existing DB
+- [x] `schema_diff()` — Compare Python models against live database schema
+- [x] `DatabaseIntrospector` — Parses `INFO FOR DB` / `INFO FOR TABLE` into `SchemaState`
+- [x] `ModelCodeGenerator` — Converts `SchemaState` to Python model source code
+- [x] `define_parser` module — Parses DEFINE TABLE, FIELD, INDEX, ACCESS statements
+- [x] CLI: `surreal-orm inspectdb` and `surreal-orm schemadiff`
+- [x] `ConnectionConfig` frozen dataclass for named connections
+- [x] `add_connection()`, `using()`, `list_connections()`, `get_config()`, `remove_connection()`
+- [x] `SurrealConfigDict(connection="name")` model-level routing
+- [x] `get_connection_name()` with priority: context var > model config > "default"
+- [x] All query paths route through named connection (model, queryset, live, auth, relations)
+
+### v0.11.x (Next) - Advanced Queries & Caching
+
+- [ ] Subqueries
+- [ ] Query cache
+- [ ] Prefetch objects
 
 ---
 

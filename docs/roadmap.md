@@ -25,7 +25,7 @@
 | 0.7.0   | Released | Performance & DX: refresh, call_function, FETCH, extras   |
 | 0.8.0   | Released | Auth Module Fixes + Computed Fields                       |
 | 0.9.0   | Released | ORM Live Models + Change Feed Integration                 |
-| 0.10.0  | Planned  | Schema Introspection & Multi-DB                           |
+| 0.10.0  | Released | Schema Introspection & Multi-DB                           |
 | 0.11.0  | Planned  | Advanced Queries & Caching                                |
 | 0.12.0  | Planned  | Testing & Developer Experience                            |
 
@@ -748,61 +748,77 @@ ws_conn = await SurrealDBConnectionManager.get_ws_client()
 
 ---
 
-## v0.10.0 - Schema Introspection & Multi-DB (Planned)
+## v0.10.0 - Schema Introspection & Multi-DB (Released)
 
-**Goal:** Auto-detect existing schemas and support multiple database routing.
+**Goal:** Generate Python model code from existing databases and route models to different databases.
+
+**Status:** Implemented and released.
 
 ### Schema Introspection
 
-Generate ORM model files from an existing SurrealDB schema:
+Generate ORM model files from an existing SurrealDB database by parsing `INFO FOR DB` / `INFO FOR TABLE` results:
 
 ```python
-from surreal_orm.introspection import generate_models_from_db
+from surreal_orm import generate_models_from_db, schema_diff
 
-# Generate models from existing database
-await generate_models_from_db(
-    output_dir="models/",
-    tables=["users", "orders", "products"],
-)
+# Generate Python model code from existing database
+code = await generate_models_from_db(output_path="models.py")
 
-# Diff existing models against live schema
-diff = await schema_diff(models=[User, Order, Product])
-for change in diff:
-    print(change)  # e.g. "Field 'email' missing in model User"
+# Compare Python models against live database schema
+operations = await schema_diff(models=[User, Order, Product])
+for op in operations:
+    print(op)  # Migration operations needed to sync
 ```
+
+**CLI commands:**
+
+```bash
+# Generate models from existing database
+surreal-orm inspectdb -u http://localhost:8000 -n myns -d mydb -o models.py
+
+# Compare models against live schema
+surreal-orm schemadiff -u http://localhost:8000 -n myns -d mydb
+```
+
+**Implementation details:**
+
+- `DatabaseIntrospector` — Parses `INFO FOR DB` / `INFO FOR TABLE` results into `SchemaState`
+- `ModelCodeGenerator` — Converts `SchemaState` to Python model source code
+- `define_parser` module — Parses DEFINE TABLE, FIELD, INDEX, ACCESS statements
+- Handles generic types (`array<string>`, `option<int>`, `record<users>`), VALUE/ASSERT expressions, encrypted fields, FLEXIBLE, READONLY
 
 ### Multi-Database Support
 
-Route models to different namespaces/databases:
+Named connection registry for routing models to different databases:
 
 ```python
-class User(BaseSurrealModel):
-    model_config = SurrealConfigDict(
-        database="users_db",
-        namespace="production",
-    )
+from surreal_orm import SurrealDBConnectionManager, ConnectionConfig
 
+# Register named connections
+SurrealDBConnectionManager.add_connection("default", url=..., ns=..., db=...)
+SurrealDBConnectionManager.add_connection("analytics", url=..., ns=..., db=...)
+
+# Model-level routing via config
 class AnalyticsEvent(BaseSurrealModel):
-    model_config = SurrealConfigDict(
-        database="analytics_db",
-    )
+    model_config = SurrealConfigDict(connection="analytics")
 
-# Runtime database switching
-async with SurrealDBConnectionManager.using("analytics_db"):
-    stats = await AnalyticsEvent.objects().all()
+# Runtime context manager override (async-safe via contextvars)
+async with SurrealDBConnectionManager.using("analytics"):
+    events = await AnalyticsEvent.objects().all()
+
+# Registry management
+SurrealDBConnectionManager.list_connections()     # ["default", "analytics"]
+SurrealDBConnectionManager.get_config("analytics")  # ConnectionConfig(...)
+SurrealDBConnectionManager.remove_connection("analytics")
 ```
 
-### Query Optimization
+**Key design decisions:**
 
-```python
-# Explain query plan
-plan = await User.objects().filter(age__gt=18).explain()
-print(plan.indexes_used)
-print(plan.estimated_cost)
-
-# Query hints
-users = await User.objects().filter(age__gt=18).using_index("idx_age").all()
-```
+- `ConnectionConfig` — Frozen dataclass for immutable connection settings
+- `contextvars.ContextVar` for async-safe `using()` context manager
+- Full backward compatibility: `set_connection()` delegates to `add_connection("default", ...)`
+- Connection name priority: context var > model config > `"default"`
+- All `get_client()` / `get_ws_client()` calls route through the named connection
 
 ---
 
@@ -983,9 +999,8 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 | Change Feed ORM Integration  | 0.9.0   | Medium   | Done   | SDK change feeds |
 | post_live_change signal      | 0.9.0   | Low      | Done   | Live Models      |
 | WebSocket ConnectionManager  | 0.9.0   | Medium   | Done   | SDK WebSocket    |
-| Schema Introspection         | 0.10.0  | High     | -      | Migrations       |
-| Multi-Database Routing       | 0.10.0  | High     | -      | ConnectionManager|
-| Query Explain / Optimization | 0.10.0  | Medium   | -      | QuerySet         |
+| Schema Introspection         | 0.10.0  | High     | Done   | Migrations       |
+| Multi-Database Routing       | 0.10.0  | High     | Done   | ConnectionManager|
 | Subqueries                   | 0.11.0  | High     | -      | QuerySet         |
 | Query Cache                  | 0.11.0  | Medium   | -      | -                |
 | Prefetch Objects             | 0.11.0  | Medium   | -      | Relations        |

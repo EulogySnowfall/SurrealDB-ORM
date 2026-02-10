@@ -191,7 +191,7 @@ class LiveModelStream(Generic[T]):
         if self._connection is None:
             from .connection_manager import SurrealDBConnectionManager
 
-            self._connection = await SurrealDBConnectionManager.get_ws_client()
+            self._connection = await SurrealDBConnectionManager.get_ws_client(self._model.get_connection_name())
 
         self._stream = LiveSelectStream(
             connection=self._connection,
@@ -272,7 +272,7 @@ class ChangeModelStream(Generic[T]):
         if self._connection is None:
             from .connection_manager import SurrealDBConnectionManager
 
-            self._connection = await SurrealDBConnectionManager.get_client()
+            self._connection = await SurrealDBConnectionManager.get_client(self._model.get_connection_name())
 
         self._feed = ChangeFeedStream(
             connection=self._connection,

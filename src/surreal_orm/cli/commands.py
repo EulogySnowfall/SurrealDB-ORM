@@ -310,6 +310,74 @@ if click is not None:
             sys.exit(1)
 
     @cli.command()
+    @click.option("--output", "-o", help="Output file path (default: print to stdout)")
+    @click.pass_context
+    def inspectdb(ctx: click.Context, output: str | None) -> None:
+        """Generate Python models from existing database tables."""
+        from ..connection_manager import SurrealDBConnectionManager
+        from ..introspection import generate_models_from_db
+
+        async def run() -> str:
+            SurrealDBConnectionManager.set_connection(
+                url=ctx.obj["url"],
+                user=ctx.obj["user"],
+                password=ctx.obj["password"],
+                namespace=ctx.obj["namespace"],
+                database=ctx.obj["database"],
+            )
+            return await generate_models_from_db(output_path=output)
+
+        try:
+            source = run_async(run())
+            if output:
+                click.echo(f"Generated models written to: {output}")
+            else:
+                click.echo(source)
+        except Exception as e:
+            click.echo(f"Introspection failed: {e}", err=True)
+            sys.exit(1)
+
+    @cli.command()
+    @click.option("--models", "-m", multiple=True, help="Model modules to compare")
+    @click.pass_context
+    def schemadiff(ctx: click.Context, models: tuple[str, ...]) -> None:
+        """Compare Python models against the live database schema."""
+        from ..connection_manager import SurrealDBConnectionManager
+        from ..introspection import schema_diff
+
+        async def run() -> list:
+            SurrealDBConnectionManager.set_connection(
+                url=ctx.obj["url"],
+                user=ctx.obj["user"],
+                password=ctx.obj["password"],
+                namespace=ctx.obj["namespace"],
+                database=ctx.obj["database"],
+            )
+
+            # Import model modules if specified
+            if models:
+                for module_path in models:
+                    try:
+                        __import__(module_path)
+                    except ImportError as e:
+                        click.echo(f"Error importing {module_path}: {e}", err=True)
+                        sys.exit(1)
+
+            return await schema_diff()
+
+        try:
+            operations = run_async(run())
+            if operations:
+                click.echo(f"Found {len(operations)} difference(s):")
+                for op in operations:
+                    click.echo(f"  - {op.describe()}")
+            else:
+                click.echo("Models and database are in sync.")
+        except Exception as e:
+            click.echo(f"Schema diff failed: {e}", err=True)
+            sys.exit(1)
+
+    @cli.command()
     @click.pass_context
     def shell(ctx: click.Context) -> None:
         """Start an interactive SurrealDB shell."""

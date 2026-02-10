@@ -161,6 +161,10 @@ class SurrealConfigDict(ConfigDict):
             be excluded from save/update operations (e.g., ["created_at", "updated_at"]).
             These fields are populated by SurrealDB's VALUE clause and should not be
             sent back during updates.
+        connection: Named connection to use for this model (e.g., "analytics").
+            When set, all queries for this model use the specified connection
+            instead of "default".  Can be overridden at runtime with
+            ``SurrealDBConnectionManager.using("name")``.
     """
 
     primary_key: str | None
@@ -175,6 +179,7 @@ class SurrealConfigDict(ConfigDict):
     token_duration: str | None
     session_duration: str | None
     server_fields: list[str] | None
+    connection: str | None
 
 
 class BaseSurrealModel(BaseModel):
@@ -255,6 +260,26 @@ class BaseSurrealModel(BaseModel):
             if isinstance(table_name, str):
                 return table_name
         return cls.__name__
+
+    @classmethod
+    def get_connection_name(cls) -> str:
+        """Return the connection name for this model.
+
+        Priority:
+        1. ``using()`` context-manager override (contextvars)
+        2. ``connection`` key in ``model_config``
+        3. ``"default"``
+        """
+        # Context-var override takes highest priority
+        active = SurrealDBConnectionManager.get_active_connection_name()
+        if active is not None:
+            return active
+        # Model-level config
+        if hasattr(cls, "model_config"):
+            conn = cls.model_config.get("connection", None)
+            if isinstance(conn, str):
+                return conn
+        return "default"
 
     @classmethod
     def get_table_type(cls) -> TableType:
@@ -529,7 +554,7 @@ class BaseSurrealModel(BaseModel):
         if not record_id:
             raise SurrealDbError("Can't refresh data, not recorded yet.")  # pragma: no cover
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
         thing = format_thing(self.get_table_name(), record_id)
         result = await client.select(thing)
 
@@ -709,7 +734,7 @@ class BaseSurrealModel(BaseModel):
         if tx is not None:
             result = await tx.query(query, variables)
         else:
-            client = await SurrealDBConnectionManager.get_client()
+            client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
             result = await client.query(query, variables)
 
         if not self._db_persisted and result.all_records:
@@ -751,7 +776,7 @@ class BaseSurrealModel(BaseModel):
             return
 
         # Without transaction
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
 
         if self._db_persisted and id is not None:
             # Already persisted: use merge for partial update
@@ -825,7 +850,7 @@ class BaseSurrealModel(BaseModel):
             if tx is not None:
                 await tx.merge(thing, data)
             else:
-                client = await SurrealDBConnectionManager.get_client()
+                client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 result = await client.merge(thing, data)
                 result_records = result.records
 
@@ -919,7 +944,7 @@ class BaseSurrealModel(BaseModel):
                 if tx is not None:
                     await tx.query(query, variables)
                 else:
-                    client = await SurrealDBConnectionManager.get_client()
+                    client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                     await client.query(query, variables)
                 if refresh:
                     await self.refresh()
@@ -930,7 +955,7 @@ class BaseSurrealModel(BaseModel):
                     if hasattr(self, key):
                         setattr(self, key, value)
             else:
-                client = await SurrealDBConnectionManager.get_client()
+                client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 await client.merge(thing, data_set)
                 if refresh:
                     await self.refresh()
@@ -979,7 +1004,7 @@ class BaseSurrealModel(BaseModel):
                 await tx.delete(thing)
                 logger.info(f"Record deleted (in transaction) -> {thing}.")
             else:
-                client = await SurrealDBConnectionManager.get_client()
+                client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 result = await client.delete(thing)
 
                 if not result.success:
@@ -1080,7 +1105,7 @@ class BaseSurrealModel(BaseModel):
             This method returns raw dictionaries, not model instances.
             Use this for edge cases where the standard QuerySet API is insufficient.
         """
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
         result = await client.query(query, variables or {})
         return list(result.all_records) if result.all_records else []
 
@@ -1150,7 +1175,7 @@ class BaseSurrealModel(BaseModel):
         thing = format_thing(cls.get_table_name(), id_part)
 
         query = f"UPDATE {thing} SET {field} = array::append({field}, $value);"
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
         result = await client.query(query, {"value": value})
         return list(result.all_records) if result.all_records else []
 
@@ -1182,7 +1207,7 @@ class BaseSurrealModel(BaseModel):
         thing = format_thing(cls.get_table_name(), id_part)
 
         query = f"UPDATE {thing} SET {field} -= $value;"
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
         result = await client.query(query, {"value": value})
         return list(result.all_records) if result.all_records else []
 
@@ -1216,7 +1241,7 @@ class BaseSurrealModel(BaseModel):
         thing = format_thing(cls.get_table_name(), id_part)
 
         query = f"UPDATE {thing} SET {field} += $value;"
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
         result = await client.query(query, {"value": value})
         return list(result.all_records) if result.all_records else []
 
@@ -1292,7 +1317,7 @@ class BaseSurrealModel(BaseModel):
             await tx.relate(from_thing, relation, to_thing, edge_data if edge_data else None)
             return {"in": from_thing, "out": to_thing, **edge_data}
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
         result = await client.relate(
             from_thing,
             relation,
@@ -1377,7 +1402,7 @@ class BaseSurrealModel(BaseModel):
                     await tx.query(query, {"target_id": target_id})
                     return
 
-                client = await SurrealDBConnectionManager.get_client()
+                client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 await client.query(query, {"target_id": target_id})
                 return
         else:
@@ -1398,7 +1423,7 @@ class BaseSurrealModel(BaseModel):
             await tx.query(query)
             return
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
         await client.query(query)
 
     async def remove_all_relations(
@@ -1472,7 +1497,7 @@ class BaseSurrealModel(BaseModel):
                 await tx.query(query)
             return
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
         for query in queries:
             await client.query(query)
 
@@ -1523,7 +1548,7 @@ class BaseSurrealModel(BaseModel):
         source_table = self.get_table_name()
         source_thing = format_thing(source_table, source_id)
 
-        client = await SurrealDBConnectionManager.get_client()
+        client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
         records: list[dict[str, Any]] = []
 
         # Query edge table and fetch related records

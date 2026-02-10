@@ -18,7 +18,15 @@ Usage:
     await manager.rollback("0001_initial")
 """
 
+from .db_introspector import DatabaseIntrospector
+from .define_parser import (
+    parse_define_access,
+    parse_define_field,
+    parse_define_index,
+    parse_define_table,
+)
 from .migration import Migration
+from .model_generator import ModelCodeGenerator
 from .operations import (
     AddField,
     AlterField,
@@ -35,6 +43,14 @@ from .operations import (
 )
 
 __all__ = [
+    # Introspection
+    "DatabaseIntrospector",
+    "ModelCodeGenerator",
+    "parse_define_field",
+    "parse_define_table",
+    "parse_define_index",
+    "parse_define_access",
+    # Migrations
     "Migration",
     "Operation",
     "CreateTable",

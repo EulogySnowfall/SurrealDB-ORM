@@ -4,10 +4,10 @@
 
 Only the **latest released version** receives security updates until v1.0.0:
 
-| Version   | Supported          |
-| --------- | ------------------ |
-| **0.9.x** | :white_check_mark: |
-| < 0.9.x   | :x:                |
+| Version    | Supported          |
+| ---------- | ------------------ |
+| **0.10.x** | :white_check_mark: |
+| < 0.10.x   | :x:                |
 
 ## Versioning Scheme
 

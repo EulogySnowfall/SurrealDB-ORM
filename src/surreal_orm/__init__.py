@@ -9,6 +9,7 @@ This package provides:
 - CLI tools for schema management
 """
 
+from .connection_config import ConnectionConfig
 from .connection_manager import SurrealDBConnectionManager
 from .enum import OrderBy
 from .model_base import (
@@ -42,6 +43,7 @@ from .q import Q
 from .surreal_function import SurrealFunc
 from .utils import retry_on_conflict
 from .live import LiveModelStream, ModelChangeEvent, ChangeModelStream
+from .introspection import generate_models_from_db, schema_diff
 from .signals import (
     Signal,
     pre_save,
@@ -63,6 +65,7 @@ from surreal_sdk.streaming.live_select import LiveAction
 
 __all__ = [
     # Connection
+    "ConnectionConfig",
     "SurrealDBConnectionManager",
     # Models
     "BaseSurrealModel",
@@ -121,8 +124,11 @@ __all__ = [
     "LiveAction",
     # Server-side functions
     "SurrealFunc",
+    # Introspection
+    "generate_models_from_db",
+    "schema_diff",
     # Utilities
     "retry_on_conflict",
 ]
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
