@@ -100,6 +100,7 @@ class LiveModelStream(Generic[T]):
         self._auto_resubscribe = auto_resubscribe
         self._on_reconnect = on_reconnect
         self._stream: LiveSelectStream | None = None
+        self._signal_tasks: set[asyncio.Task[Any]] = set()
 
     @staticmethod
     def _parse_id(record_id: str) -> str:
@@ -136,9 +137,10 @@ class LiveModelStream(Generic[T]):
             raw=change.result,
         )
 
-        # Fire the post_live_change signal (fire-and-forget, don't block the stream)
+        # Fire the post_live_change signal (fire-and-forget, don't block the stream).
+        # Tasks are tracked in _signal_tasks so they can be cancelled on stop().
         try:
-            asyncio.ensure_future(
+            task = asyncio.get_running_loop().create_task(
                 model_signals.post_live_change.send(
                     self._model,
                     instance=instance,
@@ -147,6 +149,8 @@ class LiveModelStream(Generic[T]):
                     changed_fields=change.changed_fields,
                 )
             )
+            self._signal_tasks.add(task)
+            task.add_done_callback(self._signal_tasks.discard)
         except Exception:
             logger.debug(
                 "Failed to schedule post_live_change signal for %s (action=%s, record_id=%s)",
@@ -202,15 +206,18 @@ class LiveModelStream(Generic[T]):
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        await self.stop()
+
+    async def stop(self) -> None:
+        """Manually stop the live stream and cancel pending signal tasks."""
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
 
-    async def stop(self) -> None:
-        """Manually stop the live stream."""
-        if self._stream is not None:
-            await self._stream.stop()
-            self._stream = None
+        # Cancel any in-flight signal tasks
+        for task in list(self._signal_tasks):
+            task.cancel()
+        self._signal_tasks.clear()
 
 
 class ChangeModelStream(Generic[T]):

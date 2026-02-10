@@ -348,7 +348,7 @@ async def test_post_live_change_signal_fires() -> None:
             try:
                 await task
             except asyncio.CancelledError:
-                pass
+                pass  # Expected: task was cancelled after timeout
 
         # Give the fire-and-forget signal a moment to complete
         await asyncio.sleep(0.3)

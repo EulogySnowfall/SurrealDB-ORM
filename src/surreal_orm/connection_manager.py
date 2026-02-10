@@ -186,6 +186,15 @@ class SurrealDBConnectionManager:
         if not cls.is_connection_set():
             raise ValueError("Connection not been set.")
 
+        # Close stale disconnected client before creating a new one
+        if cls.__ws_client is not None:
+            try:
+                await cls.__ws_client.close()
+            except Exception:
+                logger.debug("Failed to close stale WebSocket client.", exc_info=True)
+            cls.__ws_client = None
+
+        _ws_client: WebSocketConnection | None = None
         try:
             url = cls.get_connection_string()
             assert url is not None
@@ -207,15 +216,13 @@ class SurrealDBConnectionManager:
             return cls.__ws_client
         except SurrealDBError as e:
             logger.warning(f"Can't get WebSocket connection: {e}")
-            if cls.__ws_client is not None:  # pragma: no cover
-                await cls.__ws_client.close()
-                cls.__ws_client = None
+            if _ws_client is not None:  # pragma: no cover
+                await _ws_client.close()
             raise SurrealDbConnectionError(f"Can't connect to the database via WebSocket: {e}")
         except Exception as e:
             logger.warning(f"Can't get WebSocket connection: {e}")
-            if cls.__ws_client is not None:  # pragma: no cover
-                await cls.__ws_client.close()
-                cls.__ws_client = None
+            if _ws_client is not None:  # pragma: no cover
+                await _ws_client.close()
             raise SurrealDbConnectionError("Can't connect to the database via WebSocket.")
 
     @classmethod

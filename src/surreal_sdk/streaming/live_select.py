@@ -8,6 +8,7 @@ from typing import Any, Callable, Awaitable, Coroutine, Self
 from dataclasses import dataclass, field
 from enum import StrEnum
 import asyncio
+import re
 
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
@@ -196,12 +197,16 @@ class LiveSelectStream:
 
     @staticmethod
     def _inline_params_static(sql: str, params: dict[str, Any]) -> str:
-        """Replace $param references with inline values in the SQL string."""
+        """Replace $param references with inline values in the SQL string.
+
+        Uses regex word-boundary matching to avoid substituting partial
+        tokens or occurrences inside string literals.
+        """
         result = sql
-        # Sort by key length descending to avoid partial replacements
-        # (e.g. $_f10 should be replaced before $_f1)
         for key in sorted(params, key=len, reverse=True):
-            result = result.replace(f"${key}", LiveSelectStream._format_value(params[key]))
+            # Match $key only when followed by a non-identifier character (or end of string)
+            pattern = re.escape(f"${key}") + r"(?![a-zA-Z0-9_])"
+            result = re.sub(pattern, LiveSelectStream._format_value(params[key]), result)
         return result
 
     async def start(self) -> str:
