@@ -1,11 +1,18 @@
+from __future__ import annotations
+
 from .constants import LOOKUP_OPERATORS
 from .enum import OrderBy
 from .q import Q
 from .utils import remove_quotes_for_variables, format_thing, parse_record_id
 from . import BaseSurrealModel, SurrealDBConnectionManager
 from .aggregations import Aggregation
-from typing import Self, Any, Sequence, cast
+from typing import TYPE_CHECKING, Self, Any, Sequence, cast
+from datetime import datetime
 from pydantic_core import ValidationError
+
+if TYPE_CHECKING:
+    from .live import LiveModelStream, ChangeModelStream
+    from surreal_sdk.streaming.live_select import ReconnectCallback
 
 import logging
 import re as _re
@@ -1296,3 +1303,112 @@ class QuerySet:
         client = await SurrealDBConnectionManager.get_client()
         result = await client.query(remove_quotes_for_variables(query), self._variables)
         return len(result.all_records)
+
+    # ==================== Real-time Methods ====================
+
+    def live(
+        self,
+        *,
+        auto_resubscribe: bool = True,
+        diff: bool = False,
+        on_reconnect: ReconnectCallback | None = None,
+    ) -> LiveModelStream[BaseSurrealModel]:
+        """
+        Subscribe to real-time changes for this query via WebSocket Live Query.
+
+        Returns an async context manager and iterator that yields
+        ``ModelChangeEvent`` instances with typed model objects whenever
+        matching records are created, updated, or deleted.
+
+        Requires a WebSocket connection (created lazily by the connection
+        manager on first call).
+
+        Args:
+            auto_resubscribe: Automatically resubscribe after WebSocket
+                reconnect. Defaults to True.
+            diff: If True, receive only changed fields (DIFF mode).
+            on_reconnect: Optional async callback ``(old_id, new_id)``
+                invoked when the subscription is re-established after
+                a reconnect.
+
+        Returns:
+            ``LiveModelStream`` — async context manager and iterator.
+
+        Example::
+
+            async with User.objects().filter(role="admin").live() as stream:
+                async for event in stream:
+                    match event.action:
+                        case LiveAction.CREATE:
+                            print(f"New admin: {event.instance.name}")
+                        case LiveAction.UPDATE:
+                            print(f"Admin updated: {event.instance}")
+                        case LiveAction.DELETE:
+                            print(f"Admin removed: {event.record_id}")
+        """
+        from .live import LiveModelStream
+
+        # Build WHERE clause and params from current filters
+        where_parts, filter_vars = self._build_where_parts()
+        where_clause = " AND ".join(where_parts) if where_parts else None
+        params = {**self._variables, **filter_vars}
+
+        return LiveModelStream(
+            model=self.model,
+            connection=None,  # type: ignore[arg-type]  # resolved in __aenter__
+            table=self._model_table,
+            where=where_clause,
+            params=params or None,
+            diff=diff,
+            auto_resubscribe=auto_resubscribe,
+            on_reconnect=on_reconnect,
+        )
+
+    def changes(
+        self,
+        *,
+        since: str | datetime | None = None,
+        poll_interval: float = 0.1,
+        batch_size: int = 100,
+    ) -> ChangeModelStream[BaseSurrealModel]:
+        """
+        Stream change feed events for this model's table via HTTP.
+
+        Returns an async iterator that yields ``ModelChangeEvent`` instances
+        for each change captured by SurrealDB's Change Feed. This is stateless
+        and ideal for microservices event streaming, data replication, and
+        audit trails.
+
+        .. note::
+
+            Change Feeds must be enabled on the table (``DEFINE TABLE ... CHANGEFEED ...``)
+            before this method will yield results.
+
+        Args:
+            since: Starting point as an ISO 8601 timestamp string or
+                ``datetime`` object. If None, streams from "now".
+            poll_interval: Seconds between polls when no changes are
+                available. Defaults to 0.1.
+            batch_size: Maximum changes per poll. Defaults to 100.
+
+        Returns:
+            ``ChangeModelStream`` — async iterator yielding ``ModelChangeEvent``.
+
+        Example::
+
+            async for event in User.objects().changes(since="2026-01-01"):
+                await publish_to_queue({
+                    "type": f"user.{event.action.value.lower()}",
+                    "data": event.raw,
+                })
+        """
+        from .live import ChangeModelStream
+
+        return ChangeModelStream(
+            model=self.model,
+            connection=None,  # type: ignore[arg-type]  # resolved at iteration time
+            table=self._model_table,
+            since=since,
+            poll_interval=poll_interval,
+            batch_size=batch_size,
+        )

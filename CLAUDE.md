@@ -10,7 +10,68 @@
 
 ---
 
-## Current Version: 0.8.0 (Alpha)
+## Current Version: 0.9.0 (Alpha)
+
+### What's New in 0.9.0
+
+- **Live Models** — ORM-level real-time subscriptions via WebSocket Live Queries. `QuerySet.live()` returns a typed async iterator that yields `ModelChangeEvent` instances with full Pydantic model objects.
+
+  ```python
+  from surreal_orm import LiveAction
+
+  async with User.objects().filter(role="admin").live() as stream:
+      async for event in stream:
+          match event.action:
+              case LiveAction.CREATE:
+                  print(f"New admin: {event.instance.name}")
+              case LiveAction.UPDATE:
+                  print(f"Admin updated: {event.instance}")
+              case LiveAction.DELETE:
+                  print(f"Admin removed: {event.record_id}")
+  ```
+
+  - **`ModelChangeEvent[T]`** — Typed dataclass with `action`, `instance: T`, `record_id`, `changed_fields`, `raw`
+  - **`LiveModelStream[T]`** — Async context manager + iterator wrapping SDK `LiveSelectStream`
+  - **Filter integration** — QuerySet filters translate to live query WHERE clauses with parameterized variables
+  - **`auto_resubscribe=True`** — Seamless recovery from WebSocket disconnects
+  - **`diff=True`** — Receive only changed fields (DIFF mode)
+
+- **Change Feed Integration** — HTTP-based change data capture at the ORM level. `QuerySet.changes()` returns a typed async iterator for event streaming.
+
+  ```python
+  async for event in User.objects().changes(since="2026-01-01"):
+      await publish_to_queue({
+          "type": f"user.{event.action.value.lower()}",
+          "data": event.raw,
+      })
+  ```
+
+  - **`ChangeModelStream[T]`** — Async iterator wrapping SDK `ChangeFeedStream`
+  - **Cursor tracking** — `.cursor` property for resumable streaming
+  - **Configurable polling** — `poll_interval` and `batch_size` parameters
+  - **HTTP-only** — No WebSocket required, works with existing HTTP connection
+
+- **`post_live_change` Signal** — New signal fired when live query events are received, separate from local CRUD signals (`post_save`, etc.)
+
+  ```python
+  from surreal_orm import post_live_change, LiveAction
+
+  @post_live_change.connect(Player)
+  async def on_player_change(sender, instance, action, record_id, **kwargs):
+      if action == LiveAction.CREATE:
+          await ws_manager.broadcast({"type": "player_joined", "name": instance.name})
+  ```
+
+- **WebSocket Connection Manager** — `SurrealDBConnectionManager` now manages an optional WebSocket connection alongside HTTP, created lazily on first `.live()` call.
+
+  ```python
+  # Automatic — WebSocket created lazily
+  async with User.objects().filter(active=True).live() as stream:
+      ...
+
+  # Manual access
+  ws_conn = await SurrealDBConnectionManager.get_ws_client()
+  ```
 
 ### What's New in 0.8.0
 
@@ -1026,10 +1087,19 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] Auto-excluded from writes via `get_server_fields()`
 - [x] Migration introspector generates VALUE clauses
 
-### v0.9.x (Next) - ORM Real-time Integration
+### Completed (0.9.0) - ORM Real-time Integration
 
-- [ ] Live Models (real-time sync at ORM level)
-- [ ] Change Feed integration for ORM
+- [x] `QuerySet.live()` — Live model subscriptions via WebSocket
+- [x] `LiveModelStream` — Async context manager + iterator with typed `ModelChangeEvent`
+- [x] `QuerySet.changes()` — Change feed streaming via HTTP
+- [x] `ChangeModelStream` — Async iterator for CDC/event streaming
+- [x] `post_live_change` signal for external database change events
+- [x] `SurrealDBConnectionManager.get_ws_client()` — Lazy WebSocket connection management
+
+### v0.10.x (Next) - Advanced Features
+
+- [ ] Schema introspection (generate models from existing DB)
+- [ ] Multi-database support
 
 ---
 

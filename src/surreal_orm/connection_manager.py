@@ -1,7 +1,7 @@
 from typing import Any, Literal
 import logging
 
-from surreal_sdk import HTTPConnection
+from surreal_sdk import HTTPConnection, WebSocketConnection
 from surreal_sdk.exceptions import SurrealDBError
 from surreal_sdk.transaction import HTTPTransaction
 
@@ -22,6 +22,7 @@ class SurrealDBConnectionManager:
     __database: str | None = None
     __protocol: Literal["json", "cbor"] = "cbor"
     __client: HTTPConnection | None = None
+    __ws_client: WebSocketConnection | None = None
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await SurrealDBConnectionManager.close_connection()
@@ -67,9 +68,9 @@ class SurrealDBConnectionManager:
     @classmethod
     async def unset_connection(cls) -> None:
         """
-        Unset the connection kwargs and close any active connection.
+        Unset the connection kwargs and close any active connections (HTTP + WebSocket).
 
-        This is an async method that properly closes the connection before
+        This is an async method that properly closes connections before
         clearing the settings. Use unset_connection_sync() if you need a
         synchronous version (e.g., in atexit handlers or non-async contexts).
         """
@@ -105,6 +106,7 @@ class SurrealDBConnectionManager:
         cls.__database = None
         cls.__protocol = "cbor"
         cls.__client = None
+        cls.__ws_client = None
 
     @classmethod
     def is_connection_set(cls) -> bool:
@@ -163,12 +165,80 @@ class SurrealDBConnectionManager:
             raise SurrealDbConnectionError("Can't connect to the database.")
 
     @classmethod
+    async def get_ws_client(cls) -> WebSocketConnection:
+        """
+        Get or create a WebSocket connection to SurrealDB.
+
+        The WebSocket connection is created lazily on first call and reused
+        for subsequent calls. It uses the same URL and credentials as the
+        HTTP connection, with automatic ``http`` → ``ws`` URL conversion
+        (handled by ``WebSocketConnection.__init__``).
+
+        Required for Live Queries (``QuerySet.live()``).
+
+        :return: The WebSocketConnection instance.
+        :raises ValueError: If connection settings have not been configured.
+        :raises SurrealDbConnectionError: If the WebSocket connection fails.
+        """
+        if cls.__ws_client is not None and cls.__ws_client.is_connected:
+            return cls.__ws_client
+
+        if not cls.is_connection_set():
+            raise ValueError("Connection not been set.")
+
+        # Close stale disconnected client before creating a new one
+        if cls.__ws_client is not None:
+            try:
+                await cls.__ws_client.close()
+            except Exception:
+                logger.debug("Failed to close stale WebSocket client.", exc_info=True)
+            cls.__ws_client = None
+
+        _ws_client: WebSocketConnection | None = None
+        try:
+            url = cls.get_connection_string()
+            assert url is not None
+            assert cls.__namespace is not None
+            assert cls.__database is not None
+            assert cls.__user is not None
+            assert cls.__password is not None
+
+            _ws_client = WebSocketConnection(
+                url,
+                cls.__namespace,
+                cls.__database,
+                protocol=cls.__protocol,
+            )
+            await _ws_client.connect()
+            await _ws_client.signin(cls.__user, cls.__password)
+
+            cls.__ws_client = _ws_client
+            return cls.__ws_client
+        except SurrealDBError as e:
+            logger.warning(f"Can't get WebSocket connection: {e}")
+            if _ws_client is not None:  # pragma: no cover
+                await _ws_client.close()
+            raise SurrealDbConnectionError(f"Can't connect to the database via WebSocket: {e}")
+        except Exception as e:
+            logger.warning(f"Can't get WebSocket connection: {e}")
+            if _ws_client is not None:  # pragma: no cover
+                await _ws_client.close()
+            raise SurrealDbConnectionError("Can't connect to the database via WebSocket.")
+
+    @classmethod
     async def close_connection(cls) -> None:
         """
-        Close the connection to the SurrealDB instance.
+        Close all connections to the SurrealDB instance (HTTP and WebSocket).
         """
-        # Fermer la connexion
+        # Close WebSocket connection if active
+        if cls.__ws_client is not None:
+            try:
+                await cls.__ws_client.close()
+            except Exception:
+                logger.warning("Failed to close WebSocket connection cleanly.", exc_info=True)
+            cls.__ws_client = None
 
+        # Close HTTP connection
         if cls.__client is None:
             return
 

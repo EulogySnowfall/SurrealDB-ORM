@@ -16,6 +16,8 @@ A Django-style ORM for SurrealDB with async support and Pydantic validation.
 - [Aggregations](#aggregations)
 - [Bulk Operations](#bulk-operations)
 - [Relations & Graph Traversal](#relations--graph-traversal)
+- [Live Models (Real-time)](#live-models-real-time)
+- [Change Feed Integration](#change-feed-integration)
 - [Custom Queries](#custom-queries)
 - [Error Handling](#error-handling)
 
@@ -829,6 +831,133 @@ orders = await Order.objects().fetch("customer", "items").limit(50).exec()
 # select_related() also maps to FETCH
 stats = await PlayerStats.objects().select_related("user").order_by("-wins").limit(100).exec()
 # Generates: SELECT * FROM player_stats ORDER BY wins DESC LIMIT 100 FETCH user;
+```
+
+---
+
+## Live Models (Real-time)
+
+Subscribe to real-time model changes via WebSocket. The ORM wraps the SDK's
+`LiveSelectStream` and yields typed `ModelChangeEvent[T]` instances with full
+Pydantic model conversion.
+
+### Basic Usage
+
+```python
+from surreal_orm import LiveAction
+
+async with User.objects().filter(role="admin").live() as stream:
+    async for event in stream:
+        match event.action:
+            case LiveAction.CREATE:
+                print(f"New admin: {event.instance.name}")
+            case LiveAction.UPDATE:
+                print(f"Updated: {event.instance.email}")
+            case LiveAction.DELETE:
+                print(f"Removed: {event.record_id}")
+```
+
+### ModelChangeEvent Properties
+
+| Property         | Type           | Description                                     |
+| ---------------- | -------------- | ----------------------------------------------- |
+| `action`         | `LiveAction`   | CREATE, UPDATE, or DELETE                        |
+| `instance`       | `T`            | Full Pydantic model instance via `from_db()`     |
+| `record_id`      | `str`          | Affected record ID (e.g., `"users:abc123"`)      |
+| `changed_fields` | `list[str]`    | Changed field names (only in DIFF mode)          |
+| `raw`            | `dict`         | Original raw data from the database              |
+
+### With Filters
+
+All QuerySet filters translate to the live query WHERE clause:
+
+```python
+# Subscribe only to active admins over 18
+async with User.objects().filter(
+    role="admin", age__gte=18, is_active=True,
+).live() as stream:
+    async for event in stream:
+        process(event)
+
+# Q objects also work
+from surreal_orm import Q
+
+async with User.objects().filter(
+    Q(role="admin") | Q(role="moderator"),
+).live() as stream:
+    async for event in stream:
+        process(event)
+```
+
+### Options
+
+```python
+async with User.objects().live(
+    auto_resubscribe=True,   # Reconnect after WebSocket drop (default: True)
+    diff=True,               # Receive only changed fields
+    on_reconnect=callback,   # Called with (old_id, new_id) on reconnect
+) as stream:
+    async for event in stream:
+        print(event.changed_fields)  # Only populated in diff mode
+```
+
+### post_live_change Signal
+
+A dedicated signal fires for external database changes detected via live queries
+(separate from local CRUD signals like `post_save`/`post_update`):
+
+```python
+from surreal_orm import post_live_change, LiveAction
+
+@post_live_change.connect(Player)
+async def on_player_change(sender, instance, action, record_id, **kwargs):
+    if action == LiveAction.CREATE:
+        await ws_manager.broadcast({"type": "player_joined", "name": instance.name})
+    elif action == LiveAction.DELETE:
+        await ws_manager.broadcast({"type": "player_left", "id": record_id})
+```
+
+---
+
+## Change Feed Integration
+
+HTTP-based change data capture (CDC) for event-driven architectures. Unlike
+live models which require WebSocket, change feeds work over HTTP and are
+stateless and resumable.
+
+### Basic Usage
+
+```python
+async for event in User.objects().changes(since="2026-01-01"):
+    print(event.action, event.instance.name)
+```
+
+### Event-Driven Microservices
+
+```python
+# Publish model changes to a message queue
+async for event in Order.objects().changes(since="2026-01-01"):
+    await publish_to_queue({
+        "type": f"order.{event.action.value.lower()}",
+        "record_id": event.record_id,
+        "data": event.raw,
+    })
+```
+
+### Options
+
+```python
+stream = User.objects().changes(
+    since="2026-02-01T00:00:00Z",  # Start from this timestamp
+    poll_interval=0.1,              # Seconds between polls (default: 0.1)
+    batch_size=100,                 # Max records per poll (default: 100)
+)
+
+async for event in stream:
+    process(event)
+
+# Access cursor for resumability
+print(stream.cursor)  # Use this to resume later
 ```
 
 ---

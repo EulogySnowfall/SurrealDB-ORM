@@ -13,6 +13,60 @@
 
 ---
 
+## What's New in 0.9.0
+
+### ORM Real-time Features: Live Models + Change Feed
+
+- **Live Models** - Real-time subscriptions at the ORM level yielding typed Pydantic model instances
+
+  ```python
+  from surreal_orm import LiveAction
+
+  async with User.objects().filter(role="admin").live() as stream:
+      async for event in stream:
+          match event.action:
+              case LiveAction.CREATE:
+                  print(f"New admin: {event.instance.name}")
+              case LiveAction.UPDATE:
+                  print(f"Updated: {event.instance.email}")
+              case LiveAction.DELETE:
+                  print(f"Removed: {event.record_id}")
+  ```
+
+  - `ModelChangeEvent[T]` with typed `instance`, `action`, `record_id`, `changed_fields`
+  - Full QuerySet filter integration (WHERE clause + parameterized variables)
+  - `auto_resubscribe=True` for seamless WebSocket reconnect recovery
+  - `diff=True` for receiving only changed fields
+
+- **Change Feed Integration** - HTTP-based CDC for event-driven microservices
+
+  ```python
+  async for event in User.objects().changes(since="2026-01-01"):
+      await publish_to_queue({
+          "type": f"user.{event.action.value.lower()}",
+          "data": event.raw,
+      })
+  ```
+
+  - Stateless, resumable with cursor tracking
+  - Configurable `poll_interval` and `batch_size`
+  - No WebSocket required (works over HTTP)
+
+- **`post_live_change` signal** - Fires for external database changes (separate from local CRUD signals)
+
+  ```python
+  from surreal_orm import post_live_change, LiveAction
+
+  @post_live_change.connect(Player)
+  async def on_player_change(sender, instance, action, **kwargs):
+      if action == LiveAction.CREATE:
+          await ws_manager.broadcast({"type": "player_joined", "name": instance.name})
+  ```
+
+- **WebSocket Connection Manager** - `get_ws_client()` creates a lazy WebSocket connection alongside HTTP
+
+---
+
 ## What's New in 0.8.0
 
 ### Auth Module Fixes + Computed Fields
@@ -553,6 +607,21 @@ print(result.success, result.count)  # Typed access
 
 ## ORM Features
 
+### Live Models (Real-time at ORM Level)
+
+```python
+from surreal_orm import LiveAction
+
+# Subscribe to model changes with full Pydantic instances
+async with User.objects().filter(role="admin").live() as stream:
+    async for event in stream:
+        print(event.action, event.instance.name, event.record_id)
+
+# Change Feed (HTTP, no WebSocket needed)
+async for event in Order.objects().changes(since="2026-01-01"):
+    print(event.action, event.instance.total)
+```
+
 ### QuerySet with Django-style Lookups
 
 ```python
@@ -721,7 +790,7 @@ surreal-orm migrate
 | [Migration System](docs/migrations.md) | Django-style migrations  |
 | [Authentication](docs/auth.md)         | JWT authentication guide |
 | [Roadmap](docs/roadmap.md)             | Future features planning |
-| [CHANGELOG](CHANGELOG)                 | Version history          |
+| [CHANGELOG](CHANGELOG.md)              | Version history          |
 
 ---
 
