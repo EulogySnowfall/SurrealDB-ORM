@@ -77,9 +77,10 @@ async def setup_live_integration() -> AsyncGenerator[None, Any]:
             try:
                 await client.query(f"REMOVE TABLE IF EXISTS {table};")
             except Exception:
-                pass
+                pass  # Table may not exist yet; safe to ignore
+
     except Exception:
-        pass
+        pass  # Connection may not be ready; tests will fail explicitly if needed
 
     yield
 
@@ -90,9 +91,9 @@ async def setup_live_integration() -> AsyncGenerator[None, Any]:
             try:
                 await client.query(f"REMOVE TABLE IF EXISTS {table};")
             except Exception:
-                pass
+                pass  # Best-effort cleanup; table may already be gone
     except Exception:
-        pass
+        pass  # Connection may already be closed
 
     # Close WebSocket and HTTP connections
     await SurrealDBConnectionManager.close_connection()
@@ -151,7 +152,7 @@ async def test_live_stream_receives_create() -> None:
         try:
             await task
         except asyncio.CancelledError:
-            pass
+            pass  # Expected: task was cancelled after timeout
 
     assert len(events_received) >= 1
     event = events_received[0]
@@ -195,7 +196,7 @@ async def test_live_stream_receives_update() -> None:
         try:
             await task
         except asyncio.CancelledError:
-            pass
+            pass  # Expected: task was cancelled after timeout
 
     update_events = [e for e in events_received if e.action == LiveAction.UPDATE]
     assert len(update_events) >= 1
@@ -236,7 +237,7 @@ async def test_live_stream_receives_delete() -> None:
         try:
             await task
         except asyncio.CancelledError:
-            pass
+            pass  # Expected: task was cancelled after timeout
 
     delete_events = [e for e in events_received if e.action == LiveAction.DELETE]
     assert len(delete_events) >= 1
@@ -280,7 +281,7 @@ async def test_live_stream_with_filter() -> None:
         try:
             await task
         except asyncio.CancelledError:
-            pass
+            pass  # Expected: task was cancelled after timeout
 
     # Should only receive the admin event
     assert len(events_received) >= 1

@@ -723,6 +723,126 @@ class TestQuerySetLiveExtended:
         assert stream._model is PlayerModel
 
 
+# ==================== _format_value & _parse_id ====================
+
+
+class TestFormatValue:
+    """Tests for LiveSelectStream._format_value() inline param formatting."""
+
+    def test_none(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        assert LiveSelectStream._format_value(None) == "NONE"
+
+    def test_bool_true(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        assert LiveSelectStream._format_value(True) == "true"
+
+    def test_bool_false(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        assert LiveSelectStream._format_value(False) == "false"
+
+    def test_int(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        assert LiveSelectStream._format_value(42) == "42"
+
+    def test_float(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        assert LiveSelectStream._format_value(3.14) == "3.14"
+
+    def test_string(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        assert LiveSelectStream._format_value("hello") == "'hello'"
+
+    def test_string_with_quotes(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        assert LiveSelectStream._format_value("it's") == "'it\\'s'"
+
+    def test_list(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        assert LiveSelectStream._format_value([1, "a"]) == "[1, 'a']"
+
+    def test_record_id(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        rid = RecordId(table="users", id="abc123")
+        assert LiveSelectStream._format_value(rid) == "users:abc123"
+
+    def test_uuid(self) -> None:
+        from uuid import UUID
+
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        uid = UUID("12345678-1234-5678-1234-567812345678")
+        assert LiveSelectStream._format_value(uid) == f"u'{uid}'"
+
+    def test_datetime(self) -> None:
+        from datetime import datetime
+
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        dt = datetime(2026, 2, 1, 12, 30, 0)
+        assert LiveSelectStream._format_value(dt) == f"d'{dt.isoformat()}'"
+
+    def test_date(self) -> None:
+        from datetime import date
+
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        d = date(2026, 2, 1)
+        assert LiveSelectStream._format_value(d) == f"d'{d.isoformat()}'"
+
+
+class TestInlineParams:
+    """Tests for LiveSelectStream._inline_params_static()."""
+
+    def test_single_param(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        sql = "LIVE SELECT * FROM users WHERE role = $_f0"
+        result = LiveSelectStream._inline_params_static(sql, {"_f0": "admin"})
+        assert result == "LIVE SELECT * FROM users WHERE role = 'admin'"
+
+    def test_multiple_params(self) -> None:
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        sql = "LIVE SELECT * FROM users WHERE role = $_f0 AND age >= $_f1"
+        result = LiveSelectStream._inline_params_static(sql, {"_f0": "admin", "_f1": 18})
+        assert result == "LIVE SELECT * FROM users WHERE role = 'admin' AND age >= 18"
+
+    def test_longer_key_first(self) -> None:
+        """$_f10 should be replaced before $_f1 to avoid partial replacement."""
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        sql = "WHERE x = $_f1 AND y = $_f10"
+        result = LiveSelectStream._inline_params_static(sql, {"_f1": "a", "_f10": "b"})
+        assert result == "WHERE x = 'a' AND y = 'b'"
+
+
+class TestParseId:
+    """Tests for LiveModelStream._parse_id()."""
+
+    def test_with_table_prefix(self) -> None:
+        assert LiveModelStream._parse_id("users:abc123") == "abc123"
+
+    def test_without_prefix(self) -> None:
+        assert LiveModelStream._parse_id("abc123") == "abc123"
+
+    def test_empty_string(self) -> None:
+        assert LiveModelStream._parse_id("") == ""
+
+    def test_multiple_colons(self) -> None:
+        assert LiveModelStream._parse_id("table:complex:id") == "complex:id"
+
+
 # ==================== __all__ exports ====================
 
 

@@ -228,7 +228,7 @@ class SurrealDBConnectionManager:
             try:
                 await cls.__ws_client.close()
             except Exception:
-                pass
+                logger.warning("Failed to close WebSocket connection cleanly.", exc_info=True)
             cls.__ws_client = None
 
         # Close HTTP connection

@@ -160,14 +160,29 @@ class LiveSelectStream:
 
         SurrealDB LIVE SELECT does not evaluate session variables ($param)
         in WHERE clauses, so parameters must be inlined directly into the
-        query string.
+        query string.  Handles native SurrealDB types (RecordId, datetime,
+        UUID) so that LIVE SELECT filters behave the same as parameterized
+        queries.
         """
+        from datetime import datetime, date
+        from uuid import UUID
+        from ..protocol.cbor import RecordId
+
         if value is None:
             return "NONE"
         if isinstance(value, bool):
             return "true" if value else "false"
         if isinstance(value, (int, float)):
             return str(value)
+        if isinstance(value, RecordId):
+            # Emit as a record reference: table:id (unquoted, SurrealQL thing syntax)
+            return str(value)
+        if isinstance(value, UUID):
+            return f"u'{value}'"
+        if isinstance(value, datetime):
+            return f"d'{value.isoformat()}'"
+        if isinstance(value, date):
+            return f"d'{value.isoformat()}'"
         if isinstance(value, str):
             # Escape single quotes inside the string
             escaped = value.replace("\\", "\\\\").replace("'", "\\'")

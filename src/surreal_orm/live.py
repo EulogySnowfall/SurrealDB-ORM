@@ -101,21 +101,30 @@ class LiveModelStream(Generic[T]):
         self._on_reconnect = on_reconnect
         self._stream: LiveSelectStream | None = None
 
+    @staticmethod
+    def _parse_id(record_id: str) -> str:
+        """Strip optional table prefix from a record ID (e.g. 'table:abc' -> 'abc')."""
+        if isinstance(record_id, str) and ":" in record_id:
+            return record_id.split(":", 1)[1]
+        return record_id
+
     def _to_event(self, change: LiveChange) -> ModelChangeEvent[T]:
         """Convert a raw LiveChange into a typed ModelChangeEvent."""
         from . import signals as model_signals
+
+        parsed_id = self._parse_id(change.record_id)
 
         instance: T
         if change.action == LiveAction.DELETE and not change.result:
             # DELETE may return an empty result; build a minimal instance with just the id
             try:
-                instance = self._model.model_validate({"id": change.record_id})
+                instance = self._model.model_validate({"id": parsed_id})
             except Exception:
-                instance = self._model.model_construct(id=change.record_id)  # type: ignore[arg-type]
+                instance = self._model.model_construct(id=parsed_id)  # type: ignore[arg-type]
         else:
             result = self._model.from_db(change.result)
             if isinstance(result, list):
-                instance = result[0] if result else self._model.model_construct(id=change.record_id)  # type: ignore[arg-type]
+                instance = result[0] if result else self._model.model_construct(id=parsed_id)  # type: ignore[arg-type]
             else:
                 instance = result  # type: ignore[assignment]
 
@@ -139,7 +148,13 @@ class LiveModelStream(Generic[T]):
                 )
             )
         except Exception:
-            pass
+            logger.debug(
+                "Failed to schedule post_live_change signal for %s (action=%s, record_id=%s)",
+                self._model,
+                change.action,
+                change.record_id,
+                exc_info=True,
+            )
 
         return event
 
@@ -288,15 +303,17 @@ class ChangeModelStream(Generic[T]):
 
                     action = LiveAction(action_key.upper())
                     record_id = str(record.get("id", ""))
+                    # Normalize ID: strip table prefix for model construction
+                    parsed_id = LiveModelStream._parse_id(record_id) if record_id else ""
 
                     try:
                         result = self._model.from_db(record)
                         if isinstance(result, list):
-                            instance = result[0] if result else self._model.model_construct(id=record_id)  # type: ignore[arg-type]
+                            instance = result[0] if result else self._model.model_construct(id=parsed_id)  # type: ignore[arg-type]
                         else:
                             instance = result  # type: ignore[assignment]
                     except Exception:
-                        instance = self._model.model_construct(id=record_id)  # type: ignore[arg-type]
+                        instance = self._model.model_construct(id=parsed_id)  # type: ignore[arg-type]
 
                     events.append(
                         ModelChangeEvent(
