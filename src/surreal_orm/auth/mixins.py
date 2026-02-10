@@ -48,15 +48,15 @@ class AuthenticatedUserMixin:
             email="test@example.com", password="secret"
         )
 
-    # Stub for mypy — overridden by BaseSurrealModel.get_connection_name()
-    @classmethod
-    def get_connection_name(cls) -> str:  # pragma: no cover
-        return "default"
-
         # Validate a token and get the record ID
         record_id = await User.validate_token(token)
         # "users:johndoe"
     """
+
+    # Stub for mypy — overridden by BaseSurrealModel.get_connection_name()
+    @classmethod
+    def get_connection_name(cls) -> str:  # pragma: no cover
+        return "default"
 
     @classmethod
     async def _create_auth_client(cls) -> "HTTPConnection":

@@ -75,11 +75,15 @@ class SurrealDBConnectionManager:
     # Async context-manager (unchanged public API)
     # -----------------------------------------------------------------------
 
+    def __init__(self) -> None:
+        self._resolved_name: str = "default"
+
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        await SurrealDBConnectionManager.close_connection("default")
+        await SurrealDBConnectionManager.close_connection(self._resolved_name)
 
     async def __aenter__(self) -> HTTPConnection:
-        return await SurrealDBConnectionManager.get_client()
+        self._resolved_name = SurrealDBConnectionManager.get_active_connection_name() or "default"
+        return await SurrealDBConnectionManager.get_client(self._resolved_name)
 
     # -----------------------------------------------------------------------
     # Multi-DB public API
@@ -284,6 +288,7 @@ class SurrealDBConnectionManager:
         if config is None:
             raise ValueError(f"Connection {name!r} not configured. Call set_connection() or add_connection() first.")
 
+        _client: HTTPConnection | None = None
         try:
             _client = HTTPConnection(
                 config.url,
@@ -303,9 +308,19 @@ class SurrealDBConnectionManager:
             return _client
         except SurrealDBError as e:
             logger.warning("Can't get connection '%s': %s", name, e)
+            if _client is not None:
+                try:
+                    await _client.close()
+                except Exception:
+                    pass
             raise SurrealDbConnectionError(f"Can't connect to the database: {e}")
         except Exception as e:
             logger.warning("Can't get connection '%s': %s", name, e)
+            if _client is not None:
+                try:
+                    await _client.close()
+                except Exception:
+                    pass
             raise SurrealDbConnectionError("Can't connect to the database.")
 
     @classmethod

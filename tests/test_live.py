@@ -514,14 +514,20 @@ class TestConnectionManagerWebSocket:
         """get_ws_client() raises ValueError without set_connection()."""
         from src.surreal_orm.connection_manager import SurrealDBConnectionManager
 
-        # Save and clear the registry to test the error path
-        saved = dict(SurrealDBConnectionManager._configs)
+        # Save and clear registries (including cached clients) to test the error path
+        saved_configs = dict(SurrealDBConnectionManager._configs)
+        saved_clients = dict(SurrealDBConnectionManager._clients)
+        saved_ws = dict(SurrealDBConnectionManager._ws_clients)
         SurrealDBConnectionManager._configs.clear()
+        SurrealDBConnectionManager._clients.clear()
+        SurrealDBConnectionManager._ws_clients.clear()
         try:
             with pytest.raises(ValueError, match="not configured"):
                 asyncio.run(SurrealDBConnectionManager.get_ws_client())
         finally:
-            SurrealDBConnectionManager._configs.update(saved)
+            SurrealDBConnectionManager._configs.update(saved_configs)
+            SurrealDBConnectionManager._clients.update(saved_clients)
+            SurrealDBConnectionManager._ws_clients.update(saved_ws)
 
 
 # ==================== Version ====================
