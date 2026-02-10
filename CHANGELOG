@@ -6,6 +6,144 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.11.0] - 2026-02-10
+
+### Added
+
+- **Subqueries** — Embed a QuerySet as a filter value in another QuerySet
+  - `Subquery` class wrapping a `QuerySet` for inline sub-SELECT expressions
+  - Parameterized variables remapped via shared counter to avoid collisions
+  - Works with all filter operators (`__in`, `=`, etc.) and Q objects
+  - Nested subqueries supported (subquery within a subquery)
+  - Usable in `annotate()` for scalar sub-SELECT expressions
+  - New file: `src/surreal_orm/subquery.py`
+
+- **Query Cache** — TTL-based query result caching with auto-invalidation
+  - `QueryCache` class-level singleton with `configure()`, `get()`, `set()`, `invalidate()`, `clear()`, `stats()`
+  - SHA-256 cache keys from query string + variables + table name
+  - LRU eviction when `max_size` is reached
+  - Auto-invalidation via `post_save`, `post_delete`, `post_update` signals
+  - `QuerySet.cache(ttl=N)` method for opt-in caching per query
+  - New file: `src/surreal_orm/cache.py`
+
+- **Prefetch Objects** — Fine-grained control over `prefetch_related()` batching
+  - `Prefetch` class with `relation_name`, `queryset`, and `to_attr` parameters
+  - `prefetch_related()` now accepts both strings and `Prefetch` objects
+  - `_execute_prefetch()` batch-fetches related records after main query
+  - Results attached to parent instances via `object.__setattr__`
+  - Custom QuerySet filters applied to the edge table query
+  - New file: `src/surreal_orm/prefetch.py`
+
+### Changed
+
+- `annotate()` type hint extended to accept `Aggregation | Subquery`
+- `_execute_annotate()` handles Subquery annotations as inline sub-SELECTs
+- `_prefetch_related` type changed from `list[str]` to `list[str | Prefetch]`
+- `exec()` now checks/stores cache and runs prefetch after main query
+- Version bump to 0.11.0
+
+---
+
+## [0.10.0] - 2026-02-10
+
+### Added
+
+- **Schema Introspection** — Generate Python model code from an existing SurrealDB database
+  - `generate_models_from_db(output_path=)` public API
+  - `schema_diff(models=[...])` to compare Python models against live database
+  - `DatabaseIntrospector` — Parses `INFO FOR DB` / `INFO FOR TABLE` into `SchemaState`
+  - `ModelCodeGenerator` — Converts `SchemaState` to Python model source code
+  - `define_parser` module — Parses DEFINE TABLE, FIELD, INDEX, ACCESS statements
+  - Handles generic types, VALUE/ASSERT expressions, encrypted fields, FLEXIBLE, READONLY
+  - CLI: `surreal-orm inspectdb` and `surreal-orm schemadiff` commands
+
+- **Multi-Database Support** — Named connection registry for routing models to different databases
+  - `ConnectionConfig` frozen dataclass for immutable connection settings
+  - `add_connection("name", ...)` to register named connections
+  - `using("name")` async context manager override (async-safe via `contextvars`)
+  - `SurrealConfigDict(connection="name")` model-level connection routing
+  - `get_connection_name()` priority: context var > model config > `"default"`
+  - `list_connections()`, `get_config()`, `remove_connection()` registry management
+  - Full backward compatibility: `set_connection()` delegates to `add_connection("default", ...)`
+
+### Changed
+
+- All query paths route through named connection (model, queryset, live, auth, relations)
+- Version bump to 0.10.0
+
+---
+
+## [0.9.0] - 2026-02-10
+
+### Added
+
+- **Live Models** — ORM-level real-time subscriptions via WebSocket Live Queries
+  - `QuerySet.live()` returns a typed async iterator yielding `ModelChangeEvent` instances
+  - `ModelChangeEvent[T]` dataclass with `action`, `instance: T`, `record_id`, `changed_fields`, `raw`
+  - `LiveModelStream[T]` async context manager + iterator wrapping SDK `LiveSelectStream`
+  - Filter integration: QuerySet filters translate to live query WHERE clauses
+  - `auto_resubscribe=True` for seamless WebSocket recovery
+  - `diff=True` for receiving only changed fields (DIFF mode)
+
+- **Change Feed Integration** — HTTP-based change data capture at the ORM level
+  - `QuerySet.changes()` returns a typed async iterator for event streaming
+  - `ChangeModelStream[T]` async iterator wrapping SDK `ChangeFeedStream`
+  - Cursor tracking via `.cursor` property for resumable streaming
+  - Configurable `poll_interval` and `batch_size` parameters
+
+- **`post_live_change` Signal** — New signal fired on live query events
+
+- **WebSocket Connection Manager** — Lazy WebSocket connection alongside HTTP
+  - `SurrealDBConnectionManager.get_ws_client()` for manual access
+
+### Changed
+
+- Version bump to 0.9.0
+
+---
+
+## [0.8.0] - 2026-02-08
+
+### Added
+
+- **Computed Fields** — Server-side computed fields using `DEFINE FIELD ... VALUE <expression>`
+  - `Computed[T] = Computed("expression")` — dual-use type annotation + default value
+  - Auto-excluded from writes via `get_server_fields()`
+  - Migration introspector generates VALUE clauses
+
+### Fixed
+
+- **Auth Module: Ephemeral Connections** (Critical) — `signup()`, `signin()`, `authenticate_token()` no longer mutate root singleton connection
+- **Auth Module: Configurable Access Name** (High) — Access name configurable via `access_name` in `SurrealConfigDict`
+- **Auth Module: `signup()` Returns Token** (High) — Now returns `tuple[Self, str]` (user + JWT)
+- **Auth Module: `authenticate_token()` Fixed** (Medium) — Now returns `tuple[Self, str] | None`
+  - Added `validate_token()` lightweight method returning `str | None`
+  - SDK `authenticate()` RPC method added to `BaseSurrealConnection`
+
+### Changed
+
+- Version bump to 0.8.0
+
+---
+
+## [0.7.0] - 2026-02-08
+
+### Added
+
+- **`merge(refresh=False)`** — Skip the extra SELECT after UPDATE for fire-and-forget operations
+- **`call_function()`** — Invoke custom SurrealDB stored functions from ORM
+  - Available on `SurrealDBConnectionManager` and any model class
+- **`extra_vars` on `save()` and `merge()`** — Bind additional query variables for SurrealFunc expressions
+- **`fetch()` + FETCH clause** — Resolve record links inline to avoid N+1 queries
+  - `select_related()` also maps to FETCH
+- **`remove_all_relations()` with list support** — Remove multiple relation types in one call
+
+### Changed
+
+- Version bump to 0.7.0
+
+---
+
 ## [0.6.0] - 2026-02-07
 
 ### Added
@@ -50,6 +188,78 @@ and adheres to [SemVer](https://semver.org/) versioning.
 - Filter rendering extracted into `_render_condition()` static method (was duplicated)
 - `_render_q()` added for recursive Q object compilation
 - Version bump to 0.6.0
+
+---
+
+## [0.5.9] - 2026-02-07
+
+### Added
+
+- **Atomic Array Operations** — Server-side array mutations
+  - `atomic_append(record_id, field, value)` — Append using `array::append()`
+  - `atomic_remove(record_id, field, value)` — Remove using `-=` operator
+  - `atomic_set_add(record_id, field, value)` — Add only if not present using `+=`
+
+- **Transaction Conflict Retry** — `retry_on_conflict(max_retries=3)` decorator with exponential backoff + jitter
+  - `TransactionConflictError` new exception subclass for conflict detection
+
+- **Relation Direction Control** — `reverse` parameter for `relate()` and `remove_relation()`
+
+- **New Query Lookup Operators**
+  - `not_contains` → `CONTAINSNOT`
+  - `containsall` → `CONTAINSALL`
+  - `containsany` → `CONTAINSANY`
+  - `not_in` → `NOT IN`
+
+### Changed
+
+- Version bump to 0.5.9
+
+---
+
+## [0.5.8] - 2026-02-05
+
+### Added
+
+- **Around Signals** — Generator-based middleware pattern for wrapping DB operations
+  - `around_save`, `around_delete`, `around_update` signal types
+  - Shared state between before/after logic via `yield`
+  - Guaranteed cleanup with `try/finally`
+  - Execution order: `pre_* → around(before) → DB operation → around(after) → post_*`
+
+### Changed
+
+- Version bump to 0.5.8
+
+---
+
+## [0.5.7] - 2026-02-05
+
+### Added
+
+- **Model Signals** — Django-style event hooks for model lifecycle operations
+  - Signal types: `pre_save`, `post_save`, `pre_delete`, `post_delete`, `pre_update`, `post_update`
+  - `Signal.connect(sender=None)` decorator and method for registering handlers
+  - `Signal.send(sender, **kwargs)` for dispatching to handlers
+  - `Signal.disconnect()`, `Signal.disconnect_all()`, `Signal.clear()` for cleanup
+
+### Changed
+
+- Version bump to 0.5.7
+
+---
+
+## [0.5.6] - 2026-02-04
+
+### Fixed
+
+- **Issue #8 bis: Numeric ID escaping in relation queries**
+  - Fixed `get_related()`, `RelationQuerySet`, and `RelationInfo.get_traversal_query()` for IDs starting with digits
+  - Now uses `escape_record_id()` for proper backtick escaping in graph traversal queries
+
+### Changed
+
+- Version bump to 0.5.6
 
 ---
 
@@ -100,7 +310,7 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
-## [0.5.5.1] - 2026-02-03
+## [0.5.5.1] - 2026-02-04
 
 ### Fixed
 
@@ -184,7 +394,7 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
-## [0.5.4] - 2026-02-02
+## [0.5.4] - 2026-02-03
 
 ### Added
 
@@ -202,6 +412,45 @@ and adheres to [SemVer](https://semver.org/) versioning.
 ### Changed
 
 - Version bump to 0.5.4
+
+---
+
+## [0.5.3.3] - 2026-02-02
+
+### Fixed
+
+- **`from_db()` fields_set** — Fixed bug where `from_db()` marked all fields as "user-set", causing `exclude_unset=True` to include DB-loaded fields in subsequent saves. Now `from_db()` clears `__pydantic_fields_set__`.
+
+### Changed
+
+- Version bump to 0.5.3.3
+
+---
+
+## [0.5.3.2] - 2026-02-02
+
+### Fixed
+
+- **QuerySet table name** — Fixed critical bug where QuerySet used class name instead of configured `table_name` from `model_config`
+
+### Changed
+
+- `QuerySet.get()` signature now accepts both `id=` keyword and positional `id_item` parameter
+- Version bump to 0.5.3.2
+
+---
+
+## [0.5.3.1] - 2026-02-02
+
+### Fixed
+
+- **Partial updates for persisted records** — `save()` now uses `merge()` for already-persisted records, only sending explicitly modified fields
+- **datetime parsing from DB** — `_update_from_db()` auto-parses ISO 8601 datetime strings
+- **`_db_persisted` flag** — Tracks new vs persisted records for correct save behavior
+
+### Changed
+
+- Version bump to 0.5.3.1
 
 ---
 

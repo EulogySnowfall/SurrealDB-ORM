@@ -13,6 +13,40 @@
 
 ---
 
+## What's New in 0.11.0
+
+### Advanced Queries & Caching
+
+- **Subqueries** — Embed a QuerySet as a filter value in another QuerySet
+
+  ```python
+  from surreal_orm import Subquery
+
+  top_ids = Order.objects().filter(total__gte=100).select("user_id")
+  users = await User.objects().filter(id__in=Subquery(top_ids)).exec()
+  ```
+
+- **Query Cache** — TTL-based caching with automatic invalidation on writes
+
+  ```python
+  from surreal_orm import QueryCache
+
+  QueryCache.configure(default_ttl=120, max_size=500)
+  users = await User.objects().filter(role="admin").cache(ttl=30).exec()
+  ```
+
+- **Prefetch Objects** — Fine-grained control over related data prefetching
+
+  ```python
+  from surreal_orm import Prefetch
+
+  users = await User.objects().prefetch_related(
+      Prefetch("wrote", queryset=Post.objects().filter(published=True), to_attr="published_posts"),
+  ).exec()
+  ```
+
+---
+
 ## What's New in 0.10.0
 
 ### Schema Introspection & Multi-Database Support
