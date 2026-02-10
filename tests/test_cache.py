@@ -135,14 +135,14 @@ class TestQueryCacheClear:
 
 
 class TestQueryCacheMaxSize:
-    """Test LRU eviction when max_size is reached."""
+    """Test FIFO eviction when max_size is reached."""
 
     def test_eviction_at_capacity(self) -> None:
         QueryCache._max_size = 3
         QueryCache.set("k1", "d1", "t", ttl=100)
         QueryCache.set("k2", "d2", "t", ttl=200)
         QueryCache.set("k3", "d3", "t", ttl=300)
-        # Adding a 4th should evict the entry with shortest TTL (k1)
+        # Adding a 4th should evict the oldest inserted entry (k1)
         QueryCache.set("k4", "d4", "t", ttl=400)
         assert len(QueryCache._cache) == 3
         assert QueryCache.get("k1") is None  # evicted

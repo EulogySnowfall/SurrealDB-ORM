@@ -168,7 +168,7 @@ class TestSubqueryInFilter:
         inner = Order.objects().filter(status="completed").select("total").limit(1)
         qs = Order.objects().filter(total=Subquery(inner))
         query = qs._compile_query()
-        assert "total = (SELECT VALUE total FROM orders WHERE status = $_f0 LIMIT 1)" in query
+        assert "total = array::first((SELECT VALUE total FROM orders WHERE status = $_f0 LIMIT 1))" in query
         assert qs._variables["_f0"] == "completed"
 
     def test_filter_mixed_subquery_and_regular(self) -> None:
@@ -320,15 +320,14 @@ class TestSubqueryIntegration:
         assert len(orders) >= 2
 
     async def test_filter_by_subquery_scalar(self) -> None:
-        """Filter using a scalar subquery with IN (e.g., max total)."""
-        # Use __in since SELECT VALUE returns an array even with LIMIT 1
+        """Filter using a scalar subquery (e.g., max total) with array::first()."""
         completed_orders = Order.objects().filter(status="completed").select("total").order_by("-total").limit(1)
         orders = (
             await Order.objects()
             .filter(
-                total__in=Subquery(completed_orders),
+                total=Subquery(completed_orders),
             )
             .exec()
         )
-        # Should find the order with the highest completed total (200.0)
+        # array::first() extracts the single value (200.0) from the subquery
         assert len(orders) >= 1

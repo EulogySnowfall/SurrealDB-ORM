@@ -18,9 +18,9 @@ Example::
 
     # Store results under a different attribute name
     users = await User.objects().prefetch_related(
-        Prefetch("posts", queryset=Post.objects().order_by("-created_at").limit(5), to_attr="recent_posts"),
+        Prefetch("posts", queryset=Post.objects().filter(published=True), to_attr="published_posts"),
     ).exec()
-    # user.recent_posts  ← list of the 5 most recent posts
+    # user.published_posts  ← list of published posts
 """
 
 from __future__ import annotations

@@ -682,12 +682,15 @@ class QuerySet:
                     object.__setattr__(inst, to_attr, [])
                 continue
 
-            # Build batch query for this relation (treated as edge table)
-            # SELECT *, in, out FROM relation_name WHERE in IN [...]
+            # Build batch query for this relation (treated as edge table).
+            # Use ``out.*`` to dereference the target node so callers get
+            # the related records (not raw edge records).  The ``in`` field
+            # is kept for grouping results by source instance.
             id_list = ", ".join(source_ids)
-            query = f"SELECT *, in, out FROM {relation_name} WHERE in IN [{id_list}];"
+            query = f"SELECT in, out.* FROM {relation_name} WHERE in IN [{id_list}];"
 
-            # If custom queryset has filters, append them as AND conditions
+            # If custom queryset has filters, append them as AND conditions.
+            # Note: filters apply to the *edge* table fields.
             extra_where = ""
             extra_vars: dict[str, Any] = {}
             if custom_qs is not None:
@@ -695,7 +698,7 @@ class QuerySet:
                 if parts:
                     extra_where = " AND " + " AND ".join(parts)
                     extra_vars = fvars
-                query = f"SELECT *, in, out FROM {relation_name} WHERE in IN [{id_list}]{extra_where};"
+                query = f"SELECT in, out.* FROM {relation_name} WHERE in IN [{id_list}]{extra_where};"
 
             result = await client.query(remove_quotes_for_variables(query), extra_vars)
 
@@ -706,7 +709,10 @@ class QuerySet:
                     in_ref = record.get("in", "")
                     if hasattr(in_ref, "__str__"):
                         in_ref = str(in_ref)
-                    grouped.setdefault(in_ref, []).append(record)
+                    # Remove the 'in' key so the attached dict only has
+                    # target-node fields.
+                    node = {k: v for k, v in record.items() if k != "in"}
+                    grouped.setdefault(in_ref, []).append(node)
 
             # Attach to instances
             for inst in instances:
@@ -743,9 +749,15 @@ class QuerySet:
         """
         op = LOOKUP_OPERATORS.get(lookup_name, "=")
 
-        # Subquery values: compile to inline sub-SELECT
+        # Subquery values: compile to inline sub-SELECT.
+        # Collection operators (IN, NOT IN, etc.) use the array directly;
+        # scalar operators (=, !=, >, etc.) wrap with array::first().
         if isinstance(value, Subquery):
-            return f"{field_name} {op} {value.to_surql(variables, counter)}"
+            sub_sql = value.to_surql(variables, counter)
+            _COLLECTION_LOOKUPS = {"in", "not_in", "containsall", "containsany"}
+            if lookup_name in _COLLECTION_LOOKUPS:
+                return f"{field_name} {op} {sub_sql}"
+            return f"{field_name} {op} array::first({sub_sql})"
 
         if lookup_name == "isnull":
             if not isinstance(value, bool):
