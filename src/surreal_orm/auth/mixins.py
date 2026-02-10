@@ -67,23 +67,29 @@ class AuthenticatedUserMixin:
         token and auth state.  Using the root singleton would corrupt it for
         all other concurrent ORM operations.  This method creates a fresh,
         ephemeral connection that callers must close via ``await client.close()``.
+
+        Respects the model's named connection (multi-DB support).
         """
         from surreal_sdk import HTTPConnection
 
         from ..connection_manager import SurrealDBConnectionManager
         from ..model_base import SurrealDbError
 
-        url = SurrealDBConnectionManager.get_connection_string()
-        ns = SurrealDBConnectionManager.get_namespace()
-        db = SurrealDBConnectionManager.get_database()
+        conn_name = cls.get_connection_name()  # type: ignore[attr-defined]
+        config = SurrealDBConnectionManager.get_config(conn_name)
 
-        if not url or not ns or not db:
-            raise SurrealDbError("Connection not configured. Call SurrealDBConnectionManager.set_connection() first.")
+        if config is None:
+            raise SurrealDbError(
+                f"Connection '{conn_name}' not configured. "
+                "Call SurrealDBConnectionManager.set_connection() or add_connection() first."
+            )
 
-        # Respect the protocol configured on the connection manager
-        protocol = SurrealDBConnectionManager.get_protocol()
-
-        client = HTTPConnection(url, ns, db, protocol=protocol)
+        client = HTTPConnection(
+            config.url,
+            config.namespace,
+            config.database,
+            protocol=config.protocol,
+        )
         await client.connect()
         return client
 
@@ -127,9 +133,14 @@ class AuthenticatedUserMixin:
         table_name = config.get("table_name") or cls.__name__
         access_name = config.get("access_name") or f"{table_name.lower()}_auth"
 
-        # Get connection info
-        namespace = SurrealDBConnectionManager.get_namespace()
-        database = SurrealDBConnectionManager.get_database()
+        # Get connection info from named connection config
+        conn_name = cls.get_connection_name()  # type: ignore[attr-defined]
+        conn_config = SurrealDBConnectionManager.get_config(conn_name)
+        if conn_config is None:
+            raise SurrealDbError(f"Connection '{conn_name}' not configured.")
+
+        namespace = conn_config.namespace
+        database = conn_config.database
 
         if not namespace or not database:
             raise SurrealDbError("Namespace and database must be set for authentication")
@@ -156,7 +167,7 @@ class AuthenticatedUserMixin:
             await client.close()
 
         # Fetch the created user via the root singleton (guaranteed access)
-        root_client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())  # type: ignore[attr-defined]
+        root_client = await SurrealDBConnectionManager.get_client(conn_name)  # type: ignore[attr-defined]
 
         identifier_field = config.get("identifier_field", "email")
         identifier_value = credentials.get(identifier_field)
@@ -213,9 +224,14 @@ class AuthenticatedUserMixin:
         table_name = config.get("table_name") or cls.__name__
         access_name = config.get("access_name") or f"{table_name.lower()}_auth"
 
-        # Get connection info
-        namespace = SurrealDBConnectionManager.get_namespace()
-        database = SurrealDBConnectionManager.get_database()
+        # Get connection info from named connection config
+        conn_name = cls.get_connection_name()  # type: ignore[attr-defined]
+        conn_config = SurrealDBConnectionManager.get_config(conn_name)
+        if conn_config is None:
+            raise SurrealDbError(f"Connection '{conn_name}' not configured.")
+
+        namespace = conn_config.namespace
+        database = conn_config.database
 
         if not namespace or not database:
             raise SurrealDbError("Namespace and database must be set for authentication")
@@ -240,7 +256,7 @@ class AuthenticatedUserMixin:
             await client.close()
 
         # Fetch user via root singleton (guaranteed access)
-        root_client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())  # type: ignore[attr-defined]
+        root_client = await SurrealDBConnectionManager.get_client(conn_name)  # type: ignore[attr-defined]
 
         identifier_field = config.get("identifier_field", "email")
         identifier_value = credentials.get(identifier_field)

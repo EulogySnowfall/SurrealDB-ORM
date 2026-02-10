@@ -128,7 +128,8 @@ class TestConnectionRegistry:
         assert SurrealDBConnectionManager.get_database() == "db"
         assert SurrealDBConnectionManager.is_connection_set() is True
 
-    def test_remove_connection(self):
+    @pytest.mark.asyncio
+    async def test_remove_connection(self):
         SurrealDBConnectionManager.add_connection(
             "temp",
             url="http://temp:8000",
@@ -138,11 +139,12 @@ class TestConnectionRegistry:
             database="db",
         )
         assert "temp" in SurrealDBConnectionManager.list_connections()
-        SurrealDBConnectionManager.remove_connection("temp")
+        await SurrealDBConnectionManager.remove_connection("temp")
         assert "temp" not in SurrealDBConnectionManager.list_connections()
         assert SurrealDBConnectionManager.get_config("temp") is None
 
-    def test_remove_default_clears_legacy(self):
+    @pytest.mark.asyncio
+    async def test_remove_default_clears_legacy(self):
         SurrealDBConnectionManager.add_connection(
             "default",
             url="http://localhost:8000",
@@ -151,7 +153,7 @@ class TestConnectionRegistry:
             namespace="ns",
             database="db",
         )
-        SurrealDBConnectionManager.remove_connection("default")
+        await SurrealDBConnectionManager.remove_connection("default")
         assert SurrealDBConnectionManager.get_url() is None
         assert SurrealDBConnectionManager.is_connection_set() is False
 
@@ -259,7 +261,7 @@ class TestUnsetConnection:
 
 class TestActiveConnection:
     def test_default_active_connection(self):
-        assert SurrealDBConnectionManager.get_active_connection_name() == "default"
+        assert SurrealDBConnectionManager.get_active_connection_name() is None
 
     @pytest.mark.asyncio
     async def test_using_overrides_active(self):
@@ -271,13 +273,13 @@ class TestActiveConnection:
             namespace="ns",
             database="db",
         )
-        assert SurrealDBConnectionManager.get_active_connection_name() == "default"
+        assert SurrealDBConnectionManager.get_active_connection_name() is None
 
         async with SurrealDBConnectionManager.using("analytics"):
             assert SurrealDBConnectionManager.get_active_connection_name() == "analytics"
 
-        # After context exit, back to default
-        assert SurrealDBConnectionManager.get_active_connection_name() == "default"
+        # After context exit, back to None (no override)
+        assert SurrealDBConnectionManager.get_active_connection_name() is None
 
     @pytest.mark.asyncio
     async def test_using_unknown_connection_raises(self):
@@ -305,7 +307,7 @@ class TestActiveConnection:
             database="db",
         )
 
-        assert SurrealDBConnectionManager.get_active_connection_name() == "default"
+        assert SurrealDBConnectionManager.get_active_connection_name() is None
 
         async with SurrealDBConnectionManager.using("a"):
             assert SurrealDBConnectionManager.get_active_connection_name() == "a"
@@ -313,7 +315,7 @@ class TestActiveConnection:
                 assert SurrealDBConnectionManager.get_active_connection_name() == "b"
             assert SurrealDBConnectionManager.get_active_connection_name() == "a"
 
-        assert SurrealDBConnectionManager.get_active_connection_name() == "default"
+        assert SurrealDBConnectionManager.get_active_connection_name() is None
 
     @pytest.mark.asyncio
     async def test_using_async_safe(self):

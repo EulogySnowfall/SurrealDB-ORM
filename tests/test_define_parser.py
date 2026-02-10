@@ -42,7 +42,7 @@ class TestParseDefineField:
     def test_optional_field(self) -> None:
         result = parse_define_field("DEFINE FIELD bio ON users TYPE option<string>")
         assert result.name == "bio"
-        assert result.field_type == "option<string>"
+        assert result.field_type == "string"
         assert result.nullable is True
 
     def test_union_null_field(self) -> None:
@@ -117,7 +117,7 @@ class TestParseDefineField:
 
     def test_nested_generic_type(self) -> None:
         result = parse_define_field("DEFINE FIELD data ON events TYPE option<array<object>>")
-        assert result.field_type == "option<array<object>>"
+        assert result.field_type == "array<object>"
         assert result.nullable is True
 
     def test_complex_field_with_all_clauses(self) -> None:

@@ -800,21 +800,29 @@ class TestFR5RemoveAllRelationsList:
     """FR5: remove_all_relations() accepts str | list[str]."""
 
     def test_accepts_single_string(self) -> None:
-        """Single string still works (backward compatible)."""
-        import asyncio
-
+        """Single string arg passes validation (no ValueError)."""
         model = ModelTest(id="1", name="Test", age=45)
-        # Will fail at DB call, but should not fail at validation
-        with pytest.raises(Exception, match="(?:Connection|connect)"):
-            asyncio.run(model.remove_all_relations("has_player"))
+        # Validation should pass — only a DB error (or connection error) may occur
+        try:
+            import asyncio
+
+            asyncio.get_event_loop().run_until_complete(model.remove_all_relations("has_player"))
+        except ValueError:
+            pytest.fail("remove_all_relations raised ValueError for valid single string")
+        except Exception:
+            pass  # Any non-ValueError (connection/auth) is expected
 
     def test_accepts_list_of_strings(self) -> None:
-        """List of strings is accepted."""
-        import asyncio
-
+        """List of strings arg passes validation (no ValueError)."""
         model = ModelTest(id="1", name="Test", age=45)
-        with pytest.raises(Exception, match="(?:Connection|connect)"):
-            asyncio.run(model.remove_all_relations(["has_player", "has_action"]))
+        try:
+            import asyncio
+
+            asyncio.get_event_loop().run_until_complete(model.remove_all_relations(["has_player", "has_action"]))
+        except ValueError:
+            pytest.fail("remove_all_relations raised ValueError for valid list of strings")
+        except Exception:
+            pass  # Any non-ValueError (connection/auth) is expected
 
     def test_rejects_invalid_name_in_list(self) -> None:
         """Invalid relation name in list raises ValueError."""

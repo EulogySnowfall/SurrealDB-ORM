@@ -177,7 +177,12 @@ def parse_define_field(statement: str) -> FieldState:
     clauses = _extract_clauses(body, _FIELD_KEYWORDS)
 
     field_type = clauses.get("TYPE", "any")
-    nullable = field_type.startswith("option<") or "| null" in field_type.lower()
+    field_type_lower = field_type.lower()
+    nullable = field_type_lower.startswith("option<") or "| null" in field_type_lower
+
+    # Normalize: unwrap option<T> to T (the nullable flag carries the info)
+    if field_type_lower.startswith("option<") and field_type.endswith(">"):
+        field_type = field_type[7:-1].strip()
     flexible = "FLEXIBLE" in clauses
     readonly = "READONLY" in clauses
     encrypted = False

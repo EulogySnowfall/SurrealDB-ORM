@@ -76,7 +76,7 @@ class SurrealDBConnectionManager:
     # -----------------------------------------------------------------------
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        await SurrealDBConnectionManager.close_connection()
+        await SurrealDBConnectionManager.close_connection("default")
 
     async def __aenter__(self) -> HTTPConnection:
         return await SurrealDBConnectionManager.get_client()
@@ -123,20 +123,15 @@ class SurrealDBConnectionManager:
             cls._sync_legacy_vars(config)
 
     @classmethod
-    def remove_connection(cls, name: str) -> None:
-        """Remove a named connection and close its clients."""
+    async def remove_connection(cls, name: str) -> None:
+        """Remove a named connection and properly close its clients."""
+        await cls._close_single(name)
         cls._configs.pop(name, None)
-        client = cls._clients.pop(name, None)
-        ws_client = cls._ws_clients.pop(name, None)
+        cls._clients.pop(name, None)
+        cls._ws_clients.pop(name, None)
 
         if name == "default":
             cls._clear_legacy_vars()
-
-        # Best-effort close (sync context — callers should prefer close_connection)
-        if client is not None:
-            logger.debug("Connection '%s' removed; HTTP client discarded.", name)
-        if ws_client is not None:
-            logger.debug("Connection '%s' removed; WS client discarded.", name)
 
     @classmethod
     def get_config(cls, name: str = "default") -> ConnectionConfig | None:
@@ -149,14 +144,14 @@ class SurrealDBConnectionManager:
         return list(cls._configs.keys())
 
     @classmethod
-    def get_active_connection_name(cls) -> str:
-        """Return the currently active connection name.
+    def get_active_connection_name(cls) -> str | None:
+        """Return the currently active connection name override, or ``None``.
 
-        Priority:
-        1. ``using()`` context-manager override (contextvars)
-        2. Falls back to ``"default"``
+        Returns:
+            The connection name set by ``using()``, or ``None`` if no
+            override is active.
         """
-        return _active_connection.get() or "default"
+        return _active_connection.get()
 
     @classmethod
     @asynccontextmanager
@@ -227,7 +222,7 @@ class SurrealDBConnectionManager:
         clearing the settings. Use unset_connection_sync() if you need a
         synchronous version (e.g., in atexit handlers or non-async contexts).
         """
-        await cls.close_connection()
+        await cls.close_connection("default")
         cls._configs.pop("default", None)
         cls._clear_legacy_vars()
 
@@ -278,7 +273,7 @@ class SurrealDBConnectionManager:
 
         :return: The HTTPConnection instance.
         """
-        name = name or cls.get_active_connection_name()
+        name = name or cls.get_active_connection_name() or "default"
 
         # Fast path: reuse existing connected client
         existing = cls._clients.get(name)
@@ -332,7 +327,7 @@ class SurrealDBConnectionManager:
         :raises ValueError: If connection settings have not been configured.
         :raises SurrealDbConnectionError: If the WebSocket connection fails.
         """
-        name = name or cls.get_active_connection_name()
+        name = name or cls.get_active_connection_name() or "default"
 
         existing = cls._ws_clients.get(name)
         if existing is not None and existing.is_connected:
@@ -758,4 +753,6 @@ class SurrealDBConnectionManager:
             try:
                 await http.close()
             except NotImplementedError:
-                pass
+                # Some HTTP client implementations may not support close();
+                # ignore to maintain compatibility.
+                logger.debug("HTTP client for connection '%s' does not implement close().", name)

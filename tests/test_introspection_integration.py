@@ -82,7 +82,7 @@ async def setup_introspection_db() -> AsyncGenerator[None, Any]:
             """
         )
     except Exception:
-        pass
+        pass  # Best-effort cleanup; connection may already be closed
 
     await SurrealDBConnectionManager.close_connection()
 

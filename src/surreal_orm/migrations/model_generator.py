@@ -158,8 +158,8 @@ class ModelCodeGenerator:
         # Collect any needed imports from the type
         self._collect_type_imports(python_type, extra_imports)
 
-        # Handle nullable
-        if field.nullable:
+        # Handle nullable; avoid duplicating None for option<T> types
+        if field.nullable and "None" not in python_type:
             python_type = f"{python_type} | None"
 
         # Handle computed fields (VALUE clause)

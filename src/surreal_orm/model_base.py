@@ -272,7 +272,7 @@ class BaseSurrealModel(BaseModel):
         """
         # Context-var override takes highest priority
         active = SurrealDBConnectionManager.get_active_connection_name()
-        if active != "default":
+        if active is not None:
             return active
         # Model-level config
         if hasattr(cls, "model_config"):
