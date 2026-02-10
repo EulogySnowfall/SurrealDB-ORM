@@ -827,7 +827,7 @@ SurrealDBConnectionManager.remove_connection("analytics")
 **Goal:** Subqueries, query result caching, and `Prefetch` objects for complex data loading.
 
 - [x] `Subquery` class for inline sub-SELECT in filters and annotations
-- [x] `QueryCache` with TTL, LRU eviction, and signal-based auto-invalidation
+- [x] `QueryCache` with TTL, FIFO eviction, and signal-based auto-invalidation
 - [x] `QuerySet.cache(ttl=N)` opt-in caching method
 - [x] `Prefetch` objects for fine-grained `prefetch_related()` control
 - [x] `_execute_prefetch()` batch-fetching after main query
@@ -842,7 +842,7 @@ from surreal_orm import Subquery
 # Users who placed orders above $100
 top_ids = Order.objects().filter(total__gte=100).select("user_id")
 users = await User.objects().filter(id__in=Subquery(top_ids)).exec()
-# SELECT * FROM users WHERE id IN (SELECT user_id FROM orders WHERE total >= $_f0);
+# SELECT * FROM users WHERE id IN (SELECT VALUE user_id FROM orders WHERE total >= $_f0);
 ```
 
 ### Query Cache

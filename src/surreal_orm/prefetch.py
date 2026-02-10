@@ -37,11 +37,18 @@ class Prefetch:
 
     Args:
         relation_name: The edge table or relation field name to traverse.
-        queryset: An optional ``QuerySet`` whose filters / ordering / limit
-            are applied when fetching related objects.  If ``None``, all
-            related objects are fetched.
+        queryset: An optional ``QuerySet`` whose **filters** are appended as
+            extra AND conditions on the edge table query.  The filters should
+            reference fields that exist on the **edge record** (not the target
+            model).  If ``None``, all related objects are fetched.
         to_attr: The attribute name on each parent instance where the
             prefetched list is stored.  Defaults to ``relation_name``.
+
+    Note:
+        The ``queryset`` filters are applied to the edge table directly
+        (``SELECT ... FROM <relation_name> WHERE in IN [...] AND <filters>``).
+        To filter by target-model fields, use a raw query or post-filter in
+        Python after prefetch.
 
     Example::
 

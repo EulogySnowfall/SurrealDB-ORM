@@ -21,7 +21,7 @@ and adheres to [SemVer](https://semver.org/) versioning.
 - **Query Cache** — TTL-based query result caching with auto-invalidation
   - `QueryCache` class-level singleton with `configure()`, `get()`, `set()`, `invalidate()`, `clear()`, `stats()`
   - SHA-256 cache keys from query string + variables + table name
-  - LRU eviction when `max_size` is reached
+  - FIFO eviction when `max_size` is reached
   - Auto-invalidation via `post_save`, `post_delete`, `post_update` signals
   - `QuerySet.cache(ttl=N)` method for opt-in caching per query
   - New file: `src/surreal_orm/cache.py`

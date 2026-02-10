@@ -596,11 +596,21 @@ class QuerySet:
         Returns:
             list[dict[str, Any]]: A list of dictionaries containing grouped results.
         """
-        # Build SELECT clause with group fields and aggregations/subqueries
+        # Build WHERE clause first so the shared counter is advanced before
+        # subquery annotations — prevents $_fN variable collisions.
+        where_parts, filter_vars = self._build_where_parts()
+        if filter_vars:
+            self._variables.update(filter_vars)
+        where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        # Build SELECT clause with group fields and aggregations/subqueries.
+        # Re-use the counter from _build_where_parts() so annotation subqueries
+        # continue numbering where the filters left off.
         select_parts: list[str] = list(self._group_by_fields)
 
-        # Counter + variables for subquery annotations
-        counter: list[int] = [0]
+        # Determine the next counter value after WHERE clause variables
+        next_counter = max((int(k[2:]) for k in filter_vars if k.startswith("_f")), default=-1) + 1
+        counter: list[int] = [next_counter]
         sub_vars: dict[str, Any] = {}
 
         for alias, annotation in self._annotations.items():
@@ -613,9 +623,6 @@ class QuerySet:
             self._variables.update(sub_vars)
 
         select_clause = ", ".join(select_parts)
-
-        # Build WHERE clause
-        where_clause = self._compile_where_clause()
 
         # Build GROUP BY clause
         if self._group_by_fields:
@@ -934,10 +941,24 @@ class QuerySet:
         query = self._compile_query()
 
         # ── Cache: check for hit ────────────────────────────────────────
+        cache_key: str | None = None
         if self._cache_ttl is not None:
             from .cache import QueryCache
 
-            cache_key = QueryCache.make_key(query, self._variables, self._model_table)
+            # Include prefetch config in key so different prefetch combos
+            # get separate cache entries.
+            prefetch_fp = ""
+            if self._prefetch_related:
+                parts = []
+                for p in self._prefetch_related:
+                    if isinstance(p, Prefetch):
+                        parts.append(f"{p.relation_name}:{p.to_attr}")
+                    else:
+                        parts.append(str(p))
+                prefetch_fp = "|".join(parts)
+
+            key_vars = {**self._variables, "_pfp": prefetch_fp} if prefetch_fp else self._variables
+            cache_key = QueryCache.make_key(query, key_vars, self._model_table)
             cached = QueryCache.get(cache_key)
             if cached is not None:
                 return cached
@@ -954,11 +975,11 @@ class QuerySet:
         if self._prefetch_related and isinstance(parsed, list):
             await self._execute_prefetch(parsed)
 
-        # ── Cache: store result ─────────────────────────────────────────
-        if self._cache_ttl is not None:
+        # ── Cache: store result (after prefetch, so hits include prefetched data)
+        if cache_key is not None:
             from .cache import QueryCache
 
-            QueryCache.set(cache_key, parsed, self._model_table, self._cache_ttl)  # type: ignore[possibly-undefined]
+            QueryCache.set(cache_key, parsed, self._model_table, self._cache_ttl)  # type: ignore[arg-type]
 
         return parsed
 

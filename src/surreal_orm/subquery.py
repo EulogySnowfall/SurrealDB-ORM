@@ -13,7 +13,7 @@ Example::
     users = await User.objects().filter(
         age__in=Subquery(active_ages),
     ).exec()
-    # Generates: SELECT * FROM users WHERE age IN (SELECT age FROM users WHERE is_active = $_f0);
+    # Generates: SELECT * FROM users WHERE age IN (SELECT VALUE age FROM users WHERE is_active = $_f0);
 """
 
 from __future__ import annotations

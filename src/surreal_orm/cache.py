@@ -25,6 +25,7 @@ Example::
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -46,7 +47,7 @@ class _CacheEntry:
 
 class QueryCache:
     """
-    Global query cache with TTL, LRU eviction, and signal-based invalidation.
+    Global query cache with TTL, FIFO eviction, and signal-based invalidation.
 
     This is a class-level singleton — all configuration and state is stored as
     class attributes.  Call ``configure()`` once at startup to set defaults.
@@ -82,7 +83,7 @@ class QueryCache:
 
         Args:
             default_ttl: Default time-to-live in seconds for cache entries.
-            max_size: Maximum number of cached entries (oldest evicted first).
+            max_size: Maximum number of cached entries (FIFO eviction).
             enabled: Whether the cache is active.
         """
         cls._default_ttl = default_ttl
@@ -115,16 +116,21 @@ class QueryCache:
         """
         Retrieve a cached result by key.
 
-        Returns ``None`` if the key is missing or expired (expired entries
-        are removed on access).
+        Returns ``None`` if the cache is disabled, the key is missing, or
+        the entry has expired (expired entries are removed on access).
+
+        A deep copy of the stored data is returned so that callers cannot
+        accidentally mutate the cached value.
         """
+        if not cls._enabled:
+            return None
         entry = cls._cache.get(key)
         if entry is None:
             return None
         if time.monotonic() > entry.expires_at:
             cls._remove_key(key)
             return None
-        return entry.data
+        return copy.deepcopy(entry.data)
 
     @classmethod
     def set(
@@ -151,7 +157,7 @@ class QueryCache:
             cls._evict_oldest()
 
         expires_at = time.monotonic() + (ttl if ttl is not None else cls._default_ttl)
-        cls._cache[key] = _CacheEntry(data=data, table=table, expires_at=expires_at)
+        cls._cache[key] = _CacheEntry(data=copy.deepcopy(data), table=table, expires_at=expires_at)
 
         if table not in cls._table_keys:
             cls._table_keys[table] = set()
@@ -211,10 +217,11 @@ class QueryCache:
 
     @classmethod
     def _evict_oldest(cls) -> None:
-        """Evict the entry with the earliest expiration time."""
+        """Evict the oldest cache entry based on insertion order (FIFO)."""
         if not cls._cache:
             return
-        oldest_key = min(cls._cache, key=lambda k: cls._cache[k].expires_at)
+        # dict preserves insertion order in Python 3.7+
+        oldest_key = next(iter(cls._cache))
         cls._remove_key(oldest_key)
 
     @classmethod

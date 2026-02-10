@@ -22,7 +22,7 @@
   # Users who placed orders above $100
   top_ids = Order.objects().filter(total__gte=100).select("user_id")
   users = await User.objects().filter(id__in=Subquery(top_ids)).exec()
-  # SELECT * FROM users WHERE id IN (SELECT user_id FROM orders WHERE total >= $_f0);
+  # SELECT * FROM users WHERE id IN (SELECT VALUE user_id FROM orders WHERE total >= $_f0);
 
   # Scalar subquery in annotate
   users = await User.objects().annotate(
@@ -58,7 +58,7 @@
   - **`QueryCache.configure()`** — Global settings: `default_ttl`, `max_size`, `enabled`
   - **`QuerySet.cache(ttl=N)`** — Opt-in caching per query
   - SHA-256 cache keys from query + variables + table
-  - LRU eviction at `max_size`
+  - FIFO eviction at `max_size`
   - Auto-invalidation via `post_save`, `post_delete`, `post_update` signals
 
 - **Prefetch Objects** — Fine-grained control over `prefetch_related()` batching
@@ -1235,7 +1235,7 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 ### Completed (0.11.0) - Advanced Queries & Caching
 
 - [x] `Subquery` class for inline sub-SELECT in filters and annotations
-- [x] `QueryCache` with TTL, LRU eviction, and signal-based auto-invalidation
+- [x] `QueryCache` with TTL, FIFO eviction, and signal-based auto-invalidation
 - [x] `Prefetch` objects for fine-grained `prefetch_related()` control
 - [x] `QuerySet.cache(ttl=N)` opt-in caching method
 - [x] `_execute_prefetch()` batch-fetching after main query
