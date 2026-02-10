@@ -329,6 +329,7 @@ async def test_post_live_change_signal_fires() -> None:
         signal_calls.append(kwargs)
 
     try:
+
         async def collect_one_event() -> None:
             async with LiveTestPlayer.objects().live() as stream:
                 async for _ in stream:

@@ -368,9 +368,13 @@ class TestQuerySetLive:
         """live() works with Q object filters."""
         from src.surreal_orm.q import Q
 
-        stream = PlayerModel.objects().filter(
-            Q(name="alice") | Q(name="bob"),
-        ).live()
+        stream = (
+            PlayerModel.objects()
+            .filter(
+                Q(name="alice") | Q(name="bob"),
+            )
+            .live()
+        )
         assert stream._where is not None
         assert "OR" in stream._where
 
@@ -649,7 +653,10 @@ class TestChangeModelStreamEdgeCases:
 
         now = datetime(2026, 1, 1, 0, 0, 0)
         stream = ChangeModelStream(
-            model=PlayerModel, connection=None, table="players", since=now,
+            model=PlayerModel,
+            connection=None,
+            table="players",
+            since=now,
         )
         assert stream._since == now
 
@@ -669,9 +676,15 @@ class TestQuerySetLiveExtended:
 
     def test_live_with_multiple_filters(self) -> None:
         """live() with multiple filter conditions creates a combined WHERE clause."""
-        stream = PlayerModel.objects().filter(
-            role="admin", age__gte=18, name__startswith="A",
-        ).live()
+        stream = (
+            PlayerModel.objects()
+            .filter(
+                role="admin",
+                age__gte=18,
+                name__startswith="A",
+            )
+            .live()
+        )
         assert stream._where is not None
         assert "role" in stream._where
         assert "age" in stream._where
@@ -679,12 +692,7 @@ class TestQuerySetLiveExtended:
 
     def test_live_with_explicit_variables_merged(self) -> None:
         """live() merges explicit variables with filter variables."""
-        stream = (
-            PlayerModel.objects()
-            .filter(role="$user_role")
-            .variables(user_role="admin")
-            .live()
-        )
+        stream = PlayerModel.objects().filter(role="$user_role").variables(user_role="admin").live()
         assert stream._params is not None
         assert "user_role" in stream._params
         assert stream._params["user_role"] == "admin"
