@@ -13,10 +13,8 @@ LOOKUP_OPERATORS = {
     "not_contains": "CONTAINSNOT",
     "containsall": "CONTAINSALL",
     "containsany": "CONTAINSANY",
-    "startswith": "STARTSWITH",
-    "istartswith": "STARTSWITH",
-    "endswith": "ENDSWITH",
-    "iendswith": "ENDSWITH",
+    # startswith/endswith are handled via string::starts_with() / string::ends_with()
+    # in _render_condition — they must NOT appear here as SurrealQL operators.
     "match": "MATCH",
     "regex": "REGEX",
     "iregex": "REGEX",
