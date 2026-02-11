@@ -7,6 +7,7 @@ built-in functions for encryption, validation, and other operations.
 
 from .computed import Computed, get_computed_expression, is_computed_field
 from .encrypted import Encrypted, EncryptedField, EncryptedFieldInfo
+from .vector import VectorField, get_vector_info, is_vector_field
 from .relation import (
     ForeignKey,
     ManyToMany,
@@ -28,6 +29,10 @@ __all__ = [
     "Encrypted",
     "EncryptedField",
     "EncryptedFieldInfo",
+    # Vector fields
+    "VectorField",
+    "is_vector_field",
+    "get_vector_info",
     # Relation fields
     "ForeignKey",
     "ManyToMany",

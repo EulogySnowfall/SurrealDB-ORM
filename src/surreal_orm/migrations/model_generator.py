@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from .state import FieldState, SchemaState, TableState
+from .state import FieldState, IndexState, SchemaState, TableState
 
 # SurrealDB type → Python type annotation
 _SURREAL_TO_PYTHON: dict[str, str] = {
@@ -137,11 +137,28 @@ class ModelCodeGenerator:
         lines.append("")
         lines.append("    id: str | None = None")
 
+        # Build a map of field → HNSW index for VectorField generation
+        hnsw_indexes: dict[str, "IndexState"] = {}
+        for idx in table.indexes.values():
+            if idx.hnsw and len(idx.fields) == 1:
+                hnsw_indexes[idx.fields[0]] = idx
+
         # Generate fields
         for _field_name, field_state in sorted(table.fields.items()):
-            field_line, field_imports = self._generate_field(field_state)
-            lines.append(f"    {field_line}")
-            extra_imports.update(field_imports)
+            hnsw_idx = hnsw_indexes.get(field_state.name)
+            if hnsw_idx and hnsw_idx.dimension:
+                # Generate VectorField annotation
+                extra_imports.add("from surreal_orm.fields import VectorField")
+                vtype = hnsw_idx.vector_type or "F32"
+                if vtype == "F32":
+                    field_line = f"{field_state.name}: VectorField[{hnsw_idx.dimension}]"
+                else:
+                    field_line = f'{field_state.name}: VectorField[{hnsw_idx.dimension}, "{vtype}"]'
+                lines.append(f"    {field_line}")
+            else:
+                field_line, field_imports = self._generate_field(field_state)
+                lines.append(f"    {field_line}")
+                extra_imports.update(field_imports)
 
         return "\n".join(lines), extra_imports
 

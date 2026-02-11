@@ -6,8 +6,8 @@ Only the **latest released version** receives security updates until v1.0.0:
 
 | Version    | Supported          |
 | ---------- | ------------------ |
-| **0.11.x** | :white_check_mark: |
-| < 0.11.x   | :x:                |
+| **0.12.x** | :white_check_mark: |
+| < 0.12.x   | :x:                |
 
 ## Versioning Scheme
 

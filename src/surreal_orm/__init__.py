@@ -25,7 +25,7 @@ from .types import (
     SchemaMode,
     TableType,
 )
-from .fields import Computed, Encrypted
+from .fields import Computed, Encrypted, VectorField
 from .fields import (
     ForeignKey,
     ManyToMany,
@@ -43,10 +43,12 @@ from .q import Q
 from .subquery import Subquery
 from .cache import QueryCache
 from .prefetch import Prefetch
+from .search import SearchScore, SearchHighlight
 from .surreal_function import SurrealFunc
 from .utils import retry_on_conflict
 from .live import LiveModelStream, ModelChangeEvent, ChangeModelStream
 from .introspection import generate_models_from_db, schema_diff
+from .migrations.operations import DefineAnalyzer
 from .signals import (
     Signal,
     pre_save,
@@ -94,6 +96,7 @@ __all__ = [
     # Fields
     "Computed",
     "Encrypted",
+    "VectorField",
     # Relations
     "ForeignKey",
     "ManyToMany",
@@ -131,13 +134,18 @@ __all__ = [
     "QueryCache",
     # Prefetch
     "Prefetch",
+    # Search
+    "SearchScore",
+    "SearchHighlight",
     # Server-side functions
     "SurrealFunc",
     # Introspection
     "generate_models_from_db",
     "schema_diff",
+    # Migrations
+    "DefineAnalyzer",
     # Utilities
     "retry_on_conflict",
 ]
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"

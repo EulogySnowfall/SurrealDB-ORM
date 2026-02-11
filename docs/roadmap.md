@@ -26,8 +26,10 @@
 | 0.8.0   | Released | Auth Module Fixes + Computed Fields                       |
 | 0.9.0   | Released | ORM Live Models + Change Feed Integration                 |
 | 0.10.0  | Released | Schema Introspection & Multi-DB                           |
-| 0.11.0  | Planned  | Advanced Queries & Caching                                |
-| 0.12.0  | Planned  | Testing & Developer Experience                            |
+| 0.11.0  | Released | Advanced Queries & Caching                                |
+| 0.12.0  | Released | Vector Search & Full-Text Search                          |
+| 0.13.0  | Planned  | Events, Geospatial & Materialized Views                   |
+| 0.14.0  | Planned  | Testing & Developer Experience                            |
 
 ---
 
@@ -881,7 +883,337 @@ users = await User.objects().prefetch_related(
 
 ---
 
-## v0.12.0 - Testing & Developer Experience (Planned)
+## v0.12.0 - Vector Search & Full-Text Search (Released)
+
+**Goal:** First-class support for AI/RAG pipelines and search-heavy applications by leveraging SurrealDB's native vector similarity and full-text search capabilities.
+
+**Status:** Implemented and released.
+
+### 1. Vector Fields & HNSW Indexes
+
+New `VectorField` type and HNSW index support for embedding storage and similarity search:
+
+```python
+from surreal_orm import BaseSurrealModel, SurrealConfigDict
+from surreal_orm.fields import VectorField
+
+class Document(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="documents")
+
+    title: str
+    content: str
+    embedding: VectorField(dimension=1536, type="F32")
+```
+
+**Migration support:**
+
+```python
+from surreal_orm.migrations.operations import CreateIndex
+
+# HNSW vector index
+CreateIndex(
+    table="documents",
+    name="idx_embedding",
+    fields=["embedding"],
+    hnsw=True,
+    dimension=1536,
+    distance="COSINE",  # COSINE | EUCLIDEAN | MANHATTAN | MINKOWSKI | CHEBYSHEV | HAMMING
+    type="F32",         # F32 | F64 | I16 | I32 | I64
+    efc=150,
+    m=12,
+)
+```
+
+Generates:
+
+```sql
+DEFINE INDEX idx_embedding ON documents FIELDS embedding
+    HNSW DIMENSION 1536 DIST COSINE TYPE F32 EFC 150 M 12;
+```
+
+### 2. Vector Similarity Search (`similar_to()`)
+
+New QuerySet method for KNN-based similarity search using the `<|N|>` operator:
+
+```python
+# Basic similarity search (top 10 nearest neighbours)
+results = await Document.objects().similar_to(
+    field="embedding",
+    vector=query_embedding,
+    limit=10,
+    distance="cosine",
+).exec()
+
+# With search effort tuning (ef parameter)
+results = await Document.objects().similar_to(
+    field="embedding",
+    vector=query_embedding,
+    limit=10,
+    ef=40,
+).exec()
+# SELECT *, vector::distance::knn() AS _distance
+# FROM documents WHERE embedding <|10, 40|> $_vec
+# ORDER BY _distance;
+
+# Combined with standard filters (pre-filter)
+results = await Document.objects().similar_to(
+    field="embedding",
+    vector=query_embedding,
+    limit=5,
+).filter(category="science").exec()
+# WHERE category = $_f0 AND embedding <|5|> $_vec
+
+# Access distance on results
+for doc in results:
+    print(f"{doc.title}: distance={doc._knn_distance}")
+```
+
+### 3. Vector Functions
+
+Expose SurrealDB's 22+ vector functions via QuerySet annotations and `SurrealFunc`:
+
+```python
+from surreal_orm import SurrealFunc
+
+# Distance calculations in annotations
+docs = await Document.objects().annotate(
+    cosine_sim=SurrealFunc("vector::similarity::cosine(embedding, $query_vec)"),
+).variables(query_vec=my_vector).order_by("-cosine_sim").limit(10).exec()
+
+# Available vector functions:
+# vector::distance::euclidean, manhattan, chebyshev, hamming, minkowski, knn
+# vector::similarity::cosine, jaccard, pearson
+# vector::add, subtract, multiply, divide, scale
+# vector::dot, cross, magnitude, normalize, angle, project
+```
+
+### 4. Full-Text Search Analyzers
+
+Define custom text analyzers for full-text search:
+
+```python
+from surreal_orm.migrations.operations import DefineAnalyzer
+
+# In migrations
+DefineAnalyzer(
+    name="english",
+    tokenizers=["class", "blank"],
+    filters=["lowercase", "ascii", "snowball(english)"],
+)
+
+DefineAnalyzer(
+    name="autocomplete",
+    tokenizers=["class"],
+    filters=["lowercase", "edgengram(2, 10)"],
+)
+```
+
+Generates:
+
+```sql
+DEFINE ANALYZER english TOKENIZERS class, blank FILTERS lowercase, ascii, snowball(english);
+DEFINE ANALYZER autocomplete TOKENIZERS class FILTERS lowercase, edgengram(2, 10);
+```
+
+**Tokenizers:** `blank`, `camel`, `class`, `punct`
+**Filters:** `ascii`, `lowercase`, `uppercase`, `edgengram(min, max)`, `ngram(min, max)`, `snowball(lang)`, `mapper(path)`
+
+### 5. Full-Text Search Indexes (BM25 + Highlights)
+
+FULLTEXT index support with BM25 scoring and highlights:
+
+```python
+from surreal_orm.migrations.operations import CreateIndex
+
+CreateIndex(
+    table="articles",
+    name="idx_content_fts",
+    fields=["content"],
+    fulltext=True,
+    analyzer="english",
+    bm25=(1.2, 0.75),   # (k1, b) parameters
+    highlights=True,
+)
+```
+
+Generates:
+
+```sql
+DEFINE INDEX idx_content_fts ON articles FIELDS content
+    SEARCH ANALYZER english BM25(1.2, 0.75) HIGHLIGHTS;
+```
+
+### 6. Full-Text Search QuerySet (`search()`)
+
+New QuerySet method using the `@@` matches operator with scoring and highlighting:
+
+```python
+from surreal_orm.search import SearchScore, SearchHighlight
+
+# Simple full-text search
+results = await Article.objects().search(content="machine learning").exec()
+# SELECT * FROM articles WHERE content @@ 'machine learning';
+
+# Multi-field search with scoring and highlights
+results = await Article.objects().search(
+    title="quantum computing",       # title @0@ 'quantum computing'
+    body="entanglement theory",      # body @1@ 'entanglement theory'
+).annotate(
+    relevance=SearchScore(0) + SearchScore(1),
+    title_hl=SearchHighlight("<b>", "</b>", 0),
+    body_hl=SearchHighlight("<b>", "</b>", 1),
+).order_by("-relevance").exec()
+# SELECT *,
+#   search::score(0) + search::score(1) AS relevance,
+#   search::highlight('<b>', '</b>', 0) AS title_hl,
+#   search::highlight('<b>', '</b>', 1) AS body_hl
+# FROM articles
+# WHERE title @0@ 'quantum computing' OR body @1@ 'entanglement theory'
+# ORDER BY relevance DESC;
+
+# Access results
+for article in results:
+    print(f"{article.title_hl} — relevance: {article.relevance}")
+```
+
+### 7. Hybrid Search (Vector + Full-Text)
+
+Combine vector similarity with full-text search for RAG pipelines:
+
+```python
+# Reciprocal Rank Fusion
+results = await Document.objects().hybrid_search(
+    vector_field="embedding",
+    vector=query_embedding,
+    vector_limit=20,
+    text_field="content",
+    text_query="machine learning transformers",
+    text_limit=20,
+    rrf_k=60,
+).exec()
+```
+
+### 8. Advanced Index Operations
+
+Expand `CreateIndex` and `IndexState` to support all SurrealDB index variants:
+
+```python
+# Count index (v3.0.0+)
+CreateIndex(table="metrics", name="idx_count", count=True)
+
+# Non-blocking index creation
+CreateIndex(table="documents", name="idx_embed", ..., concurrently=True)
+
+# Deferred consistency (high-volume ingestion)
+CreateIndex(table="logs", name="idx_logs", ..., defer=True)
+```
+
+### 9. Schema Introspection Updates
+
+- `DatabaseIntrospector` parses HNSW and FULLTEXT index parameters
+- `ModelCodeGenerator` generates `VectorField` annotations
+- `define_parser` handles DEFINE ANALYZER statements
+- `schema_diff()` detects index parameter changes (dimension, distance, BM25)
+- CLI `inspectdb` generates vector field annotations from existing DB
+
+---
+
+## v0.13.0 - Events, Geospatial & Materialized Views (Planned)
+
+**Goal:** Server-side triggers, location-based queries, and auto-maintained aggregate tables.
+
+### DEFINE EVENT (Server-Side Triggers)
+
+Declarative server-side event triggers on model lifecycle:
+
+```python
+from surreal_orm.events import Event
+
+class User(BaseSurrealModel):
+    email: str
+    name: str
+
+    class Meta:
+        events = [
+            Event(
+                "email_audit",
+                when="$before.email != $after.email",
+                then="""CREATE audit_log SET
+                    table = 'user', record = $value.id,
+                    action = $event, changed_at = time::now()""",
+            ),
+            Event(
+                "notify_webhook",
+                when="$event = 'CREATE'",
+                then="http::post('https://hooks.example.com', { id: $after.id })",
+                async_mode=True,
+                retry=3,
+            ),
+        ]
+```
+
+Migration operations: `DefineEvent`, `RemoveEvent`
+
+### Geospatial Fields
+
+Typed geometry fields and distance-based queries:
+
+```python
+from surreal_orm.fields import PointField, PolygonField
+
+class Store(BaseSurrealModel):
+    name: str
+    location: PointField          # geometry<point>
+    delivery_area: PolygonField   # geometry<polygon>
+
+# Distance-based queries
+nearby = await Store.objects().filter(
+    location__distance_lt=((-73.98, 40.74), 5000),  # Within 5km
+).exec()
+
+# Geo annotations
+stores = await Store.objects().annotate(
+    dist=GeoFunc.distance("location", (-73.98, 40.74)),
+).order_by("dist").limit(10).exec()
+```
+
+### Materialized Views
+
+Read-only models backed by `DEFINE TABLE ... AS SELECT`:
+
+```python
+from surreal_orm import MaterializedView
+
+class OrderStats(MaterializedView):
+    source_query = """
+        SELECT status, count() AS total, math::sum(amount) AS revenue
+        FROM orders GROUP BY status
+    """
+    status: str
+    total: int
+    revenue: float
+
+# Auto-maintained by SurrealDB — read-only queries
+stats = await OrderStats.objects().all()
+```
+
+### TYPE RELATION Enforcement
+
+Enforce graph edge constraints in migrations:
+
+```python
+class Likes(BaseSurrealModel):
+    model_config = SurrealConfigDict(
+        table_type=TableType.RELATION,
+        relation_in=["person"],
+        relation_out=["blog_post", "book"],
+        enforced=True,
+    )
+```
+
+---
+
+## v0.14.0 - Testing & Developer Experience (Planned)
 
 **Goal:** First-class testing utilities and developer tooling.
 
@@ -951,6 +1283,16 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 
 ---
 
+## Future Versions (Planned)
+
+| Version | Focus            | Key Features                                                |
+| ------- | ---------------- | ----------------------------------------------------------- |
+| 0.15.0  | Graph Power      | Recursive traversal, shortest path, path collection         |
+| 0.16.0  | ML & Data        | SurrealML inference, JSONL import/export, DB dump/restore   |
+| 0.17.0  | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring    |
+
+---
+
 ## Implementation Priority
 
 | Feature                      | Version | Priority | Status | Dependencies     |
@@ -999,12 +1341,22 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 | WebSocket ConnectionManager  | 0.9.0   | Medium   | Done   | SDK WebSocket    |
 | Schema Introspection         | 0.10.0  | High     | Done   | Migrations       |
 | Multi-Database Routing       | 0.10.0  | High     | Done   | ConnectionManager|
-| Subqueries                   | 0.11.0  | High     | -      | QuerySet         |
-| Query Cache                  | 0.11.0  | Medium   | -      | -                |
-| Prefetch Objects             | 0.11.0  | Medium   | -      | Relations        |
-| Test Fixtures                | 0.12.0  | High     | -      | -                |
-| Model Factories              | 0.12.0  | High     | -      | -                |
-| Debug Toolbar / QueryLogger  | 0.12.0  | Medium   | -      | -                |
+| Subqueries                   | 0.11.0  | High     | Done   | QuerySet         |
+| Query Cache                  | 0.11.0  | Medium   | Done   | -                |
+| Prefetch Objects             | 0.11.0  | Medium   | Done   | Relations        |
+| VectorField + HNSW Index     | 0.12.0  | Critical | Done   | Migrations       |
+| similar_to() KNN search      | 0.12.0  | Critical | Done   | VectorField      |
+| Full-Text Analyzer + Index   | 0.12.0  | High     | Done   | Migrations       |
+| search() QuerySet method     | 0.12.0  | High     | Done   | FTS Index        |
+| Hybrid Search (Vector + FTS) | 0.12.0  | Medium   | Done   | Vector + FTS     |
+| Advanced Index Operations    | 0.12.0  | High     | Done   | Migrations       |
+| DEFINE EVENT (triggers)      | 0.13.0  | High     | -      | Migrations       |
+| Geospatial Fields            | 0.13.0  | Medium   | -      | -                |
+| Materialized Views           | 0.13.0  | Medium   | -      | -                |
+| TYPE RELATION enforcement    | 0.13.0  | Low      | -      | Relations        |
+| Test Fixtures                | 0.14.0  | High     | -      | -                |
+| Model Factories              | 0.14.0  | High     | -      | -                |
+| Debug Toolbar / QueryLogger  | 0.14.0  | Medium   | -      | -                |
 
 ---
 

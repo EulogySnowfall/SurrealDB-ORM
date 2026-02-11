@@ -10,7 +10,96 @@
 
 ---
 
-## Current Version: 0.11.0 (Alpha)
+## Current Version: 0.12.0 (Alpha)
+
+### What's New in 0.12.0
+
+- **Vector Similarity Search** — KNN search with HNSW indexes for AI/RAG pipelines
+
+  ```python
+  from surreal_orm.fields import VectorField
+
+  class Document(BaseSurrealModel):
+      title: str
+      embedding: VectorField[1536]
+
+  # KNN similarity search (top 10 nearest neighbours)
+  docs = await Document.objects().similar_to("embedding", query_vector, limit=10).exec()
+
+  # With search effort tuning
+  docs = await Document.objects().similar_to("embedding", query_vector, limit=10, ef=40).exec()
+  # SELECT *, vector::distance::knn() AS _knn_distance FROM documents
+  # WHERE embedding <|10, 40|> $_knn_vec ORDER BY _knn_distance;
+
+  # Combined with filters
+  docs = await Document.objects().filter(category="science").similar_to(
+      "embedding", query_vector, limit=5
+  ).exec()
+  ```
+
+  - **`VectorField[dim]`** and **`VectorField[dim, "F64"]`** — Type annotation with dimension and optional vector type
+  - **`is_vector_field()`**, **`get_vector_info()`** — Detection and metadata extraction helpers
+  - **`similar_to(field, vector, limit, *, ef)`** — KNN search using `<|N|>` operator
+  - Auto-adds `vector::distance::knn() AS _knn_distance` to SELECT and ORDER BY
+  - `_knn_distance` attached to result model instances
+
+- **Full-Text Search** — BM25 scoring, highlighting, and multi-field search
+
+  ```python
+  from surreal_orm import SearchScore, SearchHighlight
+
+  # Single-field search
+  posts = await Post.objects().search(title="quantum").exec()
+
+  # Multi-field with scoring and highlights
+  results = await Post.objects().search(title="quantum", body="physics").annotate(
+      relevance=SearchScore(0),
+      snippet=SearchHighlight("<b>", "</b>", 0),
+  ).exec()
+  ```
+
+  - **`QuerySet.search(**field_queries)`** — FTS using `@N@` match operator
+  - **`SearchScore(ref)`** — Annotation for `search::score(N)` BM25 relevance
+  - **`SearchHighlight(open_tag, close_tag, ref)`** — Annotation for `search::highlight()`
+  - Multi-field search with auto-incrementing match references
+
+- **Hybrid Search** — Reciprocal Rank Fusion combining vector + FTS
+
+  ```python
+  results = await Document.objects().hybrid_search(
+      vector_field="embedding", vector=query_vec, vector_limit=20,
+      text_field="content", text_query="machine learning", text_limit=20,
+      rrf_k=60,
+  )
+  ```
+
+  - **`hybrid_search()`** — Uses `search::rrf()` for ranking fusion
+  - Configurable `vector_limit`, `text_limit`, `rrf_k` parameters
+
+- **HNSW & FTS Index Operations** — Full migration support for vector and full-text indexes
+
+  ```python
+  from surreal_orm.migrations.operations import CreateIndex, DefineAnalyzer
+
+  # HNSW vector index
+  CreateIndex(table="documents", name="vec_idx", fields=["embedding"],
+              hnsw=True, dimension=1536, dist="COSINE", vector_type="F32")
+
+  # FTS index with BM25 and highlights
+  CreateIndex(table="posts", name="ft_title", fields=["title"],
+              search_analyzer="my_az", bm25=(1.2, 0.75), highlights=True)
+
+  # Custom text analyzer
+  DefineAnalyzer(name="english", tokenizers=["blank", "class"],
+                 filters=["lowercase", "snowball(english)"])
+  ```
+
+  - `CreateIndex` expanded: `hnsw`, `dimension`, `dist`, `vector_type`, `efc`, `m`, `concurrently`, `bm25`, `highlights`
+  - `DefineAnalyzer` / `RemoveAnalyzer` migration operations
+  - `AnalyzerState` and expanded `IndexState` for schema diffing
+  - `parse_define_index()` and `parse_define_analyzer()` parsers
+  - `DatabaseIntrospector` parses analyzers from `INFO FOR DB`
+  - `ModelCodeGenerator` generates `VectorField` annotations for HNSW-indexed fields
 
 ### What's New in 0.11.0
 
@@ -1239,6 +1328,20 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `Prefetch` objects for fine-grained `prefetch_related()` control
 - [x] `QuerySet.cache(ttl=N)` opt-in caching method
 - [x] `_execute_prefetch()` batch-fetching after main query
+
+### Completed (0.12.0) - Vector Search & Full-Text Search
+
+- [x] `VectorField[dim]` type annotation with dimension and optional vector type
+- [x] `is_vector_field()`, `get_vector_info()` detection helpers
+- [x] `similar_to(field, vector, limit, *, ef)` KNN search on QuerySet
+- [x] `search(**field_queries)` full-text search on QuerySet
+- [x] `SearchScore(ref)` and `SearchHighlight(open, close, ref)` annotation helpers
+- [x] `hybrid_search()` combining vector + FTS via `search::rrf()`
+- [x] `CreateIndex` expanded with HNSW + BM25 parameters
+- [x] `DefineAnalyzer` / `RemoveAnalyzer` migration operations
+- [x] `AnalyzerState` and expanded `IndexState` for schema diffing
+- [x] `parse_define_index()` and `parse_define_analyzer()` parsers
+- [x] `DatabaseIntrospector` parses analyzers, `ModelCodeGenerator` generates `VectorField`
 
 ---
 
