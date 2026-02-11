@@ -902,7 +902,7 @@ class Document(BaseSurrealModel):
 
     title: str
     content: str
-    embedding: VectorField(dimension=1536, type="F32")
+    embedding: VectorField[1536]
 ```
 
 **Migration support:**
@@ -917,8 +917,8 @@ CreateIndex(
     fields=["embedding"],
     hnsw=True,
     dimension=1536,
-    distance="COSINE",  # COSINE | EUCLIDEAN | MANHATTAN | MINKOWSKI | CHEBYSHEV | HAMMING
-    type="F32",         # F32 | F64 | I16 | I32 | I64
+    dist="COSINE",         # COSINE | EUCLIDEAN | MANHATTAN | MINKOWSKI | CHEBYSHEV | HAMMING
+    vector_type="F32",     # F32 | F64 | I16 | I32 | I64
     efc=150,
     m=12,
 )
@@ -938,16 +938,15 @@ New QuerySet method for KNN-based similarity search using the `<|N|>` operator:
 ```python
 # Basic similarity search (top 10 nearest neighbours)
 results = await Document.objects().similar_to(
-    field="embedding",
-    vector=query_embedding,
+    "embedding",
+    query_embedding,
     limit=10,
-    distance="cosine",
 ).exec()
 
 # With search effort tuning (ef parameter)
 results = await Document.objects().similar_to(
-    field="embedding",
-    vector=query_embedding,
+    "embedding",
+    query_embedding,
     limit=10,
     ef=40,
 ).exec()
@@ -957,8 +956,8 @@ results = await Document.objects().similar_to(
 
 # Combined with standard filters (pre-filter)
 results = await Document.objects().similar_to(
-    field="embedding",
-    vector=query_embedding,
+    "embedding",
+    query_embedding,
     limit=5,
 ).filter(category="science").exec()
 # WHERE category = $_f0 AND embedding <|5|> $_vec
@@ -1052,28 +1051,30 @@ from surreal_orm.search import SearchScore, SearchHighlight
 
 # Simple full-text search
 results = await Article.objects().search(content="machine learning").exec()
-# SELECT * FROM articles WHERE content @@ 'machine learning';
+# SELECT * FROM articles WHERE content @0@ $_s0;
 
 # Multi-field search with scoring and highlights
 results = await Article.objects().search(
     title="quantum computing",       # title @0@ 'quantum computing'
     body="entanglement theory",      # body @1@ 'entanglement theory'
 ).annotate(
-    relevance=SearchScore(0) + SearchScore(1),
+    title_score=SearchScore(0),
+    body_score=SearchScore(1),
     title_hl=SearchHighlight("<b>", "</b>", 0),
     body_hl=SearchHighlight("<b>", "</b>", 1),
-).order_by("-relevance").exec()
+).order_by("-title_score").exec()
 # SELECT *,
-#   search::score(0) + search::score(1) AS relevance,
+#   search::score(0) AS title_score,
+#   search::score(1) AS body_score,
 #   search::highlight('<b>', '</b>', 0) AS title_hl,
 #   search::highlight('<b>', '</b>', 1) AS body_hl
 # FROM articles
-# WHERE title @0@ 'quantum computing' OR body @1@ 'entanglement theory'
-# ORDER BY relevance DESC;
+# WHERE title @0@ 'quantum computing' AND body @1@ 'entanglement theory'
+# ORDER BY title_score DESC;
 
 # Access results
 for article in results:
-    print(f"{article.title_hl} — relevance: {article.relevance}")
+    print(f"{article.title_hl} — title_score: {article.title_score}")
 ```
 
 ### 7. Hybrid Search (Vector + Full-Text)
@@ -1090,7 +1091,7 @@ results = await Document.objects().hybrid_search(
     text_query="machine learning transformers",
     text_limit=20,
     rrf_k=60,
-).exec()
+)
 ```
 
 ### 8. Advanced Index Operations

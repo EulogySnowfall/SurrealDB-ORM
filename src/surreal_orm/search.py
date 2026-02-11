@@ -87,7 +87,9 @@ class SearchHighlight:
 
     def to_surql(self, alias: str) -> str:
         """Render as ``search::highlight('open', 'close', N) AS alias``."""
-        return f"search::highlight('{self.open_tag}', '{self.close_tag}', {self.ref}) AS {alias}"
+        safe_open = self.open_tag.replace("'", "\\'")
+        safe_close = self.close_tag.replace("'", "\\'")
+        return f"search::highlight('{safe_open}', '{safe_close}', {self.ref}) AS {alias}"
 
     def __repr__(self) -> str:
         return f"SearchHighlight({self.open_tag!r}, {self.close_tag!r}, {self.ref})"

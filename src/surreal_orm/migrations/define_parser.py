@@ -430,30 +430,35 @@ def parse_define_index(statement: str) -> IndexState:
     # ── HNSW vector index ───────────────────────────────────────────
     hnsw = "HNSW" in upper_flags
 
+    # Vector-specific parameters are only meaningful for HNSW indexes.
+    # Parsing them for other index types (e.g. MTREE) would populate
+    # IndexState fields that later generate invalid CreateIndex SQL.
     dimension: int | None = None
-    dim_match = re.search(r"DIMENSION\s+(\d+)", flags_str, re.IGNORECASE)
-    if dim_match:
-        dimension = int(dim_match.group(1))
-
     dist: str | None = None
-    dist_match = re.search(r"DIST\s+(\S+)", flags_str, re.IGNORECASE)
-    if dist_match:
-        dist = dist_match.group(1).upper()
-
     vector_type: str | None = None
-    type_match = re.search(r"\bTYPE\s+(\S+)", flags_str, re.IGNORECASE)
-    if type_match:
-        vector_type = type_match.group(1).upper()
-
     efc: int | None = None
-    efc_match = re.search(r"EFC\s+(\d+)", flags_str, re.IGNORECASE)
-    if efc_match:
-        efc = int(efc_match.group(1))
-
     m_val: int | None = None
-    m_match = re.search(r"\bM\s+(\d+)", flags_str, re.IGNORECASE)
-    if m_match:
-        m_val = int(m_match.group(1))
+
+    if hnsw:
+        dim_match = re.search(r"DIMENSION\s+(\d+)", flags_str, re.IGNORECASE)
+        if dim_match:
+            dimension = int(dim_match.group(1))
+
+        dist_match = re.search(r"DIST\s+(\S+)", flags_str, re.IGNORECASE)
+        if dist_match:
+            dist = dist_match.group(1).upper()
+
+        type_match = re.search(r"\bTYPE\s+(\S+)", flags_str, re.IGNORECASE)
+        if type_match:
+            vector_type = type_match.group(1).upper()
+
+        efc_match = re.search(r"EFC\s+(\d+)", flags_str, re.IGNORECASE)
+        if efc_match:
+            efc = int(efc_match.group(1))
+
+        m_match = re.search(r"\bM\s+(\d+)", flags_str, re.IGNORECASE)
+        if m_match:
+            m_val = int(m_match.group(1))
 
     concurrently = "CONCURRENTLY" in upper_flags
 

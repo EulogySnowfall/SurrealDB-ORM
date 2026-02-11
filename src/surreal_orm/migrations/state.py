@@ -251,6 +251,22 @@ class SchemaState:
 
         operations: list[Operation] = []
 
+        # ── Analyzers first (indexes may reference them) ────────────
+        for analyzer_name, target_analyzer in target.analyzers.items():
+            if analyzer_name not in self.analyzers or self.analyzers[analyzer_name] != target_analyzer:
+                operations.append(
+                    DefineAnalyzer(
+                        name=target_analyzer.name,
+                        tokenizers=target_analyzer.tokenizers,
+                        filters=target_analyzer.filters,
+                    )
+                )
+
+        # Analyzers to remove
+        for analyzer_name in self.analyzers:
+            if analyzer_name not in target.analyzers:
+                operations.append(RemoveAnalyzer(name=analyzer_name))
+
         # Tables to create (in target but not in self)
         for table_name, target_table in target.tables.items():
             if table_name not in self.tables:
@@ -406,31 +422,6 @@ class SchemaState:
                             duration_session=target_table.access.duration_session,
                         )
                     )
-
-        # Analyzers to add/update
-        for analyzer_name, target_analyzer in target.analyzers.items():
-            if analyzer_name not in self.analyzers:
-                operations.append(
-                    DefineAnalyzer(
-                        name=target_analyzer.name,
-                        tokenizers=target_analyzer.tokenizers,
-                        filters=target_analyzer.filters,
-                    )
-                )
-            elif self.analyzers[analyzer_name] != target_analyzer:
-                # Analyzer changed — DEFINE ANALYZER is idempotent
-                operations.append(
-                    DefineAnalyzer(
-                        name=target_analyzer.name,
-                        tokenizers=target_analyzer.tokenizers,
-                        filters=target_analyzer.filters,
-                    )
-                )
-
-        # Analyzers to remove
-        for analyzer_name in self.analyzers:
-            if analyzer_name not in target.analyzers:
-                operations.append(RemoveAnalyzer(name=analyzer_name))
 
         return operations
 

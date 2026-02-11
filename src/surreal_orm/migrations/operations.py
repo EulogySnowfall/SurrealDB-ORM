@@ -427,34 +427,34 @@ class CreateIndex(Operation):
         if self.search_analyzer:
             parts.append(f"SEARCH ANALYZER {self.search_analyzer}")
 
-        if self.bm25 is True:
-            parts.append("BM25")
-        elif isinstance(self.bm25, tuple):
-            parts.append(f"BM25({self.bm25[0]},{self.bm25[1]})")
+            if self.bm25 is True:
+                parts.append("BM25")
+            elif isinstance(self.bm25, tuple):
+                parts.append(f"BM25({self.bm25[0]},{self.bm25[1]})")
 
-        if self.highlights:
-            parts.append("HIGHLIGHTS")
+            if self.highlights:
+                parts.append("HIGHLIGHTS")
 
         if self.hnsw:
             parts.append("HNSW")
 
-        if self.dimension is not None:
-            parts.append(f"DIMENSION {self.dimension}")
+            if self.dimension is not None:
+                parts.append(f"DIMENSION {self.dimension}")
 
-        if self.dist:
-            parts.append(f"DIST {self.dist}")
+            if self.dist:
+                parts.append(f"DIST {self.dist}")
 
-        if self.vector_type:
-            parts.append(f"TYPE {self.vector_type}")
+            if self.vector_type:
+                parts.append(f"TYPE {self.vector_type}")
 
-        if self.efc is not None:
-            parts.append(f"EFC {self.efc}")
+            if self.efc is not None:
+                parts.append(f"EFC {self.efc}")
 
-        if self.m is not None:
-            parts.append(f"M {self.m}")
+            if self.m is not None:
+                parts.append(f"M {self.m}")
 
-        if self.concurrently:
-            parts.append("CONCURRENTLY")
+            if self.concurrently:
+                parts.append("CONCURRENTLY")
 
         if self.comment:
             parts.append(f"COMMENT '{self.comment}'")

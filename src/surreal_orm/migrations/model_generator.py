@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from .state import FieldState, IndexState, SchemaState, TableState
+from .state import FieldState, SchemaState, TableState
 
 # SurrealDB type → Python type annotation
 _SURREAL_TO_PYTHON: dict[str, str] = {
@@ -138,7 +138,9 @@ class ModelCodeGenerator:
         lines.append("    id: str | None = None")
 
         # Build a map of field → HNSW index for VectorField generation
-        hnsw_indexes: dict[str, "IndexState"] = {}
+        from .state import IndexState
+
+        hnsw_indexes: dict[str, IndexState] = {}
         for idx in table.indexes.values():
             if idx.hnsw and len(idx.fields) == 1:
                 hnsw_indexes[idx.fields[0]] = idx

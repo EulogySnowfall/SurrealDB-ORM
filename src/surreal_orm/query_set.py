@@ -532,6 +532,8 @@ class QuerySet:
             for doc in docs:
                 print(doc.title, doc._knn_distance)
         """
+        if not _SAFE_IDENTIFIER_RE.match(field):
+            raise ValueError(f"Invalid field name for similar_to(): {field!r}")
         self._knn_field = field
         self._knn_vector = vector
         self._knn_limit = limit
@@ -574,6 +576,8 @@ class QuerySet:
         """
         ref = len(self._search_fields)
         for field_name, query_text in field_queries.items():
+            if not _SAFE_IDENTIFIER_RE.match(field_name):
+                raise ValueError(f"Invalid field name for search(): {field_name!r}")
             self._search_fields.append((field_name, query_text, ref))
             ref += 1
         return self
@@ -624,6 +628,11 @@ class QuerySet:
                 text_limit=10,
             )
         """
+        if not _SAFE_IDENTIFIER_RE.match(vector_field):
+            raise ValueError(f"Invalid field name for hybrid_search(): {vector_field!r}")
+        if not _SAFE_IDENTIFIER_RE.match(text_field):
+            raise ValueError(f"Invalid field name for hybrid_search(): {text_field!r}")
+
         # Build a raw query using LET bindings for each sub-query
         table = self._model_table
         variables: dict[str, Any] = {
@@ -1117,13 +1126,15 @@ class QuerySet:
         the results. If the data conforms to the model schema, it returns a list of model instances;
         otherwise, it returns a list of dictionaries.
 
-        When `annotate()` has been called, this returns the aggregated results as dictionaries
-        instead of model instances.
+        When `annotate()` has been called with ``Aggregation`` or ``Subquery`` annotations,
+        this returns the aggregated results as dictionaries (GROUP BY path).
+        ``SearchScore`` and ``SearchHighlight`` annotations are handled inline in the
+        SELECT clause and still return model instances.
 
         Returns:
             list[BaseSurrealModel] | list[dict]: A list of model instances if validation is successful,
-            otherwise a list of dictionaries representing the raw data. For annotated queries,
-            always returns a list of dictionaries.
+            otherwise a list of dictionaries representing the raw data. For aggregation/subquery
+            annotated queries, returns a list of dictionaries.
 
         Raises:
             SurrealDbError: If there is an issue executing the query.
