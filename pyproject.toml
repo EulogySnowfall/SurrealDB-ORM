@@ -93,7 +93,7 @@ include = ["src"]
 
 [dependency-groups]
 dev = [
-    "ipykernel>=6.29.5",
+    "ipykernel>=7.2.0",
     "mypy>=1.14.0",
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.0",
@@ -104,9 +104,11 @@ dev = [
     "isort>=5.13.2",
     "flake8>=7.1.1",
     "python-dotenv>=1.0.1",
+    "jupyterlab>=4.5.4",
+    "jupyter-core>=5.9.1",
 ]
 lint = [
-    "ruff>=0.8.4",
+    "ruff>=0.15.0",
 ]
 
 
