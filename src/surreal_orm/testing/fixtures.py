@@ -32,6 +32,17 @@ from surreal_orm.model_base import BaseSurrealModel
 logger = logging.getLogger(__name__)
 
 
+def _is_surreal_model(obj: object) -> bool:
+    """Check if *obj* is a SurrealModel instance (duck-type safe).
+
+    Using a duck-type check avoids false negatives caused by dual-import
+    paths (e.g. ``src.surreal_orm`` vs ``surreal_orm``), where
+    ``isinstance()`` would fail even though the object is functionally
+    the same class.
+    """
+    return hasattr(obj, "save") and hasattr(obj, "model_copy") and hasattr(obj, "get_table_name")
+
+
 def fixture(cls: type) -> type:
     """
     Decorator that scans a ``SurrealFixture`` subclass for model instances
@@ -47,7 +58,7 @@ def fixture(cls: type) -> type:
     instances: dict[str, BaseSurrealModel] = {}
     for attr_name in list(vars(cls)):
         value = getattr(cls, attr_name)
-        if isinstance(value, BaseSurrealModel):
+        if isinstance(value, BaseSurrealModel) or _is_surreal_model(value):
             instances[attr_name] = value
     cls._fixture_instances = instances  # type: ignore[attr-defined]
     return cls

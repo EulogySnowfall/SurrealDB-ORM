@@ -1105,7 +1105,7 @@ class BaseSurrealModel(BaseModel):
         This is a convenience method that delegates to SurrealDBConnectionManager.
 
         Usage:
-            async with User.transaction() as tx:
+            async with await User.transaction() as tx:
                 user1 = User(id="1", name="Alice")
                 await user1.save(tx=tx)
                 user2 = User(id="2", name="Bob")

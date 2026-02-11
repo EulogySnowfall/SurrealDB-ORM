@@ -1161,12 +1161,13 @@ class QuerySet:
             self._variables[var_name] = query_text
             where_parts.append(f"{field_name} @{ref_idx}@ ${var_name}")
 
-        # Geo: append distance filter (parameterized)
+        # Geo: append distance filter
+        # Note: SurrealDB cannot parse variables inside tuple constructors,
+        # so coordinates are inlined. max_distance is still parameterized.
         if self._geo_field and self._geo_point is not None and self._geo_max_distance is not None:
-            self._variables["_geo_lon"] = self._geo_point[0]
-            self._variables["_geo_lat"] = self._geo_point[1]
             self._variables["_geo_max"] = self._geo_max_distance
-            geo_expr = f"geo::distance({self._geo_field}, ($_geo_lon, $_geo_lat)) <= $_geo_max"
+            lon, lat = self._geo_point
+            geo_expr = f"geo::distance({self._geo_field}, ({lon}, {lat})) <= $_geo_max"
             where_parts.append(geo_expr)
 
         if where_parts:

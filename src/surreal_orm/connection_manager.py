@@ -715,7 +715,7 @@ class SurrealDBConnectionManager:
         Create a transaction context manager for atomic operations.
 
         Usage:
-            async with SurrealDBConnectionManager.transaction() as tx:
+            async with await SurrealDBConnectionManager.transaction() as tx:
                 user = User(name="Alice")
                 await user.save(tx=tx)
                 order = Order(user_id=user.id)
