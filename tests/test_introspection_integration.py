@@ -1,7 +1,7 @@
 """
 Integration tests for database introspection (v0.10.0).
 
-These tests require a running SurrealDB instance (port 8001).
+These tests require a running SurrealDB instance (port 8000).
 They create tables via raw SQL, then use DatabaseIntrospector
 to read back the schema and verify correctness.
 """
@@ -14,11 +14,8 @@ import pytest
 
 from src.surreal_orm.connection_manager import SurrealDBConnectionManager
 from src.surreal_orm.migrations.db_introspector import DatabaseIntrospector
+from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
 SURREALDB_DATABASE = "test_introspection"
 
 

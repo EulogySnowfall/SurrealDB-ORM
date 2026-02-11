@@ -14,9 +14,7 @@ from pydantic import Field
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.model_base import BaseSurrealModel
 
-
-# Test URLs - use same ports as other integration tests
-SURREALDB_URL = "http://localhost:8001"
+from tests.conftest import SURREALDB_URL
 
 
 # =============================================================================

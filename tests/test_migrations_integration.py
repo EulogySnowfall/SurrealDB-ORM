@@ -22,12 +22,9 @@ from src.surreal_orm.migrations.generator import MigrationGenerator
 from src.surreal_orm.migrations.introspector import introspect_models
 from src.surreal_orm.migrations.state import SchemaState
 from src.surreal_orm.migrations.operations import CreateTable, AddField
+from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
 
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
 SURREALDB_DATABASE = "test_migrations"
 
 

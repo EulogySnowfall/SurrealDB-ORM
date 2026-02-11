@@ -4,11 +4,8 @@ from pydantic import Field
 from src import surreal_orm
 from src.surreal_orm.model_base import SurrealDbError
 from src.surreal_orm.query_set import SurrealDbError as QuerySetError
+from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
 SURREALDB_DATABASE = "test_e2e"
 
 

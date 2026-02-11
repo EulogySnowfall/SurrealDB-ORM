@@ -1,7 +1,7 @@
 """
 Integration tests for v0.9.0: Live Models + Change Feed ORM Integration.
 
-These tests require a running SurrealDB instance (port 8001).
+These tests require a running SurrealDB instance (port 8000).
 They test actual WebSocket live queries and change feed streaming
 against a real database.
 """
@@ -23,14 +23,11 @@ from src.surreal_orm import (
     post_live_change,
 )
 from src.surreal_orm.types import TableType
+from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
 
 # ==================== Test Config ====================
 
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
 SURREALDB_DATABASE = "test_live_integration"
 
 

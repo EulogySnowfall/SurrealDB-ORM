@@ -269,7 +269,7 @@ async def _setup_connection() -> AsyncGenerator[None, None]:
     from src.surreal_orm import SurrealDBConnectionManager
 
     SurrealDBConnectionManager.set_connection(
-        "http://localhost:8001",
+        "http://localhost:8000",
         "root",
         "root",
         "test",

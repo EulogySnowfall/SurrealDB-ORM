@@ -11,16 +11,13 @@ from typing import Any, AsyncGenerator
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.fields.computed import Computed
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
+from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
 
 # ---------------------------------------------------------------------------
 # Connection config
 # ---------------------------------------------------------------------------
 
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
 SURREALDB_DATABASE = "test_computed"
 
 

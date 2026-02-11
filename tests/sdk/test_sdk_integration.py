@@ -16,12 +16,8 @@ from pydantic import BaseModel
 from src.surreal_sdk.connection.http import HTTPConnection
 from src.surreal_sdk.connection.websocket import WebSocketConnection
 from src.surreal_sdk.exceptions import QueryError
+from tests.conftest import SURREALDB_URL, SURREALDB_WS_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
-SURREALDB_URL_HTTP = "http://localhost:8001"
-SURREALDB_URL_WS = "ws://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
 SURREALDB_DATABASE = "test_sdk_integration"
 
 
@@ -31,7 +27,7 @@ SURREALDB_DATABASE = "test_sdk_integration"
 @pytest.fixture(scope="function")
 async def http(request: pytest.FixtureRequest) -> AsyncGenerator[HTTPConnection, None]:
     """Create a connected HTTP connection."""
-    conn = HTTPConnection(SURREALDB_URL_HTTP, SURREALDB_NAMESPACE, SURREALDB_DATABASE)
+    conn = HTTPConnection(SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE)
     await conn.connect()
     await conn.signin(SURREALDB_USER, SURREALDB_PASS)
     yield conn
@@ -42,7 +38,7 @@ async def http(request: pytest.FixtureRequest) -> AsyncGenerator[HTTPConnection,
 async def ws(request: pytest.FixtureRequest) -> AsyncGenerator[WebSocketConnection, None]:
     """Create a connected WebSocket connection."""
     conn = WebSocketConnection(
-        SURREALDB_URL_WS,
+        SURREALDB_WS_URL,
         SURREALDB_NAMESPACE,
         SURREALDB_DATABASE,
         auto_reconnect=False,
@@ -73,7 +69,7 @@ class TestHTTPAuth:
     @pytest.mark.integration
     async def test_signin_root(self) -> None:
         """Root signin returns token and sets auth state."""
-        conn = HTTPConnection(SURREALDB_URL_HTTP, SURREALDB_NAMESPACE, SURREALDB_DATABASE)
+        conn = HTTPConnection(SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE)
         await conn.connect()
         try:
             resp = await conn.signin(SURREALDB_USER, SURREALDB_PASS)
@@ -757,7 +753,7 @@ class TestWSAuth:
     @pytest.mark.integration
     async def test_signin_root(self) -> None:
         """Root signin via WebSocket."""
-        conn = WebSocketConnection(SURREALDB_URL_WS, SURREALDB_NAMESPACE, SURREALDB_DATABASE, auto_reconnect=False)
+        conn = WebSocketConnection(SURREALDB_WS_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE, auto_reconnect=False)
         await conn.connect()
         try:
             resp = await conn.signin(SURREALDB_USER, SURREALDB_PASS)

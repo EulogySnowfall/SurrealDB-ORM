@@ -1,51 +1,23 @@
-# SurrealDB Docker Compose for development and CI testing
+# SurrealDB Docker Compose for development and testing
 # Usage:
-#   make db-up          # Start test instance
-#   make db-dev         # Start dev instance (persistent)
-#   make db-cluster     # Start multi-node cluster
+#   make db-up       # Start SurrealDB (in-memory, port 8000)
+#   make db-cluster  # Start multi-node cluster
 #
 # Note: SurrealDB official image is minimal (distroless) and doesn't include
 # curl or shell. Healthcheck is done externally via wait-for-healthy.sh script.
 
 services:
   # =============================================================================
-  # Development instance (persistent data)
+  # Main instance (in-memory, ephemeral)
+  # Used for local development, integration tests, Jupyter notebooks, and CI.
+  # Data is lost when the container stops — clean slate every time.
   # =============================================================================
   surrealdb:
     image: surrealdb/surrealdb:latest
-    container_name: surrealdb-dev
+    container_name: surrealdb-orm
     ports:
       - "8000:8000"
-    command: start --log trace --user root --pass root file:/data/database.db
-    environment:
-      - SURREAL_LOG=trace
-    volumes:
-      - surrealdb_data:/data
-    restart: unless-stopped
-    networks:
-      - surrealdb-net
-
-  # =============================================================================
-  # Test instance (in-memory, ephemeral) - Used for CI and local tests
-  # =============================================================================
-  surrealdb-test:
-    image: surrealdb/surrealdb:latest
-    container_name: surrealdb-test
-    ports:
-      - "8001:8000"
     command: start --log warn --user root --pass root memory
-    networks:
-      - surrealdb-net
-
-  # =============================================================================
-  # CI instance - Optimized for GitHub Actions
-  # =============================================================================
-  surrealdb-ci:
-    image: surrealdb/surrealdb:latest
-    container_name: surrealdb-ci
-    ports:
-      - "8000:8000"
-    command: start --log error --user root --pass root memory
     networks:
       - surrealdb-net
 
@@ -89,7 +61,3 @@ services:
 networks:
   surrealdb-net:
     driver: bridge
-
-volumes:
-  surrealdb_data:
-    driver: local

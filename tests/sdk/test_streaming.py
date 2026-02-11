@@ -134,7 +134,7 @@ class TestStreamingIntegration:
     @pytest.fixture(scope="function")
     async def http_connection(self) -> AsyncGenerator[HTTPConnection, None]:
         """Create a connected HTTP connection."""
-        conn = HTTPConnection("http://localhost:8001", "test", "test")
+        conn = HTTPConnection("http://localhost:8000", "test", "test")
         try:
             await conn.connect()
             await conn.signin("root", "root")
@@ -146,7 +146,7 @@ class TestStreamingIntegration:
     async def ws_connection(self) -> AsyncGenerator[WebSocketConnection, None]:
         """Create a connected WebSocket connection."""
         conn = WebSocketConnection(
-            "ws://localhost:8001",
+            "ws://localhost:8000",
             "test",
             "test",
             auto_reconnect=False,

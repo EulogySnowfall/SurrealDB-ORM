@@ -23,13 +23,10 @@ from surreal_orm import (
     around_delete,
     around_update,
 )
+from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
 
-# Test URLs - use same ports as other integration tests
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
+# Each test file uses its own database for isolation
 SURREALDB_DATABASE = "test_signals"
 
 

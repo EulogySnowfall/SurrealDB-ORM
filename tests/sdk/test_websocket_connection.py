@@ -86,7 +86,7 @@ class TestWebSocketConnectionIntegration:
     async def connection(self) -> AsyncGenerator[WebSocketConnection, None]:
         """Create a connected WebSocket connection."""
         conn = WebSocketConnection(
-            "ws://localhost:8001",
+            "ws://localhost:8000",
             "test",
             "test",
             auto_reconnect=False,

@@ -6,7 +6,6 @@ Unit tests (no DB required) + integration tests (marked with @pytest.mark.integr
 
 from __future__ import annotations
 
-import os
 from datetime import date, datetime
 from typing import Any, AsyncGenerator
 
@@ -15,6 +14,7 @@ import pytest
 import surreal_orm
 from surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from surreal_orm.testing import Faker, ModelFactory, SurrealFixture, fixture
+from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
 
 # ---------------------------------------------------------------------------
@@ -241,11 +241,7 @@ class TestSurrealFixture:
 # Integration tests
 # ---------------------------------------------------------------------------
 
-SURREALDB_URL = os.getenv("SURREALDB_URL", "http://localhost:8001")
-SURREALDB_USER = os.getenv("SURREALDB_USER", "root")
-SURREALDB_PASS = os.getenv("SURREALDB_PASS", "root")
-SURREALDB_NAMESPACE = os.getenv("SURREALDB_NAMESPACE", "test")
-SURREALDB_DATABASE = os.getenv("SURREALDB_DATABASE", "test")
+SURREALDB_DATABASE = "test"
 
 
 @pytest.fixture(scope="module")

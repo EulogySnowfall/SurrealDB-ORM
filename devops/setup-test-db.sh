@@ -5,7 +5,7 @@
 set -e
 
 HOST="${1:-localhost}"
-PORT="${2:-8001}"
+PORT="${2:-8000}"
 URL="http://${HOST}:${PORT}"
 
 echo "Setting up test database at ${URL}..."

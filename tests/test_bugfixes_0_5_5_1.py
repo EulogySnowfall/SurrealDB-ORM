@@ -23,9 +23,7 @@ from src.surreal_orm.utils import (
     parse_record_id,
 )
 
-
-# Test URLs - use same ports as other integration tests
-SURREALDB_URL = "http://localhost:8001"
+from tests.conftest import SURREALDB_URL
 
 
 # =============================================================================

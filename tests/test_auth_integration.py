@@ -17,12 +17,8 @@ from src.surreal_orm.model_base import (
 from src.surreal_orm.types import TableType
 from src.surreal_orm.fields import Encrypted
 from src.surreal_orm.auth import AuthenticatedUserMixin, AccessDefinition, AccessGenerator
+from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
-
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
 SURREALDB_DATABASE = "test_auth"
 
 

@@ -163,7 +163,7 @@ class TestHTTPConnectionIntegration:
     @pytest.fixture(scope="function")
     async def connection(self) -> AsyncGenerator[HTTPConnection, None]:
         """Create a connected HTTP connection."""
-        conn = HTTPConnection("http://localhost:8001", "test", "test")
+        conn = HTTPConnection("http://localhost:8000", "test", "test")
         try:
             await conn.connect()
             await conn.signin("root", "root")

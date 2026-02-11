@@ -19,9 +19,7 @@ from surreal_orm import BaseSurrealModel, SurrealConfigDict, SurrealDBConnection
 from surreal_sdk import SurrealDB, HTTPConnection, WebSocketConnection
 from surreal_sdk.protocol.rpc import RPCRequest
 
-# Use the same port as other integration tests (conftest manages the container)
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_WS_URL = "ws://localhost:8001"
+from tests.conftest import SURREALDB_URL, SURREALDB_WS_URL
 
 
 # =============================================================================

@@ -339,7 +339,7 @@ class TestHTTPTransactionIntegration:
         """Create a connected HTTP connection."""
         from src.surreal_sdk.connection.http import HTTPConnection
 
-        conn = HTTPConnection("http://localhost:8001", "test", "test")
+        conn = HTTPConnection("http://localhost:8000", "test", "test")
         await conn.connect()
         await conn.signin("root", "root")
         yield conn
@@ -418,7 +418,7 @@ class TestFunctionIntegrationWithSurrealDB:
         """Create a connected HTTP connection."""
         from src.surreal_sdk.connection.http import HTTPConnection
 
-        conn = HTTPConnection("http://localhost:8001", "test", "test")
+        conn = HTTPConnection("http://localhost:8000", "test", "test")
         await conn.connect()
         await conn.signin("root", "root")
         yield conn
