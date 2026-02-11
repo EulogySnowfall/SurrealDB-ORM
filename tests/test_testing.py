@@ -228,14 +228,13 @@ class TestSurrealFixture:
         assert isinstance(UserFixtures._fixture_instances["alice"], SimpleModel)
         assert UserFixtures._fixture_instances["alice"].name == "Alice"
 
-    def test_no_decorator_raises(self) -> None:
+    async def test_no_decorator_raises(self) -> None:
         class BadFixture(SurrealFixture):
             pass
 
         with pytest.raises(ValueError, match="no fixture instances"):
-            import asyncio
-
-            asyncio.get_event_loop().run_until_complete(BadFixture.load().__aenter__())
+            async with BadFixture.load():
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -249,9 +248,9 @@ SURREALDB_NAMESPACE = os.getenv("SURREALDB_NAMESPACE", "test")
 SURREALDB_DATABASE = os.getenv("SURREALDB_DATABASE", "test")
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="module")
 async def setup_testing_db() -> AsyncGenerator[None, Any]:
-    """Setup connection for integration tests."""
+    """Setup connection for integration tests (not autouse — only pulled by integration tests)."""
     surreal_orm.SurrealDBConnectionManager.set_connection(
         SURREALDB_URL,
         SURREALDB_USER,
@@ -259,32 +258,19 @@ async def setup_testing_db() -> AsyncGenerator[None, Any]:
         SURREALDB_NAMESPACE,
         SURREALDB_DATABASE,
     )
-    # Clean up test tables
-    try:
-        client = await surreal_orm.SurrealDBConnectionManager.get_client()
-        for table in ["SimpleModel", "test_products"]:
-            try:
-                await client.query(f"REMOVE TABLE IF EXISTS {table};")
-            except Exception:
-                pass
-    except Exception:
-        pass
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    for table in ["SimpleModel", "test_products"]:
+        await client.query(f"REMOVE TABLE IF EXISTS {table};")
 
     yield
 
-    try:
-        client = await surreal_orm.SurrealDBConnectionManager.get_client()
-        for table in ["SimpleModel", "test_products"]:
-            try:
-                await client.query(f"REMOVE TABLE IF EXISTS {table};")
-            except Exception:
-                pass
-    except Exception:
-        pass
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    for table in ["SimpleModel", "test_products"]:
+        await client.query(f"REMOVE TABLE IF EXISTS {table};")
 
 
 @pytest.mark.integration
-async def test_factory_create() -> None:
+async def test_factory_create(setup_testing_db: None) -> None:
     """Factory.create() saves to DB and returns instance with ID."""
     user = await SimpleFactory.create()
     assert user.get_id() is not None
@@ -299,7 +285,7 @@ async def test_factory_create() -> None:
 
 
 @pytest.mark.integration
-async def test_factory_create_batch() -> None:
+async def test_factory_create_batch(setup_testing_db: None) -> None:
     """Factory.create_batch() creates multiple records."""
     users = await SimpleFactory.create_batch(3)
     assert len(users) == 3
@@ -315,7 +301,7 @@ async def test_factory_create_batch() -> None:
 
 
 @pytest.mark.integration
-async def test_fixture_load_unload() -> None:
+async def test_fixture_load_unload(setup_testing_db: None) -> None:
     """Fixture loads instances and cleans up on exit."""
     async with UserFixtures.load() as fixtures:
         assert fixtures.alice.get_id() is not None
@@ -332,7 +318,7 @@ async def test_fixture_load_unload() -> None:
 
 
 @pytest.mark.integration
-async def test_query_logger_captures_real_queries() -> None:
+async def test_query_logger_captures_real_queries(setup_testing_db: None) -> None:
     """QueryLogger captures queries from real DB operations."""
     from surreal_orm.debug import QueryLogger
 

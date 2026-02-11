@@ -85,8 +85,8 @@ class QueryLogger:
         return sum(q.duration_ms for q in self.queries)
 
     def _record(self, sql: str, variables: dict[str, Any], duration_ms: float) -> None:
-        """Record a query execution."""
-        self.queries.append(QueryLog(sql=sql, variables=variables, duration_ms=duration_ms))
+        """Record a query execution (snapshots variables to avoid mutation)."""
+        self.queries.append(QueryLog(sql=sql, variables=dict(variables), duration_ms=duration_ms))
 
     def __repr__(self) -> str:
         return f"QueryLogger({self.total_queries} queries, {self.total_ms:.1f}ms)"

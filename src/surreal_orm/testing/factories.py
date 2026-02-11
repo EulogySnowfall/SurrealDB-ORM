@@ -332,12 +332,16 @@ class ModelFactory(metaclass=_FactoryMeta):
     @classmethod
     def _resolve_fields(cls, **overrides: Any) -> dict[str, Any]:
         """Resolve all field values, applying overrides."""
+        import copy
+
         data: dict[str, Any] = {}
         for field_name, field_def in cls._field_defs.items():
             if field_name in overrides:
                 data[field_name] = overrides[field_name]
             elif isinstance(field_def, Faker):
                 data[field_name] = field_def.generate()
+            elif isinstance(field_def, (list, dict)):
+                data[field_name] = copy.copy(field_def)
             else:
                 data[field_name] = field_def
         # Apply any overrides for fields not in _field_defs

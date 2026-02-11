@@ -91,12 +91,18 @@ class SurrealFixture:
         # Create a namespace object to hold saved instances
         holder = cls()
 
-        # Save all instances
+        # Clone and save instances — each load() gets fresh copies to avoid
+        # leaking state (id, _db_persisted) across multiple load() calls.
         saved: list[BaseSurrealModel] = []
-        for attr_name, instance in instances.items():
-            await instance.save()
-            saved.append(instance)
-            setattr(holder, attr_name, instance)
+        for attr_name, template in instances.items():
+            clone = template.model_copy(deep=True)
+            if hasattr(clone, "id"):
+                object.__setattr__(clone, "id", None)
+            if hasattr(clone, "_db_persisted"):
+                object.__setattr__(clone, "_db_persisted", False)
+            await clone.save()
+            saved.append(clone)
+            setattr(holder, attr_name, clone)
 
         try:
             yield holder
