@@ -25,7 +25,16 @@ from .types import (
     SchemaMode,
     TableType,
 )
-from .fields import Computed, Encrypted, VectorField, GeoField, PointField, PolygonField, LineStringField, MultiPointField
+from .fields import (
+    Computed,
+    Encrypted,
+    GeoField,
+    LineStringField,
+    MultiPointField,
+    PointField,
+    PolygonField,
+    VectorField,
+)
 from .fields import (
     ForeignKey,
     ManyToMany,

@@ -80,7 +80,7 @@ class QuerySet:
         self._model_table: str = model.get_table_name()
         self._variables: dict = {}
         self._group_by_fields: list[str] = []
-        self._annotations: dict[str, Aggregation | Subquery | SearchScore | SearchHighlight] = {}
+        self._annotations: dict[str, Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance] = {}
         # Vector similarity search (KNN)
         self._knn_field: str | None = None
         self._knn_vector: list[float] | None = None
@@ -312,19 +312,20 @@ class QuerySet:
         self._group_by_fields = list(fields)
         return self
 
-    def annotate(self, **aggregations: Aggregation | Subquery | SearchScore | SearchHighlight) -> Self:
+    def annotate(self, **aggregations: Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance) -> Self:
         """
-        Add aggregation functions, subqueries, or search annotations.
+        Add aggregation functions, subqueries, search annotations, or geo distances.
 
         This method is used in conjunction with `values()` to perform GROUP BY operations,
-        or with `search()` / `similar_to()` to add relevance scores and highlights.
+        with `search()` / `similar_to()` to add relevance scores and highlights,
+        or with `nearby()` to add distance annotations.
 
         Each keyword argument should be an Aggregation instance (Count, Sum, Avg, Min, Max),
-        a Subquery instance, a SearchScore, or a SearchHighlight.
+        a Subquery instance, a SearchScore, a SearchHighlight, or a GeoDistance.
 
         Args:
             **aggregations: Keyword arguments where keys are alias names and values are
-                Aggregation, Subquery, SearchScore, or SearchHighlight instances.
+                Aggregation, Subquery, SearchScore, SearchHighlight, or GeoDistance instances.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
@@ -1121,10 +1122,12 @@ class QuerySet:
             self._variables[var_name] = query_text
             where_parts.append(f"{field_name} @{ref_idx}@ ${var_name}")
 
-        # Geo: append distance filter
+        # Geo: append distance filter (parameterized)
         if self._geo_field and self._geo_point is not None and self._geo_max_distance is not None:
+            self._variables["_geo_lon"] = self._geo_point[0]
+            self._variables["_geo_lat"] = self._geo_point[1]
             self._variables["_geo_max"] = self._geo_max_distance
-            geo_expr = f"geo::distance({self._geo_field}, ({self._geo_point[0]}, {self._geo_point[1]})) <= $_geo_max"
+            geo_expr = f"geo::distance({self._geo_field}, ($_geo_lon, $_geo_lat)) <= $_geo_max"
             where_parts.append(geo_expr)
 
         if where_parts:

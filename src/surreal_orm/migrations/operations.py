@@ -767,7 +767,8 @@ class DefineEvent(Operation):
         parts.append(f"THEN ({self.then})")
 
         if self.comment:
-            parts.append(f"COMMENT '{self.comment}'")
+            escaped_comment = self.comment.replace("'", "''")
+            parts.append(f"COMMENT '{escaped_comment}'")
 
         return " ".join(parts) + ";"
 
