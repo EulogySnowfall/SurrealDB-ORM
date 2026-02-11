@@ -8,6 +8,7 @@ from . import BaseSurrealModel, SurrealDBConnectionManager
 from .aggregations import Aggregation
 from .subquery import Subquery
 from .prefetch import Prefetch
+from .search import SearchScore, SearchHighlight
 from typing import TYPE_CHECKING, Self, Any, Sequence, cast
 from datetime import datetime
 from pydantic_core import ValidationError
@@ -78,7 +79,14 @@ class QuerySet:
         self._model_table: str = model.get_table_name()
         self._variables: dict = {}
         self._group_by_fields: list[str] = []
-        self._annotations: dict[str, Aggregation | Subquery] = {}
+        self._annotations: dict[str, Aggregation | Subquery | SearchScore | SearchHighlight] = {}
+        # Vector similarity search (KNN)
+        self._knn_field: str | None = None
+        self._knn_vector: list[float] | None = None
+        self._knn_limit: int | None = None
+        self._knn_ef: int | None = None
+        # Full-text search
+        self._search_fields: list[tuple[str, str, int]] = []  # (field, query, ref_index)
         # Relation query options
         self._select_related: list[str] = []
         self._prefetch_related: list[str | Prefetch] = []
@@ -299,17 +307,19 @@ class QuerySet:
         self._group_by_fields = list(fields)
         return self
 
-    def annotate(self, **aggregations: Aggregation | Subquery) -> Self:
+    def annotate(self, **aggregations: Aggregation | Subquery | SearchScore | SearchHighlight) -> Self:
         """
-        Add aggregation functions or subqueries to compute values for each group.
+        Add aggregation functions, subqueries, or search annotations.
 
-        This method is used in conjunction with `values()` to perform GROUP BY operations.
-        Each keyword argument should be an Aggregation instance (Count, Sum, Avg, Min, Max)
-        or a Subquery instance for scalar sub-SELECT expressions.
+        This method is used in conjunction with `values()` to perform GROUP BY operations,
+        or with `search()` / `similar_to()` to add relevance scores and highlights.
+
+        Each keyword argument should be an Aggregation instance (Count, Sum, Avg, Min, Max),
+        a Subquery instance, a SearchScore, or a SearchHighlight.
 
         Args:
-            **aggregations (Aggregation | Subquery): Keyword arguments where keys are alias
-                names and values are Aggregation or Subquery instances.
+            **aggregations: Keyword arguments where keys are alias names and values are
+                Aggregation, Subquery, SearchScore, or SearchHighlight instances.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
@@ -317,7 +327,7 @@ class QuerySet:
         Example:
             ```python
             from surreal_orm.aggregations import Count, Sum, Avg
-            from surreal_orm import Subquery
+            from surreal_orm import Subquery, SearchScore, SearchHighlight
 
             # Calculate statistics per status
             stats = await Order.objects().values("status").annotate(
@@ -326,11 +336,10 @@ class QuerySet:
                 avg_amount=Avg("amount"),
             )
 
-            # Scalar subquery annotation
-            users = await User.objects().annotate(
-                order_count=Subquery(
-                    Order.objects().filter(user_id="$parent.id").select("count()")
-                ),
+            # Search with BM25 scoring and highlighting
+            results = await Post.objects().search(title="quantum").annotate(
+                relevance=SearchScore(0),
+                snippet=SearchHighlight("<b>", "</b>", 0),
             ).exec()
             ```
         """
@@ -486,6 +495,167 @@ class QuerySet:
             logger.warning("QueryCache is disabled — .cache() has no effect")
         self._cache_ttl = ttl if ttl is not None else QueryCache._default_ttl
         return self
+
+    def similar_to(
+        self,
+        field: str,
+        vector: list[float],
+        limit: int = 10,
+        *,
+        ef: int | None = None,
+    ) -> Self:
+        """
+        Find records by vector similarity using SurrealDB's KNN operator.
+
+        Requires a vector index (HNSW or MTREE) on the target field.  The
+        query uses the ``<|N|>`` (or ``<|N, EF|>``) operator to perform
+        nearest-neighbour search.
+
+        Results are automatically ordered by distance (ascending) and
+        include a ``_knn_distance`` attribute on each returned model
+        instance.
+
+        Args:
+            field: Name of the vector field (e.g., ``"embedding"``).
+            vector: Query vector as a list of floats.
+            limit: Maximum number of nearest neighbours (K). Defaults to 10.
+            ef: Optional HNSW search-time ``ef`` parameter for recall tuning.
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example::
+
+            docs = await Document.objects().similar_to(
+                "embedding", query_vector, limit=5,
+            ).exec()
+            for doc in docs:
+                print(doc.title, doc._knn_distance)
+        """
+        if not _SAFE_IDENTIFIER_RE.match(field):
+            raise ValueError(f"Invalid field name for similar_to(): {field!r}")
+        self._knn_field = field
+        self._knn_vector = vector
+        self._knn_limit = limit
+        self._knn_ef = ef
+        return self
+
+    def search(self, **field_queries: str) -> Self:
+        """
+        Perform full-text search on indexed fields.
+
+        Each keyword argument maps a field name to a search query string.
+        The field must have a ``SEARCH ANALYZER`` index with BM25 scoring
+        in SurrealDB.
+
+        Each field gets a unique match-reference index (``@0@``, ``@1@``,
+        etc.) that can be referenced in ``SearchScore`` and
+        ``SearchHighlight`` annotations.
+
+        Args:
+            **field_queries: Keyword arguments mapping field names to
+                search query strings.
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example::
+
+            # Single field
+            posts = await Post.objects().search(title="quantum physics").exec()
+
+            # Multi-field with scoring
+            from surreal_orm import SearchScore
+
+            posts = await Post.objects().search(
+                title="quantum", body="physics",
+            ).annotate(
+                title_score=SearchScore(0),
+                body_score=SearchScore(1),
+            ).exec()
+        """
+        ref = len(self._search_fields)
+        for field_name, query_text in field_queries.items():
+            if not _SAFE_IDENTIFIER_RE.match(field_name):
+                raise ValueError(f"Invalid field name for search(): {field_name!r}")
+            self._search_fields.append((field_name, query_text, ref))
+            ref += 1
+        return self
+
+    async def hybrid_search(
+        self,
+        *,
+        vector_field: str,
+        vector: list[float],
+        vector_limit: int = 20,
+        text_field: str,
+        text_query: str,
+        text_limit: int = 20,
+        rrf_k: int = 60,
+    ) -> list[dict[str, Any]]:
+        """
+        Combine vector similarity and full-text search using Reciprocal Rank Fusion.
+
+        Executes two sub-queries (KNN + FTS) and merges the results using
+        ``search::rrf()`` for balanced ranking.
+
+        .. note::
+
+            This is a terminal method — it executes the query and returns
+            results as dictionaries (not model instances), since the result
+            set is a custom projection.
+
+        Args:
+            vector_field: Name of the vector field.
+            vector: Query vector.
+            vector_limit: KNN limit (K neighbours).
+            text_field: Name of the FTS field.
+            text_query: Search query string.
+            text_limit: Number of FTS results to consider.
+            rrf_k: Reciprocal Rank Fusion constant (default 60).
+
+        Returns:
+            list[dict]: Results ordered by combined RRF score.
+
+        Example::
+
+            results = await Document.objects().hybrid_search(
+                vector_field="embedding",
+                vector=query_vec,
+                vector_limit=10,
+                text_field="content",
+                text_query="quantum computing",
+                text_limit=10,
+            )
+        """
+        if not _SAFE_IDENTIFIER_RE.match(vector_field):
+            raise ValueError(f"Invalid field name for hybrid_search(): {vector_field!r}")
+        if not _SAFE_IDENTIFIER_RE.match(text_field):
+            raise ValueError(f"Invalid field name for hybrid_search(): {text_field!r}")
+
+        # Build a raw query using LET bindings for each sub-query
+        table = self._model_table
+        variables: dict[str, Any] = {
+            "_hybrid_vec": vector,
+            "_hybrid_text": text_query,
+        }
+
+        query = (
+            f"LET $vec_results = (SELECT id, vector::distance::knn() AS _d "
+            f"FROM {table} WHERE {vector_field} <|{vector_limit}|> $_hybrid_vec "
+            f"ORDER BY _d);\n"
+            f"LET $fts_results = (SELECT id, search::score(0) AS _s "
+            f"FROM {table} WHERE {text_field} @0@ $_hybrid_text "
+            f"ORDER BY _s DESC LIMIT {text_limit});\n"
+            f"SELECT *, "
+            f"search::rrf({rrf_k}, $vec_results, $fts_results) AS _rrf_score "
+            f"FROM array::union($vec_results.id, $fts_results.id) "
+            f"ORDER BY _rrf_score DESC;"
+        )
+
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+        result = await client.query(remove_quotes_for_variables(query), variables)
+        return cast(list[dict[str, Any]], result.all_records)
 
     def traverse(self, path: str) -> Self:
         """
@@ -863,33 +1033,66 @@ class QuerySet:
         to prevent injection. This method constructs the final SQL query by combining
         the selected fields, filters, ordering, limit, and offset parameters.
 
+        Supports:
+        - Standard SELECT queries
+        - KNN vector similarity (``<|N|>`` operator)
+        - Full-text search (``@N@`` operator)
+
         Returns:
             str: The compiled SQL query string.
-
-        Example:
-            ```python
-            query = queryset._compile_query()
-            # Returns something like:
-            # "SELECT id, name FROM users WHERE age > $_f0 AND status = $_f1 ORDER BY name ASC LIMIT 10 START 20;"
-            ```
         """
-        # Construct the SELECT clause
+        # ── SELECT clause ───────────────────────────────────────────────
+        extra_select: list[str] = []
+
+        # KNN: add distance function to SELECT
+        if self._knn_field:
+            extra_select.append("vector::distance::knn() AS _knn_distance")
+
+        # Search + annotate: add SearchScore / SearchHighlight to SELECT
+        for alias, annotation in self._annotations.items():
+            if isinstance(annotation, (SearchScore, SearchHighlight)):
+                extra_select.append(annotation.to_surql(alias))
+
         if self.select_item:
             fields = ", ".join(self.select_item)
+            if extra_select:
+                fields += ", " + ", ".join(extra_select)
             query = f"SELECT {fields} FROM {self._model_table}"
         else:
-            query = f"SELECT * FROM {self._model_table}"
+            if extra_select:
+                query = f"SELECT *, {', '.join(extra_select)} FROM {self._model_table}"
+            else:
+                query = f"SELECT * FROM {self._model_table}"
 
-        # Append WHERE clauses if any (parameterized)
+        # ── WHERE clause ────────────────────────────────────────────────
         where_parts, filter_vars = self._build_where_parts()
         if filter_vars:
             self._variables.update(filter_vars)
+
+        # KNN: append <|K|> or <|K, EF|> condition
+        if self._knn_field and self._knn_vector is not None and self._knn_limit is not None:
+            self._variables["_knn_vec"] = self._knn_vector
+            if self._knn_ef is not None:
+                knn_op = f"{self._knn_field} <|{self._knn_limit},{self._knn_ef}|> $_knn_vec"
+            else:
+                knn_op = f"{self._knn_field} <|{self._knn_limit}|> $_knn_vec"
+            where_parts.append(knn_op)
+
+        # FTS: append @N@ conditions
+        for field_name, query_text, ref_idx in self._search_fields:
+            var_name = f"_s{ref_idx}"
+            self._variables[var_name] = query_text
+            where_parts.append(f"{field_name} @{ref_idx}@ ${var_name}")
+
         if where_parts:
             query += " WHERE " + " AND ".join(where_parts)
 
-        # Append ORDER BY if set (must come before LIMIT/START in SurrealQL)
+        # ── ORDER BY ────────────────────────────────────────────────────
         if self._order_by:
             query += f" ORDER BY {self._order_by}"
+        elif self._knn_field:
+            # Auto-order by KNN distance when no explicit order set
+            query += " ORDER BY _knn_distance"
 
         # Append LIMIT if set
         if self._limit is not None:
@@ -923,13 +1126,15 @@ class QuerySet:
         the results. If the data conforms to the model schema, it returns a list of model instances;
         otherwise, it returns a list of dictionaries.
 
-        When `annotate()` has been called, this returns the aggregated results as dictionaries
-        instead of model instances.
+        When `annotate()` has been called with ``Aggregation`` or ``Subquery`` annotations,
+        this returns the aggregated results as dictionaries (GROUP BY path).
+        ``SearchScore`` and ``SearchHighlight`` annotations are handled inline in the
+        SELECT clause and still return model instances.
 
         Returns:
             list[BaseSurrealModel] | list[dict]: A list of model instances if validation is successful,
-            otherwise a list of dictionaries representing the raw data. For annotated queries,
-            always returns a list of dictionaries.
+            otherwise a list of dictionaries representing the raw data. For aggregation/subquery
+            annotated queries, returns a list of dictionaries.
 
         Raises:
             SurrealDbError: If there is an issue executing the query.
@@ -946,8 +1151,17 @@ class QuerySet:
             ).exec()
             ```
         """
-        # If annotations are set, execute as GROUP BY query
-        if self._annotations:
+        # If annotations are set with Aggregation or Subquery, execute as GROUP BY query.
+        # SearchScore / SearchHighlight are handled inline by _compile_query().
+        has_group_annotations = any(isinstance(a, (Aggregation, Subquery)) for a in self._annotations.values())
+        if self._annotations and has_group_annotations:
+            # _execute_annotate() only applies filter/Q-object WHERE parts.
+            # search() and similar_to() constraints are not supported in this path.
+            if self._search_fields or self._knn_field:
+                raise ValueError(
+                    "Combining .search() or .similar_to() with aggregation/subquery "
+                    "annotations is not supported. Execute them as separate queries."
+                )
             return await self._execute_annotate()
 
         query = self._compile_query()
@@ -976,12 +1190,38 @@ class QuerySet:
                 return cached
 
         results = await self._execute_query(query)
+
+        # ── KNN / Search annotations: extract extra fields before model parsing
+        extra_fields_per_record: list[dict[str, Any]] = []
+        extra_keys: set[str] = set()
+
+        if self._knn_field:
+            extra_keys.add("_knn_distance")
+        for alias, annotation in self._annotations.items():
+            if isinstance(annotation, (SearchScore, SearchHighlight)):
+                extra_keys.add(alias)
+
+        if extra_keys and isinstance(results, list):
+            for record in results:
+                if isinstance(record, dict):
+                    extras = {k: record.get(k) for k in extra_keys if k in record}
+                    extra_fields_per_record.append(extras)
+                else:
+                    extra_fields_per_record.append({})
+
         try:
             # surrealdb SDK 1.0.8 returns records directly, not wrapped in {"result": ...}
             parsed = self.model.from_db(cast(dict | list | None, results))
         except ValidationError as e:
             logger.info(f"Pydantic invalid format for the class, returning dict value: {e}")
             parsed = results
+
+        # Attach extra fields (KNN distance, search scores) to model instances
+        if extra_keys and isinstance(parsed, list) and extra_fields_per_record:
+            for i, inst in enumerate(parsed):
+                if i < len(extra_fields_per_record) and isinstance(inst, BaseSurrealModel):
+                    for k, v in extra_fields_per_record[i].items():
+                        object.__setattr__(inst, k, v)
 
         # ── Prefetch related ─────────────────────────────────────────────
         if self._prefetch_related and isinstance(parsed, list):

@@ -354,6 +354,9 @@ def _parse_permissions(raw: str | None) -> dict[str, str]:
 def parse_define_index(statement: str) -> IndexState:
     """Parse a DEFINE INDEX statement into an IndexState.
 
+    Handles standard, UNIQUE, SEARCH ANALYZER (with optional BM25 / HIGHLIGHTS),
+    and HNSW vector index definitions.
+
     Args:
         statement: Full DEFINE INDEX statement string.
 
@@ -371,38 +374,123 @@ def parse_define_index(statement: str) -> IndexState:
         raise ValueError(f"Cannot parse DEFINE INDEX statement: {statement!r}")
 
     index_name = match.group(1)
-    # table_name = match.group(2)  # Not stored in IndexState
     rest = match.group(3).strip()
 
-    # Extract field list (comma-separated, before UNIQUE/SEARCH/COMMENT)
-    unique = False
-    search_analyzer = None
+    # Keywords that delimit the fields list from index-type flags
+    _INDEX_KEYWORDS = [
+        "UNIQUE",
+        "SEARCH",
+        "HNSW",
+        "DIMENSION",
+        "DIST",
+        "TYPE",
+        "EFC",
+        "BM25",
+        "HIGHLIGHTS",
+        "CONCURRENTLY",
+        "COMMENT",
+        "MTREE",
+    ]
 
-    # Split rest into fields part and flags
+    # Find where the fields list ends by looking for the first keyword
+    # at a proper word boundary (both before and after the keyword).
     upper_rest = rest.upper()
     fields_end = len(rest)
-    for kw in ["UNIQUE", "SEARCH", "COMMENT"]:
-        idx = upper_rest.find(kw)
-        if idx != -1 and idx < fields_end:
-            fields_end = idx
+    for kw in _INDEX_KEYWORDS:
+        pos = 0
+        while pos < len(upper_rest):
+            idx = upper_rest.find(kw, pos)
+            if idx == -1:
+                break
+            # Check word boundary before the keyword
+            before_ok = idx == 0 or upper_rest[idx - 1] in (" ", "\t", "\n", ",")
+            # Check word boundary after the keyword
+            after_idx = idx + len(kw)
+            after_ok = after_idx >= len(upper_rest) or upper_rest[after_idx] in (" ", "\t", "\n", "(")
+            if before_ok and after_ok and idx < fields_end:
+                fields_end = idx
+                break
+            pos = idx + 1
 
     fields_str = rest[:fields_end].strip().rstrip(",")
     fields = [f.strip() for f in fields_str.split(",") if f.strip()]
 
     flags_str = rest[fields_end:]
-    if "UNIQUE" in flags_str.upper():
-        unique = True
 
-    # SEARCH ANALYZER <name>
+    # Strip COMMENT clause before keyword detection so that comment
+    # text like 'COMMENT "Uses HNSW for speed"' doesn't cause false
+    # matches on keywords like UNIQUE, BM25, or HNSW.
+    flags_str = re.sub(r"""COMMENT\s+(?:"[^"]*"|'[^']*')""", "", flags_str, flags=re.IGNORECASE)
+
+    upper_flags = flags_str.upper()
+
+    # ── Standard flags ──────────────────────────────────────────────
+    unique = "UNIQUE" in upper_flags
+
+    # ── Full-text search ────────────────────────────────────────────
+    search_analyzer: str | None = None
     search_match = re.search(r"SEARCH\s+ANALYZER\s+(\S+)", flags_str, re.IGNORECASE)
     if search_match:
         search_analyzer = search_match.group(1)
+
+    bm25: tuple[float, float] | bool | None = None
+    bm25_match = re.search(r"BM25\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)", flags_str, re.IGNORECASE)
+    if bm25_match:
+        bm25 = (float(bm25_match.group(1)), float(bm25_match.group(2)))
+    elif "BM25" in upper_flags:
+        bm25 = True
+
+    highlights = "HIGHLIGHTS" in upper_flags
+
+    # ── HNSW vector index ───────────────────────────────────────────
+    hnsw = "HNSW" in upper_flags
+
+    # Vector-specific parameters are only meaningful for HNSW indexes.
+    # Parsing them for other index types (e.g. MTREE) would populate
+    # IndexState fields that later generate invalid CreateIndex SQL.
+    dimension: int | None = None
+    dist: str | None = None
+    vector_type: str | None = None
+    efc: int | None = None
+    m_val: int | None = None
+
+    if hnsw:
+        dim_match = re.search(r"DIMENSION\s+(\d+)", flags_str, re.IGNORECASE)
+        if dim_match:
+            dimension = int(dim_match.group(1))
+
+        dist_match = re.search(r"DIST\s+(\S+)", flags_str, re.IGNORECASE)
+        if dist_match:
+            dist = dist_match.group(1).upper()
+
+        type_match = re.search(r"\bTYPE\s+(\S+)", flags_str, re.IGNORECASE)
+        if type_match:
+            vector_type = type_match.group(1).upper()
+
+        efc_match = re.search(r"EFC\s+(\d+)", flags_str, re.IGNORECASE)
+        if efc_match:
+            efc = int(efc_match.group(1))
+
+        m_match = re.search(r"\bM\s+(\d+)", flags_str, re.IGNORECASE)
+        if m_match:
+            m_val = int(m_match.group(1))
+
+    concurrently = "CONCURRENTLY" in upper_flags
 
     return IndexState(
         name=index_name,
         fields=fields,
         unique=unique,
         search_analyzer=search_analyzer,
+        bm25=bm25,
+        highlights=highlights,
+        hnsw=hnsw,
+        dimension=dimension,
+        dist=dist,
+        vector_type=vector_type,
+        efc=efc,
+        m=m_val,
+        concurrently=concurrently,
     )
 
 
@@ -538,9 +626,66 @@ def _split_set_clauses(sets_str: str) -> list[str]:
     return parts
 
 
+def parse_define_analyzer(statement: str) -> dict[str, Any]:
+    """Parse a DEFINE ANALYZER statement into a dict.
+
+    Returns a dict with keys compatible with ``AnalyzerState``:
+    ``name``, ``tokenizers``, ``filters``.
+
+    Examples::
+
+        parse_define_analyzer(
+            "DEFINE ANALYZER my_analyzer TOKENIZERS blank, class "
+            "FILTERS lowercase, snowball(english)"
+        )
+        # → {"name": "my_analyzer",
+        #    "tokenizers": ["blank", "class"],
+        #    "filters": ["lowercase", "snowball(english)"]}
+
+    Args:
+        statement: Full DEFINE ANALYZER statement string.
+
+    Returns:
+        Dict with parsed analyzer properties.
+    """
+    stmt = statement.strip().rstrip(";").strip()
+
+    match = re.match(
+        r"DEFINE\s+ANALYZER\s+(?:IF\s+NOT\s+EXISTS\s+|OVERWRITE\s+)?(\S+)\s*(.*)",
+        stmt,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError(f"Cannot parse DEFINE ANALYZER statement: {statement!r}")
+
+    analyzer_name = match.group(1)
+    body = match.group(2).strip()
+
+    tokenizers: list[str] = []
+    filters: list[str] = []
+
+    # Extract TOKENIZERS clause
+    tok_match = re.search(r"TOKENIZERS\s+(.+?)(?:\s+FILTERS\b|\s+COMMENT\b|$)", body, re.IGNORECASE)
+    if tok_match:
+        raw = tok_match.group(1).strip()
+        tokenizers = [t.strip() for t in raw.split(",") if t.strip()]
+
+    # Extract FILTERS clause (may contain parenthesized args like snowball(english))
+    filt_match = re.search(r"FILTERS\s+(.+?)(?:\s+COMMENT\b|$)", body, re.IGNORECASE)
+    if filt_match:
+        filters = _split_set_clauses(filt_match.group(1).strip())
+
+    return {
+        "name": analyzer_name,
+        "tokenizers": tokenizers,
+        "filters": filters,
+    }
+
+
 __all__ = [
     "parse_define_field",
     "parse_define_table",
     "parse_define_index",
     "parse_define_access",
+    "parse_define_analyzer",
 ]

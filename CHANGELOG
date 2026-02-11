@@ -6,6 +6,61 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.12.0] - 2026-02-10
+
+### Added
+
+- **Vector Search** — First-class support for AI/RAG pipelines with SurrealDB HNSW indexes
+  - `VectorField[dimension]` and `VectorField[dimension, "type"]` type annotations
+  - `is_vector_field()` and `get_vector_info()` detection helpers
+  - `QuerySet.similar_to(field, vector, limit, *, ef)` — KNN similarity search using `<|N|>` operator
+  - Auto-adds `vector::distance::knn() AS _knn_distance` to SELECT and ORDER BY
+  - Combined with `.filter()` for pre-filtered similarity search
+  - New file: `src/surreal_orm/fields/vector.py`
+
+- **Full-Text Search** — BM25 scoring, highlighting, and multi-field search
+  - `QuerySet.search(**field_queries)` — FTS using `@N@` match operator
+  - `SearchScore(ref)` — Annotation helper for `search::score(N)` BM25 relevance
+  - `SearchHighlight(open_tag, close_tag, ref)` — Annotation helper for `search::highlight()`
+  - Multi-field search with auto-incrementing match references
+  - Compatible with `.filter()` and `.annotate()` for combined queries
+  - New file: `src/surreal_orm/search.py`
+
+- **Hybrid Search** — Reciprocal Rank Fusion combining vector + full-text search
+  - `QuerySet.hybrid_search(vector_field, vector, text_field, text_query, ...)` — Uses `search::rrf()` for ranking fusion
+  - Configurable `vector_limit`, `text_limit`, `rrf_k` parameters
+
+- **HNSW Index Support** — Full migration support for vector indexes
+  - `CreateIndex` expanded with `hnsw`, `dimension`, `dist`, `vector_type`, `efc`, `m`, `concurrently` parameters
+  - Generates `DEFINE INDEX ... HNSW DIMENSION N DIST X TYPE Y EFC N M N;`
+  - `IndexState` expanded with all HNSW parameters for schema diffing
+
+- **Full-Text Index Support** — BM25 and highlights in migrations
+  - `CreateIndex` expanded with `bm25` (bool or tuple) and `highlights` parameters
+  - Generates `DEFINE INDEX ... SEARCH ANALYZER name BM25(k1, b) HIGHLIGHTS;`
+
+- **Analyzer Operations** — Define and manage custom text analyzers
+  - `DefineAnalyzer(name, tokenizers, filters)` migration operation
+  - `RemoveAnalyzer(name)` migration operation
+  - `AnalyzerState` dataclass for schema tracking
+  - `SchemaState.analyzers` dict with full diff support (add/update/remove)
+  - `parse_define_analyzer()` parser for `DEFINE ANALYZER` statements
+
+- **Parser Enhancements** — `parse_define_index()` now parses HNSW, BM25, HIGHLIGHTS, CONCURRENTLY
+
+- **Introspection Updates**
+  - `DatabaseIntrospector` now parses analyzers from `INFO FOR DB`
+  - `ModelCodeGenerator` generates `VectorField[dim]` annotations for HNSW-indexed fields
+
+### Changed
+
+- `annotate()` type hint extended to accept `SearchScore | SearchHighlight`
+- `exec()` attaches extra fields (`_knn_distance`, search scores) to model instances
+- Search-only annotations bypass GROUP BY path in `_execute_annotate()`
+- Version bump to 0.12.0
+
+---
+
 ## [0.11.0] - 2026-02-10
 
 ### Added

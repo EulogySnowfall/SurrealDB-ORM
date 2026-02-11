@@ -16,11 +16,12 @@ from surreal_sdk.connection.http import HTTPConnection
 
 from .define_parser import (
     parse_define_access,
+    parse_define_analyzer,
     parse_define_field,
     parse_define_index,
     parse_define_table,
 )
-from .state import AccessState, SchemaState, TableState
+from .state import AccessState, AnalyzerState, SchemaState, TableState
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,23 @@ class DatabaseIntrospector:
 
         # Extract database-level access definitions
         accesses_info = db_info.get("accesses", db_info.get("ac", {}))
+
+        # Extract analyzer definitions
+        analyzers_info = db_info.get("analyzers", db_info.get("az", {}))
+        if isinstance(analyzers_info, dict):
+            for _az_name, az_define_stmt in analyzers_info.items():
+                try:
+                    az_props = parse_define_analyzer(az_define_stmt)
+                    state.analyzers[az_props["name"]] = AnalyzerState(
+                        name=az_props["name"],
+                        tokenizers=az_props["tokenizers"],
+                        filters=az_props["filters"],
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to parse analyzer definition, skipping.",
+                        exc_info=True,
+                    )
 
         for table_name, table_define_stmt in tables_info.items():
             try:

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .operations import Operation
+    from .operations import CreateIndex, Operation
 
 
 @dataclass
@@ -69,12 +69,30 @@ class IndexState:
         fields: List of field names in the index
         unique: Whether the index enforces uniqueness
         search_analyzer: Full-text search analyzer if any
+        bm25: BM25 parameters as ``(k1, b)`` tuple, ``True`` for defaults, or None
+        highlights: Whether FTS highlighting is enabled
+        hnsw: Whether this is an HNSW vector index
+        dimension: Vector dimension for HNSW indexes
+        dist: Distance metric (COSINE, EUCLIDEAN, etc.)
+        vector_type: Storage type (F32, F64, I16, etc.)
+        efc: HNSW build-time ef parameter
+        m: HNSW max connections per node
+        concurrently: Whether to build the index non-blocking
     """
 
     name: str
     fields: list[str]
     unique: bool = False
     search_analyzer: str | None = None
+    bm25: tuple[float, float] | bool | None = None
+    highlights: bool = False
+    hnsw: bool = False
+    dimension: int | None = None
+    dist: str | None = None
+    vector_type: str | None = None
+    efc: int | None = None
+    m: int | None = None
+    concurrently: bool = False
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, IndexState):
@@ -84,6 +102,15 @@ class IndexState:
             and self.fields == other.fields
             and self.unique == other.unique
             and self.search_analyzer == other.search_analyzer
+            and self.bm25 == other.bm25
+            and self.highlights == other.highlights
+            and self.hnsw == other.hnsw
+            and self.dimension == other.dimension
+            and self.dist == other.dist
+            and self.vector_type == other.vector_type
+            and self.efc == other.efc
+            and self.m == other.m
+            and self.concurrently == other.concurrently
         )
 
 
@@ -119,6 +146,27 @@ class AccessState:
             and self.duration_token == other.duration_token
             and self.duration_session == other.duration_session
         )
+
+
+@dataclass
+class AnalyzerState:
+    """
+    Represents the state of a full-text search analyzer.
+
+    Attributes:
+        name: Analyzer name
+        tokenizers: List of tokenizer names (e.g., ``["blank", "class"]``)
+        filters: List of filter names (e.g., ``["lowercase", "snowball(english)"]``)
+    """
+
+    name: str
+    tokenizers: list[str] = field(default_factory=list)
+    filters: list[str] = field(default_factory=list)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, AnalyzerState):
+            return False
+        return self.name == other.name and self.tokenizers == other.tokenizers and self.filters == other.filters
 
 
 @dataclass
@@ -176,6 +224,7 @@ class SchemaState:
 
     tables: dict[str, TableState] = field(default_factory=dict)
     applied_migrations: list[str] = field(default_factory=list)
+    analyzers: dict[str, "AnalyzerState"] = field(default_factory=dict)
 
     def diff(self, target: "SchemaState") -> list["Operation"]:
         """
@@ -190,16 +239,36 @@ class SchemaState:
         from .operations import (
             AddField,
             AlterField,
-            CreateIndex,
             CreateTable,
             DefineAccess,
+            DefineAnalyzer,
             DropField,
             DropIndex,
             DropTable,
             RemoveAccess,
+            RemoveAnalyzer,
         )
 
         operations: list[Operation] = []
+
+        # ── Analyzers to create/update first (indexes may reference them) ──
+        for analyzer_name, target_analyzer in target.analyzers.items():
+            if analyzer_name not in self.analyzers or self.analyzers[analyzer_name] != target_analyzer:
+                operations.append(
+                    DefineAnalyzer(
+                        name=target_analyzer.name,
+                        tokenizers=target_analyzer.tokenizers,
+                        filters=target_analyzer.filters,
+                    )
+                )
+
+        # Collect analyzers to remove — these are deferred until after all
+        # index operations so that we don't remove an analyzer still
+        # referenced by an existing index that hasn't been dropped yet.
+        deferred_remove_analyzers: list[RemoveAnalyzer] = []
+        for analyzer_name in self.analyzers:
+            if analyzer_name not in target.analyzers:
+                deferred_remove_analyzers.append(RemoveAnalyzer(name=analyzer_name))
 
         # Tables to create (in target but not in self)
         for table_name, target_table in target.tables.items():
@@ -231,15 +300,7 @@ class SchemaState:
                     )
                 # Add all indexes
                 for index_name, index_state in target_table.indexes.items():
-                    operations.append(
-                        CreateIndex(
-                            table=table_name,
-                            name=index_name,
-                            fields=index_state.fields,
-                            unique=index_state.unique,
-                            search_analyzer=index_state.search_analyzer,
-                        )
-                    )
+                    operations.append(self._create_index_from_state(table_name, index_state))
                 # Add access definition if present
                 if target_table.access:
                     operations.append(
@@ -324,27 +385,11 @@ class SchemaState:
                 # Indexes to add
                 for index_name, index_state in target_table.indexes.items():
                     if index_name not in current_table.indexes:
-                        operations.append(
-                            CreateIndex(
-                                table=table_name,
-                                name=index_name,
-                                fields=index_state.fields,
-                                unique=index_state.unique,
-                                search_analyzer=index_state.search_analyzer,
-                            )
-                        )
+                        operations.append(self._create_index_from_state(table_name, index_state))
                     elif current_table.indexes[index_name] != index_state:
                         # Index changed - drop and recreate
                         operations.append(DropIndex(table=table_name, name=index_name))
-                        operations.append(
-                            CreateIndex(
-                                table=table_name,
-                                name=index_name,
-                                fields=index_state.fields,
-                                unique=index_state.unique,
-                                search_analyzer=index_state.search_analyzer,
-                            )
-                        )
+                        operations.append(self._create_index_from_state(table_name, index_state))
 
                 # Indexes to drop
                 for index_name in current_table.indexes:
@@ -381,7 +426,32 @@ class SchemaState:
                         )
                     )
 
+        # ── Deferred analyzer removals (after all index ops) ────────
+        operations.extend(deferred_remove_analyzers)
+
         return operations
+
+    @staticmethod
+    def _create_index_from_state(table_name: str, idx: IndexState) -> "CreateIndex":
+        """Build a ``CreateIndex`` operation from an ``IndexState``."""
+        from .operations import CreateIndex
+
+        return CreateIndex(
+            table=table_name,
+            name=idx.name,
+            fields=idx.fields,
+            unique=idx.unique,
+            search_analyzer=idx.search_analyzer,
+            bm25=idx.bm25,
+            highlights=idx.highlights,
+            hnsw=idx.hnsw,
+            dimension=idx.dimension,
+            dist=idx.dist,
+            vector_type=idx.vector_type,
+            efc=idx.efc,
+            m=idx.m,
+            concurrently=idx.concurrently,
+        )
 
     def clone(self) -> "SchemaState":
         """Create a deep copy of this schema state."""

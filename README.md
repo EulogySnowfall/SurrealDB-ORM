@@ -13,37 +13,61 @@
 
 ---
 
+## What's New in 0.12.0
+
+### Vector Search & Full-Text Search
+
+- **Vector Similarity Search** — KNN search with HNSW indexes for AI/RAG pipelines
+
+  ```python
+  from surreal_orm.fields import VectorField
+
+  class Document(BaseSurrealModel):
+      title: str
+      embedding: VectorField[1536]
+
+  # KNN similarity search (top 10 nearest neighbours)
+  docs = await Document.objects().similar_to(
+      "embedding", query_vector, limit=10
+  ).exec()
+
+  # Combined with filters
+  docs = await Document.objects().filter(
+      category="science"
+  ).similar_to("embedding", query_vector, limit=5).exec()
+  ```
+
+- **Full-Text Search** — BM25 scoring, highlighting, and multi-field search
+
+  ```python
+  from surreal_orm import SearchScore, SearchHighlight
+
+  results = await Post.objects().search(title="quantum").annotate(
+      relevance=SearchScore(0),
+      snippet=SearchHighlight("<b>", "</b>", 0),
+  ).exec()
+  ```
+
+- **Hybrid Search** — Reciprocal Rank Fusion combining vector + FTS
+
+  ```python
+  results = await Document.objects().hybrid_search(
+      vector_field="embedding", vector=query_vec, vector_limit=20,
+      text_field="content", text_query="machine learning", text_limit=20,
+  )
+  ```
+
+- **Analyzer & Index Operations** — `DefineAnalyzer`, HNSW and BM25 index support in migrations
+
+---
+
 ## What's New in 0.11.0
 
 ### Advanced Queries & Caching
 
 - **Subqueries** — Embed a QuerySet as a filter value in another QuerySet
-
-  ```python
-  from surreal_orm import Subquery
-
-  top_ids = Order.objects().filter(total__gte=100).select("user_id")
-  users = await User.objects().filter(id__in=Subquery(top_ids)).exec()
-  ```
-
 - **Query Cache** — TTL-based caching with automatic invalidation on writes
-
-  ```python
-  from surreal_orm import QueryCache
-
-  QueryCache.configure(default_ttl=120, max_size=500)
-  users = await User.objects().filter(role="admin").cache(ttl=30).exec()
-  ```
-
 - **Prefetch Objects** — Fine-grained control over related data prefetching
-
-  ```python
-  from surreal_orm import Prefetch
-
-  users = await User.objects().prefetch_related(
-      Prefetch("wrote", queryset=Post.objects().filter(published=True), to_attr="published_posts"),
-  ).exec()
-  ```
 
 ---
 

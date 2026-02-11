@@ -377,16 +377,28 @@ class CreateIndex(Operation):
     """
     Create an index on a table.
 
+    Supports standard, unique, full-text search (BM25), and vector (HNSW) indexes.
+
     Example:
+        # Unique index
+        CreateIndex(table="users", name="email_idx", fields=["email"], unique=True)
+
+        # Full-text search index
         CreateIndex(
-            table="users",
-            name="email_idx",
-            fields=["email"],
-            unique=True
+            table="posts", name="ft_title", fields=["title"],
+            search_analyzer="my_analyzer", bm25=True, highlights=True,
+        )
+
+        # HNSW vector index
+        CreateIndex(
+            table="documents", name="vec_idx", fields=["embedding"],
+            hnsw=True, dimension=1536, dist="COSINE", vector_type="F32",
         )
 
     Generates:
         DEFINE INDEX email_idx ON users FIELDS email UNIQUE;
+        DEFINE INDEX ft_title ON posts FIELDS title SEARCH ANALYZER my_analyzer BM25 HIGHLIGHTS;
+        DEFINE INDEX vec_idx ON documents FIELDS embedding HNSW DIMENSION 1536 DIST COSINE TYPE F32;
     """
 
     table: str
@@ -394,6 +406,15 @@ class CreateIndex(Operation):
     fields: list[str]
     unique: bool = False
     search_analyzer: str | None = None
+    bm25: tuple[float, float] | bool | None = None
+    highlights: bool = False
+    hnsw: bool = False
+    dimension: int | None = None
+    dist: str | None = None
+    vector_type: str | None = None
+    efc: int | None = None
+    m: int | None = None
+    concurrently: bool = False
     comment: str | None = None
 
     def forwards(self) -> str:
@@ -405,6 +426,35 @@ class CreateIndex(Operation):
 
         if self.search_analyzer:
             parts.append(f"SEARCH ANALYZER {self.search_analyzer}")
+
+            if self.bm25 is True:
+                parts.append("BM25")
+            elif isinstance(self.bm25, tuple):
+                parts.append(f"BM25({self.bm25[0]},{self.bm25[1]})")
+
+            if self.highlights:
+                parts.append("HIGHLIGHTS")
+
+        if self.hnsw:
+            parts.append("HNSW")
+
+            if self.dimension is not None:
+                parts.append(f"DIMENSION {self.dimension}")
+
+            if self.dist:
+                parts.append(f"DIST {self.dist}")
+
+            if self.vector_type:
+                parts.append(f"TYPE {self.vector_type}")
+
+            if self.efc is not None:
+                parts.append(f"EFC {self.efc}")
+
+            if self.m is not None:
+                parts.append(f"M {self.m}")
+
+            if self.concurrently:
+                parts.append("CONCURRENTLY")
 
         if self.comment:
             parts.append(f"COMMENT '{self.comment}'")
@@ -596,3 +646,68 @@ class RawSQL(Operation):
 
     def describe(self) -> str:
         return self.description
+
+
+@dataclass
+class DefineAnalyzer(Operation):
+    """
+    Define a full-text search analyzer.
+
+    Example:
+        DefineAnalyzer(
+            name="my_analyzer",
+            tokenizers=["blank", "class"],
+            filters=["lowercase", "snowball(english)"],
+        )
+
+    Generates:
+        DEFINE ANALYZER my_analyzer TOKENIZERS blank, class FILTERS lowercase, snowball(english);
+    """
+
+    name: str
+    tokenizers: list[str] = field(default_factory=list)
+    filters: list[str] = field(default_factory=list)
+
+    def forwards(self) -> str:
+        parts = [f"DEFINE ANALYZER {self.name}"]
+
+        if self.tokenizers:
+            parts.append(f"TOKENIZERS {', '.join(self.tokenizers)}")
+
+        if self.filters:
+            parts.append(f"FILTERS {', '.join(self.filters)}")
+
+        return " ".join(parts) + ";"
+
+    def backwards(self) -> str:
+        return f"REMOVE ANALYZER {self.name};"
+
+    def describe(self) -> str:
+        return f"Define analyzer {self.name}"
+
+
+@dataclass
+class RemoveAnalyzer(Operation):
+    """
+    Remove a full-text search analyzer.
+
+    Example:
+        RemoveAnalyzer(name="my_analyzer")
+
+    Generates:
+        REMOVE ANALYZER my_analyzer;
+    """
+
+    name: str
+
+    def __post_init__(self) -> None:
+        self.reversible = False
+
+    def forwards(self) -> str:
+        return f"REMOVE ANALYZER {self.name};"
+
+    def backwards(self) -> str:
+        return ""
+
+    def describe(self) -> str:
+        return f"Remove analyzer {self.name}"
