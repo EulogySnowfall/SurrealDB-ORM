@@ -6,6 +6,7 @@ from typing import Any, Literal, Self, TYPE_CHECKING, get_args, get_origin
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
 from .connection_manager import SurrealDBConnectionManager
+from .debug import _log_query, _start_timer, _elapsed_ms
 from .surreal_function import SurrealFunc
 from .types import SchemaMode, TableType
 from .utils import format_thing, parse_record_id
@@ -755,10 +756,14 @@ class BaseSurrealModel(BaseModel):
             query = f"CREATE {table} SET {set_clause};"
 
         if tx is not None:
+            start = _start_timer()
             result = await tx.query(query, variables)
+            _log_query(query, variables, _elapsed_ms(start))
         else:
             client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
+            start = _start_timer()
             result = await client.query(query, variables)
+            _log_query(query, variables, _elapsed_ms(start))
 
         if not self._db_persisted and result.all_records:
             record = result.all_records[0]
@@ -804,18 +809,24 @@ class BaseSurrealModel(BaseModel):
         if self._db_persisted and id is not None:
             # Already persisted: use merge for partial update
             thing = format_thing(table, id)
+            start = _start_timer()
             await client.merge(thing, data)
+            _log_query(f"MERGE {thing}", data, _elapsed_ms(start))
             return
 
         if id is not None:
             # New record with user-provided ID: use upsert
             thing = format_thing(table, id)
+            start = _start_timer()
             await client.upsert(thing, data)
+            _log_query(f"UPSERT {thing}", data, _elapsed_ms(start))
             self._db_persisted = True
             return
 
         # Auto-generate the ID
+        start = _start_timer()
         result = await client.create(table, data)
+        _log_query(f"CREATE {table}", data, _elapsed_ms(start))
 
         # SDK returns RecordResponse
         if not result.exists:
@@ -873,10 +884,14 @@ class BaseSurrealModel(BaseModel):
             tx=tx,
         ):
             if tx is not None:
+                start = _start_timer()
                 await tx.merge(thing, data)
+                _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
+                start = _start_timer()
                 result = await client.merge(thing, data)
+                _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
                 result_records = result.records
 
         # Send post_update signal
@@ -969,21 +984,29 @@ class BaseSurrealModel(BaseModel):
                     variables.update(extra_vars)
                 query = f"UPDATE {thing} SET {set_clause};"
                 if tx is not None:
+                    start = _start_timer()
                     await tx.query(query, variables)
+                    _log_query(query, variables, _elapsed_ms(start))
                 else:
                     client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
+                    start = _start_timer()
                     await client.query(query, variables)
+                    _log_query(query, variables, _elapsed_ms(start))
                 if refresh:
                     await self.refresh()
             elif tx is not None:
+                start = _start_timer()
                 await tx.merge(thing, data_set)
+                _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
                 # Update local instance with merged data
                 for key, value in data_set.items():
                     if hasattr(self, key):
                         setattr(self, key, value)
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
+                start = _start_timer()
                 await client.merge(thing, data_set)
+                _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
                 if refresh:
                     await self.refresh()
 
@@ -1030,11 +1053,15 @@ class BaseSurrealModel(BaseModel):
             tx=tx,
         ):
             if tx is not None:
+                start = _start_timer()
                 await tx.delete(thing)
+                _log_query(f"DELETE {thing}", {}, _elapsed_ms(start))
                 logger.info(f"Record deleted (in transaction) -> {thing}.")
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
+                start = _start_timer()
                 result = await client.delete(thing)
+                _log_query(f"DELETE {thing}", {}, _elapsed_ms(start))
 
                 if not result.success:
                     raise SurrealDbError(f"Can't delete Record id -> '{record_id}' not found!")
@@ -1135,7 +1162,10 @@ class BaseSurrealModel(BaseModel):
             Use this for edge cases where the standard QuerySet API is insufficient.
         """
         client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
-        result = await client.query(query, variables or {})
+        vars_ = variables or {}
+        start = _start_timer()
+        result = await client.query(query, vars_)
+        _log_query(query, vars_, _elapsed_ms(start))
         return list(result.all_records) if result.all_records else []
 
     # ==================== Stored Function Calls ====================
@@ -1205,7 +1235,9 @@ class BaseSurrealModel(BaseModel):
 
         query = f"UPDATE {thing} SET {field} = array::append({field}, $value);"
         client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
+        start = _start_timer()
         result = await client.query(query, {"value": value})
+        _log_query(query, {"value": value}, _elapsed_ms(start))
         return list(result.all_records) if result.all_records else []
 
     @classmethod
@@ -1237,7 +1269,9 @@ class BaseSurrealModel(BaseModel):
 
         query = f"UPDATE {thing} SET {field} -= $value;"
         client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
+        start = _start_timer()
         result = await client.query(query, {"value": value})
+        _log_query(query, {"value": value}, _elapsed_ms(start))
         return list(result.all_records) if result.all_records else []
 
     @classmethod
@@ -1271,7 +1305,9 @@ class BaseSurrealModel(BaseModel):
 
         query = f"UPDATE {thing} SET {field} += $value;"
         client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
+        start = _start_timer()
         result = await client.query(query, {"value": value})
+        _log_query(query, {"value": value}, _elapsed_ms(start))
         return list(result.all_records) if result.all_records else []
 
     # ==================== Graph Relation Methods ====================

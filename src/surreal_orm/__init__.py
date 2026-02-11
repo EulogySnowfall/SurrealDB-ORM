@@ -57,6 +57,7 @@ from .surreal_function import SurrealFunc
 from .utils import retry_on_conflict
 from .live import LiveModelStream, ModelChangeEvent, ChangeModelStream
 from .geo import GeoDistance
+from .debug import QueryLogger
 from .introspection import generate_models_from_db, schema_diff
 from .migrations.operations import DefineAnalyzer, DefineEvent, RemoveEvent
 from .signals import (
@@ -163,8 +164,10 @@ __all__ = [
     "DefineAnalyzer",
     "DefineEvent",
     "RemoveEvent",
+    # Debug
+    "QueryLogger",
     # Utilities
     "retry_on_conflict",
 ]
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"

@@ -29,7 +29,7 @@
 | 0.11.0  | Released | Advanced Queries & Caching                                |
 | 0.12.0  | Released | Vector Search & Full-Text Search                          |
 | 0.13.0  | Released | Events, Geospatial & Materialized Views                   |
-| 0.14.0  | Planned  | Testing & Developer Experience                            |
+| 0.14.0  | Released | Testing & Developer Experience (Alpha → Beta)             |
 
 ---
 
@@ -1213,9 +1213,11 @@ class Likes(BaseSurrealModel):
 
 ---
 
-## v0.14.0 - Testing & Developer Experience (Planned)
+## v0.14.0 - Testing & Developer Experience (Released)
 
-**Goal:** First-class testing utilities and developer tooling.
+**Goal:** First-class testing utilities, developer tooling, and Alpha → Beta transition.
+
+**Status:** Implemented and released.
 
 ### Test Fixtures
 
@@ -1354,9 +1356,9 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 | Geospatial Fields            | 0.13.0  | Medium   | Done   | -                |
 | Materialized Views           | 0.13.0  | Medium   | Done   | -                |
 | TYPE RELATION enforcement    | 0.13.0  | Low      | Done   | Relations        |
-| Test Fixtures                | 0.14.0  | High     | -      | -                |
-| Model Factories              | 0.14.0  | High     | -      | -                |
-| Debug Toolbar / QueryLogger  | 0.14.0  | Medium   | -      | -                |
+| Test Fixtures                | 0.14.0  | High     | Done   | -                |
+| Model Factories              | 0.14.0  | High     | Done   | -                |
+| Debug Toolbar / QueryLogger  | 0.14.0  | Medium   | Done   | -                |
 
 ---
 

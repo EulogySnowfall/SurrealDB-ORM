@@ -312,7 +312,10 @@ class QuerySet:
         self._group_by_fields = list(fields)
         return self
 
-    def annotate(self, **aggregations: Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance) -> Self:
+    def annotate(
+        self,
+        **aggregations: (Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance),
+    ) -> Self:
         """
         Add aggregation functions, subqueries, search annotations, or geo distances.
 
@@ -974,6 +977,19 @@ class QuerySet:
                 )
             return f"{field_name} IS {'NULL' if value else 'NOT NULL'}"
 
+        # Handle string function lookups (startswith, endswith)
+        if lookup_name in ("startswith", "istartswith"):
+            var_name = f"_f{counter[0]}"
+            counter[0] += 1
+            variables[var_name] = value
+            return f"string::starts_with({field_name}, ${var_name})"
+
+        if lookup_name in ("endswith", "iendswith"):
+            var_name = f"_f{counter[0]}"
+            counter[0] += 1
+            variables[var_name] = value
+            return f"string::ends_with({field_name}, ${var_name})"
+
         # Backwards compat: strings starting with $ are variable references
         if isinstance(value, str) and value.startswith("$"):
             return f"{field_name} {op} {value}"
@@ -1586,7 +1602,12 @@ class QuerySet:
             results = await self._run_query_on_client(client, "SELECT * FROM users;")
             ```
         """
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        from .debug import _log_query, _start_timer, _elapsed_ms
+
+        final_query = remove_quotes_for_variables(query)
+        start = _start_timer()
+        result = await client.query(final_query, self._variables)
+        _log_query(final_query, self._variables, _elapsed_ms(start))
         # SDK returns QueryResponse, extract all records
         return cast(list[Any], result.all_records)
 
