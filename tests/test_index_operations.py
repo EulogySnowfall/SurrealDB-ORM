@@ -242,6 +242,19 @@ class TestParseDefineIndexRegression:
         assert idx.search_analyzer == "my_az"
         assert idx.bm25 is None
 
+    def test_comment_clause_does_not_trigger_false_hnsw(self) -> None:
+        """COMMENT containing 'HNSW' should not set hnsw=True."""
+        idx = parse_define_index('DEFINE INDEX email_idx ON users FIELDS email UNIQUE COMMENT "Uses HNSW for speed"')
+        assert idx.unique is True
+        assert idx.hnsw is False
+
+    def test_comment_clause_does_not_trigger_false_bm25(self) -> None:
+        """COMMENT containing 'BM25' should not set bm25."""
+        idx = parse_define_index('DEFINE INDEX name_idx ON users FIELDS name UNIQUE COMMENT "Not a BM25 index"')
+        assert idx.unique is True
+        assert idx.bm25 is None
+        assert idx.highlights is False
+
 
 class TestParseDefineAnalyzer:
     """Test parse_define_analyzer."""
@@ -377,3 +390,41 @@ class TestIndexStateDiff:
         define_ops = [o for o in ops if type(o).__name__ == "DefineAnalyzer"]
         assert len(define_ops) == 1
         assert define_ops[0].tokenizers == ["blank", "class"]
+
+    def test_remove_analyzer_deferred_after_index_ops(self) -> None:
+        """RemoveAnalyzer should come after DropIndex to avoid removing
+        an analyzer still referenced by an existing index."""
+        from src.surreal_orm.migrations.operations import DropIndex
+
+        current = SchemaState(
+            tables={
+                "posts": TableState(
+                    name="posts",
+                    fields={},
+                    indexes={
+                        "ft_idx": IndexState(
+                            name="ft_idx",
+                            fields=["title"],
+                            search_analyzer="old_az",
+                            bm25=True,
+                        ),
+                    },
+                ),
+            },
+            analyzers={
+                "old_az": AnalyzerState(name="old_az", tokenizers=["blank"], filters=["lowercase"]),
+            },
+        )
+        target = SchemaState(
+            tables={
+                "posts": TableState(name="posts", fields={}, indexes={}),
+            },
+            analyzers={},
+        )
+        ops = current.diff(target)
+        drop_idx_positions = [i for i, o in enumerate(ops) if isinstance(o, DropIndex)]
+        remove_az_positions = [i for i, o in enumerate(ops) if isinstance(o, RemoveAnalyzer)]
+        assert len(drop_idx_positions) == 1
+        assert len(remove_az_positions) == 1
+        # RemoveAnalyzer must come AFTER DropIndex
+        assert remove_az_positions[0] > drop_idx_positions[0]

@@ -416,6 +416,12 @@ def parse_define_index(statement: str) -> IndexState:
     fields = [f.strip() for f in fields_str.split(",") if f.strip()]
 
     flags_str = rest[fields_end:]
+
+    # Strip COMMENT clause before keyword detection so that comment
+    # text like 'COMMENT "Uses HNSW for speed"' doesn't cause false
+    # matches on keywords like UNIQUE, BM25, or HNSW.
+    flags_str = re.sub(r"""COMMENT\s+(?:"[^"]*"|'[^']*')""", "", flags_str, flags=re.IGNORECASE)
+
     upper_flags = flags_str.upper()
 
     # ── Standard flags ──────────────────────────────────────────────

@@ -251,7 +251,7 @@ class SchemaState:
 
         operations: list[Operation] = []
 
-        # ── Analyzers first (indexes may reference them) ────────────
+        # ── Analyzers to create/update first (indexes may reference them) ──
         for analyzer_name, target_analyzer in target.analyzers.items():
             if analyzer_name not in self.analyzers or self.analyzers[analyzer_name] != target_analyzer:
                 operations.append(
@@ -262,10 +262,13 @@ class SchemaState:
                     )
                 )
 
-        # Analyzers to remove
+        # Collect analyzers to remove — these are deferred until after all
+        # index operations so that we don't remove an analyzer still
+        # referenced by an existing index that hasn't been dropped yet.
+        deferred_remove_analyzers: list[RemoveAnalyzer] = []
         for analyzer_name in self.analyzers:
             if analyzer_name not in target.analyzers:
-                operations.append(RemoveAnalyzer(name=analyzer_name))
+                deferred_remove_analyzers.append(RemoveAnalyzer(name=analyzer_name))
 
         # Tables to create (in target but not in self)
         for table_name, target_table in target.tables.items():
@@ -422,6 +425,9 @@ class SchemaState:
                             duration_session=target_table.access.duration_session,
                         )
                     )
+
+        # ── Deferred analyzer removals (after all index ops) ────────
+        operations.extend(deferred_remove_analyzers)
 
         return operations
 

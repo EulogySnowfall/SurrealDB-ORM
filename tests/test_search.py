@@ -183,7 +183,9 @@ class TestSearchIntegration:
 
         client = await SurrealDBConnectionManager.get_client()
 
-        # Clean up
+        # Clean up — use REMOVE IF EXISTS for idempotent re-runs
+        await client.query("REMOVE INDEX IF EXISTS ft_title ON posts;")
+        await client.query("REMOVE ANALYZER IF EXISTS post_analyzer;")
         await client.query("DELETE FROM posts;")
 
         # Define analyzer and search index
