@@ -88,6 +88,9 @@ class CreateTable(Operation):
     """
     Create a new table with optional schema mode and changefeed.
 
+    Supports materialized views (``view_query``) and TYPE RELATION
+    constraints (``relation_in``, ``relation_out``, ``enforced``).
+
     Example:
         CreateTable(name="users", schema_mode="SCHEMAFULL", changefeed="7d")
 
@@ -101,9 +104,30 @@ class CreateTable(Operation):
     changefeed: str | None = None
     permissions: dict[str, str] | None = None
     comment: str | None = None
+    view_query: str | None = None
+    relation_in: str | None = None
+    relation_out: str | None = None
+    enforced: bool = False
 
     def forwards(self) -> str:
+        # Materialized view — different syntax
+        if self.view_query:
+            return f"DEFINE TABLE {self.name} AS ({self.view_query});"
+
         parts = [f"DEFINE TABLE {self.name}"]
+
+        # TYPE clause
+        if self.table_type and self.table_type.upper() == "RELATION":
+            type_clause = "TYPE RELATION"
+            if self.relation_in:
+                type_clause += f" IN {self.relation_in}"
+            if self.relation_out:
+                type_clause += f" OUT {self.relation_out}"
+            if self.enforced:
+                type_clause += " ENFORCED"
+            parts.append(type_clause)
+        elif self.table_type and self.table_type.lower() not in ("normal", ""):
+            parts.append(f"TYPE {self.table_type.upper()}")
 
         if self.schema_mode:
             parts.append(self.schema_mode)
@@ -711,3 +735,73 @@ class RemoveAnalyzer(Operation):
 
     def describe(self) -> str:
         return f"Remove analyzer {self.name}"
+
+
+@dataclass
+class DefineEvent(Operation):
+    """
+    Define a server-side event (trigger) on a table.
+
+    Example:
+        DefineEvent(
+            name="audit_create",
+            table="users",
+            when="$event = 'CREATE'",
+            then="CREATE audit_log SET table = 'users', action = 'create', at = time::now()",
+        )
+
+    Generates:
+        DEFINE EVENT audit_create ON users WHEN $event = 'CREATE'
+            THEN (CREATE audit_log SET table = 'users', action = 'create', at = time::now());
+    """
+
+    name: str
+    table: str
+    when: str
+    then: str
+    comment: str | None = None
+
+    def forwards(self) -> str:
+        parts = [f"DEFINE EVENT {self.name} ON {self.table}"]
+        parts.append(f"WHEN {self.when}")
+        parts.append(f"THEN ({self.then})")
+
+        if self.comment:
+            escaped_comment = self.comment.replace("'", "''")
+            parts.append(f"COMMENT '{escaped_comment}'")
+
+        return " ".join(parts) + ";"
+
+    def backwards(self) -> str:
+        return f"REMOVE EVENT {self.name} ON {self.table};"
+
+    def describe(self) -> str:
+        return f"Define event {self.name} on {self.table}"
+
+
+@dataclass
+class RemoveEvent(Operation):
+    """
+    Remove a server-side event from a table.
+
+    Example:
+        RemoveEvent(name="audit_create", table="users")
+
+    Generates:
+        REMOVE EVENT audit_create ON users;
+    """
+
+    name: str
+    table: str
+
+    def __post_init__(self) -> None:
+        self.reversible = False
+
+    def forwards(self) -> str:
+        return f"REMOVE EVENT {self.name} ON {self.table};"
+
+    def backwards(self) -> str:
+        return ""
+
+    def describe(self) -> str:
+        return f"Remove event {self.name} from {self.table}"

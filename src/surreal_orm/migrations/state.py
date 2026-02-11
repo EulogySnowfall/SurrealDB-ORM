@@ -170,6 +170,29 @@ class AnalyzerState:
 
 
 @dataclass
+class EventState:
+    """
+    Represents the state of a server-side event (trigger) on a table.
+
+    Attributes:
+        name: Event name
+        table: Table the event is defined on
+        when: SurrealQL condition (e.g., ``"$event = 'CREATE'"``)
+        then: SurrealQL action block
+    """
+
+    name: str
+    table: str
+    when: str
+    then: str
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, EventState):
+            return False
+        return self.name == other.name and self.table == other.table and self.when == other.when and self.then == other.then
+
+
+@dataclass
 class TableState:
     """
     Represents the complete state of a table.
@@ -177,12 +200,17 @@ class TableState:
     Attributes:
         name: Table name
         schema_mode: SCHEMAFULL or SCHEMALESS
-        table_type: Table type classification (normal, user, stream, hash)
+        table_type: Table type classification (normal, user, stream, hash, relation, any)
         fields: Dict of field name to FieldState
         indexes: Dict of index name to IndexState
+        events: Dict of event name to EventState
         changefeed: Changefeed duration if enabled
         permissions: Dict of action to WHERE condition
         access: Access definition if this is a USER table
+        view_query: AS SELECT ... clause for materialized views
+        relation_in: IN table(s) for TYPE RELATION (pipe-separated if multiple)
+        relation_out: OUT table(s) for TYPE RELATION (pipe-separated if multiple)
+        enforced: Whether the relation constraint is enforced
     """
 
     name: str
@@ -190,9 +218,14 @@ class TableState:
     table_type: str = "normal"
     fields: dict[str, FieldState] = field(default_factory=dict)
     indexes: dict[str, IndexState] = field(default_factory=dict)
+    events: dict[str, "EventState"] = field(default_factory=dict)
     changefeed: str | None = None
     permissions: dict[str, str] = field(default_factory=dict)
     access: AccessState | None = None
+    view_query: str | None = None
+    relation_in: str | None = None
+    relation_out: str | None = None
+    enforced: bool = False
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, TableState):
@@ -203,9 +236,14 @@ class TableState:
             and self.table_type == other.table_type
             and self.fields == other.fields
             and self.indexes == other.indexes
+            and self.events == other.events
             and self.changefeed == other.changefeed
             and self.permissions == other.permissions
             and self.access == other.access
+            and self.view_query == other.view_query
+            and self.relation_in == other.relation_in
+            and self.relation_out == other.relation_out
+            and self.enforced == other.enforced
         )
 
 
@@ -242,11 +280,13 @@ class SchemaState:
             CreateTable,
             DefineAccess,
             DefineAnalyzer,
+            DefineEvent,
             DropField,
             DropIndex,
             DropTable,
             RemoveAccess,
             RemoveAnalyzer,
+            RemoveEvent,
         )
 
         operations: list[Operation] = []
@@ -281,6 +321,10 @@ class SchemaState:
                         table_type=target_table.table_type,
                         changefeed=target_table.changefeed,
                         permissions=target_table.permissions or None,
+                        view_query=target_table.view_query,
+                        relation_in=target_table.relation_in,
+                        relation_out=target_table.relation_out,
+                        enforced=target_table.enforced,
                     )
                 )
                 # Add all fields
@@ -301,6 +345,16 @@ class SchemaState:
                 # Add all indexes
                 for index_name, index_state in target_table.indexes.items():
                     operations.append(self._create_index_from_state(table_name, index_state))
+                # Add all events
+                for event_name, event_state in target_table.events.items():
+                    operations.append(
+                        DefineEvent(
+                            name=event_state.name,
+                            table=table_name,
+                            when=event_state.when,
+                            then=event_state.then,
+                        )
+                    )
                 # Add access definition if present
                 if target_table.access:
                     operations.append(
@@ -329,6 +383,10 @@ class SchemaState:
                     current_table.schema_mode != target_table.schema_mode
                     or current_table.changefeed != target_table.changefeed
                     or current_table.permissions != target_table.permissions
+                    or current_table.view_query != target_table.view_query
+                    or current_table.relation_in != target_table.relation_in
+                    or current_table.relation_out != target_table.relation_out
+                    or current_table.enforced != target_table.enforced
                 ):
                     # Recreate table definition (DEFINE TABLE is idempotent)
                     operations.append(
@@ -338,6 +396,10 @@ class SchemaState:
                             table_type=target_table.table_type,
                             changefeed=target_table.changefeed,
                             permissions=target_table.permissions or None,
+                            view_query=target_table.view_query,
+                            relation_in=target_table.relation_in,
+                            relation_out=target_table.relation_out,
+                            enforced=target_table.enforced,
                         )
                     )
 
@@ -425,6 +487,35 @@ class SchemaState:
                             duration_session=target_table.access.duration_session,
                         )
                     )
+
+                # Event changes
+                for event_name, event_state in target_table.events.items():
+                    if event_name not in current_table.events:
+                        # New event
+                        operations.append(
+                            DefineEvent(
+                                name=event_state.name,
+                                table=table_name,
+                                when=event_state.when,
+                                then=event_state.then,
+                            )
+                        )
+                    elif current_table.events[event_name] != event_state:
+                        # Event changed — remove old, define new
+                        operations.append(RemoveEvent(name=event_name, table=table_name))
+                        operations.append(
+                            DefineEvent(
+                                name=event_state.name,
+                                table=table_name,
+                                when=event_state.when,
+                                then=event_state.then,
+                            )
+                        )
+
+                # Events to drop
+                for event_name in current_table.events:
+                    if event_name not in target_table.events:
+                        operations.append(RemoveEvent(name=event_name, table=table_name))
 
         # ── Deferred analyzer removals (after all index ops) ────────
         operations.extend(deferred_remove_analyzers)

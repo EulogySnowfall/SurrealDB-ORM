@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .state import FieldState, IndexState
+from .state import EventState, FieldState, IndexState
 
 # Keywords that delimit clauses in a DEFINE FIELD statement.
 # Order matters: longer keywords first to avoid partial matches.
@@ -286,14 +286,28 @@ def parse_define_table(statement: str) -> dict[str, Any]:
 
     # Table type from TYPE clause (e.g., TYPE NORMAL, TYPE RELATION)
     table_type = "normal"
+    relation_in: str | None = None
+    relation_out: str | None = None
+    enforced = False
     if "TYPE" in clauses:
-        raw_type = clauses["TYPE"].strip().upper()
-        if raw_type.startswith("RELATION"):
+        raw_type = clauses["TYPE"].strip()
+        upper_type = raw_type.upper()
+        if upper_type.startswith("RELATION"):
             table_type = "relation"
-        elif raw_type == "ANY":
+            # Parse IN/OUT/ENFORCED from the rest of the TYPE clause
+            rel_body = raw_type[len("RELATION") :].strip()
+            in_match = re.search(r"\bIN\s+(.+?)(?:\s+OUT\b|\s+ENFORCED\b|$)", rel_body, re.IGNORECASE)
+            if in_match:
+                relation_in = in_match.group(1).strip()
+            out_match = re.search(r"\bOUT\s+(.+?)(?:\s+ENFORCED\b|$)", rel_body, re.IGNORECASE)
+            if out_match:
+                relation_out = out_match.group(1).strip()
+            if "ENFORCED" in rel_body.upper():
+                enforced = True
+        elif upper_type == "ANY":
             table_type = "any"
         else:
-            table_type = raw_type.lower()
+            table_type = upper_type.lower()
 
     # Changefeed
     changefeed = clauses.get("CHANGEFEED") or None
@@ -303,12 +317,32 @@ def parse_define_table(statement: str) -> dict[str, Any]:
     # Permissions
     permissions = _parse_permissions(clauses.get("PERMISSIONS"))
 
+    # Materialized view (AS SELECT ... or AS (SELECT ...))
+    # We re-extract from the raw body because _extract_clauses may split on
+    # ``AS`` tokens inside the view query itself (e.g. ``count() AS total``).
+    view_query: str | None = None
+    as_match = re.search(
+        r"\bAS\s+(?:\(\s*)?(SELECT\b.+)",
+        body,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if as_match:
+        vq = as_match.group(1).strip()
+        # Strip trailing parenthesis from AS (SELECT ...) form
+        if vq.endswith(")"):
+            vq = vq[:-1].strip()
+        view_query = vq
+
     return {
         "name": table_name,
         "schema_mode": schema_mode,
         "table_type": table_type,
         "changefeed": changefeed,
         "permissions": permissions,
+        "view_query": view_query,
+        "relation_in": relation_in,
+        "relation_out": relation_out,
+        "enforced": enforced,
     }
 
 
@@ -682,10 +716,65 @@ def parse_define_analyzer(statement: str) -> dict[str, Any]:
     }
 
 
+def parse_define_event(statement: str) -> EventState:
+    """Parse a DEFINE EVENT statement into an EventState.
+
+    Examples::
+
+        parse_define_event(
+            "DEFINE EVENT audit_create ON users "
+            "WHEN $event = 'CREATE' "
+            "THEN (CREATE audit_log SET table = 'users', action = 'create')"
+        )
+
+    Args:
+        statement: Full DEFINE EVENT statement string.
+
+    Returns:
+        Populated EventState instance.
+    """
+    stmt = statement.strip().rstrip(";").strip()
+
+    match = re.match(
+        r"DEFINE\s+EVENT\s+(?:IF\s+NOT\s+EXISTS\s+|OVERWRITE\s+)?(\S+)\s+ON\s+(?:TABLE\s+)?(\S+)\s*(.*)",
+        stmt,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError(f"Cannot parse DEFINE EVENT statement: {statement!r}")
+
+    event_name = match.group(1)
+    table_name = match.group(2)
+    body = match.group(3).strip()
+
+    # Extract WHEN clause — everything between WHEN and THEN
+    when_match = re.search(r"\bWHEN\s+(.+?)\s+THEN\b", body, re.IGNORECASE | re.DOTALL)
+    when = when_match.group(1).strip() if when_match else ""
+
+    # Extract THEN clause — content inside parentheses after THEN
+    then_match = re.search(r"\bTHEN\s*\(", body, re.IGNORECASE)
+    then = ""
+    if then_match:
+        then = _extract_balanced_parens(body, then_match.end() - 1)
+    else:
+        # THEN without parens (single statement)
+        then_alt = re.search(r"\bTHEN\s+(.+?)(?:\s+COMMENT\b|$)", body, re.IGNORECASE | re.DOTALL)
+        if then_alt:
+            then = then_alt.group(1).strip()
+
+    return EventState(
+        name=event_name,
+        table=table_name,
+        when=when,
+        then=then,
+    )
+
+
 __all__ = [
     "parse_define_field",
     "parse_define_table",
     "parse_define_index",
     "parse_define_access",
     "parse_define_analyzer",
+    "parse_define_event",
 ]

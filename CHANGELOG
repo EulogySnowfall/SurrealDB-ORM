@@ -6,6 +6,51 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.13.0] - 2026-02-10
+
+### Added
+
+- **DEFINE EVENT (Server-Side Triggers)** — Declarative server-side event triggers in migrations
+  - `DefineEvent(name, table, when, then)` migration operation — generates `DEFINE EVENT ... WHEN ... THEN (...);`
+  - `RemoveEvent(name, table)` migration operation
+  - `EventState` dataclass for schema tracking
+  - `parse_define_event()` parser for `DEFINE EVENT` statements
+  - `SchemaState.diff()` detects event add/change/remove across tables
+  - `DatabaseIntrospector` parses events from `INFO FOR TABLE`
+  - `ModelCodeGenerator` adds informational event comments in generated models
+
+- **Geospatial Fields & Queries** — Typed geometry fields and distance-based queries
+  - `GeoField["point"]`, `GeoField["polygon"]`, `GeoField["linestring"]`, `GeoField["multipoint"]` type annotations
+  - Convenience aliases: `PointField`, `PolygonField`, `LineStringField`, `MultiPointField`
+  - `is_geo_field()` and `get_geo_info()` detection helpers
+  - `QuerySet.nearby(field, point, max_distance)` — proximity filter using `geo::distance()`
+  - `GeoDistance(field, point)` annotation helper — compatible with `annotate()` interface
+  - `ModelCodeGenerator` generates `GeoField["X"]` for `geometry<X>` database types
+  - New files: `src/surreal_orm/fields/geometry.py`, `src/surreal_orm/geo.py`
+
+- **Materialized Views** — Read-only models backed by `DEFINE TABLE ... AS SELECT`
+  - `SurrealConfigDict(view_query="SELECT ...")` for view configuration
+  - Read-only guard: `save()`, `update()`, `merge()`, `delete()` raise `TypeError` on views
+  - `CreateTable(view_query=...)` generates `DEFINE TABLE ... AS (...);`
+  - `parse_define_table()` extracts `AS` clause as `view_query`
+  - `SchemaState.diff()` detects view_query changes
+
+- **TYPE RELATION Enforcement** — Graph edge constraints in migrations
+  - `TableType.RELATION` and `TableType.ANY` added to enum
+  - `SurrealConfigDict(relation_in=..., relation_out=..., enforced=True)` for relation config
+  - `CreateTable` generates `TYPE RELATION IN table1 OUT table2 ENFORCED`
+  - `parse_define_table()` extracts RELATION IN/OUT/ENFORCED clauses
+  - `DatabaseIntrospector` populates relation fields from schema
+
+### Changed
+
+- `annotate()` type hint extended to accept `GeoDistance`
+- `exec()` integrates geo distance WHERE clause in `_compile_query()`
+- `ModelCodeGenerator` generates `view_query=`, `relation_in=`, `relation_out=`, `enforced=` in config
+- Version bump to 0.13.0
+
+---
+
 ## [0.12.0] - 2026-02-10
 
 ### Added

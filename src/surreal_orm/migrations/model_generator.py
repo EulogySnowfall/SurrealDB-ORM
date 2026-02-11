@@ -129,9 +129,25 @@ class ModelCodeGenerator:
             perm_str = repr(table.permissions)
             config_parts.append(f"permissions={perm_str}")
 
+        if table.view_query:
+            config_parts.append(f"view_query={repr(table.view_query)}")
+
+        if table.relation_in:
+            config_parts.append(f"relation_in={repr(table.relation_in)}")
+
+        if table.relation_out:
+            config_parts.append(f"relation_out={repr(table.relation_out)}")
+
+        if table.enforced:
+            config_parts.append("enforced=True")
+
         config_line = ", ".join(config_parts)
 
         lines: list[str] = []
+
+        if table.view_query:
+            lines.append("# Read-only materialized view")
+
         lines.append(f"class {class_name}(BaseSurrealModel):")
         lines.append(f"    model_config = SurrealConfigDict({config_line})")
         lines.append("")
@@ -161,6 +177,13 @@ class ModelCodeGenerator:
                 field_line, field_imports = self._generate_field(field_state)
                 lines.append(f"    {field_line}")
                 extra_imports.update(field_imports)
+
+        # Add informational comments for server-side events
+        if table.events:
+            lines.append("")
+            lines.append("    # Server-side events (managed by SurrealDB):")
+            for event_name, event_state in sorted(table.events.items()):
+                lines.append(f"    # - {event_name}: WHEN {event_state.when}")
 
         return "\n".join(lines), extra_imports
 
@@ -246,6 +269,12 @@ class ModelCodeGenerator:
         if record_match:
             return "str"  # Record references are stored as string IDs
 
+        # Handle geometry<T> → GeoField["T"]
+        geo_match = re.match(r"geometry<(.+)>", surreal_type, re.IGNORECASE)
+        if geo_match:
+            geo_type = geo_match.group(1).strip().lower()
+            return f'GeoField["{geo_type}"]'
+
         # Simple type lookup
         return _SURREAL_TO_PYTHON.get(surreal_type.lower(), "Any")
 
@@ -254,6 +283,8 @@ class ModelCodeGenerator:
         for type_name, import_line in _IMPORT_MAP.items():
             if type_name in python_type:
                 imports.add(import_line)
+        if "GeoField" in python_type:
+            imports.add("from surreal_orm.fields import GeoField")
 
     def _format_default(self, default: object) -> str:
         """Format a default value for Python source code."""

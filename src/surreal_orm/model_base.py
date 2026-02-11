@@ -165,6 +165,11 @@ class SurrealConfigDict(ConfigDict):
             When set, all queries for this model use the specified connection
             instead of "default".  Can be overridden at runtime with
             ``SurrealDBConnectionManager.using("name")``.
+        view_query: AS SELECT ... clause for materialized views.  When set,
+            the model is read-only (save/delete/merge/update raise TypeError).
+        relation_in: IN table(s) for TYPE RELATION constraint.
+        relation_out: OUT table(s) for TYPE RELATION constraint.
+        enforced: Whether the TYPE RELATION constraint is enforced.
     """
 
     primary_key: str | None
@@ -180,6 +185,10 @@ class SurrealConfigDict(ConfigDict):
     session_duration: str | None
     server_fields: list[str] | None
     connection: str | None
+    view_query: str | None
+    relation_in: str | list[str] | None
+    relation_out: str | list[str] | None
+    enforced: bool | None
 
 
 class BaseSurrealModel(BaseModel):
@@ -260,6 +269,18 @@ class BaseSurrealModel(BaseModel):
             if isinstance(table_name, str):
                 return table_name
         return cls.__name__
+
+    @classmethod
+    def _is_view(cls) -> bool:
+        """Return True if this model is a read-only materialized view."""
+        if hasattr(cls, "model_config"):
+            return cls.model_config.get("view_query") is not None
+        return False
+
+    def _check_not_view(self) -> None:
+        """Raise ``TypeError`` if this model is a materialized view."""
+        if self.__class__._is_view():
+            raise TypeError(f"Cannot modify materialized view '{self.__class__.get_table_name()}'")
 
     @classmethod
     def get_connection_name(cls) -> str:
@@ -624,6 +645,8 @@ class BaseSurrealModel(BaseModel):
             async with await SurrealDBConnectionManager.transaction() as tx:
                 await user.save(tx=tx)
         """
+        self._check_not_view()
+
         # Determine if this is a create or update
         created = not self._db_persisted
 
@@ -821,6 +844,8 @@ class BaseSurrealModel(BaseModel):
         Args:
             tx: Optional transaction to use for this operation.
         """
+        self._check_not_view()
+
         # Build exclude set: always exclude 'id' and any server-generated fields
         exclude_fields = {"id"} | self.get_server_fields()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
@@ -905,6 +930,8 @@ class BaseSurrealModel(BaseModel):
         Returns:
             Self: The updated model instance.
         """
+        self._check_not_view()
+
         data_set = {key: value for key, value in data.items()}
 
         record_id = self.get_id()
@@ -981,6 +1008,8 @@ class BaseSurrealModel(BaseModel):
         Args:
             tx: Optional transaction to use for this operation.
         """
+        self._check_not_view()
+
         record_id = self.get_id()
         if not record_id:
             raise SurrealDbError("Can't delete record without an ID.")

@@ -13,6 +13,75 @@
 
 ---
 
+## What's New in 0.13.0
+
+### Events, Geospatial, Materialized Views & TYPE RELATION
+
+- **DEFINE EVENT** — Server-side triggers in migrations
+
+  ```python
+  from surreal_orm import DefineEvent
+
+  DefineEvent(
+      name="email_audit", table="users",
+      when="$before.email != $after.email",
+      then="CREATE audit_log SET table = 'user', record = $value.id, action = $event",
+  )
+  ```
+
+- **Geospatial Fields** — Typed geometry fields and proximity queries
+
+  ```python
+  from surreal_orm.fields import PointField, PolygonField
+  from surreal_orm.geo import GeoDistance
+
+  class Store(BaseSurrealModel):
+      name: str
+      location: PointField          # geometry<point>
+      delivery_area: PolygonField   # geometry<polygon>
+
+  # Proximity search: stores within 5km
+  nearby = await Store.objects().nearby(
+      "location", (-73.98, 40.74), max_distance=5000
+  ).exec()
+
+  # Distance annotation
+  stores = await Store.objects().annotate(
+      dist=GeoDistance("location", (-73.98, 40.74)),
+  ).order_by("dist").limit(10).exec()
+  ```
+
+- **Materialized Views** — Read-only models backed by `DEFINE TABLE ... AS SELECT`
+
+  ```python
+  class OrderStats(BaseSurrealModel):
+      model_config = SurrealConfigDict(
+          table_name="order_stats",
+          view_query="SELECT status, count() AS total, math::sum(amount) AS revenue FROM orders GROUP BY status",
+      )
+      status: str
+      total: int
+      revenue: float
+
+  # Auto-maintained by SurrealDB — read-only queries only
+  stats = await OrderStats.objects().all()
+  await stats[0].save()  # TypeError: Cannot modify materialized view
+  ```
+
+- **TYPE RELATION** — Enforce graph edge constraints in migrations
+
+  ```python
+  class Likes(BaseSurrealModel):
+      model_config = SurrealConfigDict(
+          table_type=TableType.RELATION,
+          relation_in="person",
+          relation_out=["blog_post", "book"],
+          enforced=True,
+      )
+  ```
+
+---
+
 ## What's New in 0.12.0
 
 ### Vector Search & Full-Text Search
