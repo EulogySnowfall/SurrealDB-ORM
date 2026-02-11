@@ -1,0 +1,215 @@
+"""
+Tests for materialized views — CreateTable view_query, read-only guard, parser, diff.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from surreal_orm.migrations.operations import CreateTable
+from surreal_orm.migrations.define_parser import parse_define_table
+from surreal_orm.migrations.state import SchemaState, TableState
+
+
+# ---------------------------------------------------------------------------
+# CreateTable — view_query
+# ---------------------------------------------------------------------------
+
+
+class TestCreateTableView:
+    """Tests for CreateTable with view_query (materialized views)."""
+
+    def test_view_query_generates_as(self) -> None:
+        op = CreateTable(
+            name="order_stats",
+            view_query="SELECT status, count() AS total FROM orders GROUP BY status",
+        )
+        sql = op.forwards()
+        assert sql == ("DEFINE TABLE order_stats AS (SELECT status, count() AS total FROM orders GROUP BY status);")
+
+    def test_view_query_overrides_schema_mode(self) -> None:
+        """When view_query is set, schema_mode/changefeed are ignored."""
+        op = CreateTable(
+            name="stats",
+            schema_mode="SCHEMAFULL",
+            changefeed="7d",
+            view_query="SELECT * FROM orders",
+        )
+        sql = op.forwards()
+        assert "SCHEMAFULL" not in sql
+        assert "CHANGEFEED" not in sql
+        assert "AS (SELECT * FROM orders)" in sql
+
+    def test_backwards_removes_table(self) -> None:
+        op = CreateTable(name="stats", view_query="SELECT * FROM orders")
+        assert op.backwards() == "REMOVE TABLE stats;"
+
+
+# ---------------------------------------------------------------------------
+# Read-only guard
+# ---------------------------------------------------------------------------
+
+
+class TestViewReadOnly:
+    """Tests for the read-only guard on materialized views."""
+
+    def test_is_view_true(self) -> None:
+        from surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
+
+        class ViewTable(BaseSurrealModel):
+            model_config = SurrealConfigDict(
+                table_name="view_table",
+                view_query="SELECT * FROM source",
+            )
+            id: str | None = None
+
+        assert ViewTable._is_view() is True
+
+    def test_is_view_false(self) -> None:
+        from surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
+
+        class NormalTable(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="normal_table")
+            id: str | None = None
+
+        assert NormalTable._is_view() is False
+
+    def test_save_raises_on_view(self) -> None:
+        from surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
+
+        class MyView(BaseSurrealModel):
+            model_config = SurrealConfigDict(
+                table_name="my_view",
+                view_query="SELECT * FROM source",
+            )
+            id: str | None = None
+
+        instance = MyView()
+        with pytest.raises(TypeError, match="Cannot modify materialized view"):
+            instance._check_not_view()
+
+    def test_check_not_view_passes_for_normal(self) -> None:
+        from surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
+
+        class NormalModel(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="normal_model")
+            id: str | None = None
+
+        instance = NormalModel()
+        # Should not raise
+        instance._check_not_view()
+
+
+# ---------------------------------------------------------------------------
+# Parser — AS clause
+# ---------------------------------------------------------------------------
+
+
+class TestParseDefineTableAs:
+    """Tests for parsing DEFINE TABLE ... AS SELECT."""
+
+    def test_parse_view_query(self) -> None:
+        stmt = "DEFINE TABLE order_stats AS SELECT status, count() AS total FROM orders GROUP BY status"
+        result = parse_define_table(stmt)
+        assert result["name"] == "order_stats"
+        assert result["view_query"] is not None
+        assert "SELECT status" in result["view_query"]
+
+    def test_parse_normal_table_no_view(self) -> None:
+        stmt = "DEFINE TABLE users SCHEMAFULL"
+        result = parse_define_table(stmt)
+        assert result["view_query"] is None
+
+    def test_parse_view_with_where(self) -> None:
+        stmt = "DEFINE TABLE active_users AS SELECT * FROM users WHERE active = true"
+        result = parse_define_table(stmt)
+        assert result["view_query"] is not None
+        assert "WHERE active = true" in result["view_query"]
+
+
+# ---------------------------------------------------------------------------
+# SchemaState diff — view_query
+# ---------------------------------------------------------------------------
+
+
+class TestViewStateDiff:
+    """Tests for SchemaState diff with view_query changes."""
+
+    def _make_state(self, tables: dict[str, TableState]) -> SchemaState:
+        state = SchemaState()
+        state.tables = tables
+        return state
+
+    def test_create_view_table(self) -> None:
+        """Creating a new view table should set view_query on CreateTable."""
+        target = self._make_state(
+            {
+                "stats": TableState(
+                    name="stats",
+                    view_query="SELECT count() FROM orders",
+                )
+            }
+        )
+        current = self._make_state({})
+        ops = current.diff(target)
+
+        create_ops = [op for op in ops if isinstance(op, CreateTable)]
+        assert len(create_ops) == 1
+        assert create_ops[0].view_query == "SELECT count() FROM orders"
+
+    def test_view_query_change_detected(self) -> None:
+        """Changing view_query should trigger a table recreation."""
+        current = self._make_state(
+            {
+                "stats": TableState(
+                    name="stats",
+                    view_query="SELECT count() FROM orders",
+                )
+            }
+        )
+        target = self._make_state(
+            {
+                "stats": TableState(
+                    name="stats",
+                    view_query="SELECT count() FROM orders WHERE status = 'paid'",
+                )
+            }
+        )
+        ops = current.diff(target)
+
+        create_ops = [op for op in ops if isinstance(op, CreateTable)]
+        assert len(create_ops) == 1
+        assert "WHERE status = 'paid'" in create_ops[0].view_query
+
+    def test_no_change_no_ops(self) -> None:
+        """Identical view_query should produce no operations."""
+        vq = "SELECT count() FROM orders"
+        current = self._make_state({"stats": TableState(name="stats", view_query=vq)})
+        target = self._make_state({"stats": TableState(name="stats", view_query=vq)})
+        ops = current.diff(target)
+
+        create_ops = [op for op in ops if isinstance(op, CreateTable)]
+        assert len(create_ops) == 0
+
+
+# ---------------------------------------------------------------------------
+# Model generator — view tables
+# ---------------------------------------------------------------------------
+
+
+class TestModelGeneratorView:
+    """Tests for ModelCodeGenerator with view tables."""
+
+    def test_generate_view_model(self) -> None:
+        from surreal_orm.migrations.model_generator import ModelCodeGenerator
+
+        gen = ModelCodeGenerator()
+        table = TableState(
+            name="order_stats",
+            view_query="SELECT status, count() AS total FROM orders GROUP BY status",
+        )
+        block, _imports = gen._generate_model_class(table)
+
+        assert "view_query=" in block
+        assert "# Read-only materialized view" in block
+        assert "class OrderStat(BaseSurrealModel):" in block

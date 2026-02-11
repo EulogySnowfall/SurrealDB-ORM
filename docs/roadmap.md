@@ -28,7 +28,7 @@
 | 0.10.0  | Released | Schema Introspection & Multi-DB                           |
 | 0.11.0  | Released | Advanced Queries & Caching                                |
 | 0.12.0  | Released | Vector Search & Full-Text Search                          |
-| 0.13.0  | Planned  | Events, Geospatial & Materialized Views                   |
+| 0.13.0  | Released | Events, Geospatial & Materialized Views                   |
 | 0.14.0  | Planned  | Testing & Developer Experience                            |
 
 ---
@@ -1118,7 +1118,7 @@ CreateIndex(table="logs", name="idx_logs", ..., defer=True)
 
 ---
 
-## v0.13.0 - Events, Geospatial & Materialized Views (Planned)
+## v0.13.0 - Events, Geospatial & Materialized Views (Released)
 
 **Goal:** Server-side triggers, location-based queries, and auto-maintained aggregate tables.
 
@@ -1350,10 +1350,10 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 | search() QuerySet method     | 0.12.0  | High     | Done   | FTS Index        |
 | Hybrid Search (Vector + FTS) | 0.12.0  | Medium   | Done   | Vector + FTS     |
 | Advanced Index Operations    | 0.12.0  | High     | Done   | Migrations       |
-| DEFINE EVENT (triggers)      | 0.13.0  | High     | -      | Migrations       |
-| Geospatial Fields            | 0.13.0  | Medium   | -      | -                |
-| Materialized Views           | 0.13.0  | Medium   | -      | -                |
-| TYPE RELATION enforcement    | 0.13.0  | Low      | -      | Relations        |
+| DEFINE EVENT (triggers)      | 0.13.0  | High     | Done   | Migrations       |
+| Geospatial Fields            | 0.13.0  | Medium   | Done   | -                |
+| Materialized Views           | 0.13.0  | Medium   | Done   | -                |
+| TYPE RELATION enforcement    | 0.13.0  | Low      | Done   | Relations        |
 | Test Fixtures                | 0.14.0  | High     | -      | -                |
 | Model Factories              | 0.14.0  | High     | -      | -                |
 | Debug Toolbar / QueryLogger  | 0.14.0  | Medium   | -      | -                |

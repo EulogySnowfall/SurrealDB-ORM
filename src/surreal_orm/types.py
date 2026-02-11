@@ -17,12 +17,16 @@ class TableType(StrEnum):
     - USER: Authentication table with enforced SCHEMAFULL, required password field
     - STREAM: Real-time optimized table with CHANGEFEED enabled, WebSocket preferred
     - HASH: Lookup/cache table, SCHEMALESS by default
+    - RELATION: Graph edge table with TYPE RELATION IN/OUT constraints
+    - ANY: Table accepting any record type
     """
 
     NORMAL = "normal"
     USER = "user"
     STREAM = "stream"
     HASH = "hash"
+    RELATION = "relation"
+    ANY = "any"
 
 
 class SchemaMode(StrEnum):

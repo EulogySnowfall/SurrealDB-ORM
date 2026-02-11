@@ -8,6 +8,15 @@ built-in functions for encryption, validation, and other operations.
 from .computed import Computed, get_computed_expression, is_computed_field
 from .encrypted import Encrypted, EncryptedField, EncryptedFieldInfo
 from .vector import VectorField, get_vector_info, is_vector_field
+from .geometry import (
+    GeoField,
+    LineStringField,
+    MultiPointField,
+    PointField,
+    PolygonField,
+    get_geo_info,
+    is_geo_field,
+)
 from .relation import (
     ForeignKey,
     ManyToMany,
@@ -33,6 +42,14 @@ __all__ = [
     "VectorField",
     "is_vector_field",
     "get_vector_info",
+    # Geometry fields
+    "GeoField",
+    "PointField",
+    "PolygonField",
+    "LineStringField",
+    "MultiPointField",
+    "is_geo_field",
+    "get_geo_info",
     # Relation fields
     "ForeignKey",
     "ManyToMany",

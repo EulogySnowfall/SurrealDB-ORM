@@ -9,6 +9,7 @@ from .aggregations import Aggregation
 from .subquery import Subquery
 from .prefetch import Prefetch
 from .search import SearchScore, SearchHighlight
+from .geo import GeoDistance
 from typing import TYPE_CHECKING, Self, Any, Sequence, cast
 from datetime import datetime
 from pydantic_core import ValidationError
@@ -87,6 +88,10 @@ class QuerySet:
         self._knn_ef: int | None = None
         # Full-text search
         self._search_fields: list[tuple[str, str, int]] = []  # (field, query, ref_index)
+        # Geo proximity filter
+        self._geo_field: str | None = None
+        self._geo_point: tuple[float, float] | None = None
+        self._geo_max_distance: float | None = None
         # Relation query options
         self._select_related: list[str] = []
         self._prefetch_related: list[str | Prefetch] = []
@@ -582,6 +587,38 @@ class QuerySet:
             ref += 1
         return self
 
+    def nearby(
+        self,
+        field: str,
+        point: tuple[float, float],
+        max_distance: float,
+    ) -> Self:
+        """
+        Filter by geographic proximity.
+
+        Generates ``WHERE geo::distance(field, (lat, lon)) <= max_distance``.
+
+        Args:
+            field: Name of the geometry field.
+            point: Reference point as ``(latitude, longitude)`` tuple.
+            max_distance: Maximum distance in metres.
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Example::
+
+            restaurants = await Restaurant.objects().nearby(
+                "location", (40.74, -73.98), max_distance=5000,
+            ).exec()
+        """
+        if not _SAFE_IDENTIFIER_RE.match(field):
+            raise ValueError(f"Invalid field name for nearby(): {field!r}")
+        self._geo_field = field
+        self._geo_point = point
+        self._geo_max_distance = max_distance
+        return self
+
     async def hybrid_search(
         self,
         *,
@@ -1048,9 +1085,9 @@ class QuerySet:
         if self._knn_field:
             extra_select.append("vector::distance::knn() AS _knn_distance")
 
-        # Search + annotate: add SearchScore / SearchHighlight to SELECT
+        # Search / Geo annotate: add SearchScore / SearchHighlight / GeoDistance to SELECT
         for alias, annotation in self._annotations.items():
-            if isinstance(annotation, (SearchScore, SearchHighlight)):
+            if isinstance(annotation, (SearchScore, SearchHighlight, GeoDistance)):
                 extra_select.append(annotation.to_surql(alias))
 
         if self.select_item:
@@ -1083,6 +1120,12 @@ class QuerySet:
             var_name = f"_s{ref_idx}"
             self._variables[var_name] = query_text
             where_parts.append(f"{field_name} @{ref_idx}@ ${var_name}")
+
+        # Geo: append distance filter
+        if self._geo_field and self._geo_point is not None and self._geo_max_distance is not None:
+            self._variables["_geo_max"] = self._geo_max_distance
+            geo_expr = f"geo::distance({self._geo_field}, ({self._geo_point[0]}, {self._geo_point[1]})) <= $_geo_max"
+            where_parts.append(geo_expr)
 
         if where_parts:
             query += " WHERE " + " AND ".join(where_parts)

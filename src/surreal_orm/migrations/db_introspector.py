@@ -17,6 +17,7 @@ from surreal_sdk.connection.http import HTTPConnection
 from .define_parser import (
     parse_define_access,
     parse_define_analyzer,
+    parse_define_event,
     parse_define_field,
     parse_define_index,
     parse_define_table,
@@ -162,6 +163,10 @@ class DatabaseIntrospector:
             table_type=table_props["table_type"],
             changefeed=table_props["changefeed"],
             permissions=table_props["permissions"],
+            view_query=table_props.get("view_query"),
+            relation_in=table_props.get("relation_in"),
+            relation_out=table_props.get("relation_out"),
+            enforced=table_props.get("enforced", False),
         )
 
         # Get table-level info (fields, indexes, events)
@@ -194,6 +199,20 @@ class DatabaseIntrospector:
                     logger.debug(
                         "Failed to parse index definition: %s",
                         index_define_stmt,
+                        exc_info=True,
+                    )
+
+        # Parse events
+        events_info = table_info.get("events", table_info.get("ev", {}))
+        if isinstance(events_info, dict):
+            for _event_name, event_define_stmt in events_info.items():
+                try:
+                    event_state = parse_define_event(event_define_stmt)
+                    table_state.events[event_state.name] = event_state
+                except Exception:
+                    logger.debug(
+                        "Failed to parse event definition: %s",
+                        event_define_stmt,
                         exc_info=True,
                     )
 

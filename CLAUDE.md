@@ -10,7 +10,88 @@
 
 ---
 
-## Current Version: 0.12.0 (Alpha)
+## Current Version: 0.13.0 (Alpha)
+
+### What's New in 0.13.0
+
+- **DEFINE EVENT (Server-Side Triggers)** — Migration operations for SurrealDB's DEFINE EVENT
+
+  ```python
+  from surreal_orm import DefineEvent, RemoveEvent
+
+  # In migrations
+  DefineEvent(
+      name="email_audit", table="users",
+      when="$before.email != $after.email",
+      then="CREATE audit_log SET table = 'user', record = $value.id, action = $event",
+  )
+  ```
+
+  - `DefineEvent` / `RemoveEvent` migration operations
+  - `EventState` dataclass for schema tracking + diff detection
+  - `parse_define_event()` parser for DEFINE EVENT statements
+  - `DatabaseIntrospector` parses events from INFO FOR TABLE
+  - `ModelCodeGenerator` generates informational event comments
+
+- **Geospatial Fields & Queries** — Typed geometry fields with distance-based queries
+
+  ```python
+  from surreal_orm.fields import PointField, PolygonField
+  from surreal_orm.geo import GeoDistance
+
+  class Store(BaseSurrealModel):
+      name: str
+      location: PointField          # geometry<point>
+      delivery_area: PolygonField   # geometry<polygon>
+
+  # Proximity search
+  nearby = await Store.objects().nearby("location", (-73.98, 40.74), max_distance=5000).exec()
+
+  # Distance annotation (compatible with annotate() interface)
+  stores = await Store.objects().annotate(
+      dist=GeoDistance("location", (-73.98, 40.74)),
+  ).order_by("dist").limit(10).exec()
+  ```
+
+  - `GeoField["point"]`, `PointField`, `PolygonField`, `LineStringField`, `MultiPointField`
+  - `is_geo_field()`, `get_geo_info()` detection helpers
+  - `GeoDistance` annotation helper (same `to_surql()` interface as `SearchScore`)
+  - `QuerySet.nearby(field, point, max_distance)` fluent method
+  - New files: `src/surreal_orm/fields/geometry.py`, `src/surreal_orm/geo.py`
+
+- **Materialized Views** — Read-only models backed by `DEFINE TABLE ... AS SELECT`
+
+  ```python
+  class OrderStats(BaseSurrealModel):
+      model_config = SurrealConfigDict(
+          table_name="order_stats",
+          view_query="SELECT status, count() AS total FROM orders GROUP BY status",
+      )
+      status: str
+      total: int
+  ```
+
+  - `SurrealConfigDict(view_query=...)` configuration
+  - Read-only guard on `save()`, `update()`, `merge()`, `delete()` (raises `TypeError`)
+  - `CreateTable(view_query=...)` generates `DEFINE TABLE ... AS (...);`
+  - Schema diff detects view_query changes
+
+- **TYPE RELATION Enforcement** — Graph edge constraints in migrations
+
+  ```python
+  class Likes(BaseSurrealModel):
+      model_config = SurrealConfigDict(
+          table_type=TableType.RELATION,
+          relation_in="person",
+          relation_out=["blog_post", "book"],
+          enforced=True,
+      )
+  ```
+
+  - `TableType.RELATION` and `TableType.ANY` enum values
+  - `SurrealConfigDict(relation_in=..., relation_out=..., enforced=True)`
+  - `CreateTable` generates `TYPE RELATION IN ... OUT ... ENFORCED`
+  - `parse_define_table()` extracts RELATION IN/OUT/ENFORCED clauses
 
 ### What's New in 0.12.0
 
@@ -1342,6 +1423,20 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `AnalyzerState` and expanded `IndexState` for schema diffing
 - [x] `parse_define_index()` and `parse_define_analyzer()` parsers
 - [x] `DatabaseIntrospector` parses analyzers, `ModelCodeGenerator` generates `VectorField`
+
+### Completed (0.13.0) - Events, Geospatial & Materialized Views
+
+- [x] `DefineEvent` / `RemoveEvent` migration operations for server-side triggers
+- [x] `EventState` dataclass + schema diff for event add/change/remove
+- [x] `parse_define_event()` parser for DEFINE EVENT statements
+- [x] `GeoField["point"]`, `PointField`, `PolygonField`, `LineStringField`, `MultiPointField`
+- [x] `GeoDistance` annotation helper + `nearby()` QuerySet method
+- [x] `is_geo_field()`, `get_geo_info()` detection helpers
+- [x] Materialized views: `view_query` config + read-only guard
+- [x] `CreateTable` supports `view_query`, `relation_in`, `relation_out`, `enforced`
+- [x] `TableType.RELATION` and `TableType.ANY` enum values
+- [x] `parse_define_table()` extracts AS, RELATION IN/OUT/ENFORCED clauses
+- [x] `DatabaseIntrospector` parses events, relations; `ModelCodeGenerator` generates GeoField
 
 ---
 
