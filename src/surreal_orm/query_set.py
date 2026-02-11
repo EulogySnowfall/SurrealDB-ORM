@@ -507,8 +507,8 @@ class QuerySet:
         """
         Find records by vector similarity using SurrealDB's KNN operator.
 
-        Requires an HNSW index on the target field.  The query uses the
-        ``<|N|>`` (or ``<|N, EF|>``) operator to perform approximate
+        Requires a vector index (HNSW or MTREE) on the target field.  The
+        query uses the ``<|N|>`` (or ``<|N, EF|>``) operator to perform
         nearest-neighbour search.
 
         Results are automatically ordered by distance (ascending) and
@@ -1155,6 +1155,13 @@ class QuerySet:
         # SearchScore / SearchHighlight are handled inline by _compile_query().
         has_group_annotations = any(isinstance(a, (Aggregation, Subquery)) for a in self._annotations.values())
         if self._annotations and has_group_annotations:
+            # _execute_annotate() only applies filter/Q-object WHERE parts.
+            # search() and similar_to() constraints are not supported in this path.
+            if self._search_fields or self._knn_field:
+                raise ValueError(
+                    "Combining .search() or .similar_to() with aggregation/subquery "
+                    "annotations is not supported. Execute them as separate queries."
+                )
             return await self._execute_annotate()
 
         query = self._compile_query()

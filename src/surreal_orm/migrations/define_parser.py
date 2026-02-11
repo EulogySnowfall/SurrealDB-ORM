@@ -392,16 +392,25 @@ def parse_define_index(statement: str) -> IndexState:
         "MTREE",
     ]
 
-    # Find where the fields list ends
+    # Find where the fields list ends by looking for the first keyword
+    # at a proper word boundary (both before and after the keyword).
     upper_rest = rest.upper()
     fields_end = len(rest)
     for kw in _INDEX_KEYWORDS:
-        idx = upper_rest.find(kw)
-        if idx != -1 and idx < fields_end:
-            # Ensure it's a word boundary (not part of a field name)
-            before = rest[idx - 1] if idx > 0 else " "
-            if before in (" ", "\t", "\n", ","):
+        pos = 0
+        while pos < len(upper_rest):
+            idx = upper_rest.find(kw, pos)
+            if idx == -1:
+                break
+            # Check word boundary before the keyword
+            before_ok = idx == 0 or upper_rest[idx - 1] in (" ", "\t", "\n", ",")
+            # Check word boundary after the keyword
+            after_idx = idx + len(kw)
+            after_ok = after_idx >= len(upper_rest) or upper_rest[after_idx] in (" ", "\t", "\n", "(")
+            if before_ok and after_ok and idx < fields_end:
                 fields_end = idx
+                break
+            pos = idx + 1
 
     fields_str = rest[:fields_end].strip().rstrip(",")
     fields = [f.strip() for f in fields_str.split(",") if f.strip()]

@@ -1028,8 +1028,7 @@ CreateIndex(
     table="articles",
     name="idx_content_fts",
     fields=["content"],
-    fulltext=True,
-    analyzer="english",
+    search_analyzer="english",
     bm25=(1.2, 0.75),   # (k1, b) parameters
     highlights=True,
 )
@@ -1044,7 +1043,7 @@ DEFINE INDEX idx_content_fts ON articles FIELDS content
 
 ### 6. Full-Text Search QuerySet (`search()`)
 
-New QuerySet method using the `@@` matches operator with scoring and highlighting:
+New QuerySet method using the match-reference operator `@N@` with scoring and highlighting:
 
 ```python
 from surreal_orm.search import SearchScore, SearchHighlight
