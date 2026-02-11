@@ -1265,9 +1265,10 @@ class User(BaseSurrealModel):
 # Filter with Django-style lookups
 users = await User.objects().filter(age__gte=18, name__startswith="A").exec()
 
-# Supported lookups:
-# exact, gt, gte, lt, lte, in, like, ilike, contains, icontains,
-# startswith, istartswith, endswith, iendswith, match, regex, isnull
+# Supported lookups (all generate valid SurrealQL for v2.6+):
+# exact, gt, gte, lt, lte, in, not_in, contains, not_contains,
+# containsall, containsany, like, ilike, icontains, startswith,
+# istartswith, endswith, iendswith, regex, iregex, match, isnull
 ```
 
 **JWT Authentication:**

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .constants import LOOKUP_OPERATORS
+from .constants import LOOKUP_OPERATORS, like_to_regex
 from .enum import OrderBy
 from .q import Q
 from .utils import remove_quotes_for_variables, format_thing, parse_record_id
@@ -958,11 +958,17 @@ class QuerySet:
         Returns:
             str: The rendered SurrealQL condition.
         """
+
+        # ── Helper: bind a value as $_fN and return the var name ──────
+        def _bind(val: Any) -> str:
+            vn = f"_f{counter[0]}"
+            counter[0] += 1
+            variables[vn] = val
+            return vn
+
         op = LOOKUP_OPERATORS.get(lookup_name, "=")
 
-        # Subquery values: compile to inline sub-SELECT.
-        # Collection operators (IN, NOT IN, etc.) use the array directly;
-        # scalar operators (=, !=, >, etc.) wrap with array::first().
+        # ── Subquery values ──────────────────────────────────────────
         if isinstance(value, Subquery):
             sub_sql = value.to_surql(variables, counter)
             _COLLECTION_LOOKUPS = {"in", "not_in", "containsall", "containsany"}
@@ -970,6 +976,7 @@ class QuerySet:
                 return f"{field_name} {op} {sub_sql}"
             return f"{field_name} {op} array::first({sub_sql})"
 
+        # ── IS NULL / IS NOT NULL ────────────────────────────────────
         if lookup_name == "isnull":
             if not isinstance(value, bool):
                 raise TypeError(
@@ -977,38 +984,54 @@ class QuerySet:
                 )
             return f"{field_name} IS {'NULL' if value else 'NOT NULL'}"
 
-        # Handle string function lookups (startswith, endswith)
+        # ── Function-based lookups (no SurrealQL operator equivalent) ─
+        # startswith / istartswith → string::starts_with()
         if lookup_name in ("startswith", "istartswith"):
-            var_name = f"_f{counter[0]}"
-            counter[0] += 1
-            variables[var_name] = value
-            return f"string::starts_with({field_name}, ${var_name})"
+            return f"string::starts_with({field_name}, ${_bind(value)})"
 
+        # endswith / iendswith → string::ends_with()
         if lookup_name in ("endswith", "iendswith"):
-            var_name = f"_f{counter[0]}"
-            counter[0] += 1
-            variables[var_name] = value
-            return f"string::ends_with({field_name}, ${var_name})"
+            return f"string::ends_with({field_name}, ${_bind(value)})"
 
-        # Backwards compat: strings starting with $ are variable references
+        # like → string::matches(field, regex)  (LIKE pattern converted to regex)
+        if lookup_name == "like":
+            return f"string::matches({field_name}, ${_bind(like_to_regex(value))})"
+
+        # ilike → string::matches(field, (?i)regex)  (case-insensitive)
+        if lookup_name == "ilike":
+            return f"string::matches({field_name}, ${_bind('(?i)' + like_to_regex(value))})"
+
+        # icontains → string::contains(string::lowercase(field), lowercase(value))
+        if lookup_name == "icontains":
+            return f"string::contains(string::lowercase({field_name}), ${_bind(value.lower() if isinstance(value, str) else value)})"
+
+        # regex → string::matches(field, pattern)
+        if lookup_name == "regex":
+            return f"string::matches({field_name}, ${_bind(value)})"
+
+        # iregex → string::matches(field, (?i)pattern)
+        if lookup_name == "iregex":
+            return f"string::matches({field_name}, ${_bind('(?i)' + value if isinstance(value, str) else value)})"
+
+        # match → @@ (full-text search operator)
+        if lookup_name == "match":
+            return f"{field_name} @@ ${_bind(value)}"
+
+        # ── Backwards compat: $variable references ───────────────────
         if isinstance(value, str) and value.startswith("$"):
             return f"{field_name} {op} {value}"
 
+        # ── Collection lookups (IN, NOT IN, CONTAINSALL, CONTAINSANY) ─
         if lookup_name in ("in", "not_in", "containsall", "containsany"):
             if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set)):
                 raise TypeError(
                     f"Value for lookup '{lookup_name}' on field '{field_name}' "
                     f"must be a list, tuple, or set, got {type(value).__name__!r}."
                 )
-            var_name = f"_f{counter[0]}"
-            counter[0] += 1
-            variables[var_name] = list(value)
-            return f"{field_name} {op} ${var_name}"
+            return f"{field_name} {op} ${_bind(list(value))}"
 
-        var_name = f"_f{counter[0]}"
-        counter[0] += 1
-        variables[var_name] = value
-        return f"{field_name} {op} ${var_name}"
+        # ── Generic operator-based lookup (exact, gt, gte, lt, lte, contains, etc.)
+        return f"{field_name} {op} ${_bind(value)}"
 
     def _render_q(
         self,

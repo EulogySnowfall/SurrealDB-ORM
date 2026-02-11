@@ -577,3 +577,91 @@ class WebSocketConnection(BaseSurrealConnection):
             auto_resubscribe=auto_resubscribe,
             on_reconnect=on_reconnect,
         )
+
+    # CBOR-aware CRUD overrides ────────────────────────────────────────
+
+    def _to_thing(self, thing: str) -> Any:
+        """Convert "table:id" to RecordId for CBOR protocol."""
+        if self.protocol == "cbor" and ":" in thing:
+            from ..protocol.cbor import RecordId
+
+            table, id_part = thing.split(":", 1)
+            if id_part.startswith("`") and id_part.endswith("`"):
+                id_part = id_part[1:-1].replace("``", "`")
+            return RecordId(table=table, id=id_part)
+        return thing
+
+    async def select(self, thing: str) -> Any:
+        """Select records with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("select", [self._to_thing(thing)])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def create(self, thing: str, data: dict[str, Any] | None = None) -> Any:
+        """Create a record with CBOR-aware thing conversion."""
+        from ..types import RecordResponse
+
+        params: list[Any] = [self._to_thing(thing)]
+        if data:
+            params.append(data)
+        result = await self.rpc("create", params)
+        return RecordResponse.from_rpc_result(result)
+
+    async def insert(self, table: str, data: list[dict[str, Any]] | dict[str, Any]) -> Any:
+        """Insert records (table name only, no thing conversion)."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("insert", [table, data])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def update(self, thing: str, data: dict[str, Any]) -> Any:
+        """Update records with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("update", [self._to_thing(thing), data])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def upsert(self, thing: str, data: dict[str, Any]) -> Any:
+        """Upsert records with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("upsert", [self._to_thing(thing), data])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def merge(self, thing: str, data: dict[str, Any]) -> Any:
+        """Merge records with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("merge", [self._to_thing(thing), data])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def patch(self, thing: str, patches: list[dict[str, Any]]) -> Any:
+        """Apply JSON Patch with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("patch", [self._to_thing(thing), patches])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def delete(self, thing: str) -> Any:
+        """Delete records with CBOR-aware thing conversion."""
+        from ..types import DeleteResponse
+
+        result = await self.rpc("delete", [self._to_thing(thing)])
+        return DeleteResponse.from_rpc_result(result)
+
+    async def relate(
+        self,
+        from_thing: str,
+        relation: str,
+        to_thing: str,
+        data: dict[str, Any] | None = None,
+    ) -> Any:
+        """Create a graph relation with CBOR-aware thing conversion."""
+        from ..types import RecordResponse
+
+        params: list[Any] = [self._to_thing(from_thing), relation, self._to_thing(to_thing)]
+        if data:
+            params.append(data)
+        result = await self.rpc("relate", params)
+        return RecordResponse.from_rpc_result(result)

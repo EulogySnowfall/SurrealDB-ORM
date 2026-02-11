@@ -553,6 +553,13 @@ class HTTPConnection(BaseSurrealConnection):
         result = await self.rpc("merge", [self._to_thing(thing), data])
         return RecordsResponse.from_rpc_result(result)
 
+    async def patch(self, thing: str, patches: list[dict[str, Any]]) -> Any:
+        """Apply JSON Patch operations with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("patch", [self._to_thing(thing), patches])
+        return RecordsResponse.from_rpc_result(result)
+
     async def delete(self, thing: str) -> Any:
         """Delete a record with CBOR-aware thing conversion."""
         from ..types import DeleteResponse
