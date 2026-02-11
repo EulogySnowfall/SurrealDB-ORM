@@ -23,7 +23,7 @@ from src.surreal_orm.utils import (
     parse_record_id,
 )
 
-from tests.conftest import SURREALDB_URL
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 
 # =============================================================================
@@ -221,9 +221,9 @@ async def setup_connection() -> AsyncGenerator[None, None]:
     """Setup connection for integration tests."""
     SurrealDBConnectionManager.set_connection(
         SURREALDB_URL,
-        "root",
-        "root",
-        "test",
+        SURREALDB_USER,
+        SURREALDB_PASS,
+        SURREALDB_NAMESPACE,
         "test_bugfixes_0551",
     )
     yield
@@ -556,10 +556,10 @@ class TestConnectionManagerProtocol:
     def test_set_connection_default_protocol(self) -> None:
         """set_connection should use CBOR protocol by default."""
         SurrealDBConnectionManager.set_connection(
-            "http://localhost:8000",
-            "root",
-            "root",
-            "test",
+            SURREALDB_URL,
+            SURREALDB_USER,
+            SURREALDB_PASS,
+            SURREALDB_NAMESPACE,
             "test_protocol",
         )
         # The protocol is a private attribute, so we test it indirectly
@@ -570,10 +570,10 @@ class TestConnectionManagerProtocol:
     def test_set_connection_json_protocol(self) -> None:
         """set_connection should accept JSON protocol."""
         SurrealDBConnectionManager.set_connection(
-            "http://localhost:8000",
-            "root",
-            "root",
-            "test",
+            SURREALDB_URL,
+            SURREALDB_USER,
+            SURREALDB_PASS,
+            SURREALDB_NAMESPACE,
             "test_protocol",
             protocol="json",
         )
@@ -608,9 +608,9 @@ class TestCBORProtocolCRUD:
         # Setup with explicit CBOR protocol
         SurrealDBConnectionManager.set_connection(
             SURREALDB_URL,
-            "root",
-            "root",
-            "test",
+            SURREALDB_USER,
+            SURREALDB_PASS,
+            SURREALDB_NAMESPACE,
             "test_cbor_protocol",
             protocol="cbor",
         )
@@ -768,9 +768,9 @@ class TestJSONProtocolCRUD:
         # Setup with explicit JSON protocol
         SurrealDBConnectionManager.set_connection(
             SURREALDB_URL,
-            "root",
-            "root",
-            "test",
+            SURREALDB_USER,
+            SURREALDB_PASS,
+            SURREALDB_NAMESPACE,
             "test_json_protocol",
             protocol="json",
         )
@@ -904,7 +904,7 @@ class TestSDKLevelProtocols:
         from src.surreal_sdk.connection.http import HTTPConnection
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_cbor", protocol="cbor") as conn:
-            await conn.signin("root", "root")
+            await conn.signin(SURREALDB_USER, SURREALDB_PASS)
 
             # Clean up
             await conn.query("DELETE sdk_cbor_test;")
@@ -936,7 +936,7 @@ class TestSDKLevelProtocols:
         from src.surreal_sdk.connection.http import HTTPConnection
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_json", protocol="json") as conn:
-            await conn.signin("root", "root")
+            await conn.signin(SURREALDB_USER, SURREALDB_PASS)
 
             # Clean up
             await conn.query("DELETE sdk_json_test;")
@@ -968,7 +968,7 @@ class TestSDKLevelProtocols:
         from src.surreal_sdk.connection.http import HTTPConnection
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_data", protocol="cbor") as conn:
-            await conn.signin("root", "root")
+            await conn.signin(SURREALDB_USER, SURREALDB_PASS)
 
             # Clean up
             await conn.query("DELETE sdk_data_test;")
@@ -987,7 +987,7 @@ class TestSDKLevelProtocols:
         from src.surreal_sdk.connection.http import HTTPConnection
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_relate", protocol="cbor") as conn:
-            await conn.signin("root", "root")
+            await conn.signin(SURREALDB_USER, SURREALDB_PASS)
 
             # Clean up
             await conn.query("DELETE sdk_author;")
@@ -1228,9 +1228,9 @@ class TestIssue9DatetimeIntegration:
         # Setup connection
         SurrealDBConnectionManager.set_connection(
             SURREALDB_URL,
-            "root",
-            "root",
-            "test",
+            SURREALDB_USER,
+            SURREALDB_PASS,
+            SURREALDB_NAMESPACE,
             "test_datetime",
             protocol="cbor",
         )

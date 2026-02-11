@@ -618,6 +618,10 @@ class QuerySet:
         """
         if not _SAFE_IDENTIFIER_RE.match(field):
             raise ValueError(f"Invalid field name for nearby(): {field!r}")
+        if not isinstance(point, (tuple, list)) or len(point) != 2 or not all(isinstance(c, (int, float)) for c in point):
+            raise TypeError(f"point must be a (longitude, latitude) tuple of numbers, got {point!r}")
+        if not isinstance(max_distance, (int, float)):
+            raise TypeError(f"max_distance must be a number, got {type(max_distance).__name__!r}")
         self._geo_field = field
         self._geo_point = point
         self._geo_max_distance = max_distance

@@ -139,13 +139,15 @@ class TestVectorFieldExport:
 @pytest.fixture(scope="module", autouse=True)
 async def _setup_connection() -> AsyncGenerator[None, None]:
     """Set up ORM connection for integration tests."""
+    from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
+
     from src.surreal_orm import SurrealDBConnectionManager
 
     SurrealDBConnectionManager.set_connection(
-        "http://localhost:8000",
-        "root",
-        "root",
-        "test",
+        SURREALDB_URL,
+        SURREALDB_USER,
+        SURREALDB_PASS,
+        SURREALDB_NAMESPACE,
         "test_vector",
     )
     yield

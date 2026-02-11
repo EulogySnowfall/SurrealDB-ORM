@@ -31,6 +31,7 @@ SURREALDB_NAMESPACE = os.getenv("SURREALDB_NAMESPACE", "test")
 CONTAINER_NAME = "surrealdb-orm"
 COMPOSE_FILE = "devops/docker-compose.yml"
 HEALTH_CHECK_TIMEOUT = 30  # seconds
+SKIP_CONTAINER = os.getenv("SURREALDB_SKIP_CONTAINER", "").lower() in ("1", "true", "yes")
 
 
 def is_container_running() -> bool:
@@ -124,7 +125,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
     Start the SurrealDB container if:
     1. We're running integration tests
-    2. The container is not already running
+    2. The container is not already running / SurrealDB is not already healthy
     """
     global _container_started_by_tests
 
@@ -134,9 +135,15 @@ def pytest_configure(config: pytest.Config) -> None:
         # Not running integration tests, no need for container
         return
 
-    # Check if container is already running and healthy
-    if is_container_running() and is_surrealdb_healthy():
-        print(f"\n[conftest] SurrealDB container already running on port {TEST_PORT}")
+    # Honor SURREALDB_SKIP_CONTAINER (e.g. CI provides its own SurrealDB service)
+    if SKIP_CONTAINER:
+        print(f"\n[conftest] SURREALDB_SKIP_CONTAINER set — skipping container management (port {TEST_PORT})")
+        _container_started_by_tests = False
+        return
+
+    # If SurrealDB is already healthy (container or external), skip startup
+    if is_surrealdb_healthy():
+        print(f"\n[conftest] SurrealDB already healthy on port {TEST_PORT}")
         _container_started_by_tests = False
         return
 

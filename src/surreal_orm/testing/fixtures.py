@@ -100,7 +100,7 @@ class SurrealFixture:
             raise ValueError(f"{cls.__name__} has no fixture instances. Did you forget the @fixture decorator?")
 
         # Create a namespace object to hold saved instances
-        holder = cls()
+        holder = object.__new__(cls)
 
         # Clone and save instances — each load() gets fresh copies to avoid
         # leaking state (id, _db_persisted) across multiple load() calls.
