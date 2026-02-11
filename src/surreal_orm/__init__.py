@@ -25,7 +25,7 @@ from .types import (
     SchemaMode,
     TableType,
 )
-from .fields import Computed, Encrypted, VectorField, GeoField, PointField, PolygonField, LineStringField
+from .fields import Computed, Encrypted, VectorField, GeoField, PointField, PolygonField, LineStringField, MultiPointField
 from .fields import (
     ForeignKey,
     ManyToMany,
@@ -103,6 +103,7 @@ __all__ = [
     "PointField",
     "PolygonField",
     "LineStringField",
+    "MultiPointField",
     "GeoDistance",
     # Relations
     "ForeignKey",

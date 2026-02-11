@@ -596,11 +596,11 @@ class QuerySet:
         """
         Filter by geographic proximity.
 
-        Generates ``WHERE geo::distance(field, (lat, lon)) <= max_distance``.
+        Generates ``WHERE geo::distance(field, (lon, lat)) <= max_distance``.
 
         Args:
             field: Name of the geometry field.
-            point: Reference point as ``(latitude, longitude)`` tuple.
+            point: Reference point as ``(longitude, latitude)`` tuple (GeoJSON order).
             max_distance: Maximum distance in metres.
 
         Returns:
@@ -609,7 +609,7 @@ class QuerySet:
         Example::
 
             restaurants = await Restaurant.objects().nearby(
-                "location", (40.74, -73.98), max_distance=5000,
+                "location", (-73.98, 40.74), max_distance=5000,
             ).exec()
         """
         if not _SAFE_IDENTIFIER_RE.match(field):

@@ -17,7 +17,7 @@ We follow a 3-digit versioning scheme: **X.Y.Z**
 | ----- | ----------------------------------------- | -------------- |
 | X     | LTS / breaking changes                    | 1.0.0          |
 | Y     | Feature updates                           | 0.8.0 -> 0.9.0 |
-| Z     | Bugs Fixes, Security & dependency patches | 0.9.0 -> 0.9.1 |
+| Z     | Bug fixes, security & dependency patches  | 0.9.0 -> 0.9.1 |
 
 Security patches automatically bump the **patch (Z)** digit via CI workflows.
 

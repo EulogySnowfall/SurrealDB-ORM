@@ -317,13 +317,21 @@ def parse_define_table(statement: str) -> dict[str, Any]:
     # Permissions
     permissions = _parse_permissions(clauses.get("PERMISSIONS"))
 
-    # Materialized view (AS SELECT ...)
+    # Materialized view (AS SELECT ... or AS (SELECT ...))
     # We re-extract from the raw body because _extract_clauses may split on
     # ``AS`` tokens inside the view query itself (e.g. ``count() AS total``).
     view_query: str | None = None
-    as_match = re.search(r"\bAS\s+(SELECT\b.+)", body, re.IGNORECASE | re.DOTALL)
+    as_match = re.search(
+        r"\bAS\s+(?:\(\s*)?(SELECT\b.+)",
+        body,
+        re.IGNORECASE | re.DOTALL,
+    )
     if as_match:
-        view_query = as_match.group(1).strip()
+        vq = as_match.group(1).strip()
+        # Strip trailing parenthesis from AS (SELECT ...) form
+        if vq.endswith(")"):
+            vq = vq[:-1].strip()
+        view_query = vq
 
     return {
         "name": table_name,

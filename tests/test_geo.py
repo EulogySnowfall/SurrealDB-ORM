@@ -84,18 +84,18 @@ class TestGeoDistance:
     """Tests for GeoDistance annotation helper."""
 
     def test_to_surql(self) -> None:
-        gd = GeoDistance("location", (40.74, -73.98))
+        gd = GeoDistance("location", (-73.98, 40.74))
         result = gd.to_surql("dist")
-        assert result == "geo::distance(location, (40.74, -73.98)) AS dist"
+        assert result == "geo::distance(location, (-73.98, 40.74)) AS dist"
 
     def test_to_surql_custom_alias(self) -> None:
-        gd = GeoDistance("coords", (51.5, -0.12))
+        gd = GeoDistance("coords", (-0.12, 51.5))
         result = gd.to_surql("distance_km")
-        assert result == "geo::distance(coords, (51.5, -0.12)) AS distance_km"
+        assert result == "geo::distance(coords, (-0.12, 51.5)) AS distance_km"
 
     def test_repr(self) -> None:
-        gd = GeoDistance("location", (40.74, -73.98))
-        assert repr(gd) == "GeoDistance('location', (40.74, -73.98))"
+        gd = GeoDistance("location", (-73.98, 40.74))
+        assert repr(gd) == "GeoDistance('location', (-73.98, 40.74))"
 
     def test_equality(self) -> None:
         a = GeoDistance("loc", (1.0, 2.0))

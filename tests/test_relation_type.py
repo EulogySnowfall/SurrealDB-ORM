@@ -294,7 +294,7 @@ class TestModelGeneratorRelation:
         block, extra_imports = gen._generate_model_class(table)
 
         assert "table_type=TableType.RELATION" in block
-        assert 'relation_in="person"' in block
-        assert 'relation_out="blog_post"' in block
+        assert "relation_in='person'" in block
+        assert "relation_out='blog_post'" in block
         assert "enforced=True" in block
         assert "from surreal_orm.types import TableType" in extra_imports

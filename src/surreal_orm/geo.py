@@ -9,9 +9,9 @@ Example::
     from surreal_orm import GeoDistance
 
     results = await Restaurant.objects().nearby(
-        "location", (40.74, -73.98), max_distance=5000,
+        "location", (-73.98, 40.74), max_distance=5000,
     ).annotate(
-        dist=GeoDistance("location", (40.74, -73.98)),
+        dist=GeoDistance("location", (-73.98, 40.74)),
     ).exec()
 """
 
@@ -28,12 +28,12 @@ class GeoDistance:
 
     Args:
         field: Name of the geometry field.
-        point: Reference point as ``(latitude, longitude)`` tuple.
+        point: Reference point as ``(longitude, latitude)`` tuple (GeoJSON order).
 
     Example::
 
         results = await Restaurant.objects().annotate(
-            dist=GeoDistance("location", (40.74, -73.98)),
+            dist=GeoDistance("location", (-73.98, 40.74)),
         ).exec()
     """
 

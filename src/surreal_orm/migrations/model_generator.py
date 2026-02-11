@@ -130,13 +130,13 @@ class ModelCodeGenerator:
             config_parts.append(f"permissions={perm_str}")
 
         if table.view_query:
-            config_parts.append(f'view_query="{table.view_query}"')
+            config_parts.append(f"view_query={repr(table.view_query)}")
 
         if table.relation_in:
-            config_parts.append(f'relation_in="{table.relation_in}"')
+            config_parts.append(f"relation_in={repr(table.relation_in)}")
 
         if table.relation_out:
-            config_parts.append(f'relation_out="{table.relation_out}"')
+            config_parts.append(f"relation_out={repr(table.relation_out)}")
 
         if table.enforced:
             config_parts.append("enforced=True")
