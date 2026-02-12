@@ -288,7 +288,7 @@ class WebSocketConnection(BaseSurrealConnection):
                     try:
                         await self._session.close()
                     except Exception:
-                        pass
+                        pass  # Best-effort cleanup of old session before reconnect
 
                 self._session = aiohttp.ClientSession()
                 self._ws = await self._session.ws_connect(

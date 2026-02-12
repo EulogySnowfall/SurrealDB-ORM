@@ -324,7 +324,7 @@ class SurrealDBConnectionManager:
                     try:
                         await _client.close()
                     except Exception:
-                        pass
+                        pass  # Best-effort cleanup; original error is re-raised below
                 raise SurrealDbConnectionError(f"Can't connect to the database: {e}")
             except Exception as e:
                 logger.warning("Can't get connection '%s': %s", name, e)
@@ -332,7 +332,7 @@ class SurrealDBConnectionManager:
                     try:
                         await _client.close()
                     except Exception:
-                        pass
+                        pass  # Best-effort cleanup; original error is re-raised below
                 raise SurrealDbConnectionError("Can't connect to the database.")
 
     @classmethod

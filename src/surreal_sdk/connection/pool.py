@@ -145,7 +145,7 @@ class ConnectionPool:
                     try:
                         await conn.close()
                     except Exception:
-                        pass
+                        pass  # Dead connection; discard silently
                     conn = None
 
                 # Create new connection if needed
