@@ -995,6 +995,12 @@ class QuerySet:
                 )
             return f"{field_name} IS {'NULL' if value else 'NOT NULL'}"
 
+        # ── Backwards compat: $variable references ───────────────────
+        # Must come before function-based lookups so $var isn't processed
+        # by like_to_regex(), .lower(), etc.
+        if isinstance(value, str) and value.startswith("$"):
+            return f"{field_name} {op} {value}"
+
         # ── Function-based lookups (no SurrealQL operator equivalent) ─
         # startswith / istartswith → string::starts_with()
         if lookup_name in ("startswith", "istartswith"):
@@ -1006,31 +1012,37 @@ class QuerySet:
 
         # like → string::matches(field, regex)  (LIKE pattern converted to regex)
         if lookup_name == "like":
+            if not isinstance(value, str):
+                raise TypeError(f"Value for 'like' lookup on '{field_name}' must be a string, got {type(value).__name__!r}.")
             return f"string::matches({field_name}, ${_bind(like_to_regex(value))})"
 
         # ilike → string::matches(field, (?i)regex)  (case-insensitive)
         if lookup_name == "ilike":
+            if not isinstance(value, str):
+                raise TypeError(f"Value for 'ilike' lookup on '{field_name}' must be a string, got {type(value).__name__!r}.")
             return f"string::matches({field_name}, ${_bind('(?i)' + like_to_regex(value))})"
 
         # icontains → string::contains(string::lowercase(field), lowercase(value))
         if lookup_name == "icontains":
-            return f"string::contains(string::lowercase({field_name}), ${_bind(value.lower() if isinstance(value, str) else value)})"
+            if not isinstance(value, str):
+                raise TypeError(f"Value for 'icontains' lookup on '{field_name}' must be a string, got {type(value).__name__!r}.")
+            return f"string::contains(string::lowercase({field_name}), ${_bind(value.lower())})"
 
         # regex → string::matches(field, pattern)
         if lookup_name == "regex":
+            if not isinstance(value, str):
+                raise TypeError(f"Value for 'regex' lookup on '{field_name}' must be a string, got {type(value).__name__!r}.")
             return f"string::matches({field_name}, ${_bind(value)})"
 
         # iregex → string::matches(field, (?i)pattern)
         if lookup_name == "iregex":
-            return f"string::matches({field_name}, ${_bind('(?i)' + value if isinstance(value, str) else value)})"
+            if not isinstance(value, str):
+                raise TypeError(f"Value for 'iregex' lookup on '{field_name}' must be a string, got {type(value).__name__!r}.")
+            return f"string::matches({field_name}, ${_bind('(?i)' + value)})"
 
         # match → @@ (full-text search operator)
         if lookup_name == "match":
             return f"{field_name} @@ ${_bind(value)}"
-
-        # ── Backwards compat: $variable references ───────────────────
-        if isinstance(value, str) and value.startswith("$"):
-            return f"{field_name} {op} {value}"
 
         # ── Collection lookups (IN, NOT IN, CONTAINSALL, CONTAINSANY) ─
         if lookup_name in ("in", "not_in", "containsall", "containsany"):
