@@ -6,6 +6,27 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.14.1] - 2026-02-11
+
+### Added
+
+- **Typed Functions API in Notebook** — Added Section 1 to `examples/08_computed_functions.ipynb`
+  - `db.fn.math.*` — `sqrt`, `pow`, `abs`, `ceil` demos
+  - `db.fn.string.*` — `uppercase`, `len`, `concat` demos
+  - `db.fn.time.*` — `now()` server timestamp demo
+  - `db.fn.crypto.*` — `sha256`, `md5`, `argon2.generate` demos
+  - `db.fn.array.*` — `len`, `distinct`, `flatten` demos
+  - Dynamic namespace resolution demo (`db.fn.rand.int`)
+  - SQL inspection via `FunctionCall.to_sql()`
+
+### Changed
+
+- Notebook `08_computed_functions.ipynb` reordered from simple to complex (Typed Functions API first)
+- Sections renumbered: Typed Functions (1) → Computed Fields (2) → SurrealFunc (3) → extra_vars (4) → call_function (5) → raw_query (6)
+- Version bump to 0.14.1
+
+---
+
 ## [0.14.0] - 2026-02-11
 
 ### Added
