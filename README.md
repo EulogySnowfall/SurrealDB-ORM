@@ -13,6 +13,24 @@
 
 ---
 
+## What's New in 0.14.1
+
+### Typed Functions API Documentation
+
+- **Typed Functions API in Notebook 08** — Added comprehensive `db.fn.*` examples covering math, string, time, crypto, and array functions, plus dynamic namespace resolution and SQL inspection. Notebook reordered from simple to complex.
+
+  ```python
+  db = await SurrealDBConnectionManager.get_client()
+
+  sqrt = await db.fn.math.sqrt(144)             # 12.0
+  upper = await db.fn.string.uppercase("hello")  # "HELLO"
+  now = await db.fn.time.now()                    # server timestamp
+  sha = await db.fn.crypto.sha256("data")         # hash string
+  arr = await db.fn.array.distinct([1, 2, 2, 3])  # [1, 2, 3]
+  ```
+
+---
+
 ## What's New in 0.14.0
 
 ### Testing & Developer Experience (Alpha → Beta)
