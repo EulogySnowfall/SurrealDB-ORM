@@ -1025,7 +1025,9 @@ class QuerySet:
         # icontains → string::contains(string::lowercase(field), lowercase(value))
         if lookup_name == "icontains":
             if not isinstance(value, str):
-                raise TypeError(f"Value for 'icontains' lookup on '{field_name}' must be a string, got {type(value).__name__!r}.")
+                raise TypeError(
+                    f"Value for 'icontains' lookup on '{field_name}' must be a string, got {type(value).__name__!r}."
+                )
             return f"string::contains(string::lowercase({field_name}), ${_bind(value.lower())})"
 
         # regex → string::matches(field, pattern)
