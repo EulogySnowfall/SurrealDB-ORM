@@ -13,7 +13,7 @@ instead of hardcoding URLs, credentials, and ports.
 import os
 import subprocess
 import time
-from typing import Generator
+from collections.abc import Generator
 
 import pytest
 
@@ -57,14 +57,14 @@ def is_port_responding(port: int = TEST_PORT) -> bool:
             s.settimeout(2)
             s.connect(("localhost", port))
             return True
-    except (socket.timeout, ConnectionRefusedError, OSError):
+    except (TimeoutError, ConnectionRefusedError, OSError):
         return False
 
 
 def is_surrealdb_healthy(port: int = TEST_PORT) -> bool:
     """Check if SurrealDB is healthy via /health endpoint."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     try:
         url = f"http://localhost:{port}/health"

@@ -5,12 +5,12 @@ Handles the JSON-RPC style messaging format used by SurrealDB.
 Supports both JSON and CBOR serialization formats.
 """
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
-import json
 
 from . import cbor as cbor_module
 

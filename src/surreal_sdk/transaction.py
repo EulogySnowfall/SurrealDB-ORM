@@ -4,11 +4,23 @@ Transaction support for SurrealDB SDK.
 Provides atomic transaction handling for both HTTP and WebSocket connections.
 """
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
 from .exceptions import TransactionError
+
+_SAFE_THING_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(:[a-zA-Z0-9_`]+)?$")
+
+
+def _validate_thing(thing: str, context: str = "thing") -> None:
+    """Validate a table or thing reference."""
+    # Allow table:id format with backtick-escaped IDs
+    clean = thing.replace("`", "")
+    if not _SAFE_THING_RE.match(clean) and ":" not in thing:
+        raise ValueError(f"Invalid {context}: {thing!r}")
+
 
 if TYPE_CHECKING:
     from .connection.base import BaseSurrealConnection
@@ -182,14 +194,14 @@ class HTTPTransaction(BaseTransaction):
         all_vars: dict[str, Any] = {}
 
         for i, stmt in enumerate(self._statements):
-            sql_parts.append(stmt.sql)
+            # Work on a copy to avoid mutating the original statement
+            namespaced_sql = stmt.sql
             # Namespace variables to avoid conflicts between statements
             for key, val in stmt.vars.items():
                 namespaced_key = f"tx_{i}_{key}"
                 all_vars[namespaced_key] = val
-                # Replace variable reference in SQL
-                stmt.sql = stmt.sql.replace(f"${key}", f"${namespaced_key}")
-            sql_parts[i + 1] = stmt.sql  # Update with namespaced vars
+                namespaced_sql = namespaced_sql.replace(f"${key}", f"${namespaced_key}")
+            sql_parts.append(namespaced_sql)
 
         sql_parts.append("COMMIT TRANSACTION;")
         full_sql = "\n".join(sql_parts)
@@ -227,9 +239,10 @@ class HTTPTransaction(BaseTransaction):
         """Queue a create operation."""
         from .types import RecordResponse
 
+        _validate_thing(thing, "thing")
         if data:
             # Build CREATE statement with data
-            fields = ", ".join(f"{k} = ${k}" for k in data.keys())
+            fields = ", ".join(f"{k} = ${k}" for k in data)
             sql = f"CREATE {thing} SET {fields};"
             self._queue_statement(sql, data)
         else:
@@ -241,11 +254,12 @@ class HTTPTransaction(BaseTransaction):
         """Queue an insert operation."""
         from .types import RecordsResponse
 
+        _validate_thing(table, "table")
         if isinstance(data, dict):
             data = [data]
 
         for i, record in enumerate(data):
-            fields = ", ".join(f"{k} = $r{i}_{k}" for k in record.keys())
+            fields = ", ".join(f"{k} = $r{i}_{k}" for k in record)
             sql = f"CREATE {table} SET {fields};"
             vars_with_prefix = {f"r{i}_{k}": v for k, v in record.items()}
             self._queue_statement(sql, vars_with_prefix)
@@ -256,7 +270,8 @@ class HTTPTransaction(BaseTransaction):
         """Queue an update operation."""
         from .types import RecordsResponse
 
-        fields = ", ".join(f"{k} = ${k}" for k in data.keys())
+        _validate_thing(thing, "thing")
+        fields = ", ".join(f"{k} = ${k}" for k in data)
         sql = f"UPDATE {thing} SET {fields};"
         self._queue_statement(sql, data)
         return RecordsResponse(records=[], raw=[])
@@ -265,7 +280,8 @@ class HTTPTransaction(BaseTransaction):
         """Queue an upsert operation (create or update)."""
         from .types import RecordsResponse
 
-        fields = ", ".join(f"{k} = ${k}" for k in data.keys())
+        _validate_thing(thing, "thing")
+        fields = ", ".join(f"{k} = ${k}" for k in data)
         sql = f"UPSERT {thing} SET {fields};"
         self._queue_statement(sql, data)
         return RecordsResponse(records=[], raw=[])
@@ -274,7 +290,8 @@ class HTTPTransaction(BaseTransaction):
         """Queue a merge operation."""
         from .types import RecordsResponse
 
-        fields = ", ".join(f"{k} = ${k}" for k in data.keys())
+        _validate_thing(thing, "thing")
+        fields = ", ".join(f"{k} = ${k}" for k in data)
         sql = f"UPDATE {thing} MERGE {{ {fields} }};"
         self._queue_statement(sql, data)
         return RecordsResponse(records=[], raw=[])
@@ -283,6 +300,7 @@ class HTTPTransaction(BaseTransaction):
         """Queue a delete operation."""
         from .types import DeleteResponse
 
+        _validate_thing(thing, "thing")
         sql = f"DELETE {thing};"
         self._queue_statement(sql)
         return DeleteResponse(deleted=[], raw=[])
@@ -297,8 +315,11 @@ class HTTPTransaction(BaseTransaction):
         """Queue a relate operation."""
         from .types import RecordResponse
 
+        _validate_thing(from_thing, "from_thing")
+        _validate_thing(relation, "relation")
+        _validate_thing(to_thing, "to_thing")
         if data:
-            fields = ", ".join(f"{k} = ${k}" for k in data.keys())
+            fields = ", ".join(f"{k} = ${k}" for k in data)
             sql = f"RELATE {from_thing}->{relation}->{to_thing} SET {fields};"
             self._queue_statement(sql, data)
         else:

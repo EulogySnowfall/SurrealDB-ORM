@@ -1,6 +1,7 @@
 """Tests for HTTP connection module."""
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+
 import pytest
 
 from src.surreal_sdk.connection.http import HTTPConnection

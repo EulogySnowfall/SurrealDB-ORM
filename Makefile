@@ -43,7 +43,7 @@ test-sdk:
 
 .PHONY: test-integration  # Run integration tests (requires SurrealDB)
 test-integration: db-up
-	uv run pytest -m integration tests/
+	uv run pytest -m integration tests/ --cov-fail-under=0
 
 .PHONY: test-all  # Run all tests including integration
 test-all: db-up

@@ -6,8 +6,9 @@ applied (forwards) or reverted (backwards).
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from typing import Any
 
 from ..types import FieldType
 
@@ -136,7 +137,8 @@ class CreateTable(Operation):
             parts.append(f"CHANGEFEED {self.changefeed}")
 
         if self.comment:
-            parts.append(f"COMMENT '{self.comment}'")
+            escaped_comment = self.comment.replace("'", "''")
+            parts.append(f"COMMENT '{escaped_comment}'")
 
         sql = " ".join(parts) + ";"
 
@@ -242,11 +244,12 @@ class AddField(Operation):
 
         if self.default is not None:
             if isinstance(self.default, str):
-                # Check if it's a function call or literal
-                if self.default.startswith("time::") or self.default.startswith("rand::"):
+                # Check if it's a function call or variable reference
+                if "::" in self.default or self.default.startswith("$"):
+                    # Server-side function call or variable reference
                     parts.append(f"DEFAULT {self.default}")
                 else:
-                    parts.append(f"DEFAULT '{self.default}'")
+                    parts.append(f"DEFAULT '{self.default.replace(chr(39), chr(39) + chr(39))}'")
             elif isinstance(self.default, bool):
                 parts.append(f"DEFAULT {str(self.default).lower()}")
             else:
@@ -259,7 +262,8 @@ class AddField(Operation):
             parts.append("READONLY")
 
         if self.comment:
-            parts.append(f"COMMENT '{self.comment}'")
+            escaped_comment = self.comment.replace("'", "''")
+            parts.append(f"COMMENT '{escaped_comment}'")
 
         return " ".join(parts) + ";"
 
@@ -329,6 +333,8 @@ class AlterField(Operation):
     previous_type: FieldType | str | None = None
     previous_default: Any = None
     previous_assertion: str | None = None
+    previous_flexible: bool = False
+    previous_readonly: bool = False
 
     def __post_init__(self) -> None:
         """Validate field_type and set reversible based on previous state."""
@@ -357,10 +363,12 @@ class AlterField(Operation):
 
         if self.default is not None:
             if isinstance(self.default, str):
-                if self.default.startswith("time::") or self.default.startswith("rand::"):
+                # Check if it's a function call or variable reference
+                if "::" in self.default or self.default.startswith("$"):
+                    # Server-side function call or variable reference
                     parts.append(f"DEFAULT {self.default}")
                 else:
-                    parts.append(f"DEFAULT '{self.default}'")
+                    parts.append(f"DEFAULT '{self.default.replace(chr(39), chr(39) + chr(39))}'")
             elif isinstance(self.default, bool):
                 parts.append(f"DEFAULT {str(self.default).lower()}")
             else:
@@ -379,7 +387,12 @@ class AlterField(Operation):
             return ""
 
         normalized_prev_type = _normalize_field_type(self.previous_type)
-        parts = [f"DEFINE FIELD {self.name} ON {self.table} TYPE {normalized_prev_type}"]
+        parts = [f"DEFINE FIELD {self.name} ON {self.table}"]
+
+        if self.previous_flexible:
+            parts.append("FLEXIBLE")
+
+        parts.append(f"TYPE {normalized_prev_type}")
 
         if self.previous_default is not None:
             if isinstance(self.previous_default, str):
@@ -389,6 +402,9 @@ class AlterField(Operation):
 
         if self.previous_assertion:
             parts.append(f"ASSERT {self.previous_assertion}")
+
+        if self.previous_readonly:
+            parts.append("READONLY")
 
         return " ".join(parts) + ";"
 
@@ -481,7 +497,8 @@ class CreateIndex(Operation):
                 parts.append("CONCURRENTLY")
 
         if self.comment:
-            parts.append(f"COMMENT '{self.comment}'")
+            escaped_comment = self.comment.replace("'", "''")
+            parts.append(f"COMMENT '{escaped_comment}'")
 
         return " ".join(parts) + ";"
 
@@ -557,7 +574,8 @@ class DefineAccess(Operation):
     DURATION FOR TOKEN {self.duration_token}, FOR SESSION {self.duration_session}"""
 
         if self.comment:
-            sql += f"\n    COMMENT '{self.comment}'"
+            escaped_comment = self.comment.replace("'", "''")
+            sql += f"\n    COMMENT '{escaped_comment}'"
 
         return sql + ";"
 

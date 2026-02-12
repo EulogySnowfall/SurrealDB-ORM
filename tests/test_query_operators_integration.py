@@ -6,13 +6,14 @@ successfully and returns the correct results.
 
 from __future__ import annotations
 
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 
 from src import surreal_orm
 from src.surreal_orm import BaseSurrealModel, Q, SurrealConfigDict
-from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_operators"
 

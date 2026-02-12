@@ -7,15 +7,13 @@ Bug #8: datetime serialization for UPDATE (fixed with server_fields)
 Bug #9: merge() returns None instead of self
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
-
 from tests.conftest import SURREALDB_URL
-
 
 # =============================================================================
 # Test Models
@@ -177,7 +175,7 @@ class TestBug8ServerFields:
 
     def test_model_dump_excludes_server_fields(self):
         """Server fields should be excluded from model_dump for save."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         model = ModelWithServerFields(
             name="Test",
             status="active",
@@ -353,7 +351,7 @@ class TestBug8Integration:
         first_id = model.id
 
         # Simulate server setting created_at (normally done by DB)
-        model.created_at = datetime.now(timezone.utc)
+        model.created_at = datetime.now(UTC)
 
         # Change status and save again
         model.status = "active"

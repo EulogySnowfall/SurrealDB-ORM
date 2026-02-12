@@ -125,10 +125,10 @@ def get_geo_info(field_type: Any) -> str | None:
 
 __all__ = [
     "GeoField",
-    "PointField",
-    "PolygonField",
     "LineStringField",
     "MultiPointField",
-    "is_geo_field",
+    "PointField",
+    "PolygonField",
     "get_geo_info",
+    "is_geo_field",
 ]

@@ -21,12 +21,12 @@ Example::
         age = Faker("random_int", min=18, max=80)
 """
 
+from .factories import Faker, ModelFactory
 from .fixtures import SurrealFixture, fixture
-from .factories import ModelFactory, Faker
 
 __all__ = [
+    "Faker",
+    "ModelFactory",
     "SurrealFixture",
     "fixture",
-    "ModelFactory",
-    "Faker",
 ]

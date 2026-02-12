@@ -8,13 +8,14 @@ to read back the schema and verify correctness.
 
 from __future__ import annotations
 
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 
 from src.surreal_orm.connection_manager import SurrealDBConnectionManager
 from src.surreal_orm.migrations.db_introspector import DatabaseIntrospector
-from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_introspection"
 

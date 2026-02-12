@@ -1,8 +1,9 @@
 """Tests for typed function call() method."""
 
-import pytest
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 from pydantic import BaseModel
 
 from surreal_sdk.connection.base import BaseSurrealConnection

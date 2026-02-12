@@ -9,22 +9,20 @@ Bug fixes included:
 - Issue #7 (MEDIUM): get_related() with direction=in not working
 """
 
-from datetime import datetime, timezone
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 
 import pytest
 
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.model_base import BaseSurrealModel
 from src.surreal_orm.utils import (
-    needs_id_escaping,
     escape_record_id,
     format_thing,
+    needs_id_escaping,
     parse_record_id,
 )
-
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
-
 
 # =============================================================================
 # Test Models
@@ -1058,7 +1056,7 @@ class TestIssue9DatetimeValidation:
     def test_from_db_with_python_datetime(self) -> None:
         """from_db should handle Python datetime objects (from CBOR)."""
         # CBOR decoder returns Python datetime objects directly
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         record = {
             "id": "test2",
             "name": "CBOR Record",
@@ -1610,8 +1608,8 @@ class TestRelationQuerySetNumericIdEscaping:
 
     def test_build_traversal_query_escapes_numeric_source_id(self) -> None:
         """_build_traversal_query should escape source IDs starting with digits."""
-        from src.surreal_orm.relations import RelationQuerySet
         from src.surreal_orm.fields.relation import RelationInfo
+        from src.surreal_orm.relations import RelationQuerySet
 
         # Create a mock instance with a numeric ID
         class MockInstance:
@@ -1641,8 +1639,8 @@ class TestRelationQuerySetNumericIdEscaping:
 
     def test_build_traversal_query_no_escape_for_normal_source_id(self) -> None:
         """_build_traversal_query should not escape normal source IDs."""
-        from src.surreal_orm.relations import RelationQuerySet
         from src.surreal_orm.fields.relation import RelationInfo
+        from src.surreal_orm.relations import RelationQuerySet
 
         class MockInstance:
             def get_table_name(self):

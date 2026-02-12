@@ -5,7 +5,7 @@ Bug #10: UPDATE sends NONE for unmodified fields (fixed with merge() instead of 
 Bug #11: datetime returned as string instead of datetime object
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -13,12 +13,10 @@ from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.model_base import (
     BaseSurrealModel,
     SurrealConfigDict,
-    _parse_datetime,
     _is_datetime_field,
+    _parse_datetime,
 )
-
 from tests.conftest import SURREALDB_URL
-
 
 # =============================================================================
 # Test Models
@@ -111,7 +109,7 @@ class TestBug11DatetimeParsing:
 
     def test_parse_datetime_preserves_datetime(self):
         """_parse_datetime should preserve existing datetime objects."""
-        dt = datetime(2026, 2, 2, 13, 21, 23, tzinfo=timezone.utc)
+        dt = datetime(2026, 2, 2, 13, 21, 23, tzinfo=UTC)
         result = _parse_datetime(dt)
 
         assert result is dt

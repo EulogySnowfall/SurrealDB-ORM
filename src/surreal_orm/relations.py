@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .connection_manager import SurrealDBConnectionManager
 from .fields.relation import RelationInfo
-from .utils import escape_record_id
+from .utils import escape_record_id, format_thing
 
 if TYPE_CHECKING:
     from .model_base import BaseSurrealModel
@@ -48,7 +48,7 @@ class RelationQuerySet:
 
     def __init__(
         self,
-        instance: "BaseSurrealModel",
+        instance: BaseSurrealModel,
         relation_info: RelationInfo,
         traversal_path: list[tuple[RelationInfo, dict[str, Any]]] | None = None,
     ):
@@ -65,7 +65,7 @@ class RelationQuerySet:
         self._traversal_path = traversal_path or [(relation_info, {})]
         self._filters: dict[str, Any] = {}
 
-    def filter(self, **kwargs: Any) -> "RelationQuerySet":
+    def filter(self, **kwargs: Any) -> RelationQuerySet:
         """
         Add filters to the current traversal level.
 
@@ -89,7 +89,7 @@ class RelationQuerySet:
         )
         return new_qs
 
-    def __getattr__(self, name: str) -> "RelationQuerySet":
+    def __getattr__(self, name: str) -> RelationQuerySet:
         """
         Enable chained traversal via attribute access.
 
@@ -172,7 +172,11 @@ class RelationQuerySet:
                     parts = field.split("__", 1)
                     field_name = parts[0]
                     operator = parts[1]
-                    clause = self._get_filter_clause(field_name, operator, var_name)
+                    clause = self._get_filter_clause(field_name, operator, var_name, value)
+                    # isnull doesn't need a bound variable
+                    if operator == "isnull":
+                        where_clauses.append(clause)
+                        continue
                 else:
                     clause = f"{field} = ${var_name}"
 
@@ -186,8 +190,11 @@ class RelationQuerySet:
 
         return query + ";", variables
 
-    def _get_filter_clause(self, field: str, operator: str, var_name: str) -> str:
+    def _get_filter_clause(self, field: str, operator: str, var_name: str, value: Any = None) -> str:
         """Convert filter operator to SurrealQL."""
+        if operator == "isnull":
+            # True -> IS NULL, False -> IS NOT NULL
+            return f"{field} IS NOT NULL" if not value else f"{field} IS NULL"
         operator_map = {
             "exact": f"{field} = ${var_name}",
             "gt": f"{field} > ${var_name}",
@@ -198,7 +205,6 @@ class RelationQuerySet:
             "contains": f"{field} CONTAINS ${var_name}",
             "startswith": f"string::starts_with({field}, ${var_name})",
             "endswith": f"string::ends_with({field}, ${var_name})",
-            "isnull": f"{field} IS NULL",
         }
         return operator_map.get(operator, f"{field} = ${var_name}")
 
@@ -275,7 +281,7 @@ class RelationManager:
 
     def __init__(
         self,
-        instance: "BaseSurrealModel",
+        instance: BaseSurrealModel,
         relation_info: RelationInfo,
         field_name: str,
     ):
@@ -297,7 +303,7 @@ class RelationManager:
 
     # ==================== Operations ====================
 
-    async def add(self, *objects: "BaseSurrealModel", **edge_data: Any) -> None:
+    async def add(self, *objects: BaseSurrealModel, **edge_data: Any) -> None:
         """
         Add objects to this relation.
 
@@ -318,6 +324,7 @@ class RelationManager:
         client = await SurrealDBConnectionManager.get_client(self._instance.get_connection_name())
         source_table = self._instance.get_table_name()
         source_id = self._instance.get_id()
+        assert source_id is not None  # guarded above
 
         for obj in objects:
             if not obj.get_id():
@@ -325,6 +332,10 @@ class RelationManager:
 
             target_table = obj.get_table_name()
             target_id = obj.get_id()
+            assert target_id is not None  # guarded above
+
+            source_thing = format_thing(source_table, source_id)
+            target_thing = format_thing(target_table, target_id)
 
             if self._relation_info.relation_type == "relation":
                 # Use RELATE for graph relations
@@ -334,33 +345,33 @@ class RelationManager:
                 if self._relation_info.reverse:
                     # Reverse relation: target -> edge -> source
                     await client.relate(
-                        f"{target_table}:{target_id}",
+                        target_thing,
                         edge,
-                        f"{source_table}:{source_id}",
+                        source_thing,
                         edge_data if edge_data else None,
                     )
                 else:
                     # Forward relation: source -> edge -> target
                     await client.relate(
-                        f"{source_table}:{source_id}",
+                        source_thing,
                         edge,
-                        f"{target_table}:{target_id}",
+                        target_thing,
                         edge_data if edge_data else None,
                     )
             elif self._relation_info.relation_type == "many_to_many":
                 # Use intermediate table for many-to-many
                 through = self._relation_info.through or f"{source_table}_{target_table}"
                 await client.relate(
-                    f"{source_table}:{source_id}",
+                    source_thing,
                     through,
-                    f"{target_table}:{target_id}",
+                    target_thing,
                     edge_data if edge_data else None,
                 )
 
         # Invalidate cache
         self._cache = None
 
-    async def remove(self, *objects: "BaseSurrealModel") -> None:
+    async def remove(self, *objects: BaseSurrealModel) -> None:
         """
         Remove objects from this relation.
 
@@ -378,6 +389,7 @@ class RelationManager:
         client = await SurrealDBConnectionManager.get_client(self._instance.get_connection_name())
         source_table = self._instance.get_table_name()
         source_id = self._instance.get_id()
+        assert source_id is not None  # guarded above
 
         for obj in objects:
             if not obj.get_id():
@@ -385,25 +397,28 @@ class RelationManager:
 
             target_table = obj.get_table_name()
             target_id = obj.get_id()
+            assert target_id is not None  # guarded above
+            source_thing = format_thing(source_table, source_id)
+            target_thing = format_thing(target_table, target_id)
 
             if self._relation_info.relation_type == "relation":
                 edge = self._relation_info.edge_table
                 if self._relation_info.reverse:
                     # Delete edges where target -> edge -> source
-                    query = f"DELETE {edge} WHERE in = {target_table}:{target_id} AND out = {source_table}:{source_id};"
+                    query = f"DELETE {edge} WHERE in = {target_thing} AND out = {source_thing};"
                 else:
                     # Delete edges where source -> edge -> target
-                    query = f"DELETE {edge} WHERE in = {source_table}:{source_id} AND out = {target_table}:{target_id};"
+                    query = f"DELETE {edge} WHERE in = {source_thing} AND out = {target_thing};"
                 await client.query(query)
             elif self._relation_info.relation_type == "many_to_many":
                 through = self._relation_info.through or f"{source_table}_{target_table}"
-                query = f"DELETE {through} WHERE in = {source_table}:{source_id} AND out = {target_table}:{target_id};"
+                query = f"DELETE {through} WHERE in = {source_thing} AND out = {target_thing};"
                 await client.query(query)
 
         # Invalidate cache
         self._cache = None
 
-    async def set(self, objects: list["BaseSurrealModel"]) -> None:
+    async def set(self, objects: list[BaseSurrealModel]) -> None:
         """
         Replace all relations with the given objects.
 
@@ -432,19 +447,22 @@ class RelationManager:
         client = await SurrealDBConnectionManager.get_client(self._instance.get_connection_name())
         source_table = self._instance.get_table_name()
         source_id = self._instance.get_id()
+        assert source_id is not None  # guarded above
+
+        source_thing = format_thing(source_table, source_id)
 
         if self._relation_info.relation_type == "relation":
             edge = self._relation_info.edge_table
             if self._relation_info.reverse:
                 # Delete all edges pointing to this record
-                query = f"DELETE {edge} WHERE out = {source_table}:{source_id};"
+                query = f"DELETE {edge} WHERE out = {source_thing};"
             else:
                 # Delete all edges from this record
-                query = f"DELETE {edge} WHERE in = {source_table}:{source_id};"
+                query = f"DELETE {edge} WHERE in = {source_thing};"
             await client.query(query)
         elif self._relation_info.relation_type == "many_to_many":
             through = self._relation_info.through or f"{source_table}_"
-            query = f"DELETE {through} WHERE in = {source_table}:{source_id};"
+            query = f"DELETE {through} WHERE in = {source_thing};"
             await client.query(query)
 
         # Invalidate cache
@@ -495,7 +513,7 @@ class RelationManager:
         results = await self.all()
         return len(results)
 
-    async def contains(self, obj: "BaseSurrealModel") -> bool:
+    async def contains(self, obj: BaseSurrealModel) -> bool:
         """
         Check if an object is in this relation.
 
@@ -511,11 +529,7 @@ class RelationManager:
         results = await self.all()
         target_id = obj.get_id()
 
-        for related in results:
-            if hasattr(related, "get_id") and related.get_id() == target_id:
-                return True
-
-        return False
+        return any(hasattr(related, "get_id") and related.get_id() == target_id for related in results)
 
     async def first(self) -> Any | None:
         """
@@ -580,9 +594,9 @@ class RelationDescriptor:
 
     def __get__(
         self,
-        obj: "BaseSurrealModel | None",
-        objtype: type["BaseSurrealModel"] | None = None,
-    ) -> "RelationManager | RelationDescriptor":
+        obj: BaseSurrealModel | None,
+        objtype: type[BaseSurrealModel] | None = None,
+    ) -> RelationManager | RelationDescriptor:
         """
         Get the RelationManager for this field.
 
@@ -607,7 +621,7 @@ class RelationDescriptor:
 
     def __set__(
         self,
-        obj: "BaseSurrealModel",
+        obj: BaseSurrealModel,
         value: Any,
     ) -> None:
         """
@@ -621,7 +635,7 @@ class RelationDescriptor:
 
 
 def get_related_objects(
-    instance: "BaseSurrealModel",
+    instance: BaseSurrealModel,
     relation_name: str,
     direction: Literal["out", "in", "both"] = "out",
 ) -> RelationQuerySet:

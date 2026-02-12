@@ -2,10 +2,11 @@
 Unit tests for migration file generator.
 """
 
-import pytest
-from pathlib import Path
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
+
+import pytest
 
 from src.surreal_orm.migrations.generator import MigrationGenerator, generate_empty_migration
 from src.surreal_orm.migrations.operations import (

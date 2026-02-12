@@ -10,15 +10,14 @@ import inspect
 
 import pytest
 
-from src.surreal_orm.model_base import BaseSurrealModel
-from src.surreal_orm.query_set import QuerySet
 from src.surreal_orm.live import (
-    LiveModelStream,
     ChangeModelStream,
+    LiveModelStream,
     ModelChangeEvent,
 )
+from src.surreal_orm.model_base import BaseSurrealModel
+from src.surreal_orm.query_set import QuerySet
 from src.surreal_sdk.streaming.live_select import LiveAction, LiveChange
-
 
 # ==================== Test Models ====================
 
@@ -782,8 +781,8 @@ class TestFormatValue:
         assert LiveSelectStream._format_value([1, "a"]) == "[1, 'a']"
 
     def test_record_id(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
         from src.surreal_sdk.protocol.cbor import RecordId
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
 
         rid = RecordId(table="users", id="abc123")
         assert LiveSelectStream._format_value(rid) == "users:abc123"

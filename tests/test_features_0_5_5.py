@@ -6,16 +6,14 @@ Feature #2: Sync version of unset_connection()
 Feature #3: Field alias support (Python name vs DB column name)
 """
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest
 from pydantic import Field
 
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.model_base import BaseSurrealModel
-
 from tests.conftest import SURREALDB_URL
-
 
 # =============================================================================
 # Test Models

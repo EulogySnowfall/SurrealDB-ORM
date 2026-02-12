@@ -4,16 +4,17 @@ Connection Pool Implementation for SurrealDB SDK.
 Provides connection pooling for both HTTP and WebSocket connections.
 """
 
-from typing import Any, AsyncGenerator, Self
 import asyncio
-from contextlib import asynccontextmanager
 from collections import deque
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from typing import Any, Self
 
+from ..exceptions import ConnectionError
+from ..types import DeleteResponse, QueryResponse, RecordResponse, RecordsResponse
 from .base import BaseSurrealConnection
 from .http import HTTPConnection
 from .websocket import WebSocketConnection
-from ..types import QueryResponse, RecordResponse, RecordsResponse, DeleteResponse
-from ..exceptions import ConnectionError
 
 
 class ConnectionPool:
@@ -46,6 +47,9 @@ class ConnectionPool:
             timeout: Connection timeout in seconds
             **kwargs: Additional connection arguments
         """
+        if size <= 0:
+            raise ValueError(f"Pool size must be > 0, got {size}")
+
         self.url = url
         self.namespace = namespace
         self.database = database
@@ -57,6 +61,7 @@ class ConnectionPool:
         self._pool: deque[BaseSurrealConnection] = deque()
         self._in_use: set[BaseSurrealConnection] = set()
         self._lock = asyncio.Lock()
+        self._semaphore = asyncio.Semaphore(size)
         self._closed = False
         self._credentials: tuple[str, str] | None = None
 
@@ -128,39 +133,34 @@ class ConnectionPool:
 
         conn: BaseSurrealConnection | None = None
 
-        async with self._lock:
-            # Try to get an existing connection from pool
-            while self._pool:
-                conn = self._pool.popleft()
-                if conn.is_connected:
-                    break
-                # Connection is dead, discard it
-                try:
-                    await conn.close()
-                except Exception:
-                    pass
-                conn = None
+        await self._semaphore.acquire()
+        try:
+            async with self._lock:
+                # Try to get an existing connection from pool
+                while self._pool:
+                    conn = self._pool.popleft()
+                    if conn.is_connected:
+                        break
+                    # Connection is dead, discard it
+                    try:
+                        await conn.close()
+                    except Exception:
+                        pass
+                    conn = None
 
-            # Create new connection if needed and pool not at capacity
-            if conn is None:
-                if len(self._in_use) < self.size:
-                    conn = self._create_connection()
-                    await self._init_connection(conn)
-                else:
-                    # Pool at capacity, wait for a connection
-                    pass
+                # Create new connection if needed
+                if conn is None:
+                    if len(self._in_use) < self.size:
+                        conn = self._create_connection()
+                        await self._init_connection(conn)
+                    else:
+                        # Should not happen with semaphore, but just in case
+                        raise RuntimeError("No connection available")
 
-            if conn:
                 self._in_use.add(conn)
-
-        if conn is None:
-            # Wait for a connection to become available
-            while conn is None:
-                await asyncio.sleep(0.01)
-                async with self._lock:
-                    if self._pool:
-                        conn = self._pool.popleft()
-                        self._in_use.add(conn)
+        except BaseException:
+            self._semaphore.release()
+            raise
 
         try:
             yield conn
@@ -174,6 +174,7 @@ class ConnectionPool:
                         await conn.close()
                     except Exception:
                         pass
+            self._semaphore.release()
 
     async def close(self) -> None:
         """Close all connections in the pool."""

@@ -1,12 +1,14 @@
 """Integration tests for ORM v0.4.0 features: relations and graph traversal."""
 
+from collections.abc import AsyncGenerator
+from typing import Any
+
 import pytest
 from pydantic import Field
-from typing import AsyncGenerator, Any
-from src.surreal_orm.model_base import BaseSurrealModel
-from src.surreal_orm import SurrealDBConnectionManager
-from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
+from src.surreal_orm import SurrealDBConnectionManager
+from src.surreal_orm.model_base import BaseSurrealModel
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_relations"
 

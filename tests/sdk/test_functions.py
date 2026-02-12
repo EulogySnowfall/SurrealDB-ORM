@@ -5,14 +5,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.surreal_sdk.functions import (
+    BUILTIN_NAMESPACES,
+    ArrayFunctions,
+    CryptoFunctions,
     FunctionCall,
     FunctionNamespace,
     MathFunctions,
-    TimeFunctions,
-    ArrayFunctions,
     StringFunctions,
-    CryptoFunctions,
-    BUILTIN_NAMESPACES,
+    TimeFunctions,
 )
 from src.surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
 

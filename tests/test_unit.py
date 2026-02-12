@@ -2,6 +2,7 @@ import inspect
 
 import pytest
 from pydantic import Field
+
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict, SurrealDbError
 from src.surreal_orm.query_set import QuerySet
 from src.surreal_sdk.exceptions import TransactionConflictError, TransactionError
@@ -77,7 +78,7 @@ def test_str_dunnder(model_test: ModelTest) -> None:
     assert str(model_test) == "id='1' name='Test' age=45"
 
 
-async def failed_model_validation() -> None:
+async def test_failed_model_validation() -> None:
     class ModelTestInvalide(BaseSurrealModel):
         name: str = Field(..., max_length=100)
         age: int = Field(..., ge=0, le=125)
@@ -297,6 +298,7 @@ def test_remove_relation_signature_has_reverse() -> None:
 def test_atomic_ops_reject_invalid_field_name() -> None:
     """Atomic ops must reject field names that could cause SurrealQL injection."""
     import asyncio
+
     from src.surreal_orm.model_base import _SAFE_IDENTIFIER_RE
 
     # Valid field names should pass the regex

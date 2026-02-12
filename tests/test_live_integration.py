@@ -9,22 +9,22 @@ against a real database.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 from pydantic import Field
 
 from src.surreal_orm import (
     BaseSurrealModel,
-    SurrealConfigDict,
-    SurrealDBConnectionManager,
     LiveAction,
     ModelChangeEvent,
+    SurrealConfigDict,
+    SurrealDBConnectionManager,
     post_live_change,
 )
 from src.surreal_orm.types import TableType
-from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
-
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 # ==================== Test Config ====================
 
@@ -144,7 +144,7 @@ async def test_live_stream_receives_create() -> None:
     # Wait for the event (with timeout)
     try:
         await asyncio.wait_for(task, timeout=5.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         task.cancel()
         try:
             await task
@@ -188,7 +188,7 @@ async def test_live_stream_receives_update() -> None:
 
     try:
         await asyncio.wait_for(task, timeout=5.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         task.cancel()
         try:
             await task
@@ -229,7 +229,7 @@ async def test_live_stream_receives_delete() -> None:
 
     try:
         await asyncio.wait_for(task, timeout=5.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         task.cancel()
         try:
             await task
@@ -273,7 +273,7 @@ async def test_live_stream_with_filter() -> None:
 
     try:
         await asyncio.wait_for(task, timeout=5.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         task.cancel()
         try:
             await task
@@ -340,7 +340,7 @@ async def test_post_live_change_signal_fires() -> None:
 
         try:
             await asyncio.wait_for(task, timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             task.cancel()
             try:
                 await task

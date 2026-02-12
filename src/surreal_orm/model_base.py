@@ -1,21 +1,19 @@
 import logging
-import re as _re
-from datetime import datetime, timezone
-from typing import Any, Literal, Self, TYPE_CHECKING, get_args, get_origin
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, Literal, Self, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
+from . import signals as model_signals
 from .connection_manager import SurrealDBConnectionManager
-from .debug import _log_query, _start_timer, _elapsed_ms
+from .debug import _elapsed_ms, _log_query, _start_timer
 from .surreal_function import SurrealFunc
 from .types import SchemaMode, TableType
+from .utils import SAFE_IDENTIFIER_RE as _SAFE_IDENTIFIER_RE
 from .utils import format_thing, parse_record_id
-from . import signals as model_signals
 
 if TYPE_CHECKING:
     from surreal_sdk.transaction import BaseTransaction, HTTPTransaction
-
-_SAFE_IDENTIFIER_RE = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class SurrealDbError(Exception):
@@ -98,7 +96,7 @@ def _parse_datetime(value: Any) -> Any:
             seconds, nanoseconds = value
             # Convert nanoseconds to microseconds (Python datetime precision)
             microseconds = nanoseconds // 1000
-            return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(microsecond=microseconds)
+            return datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=microseconds)
         except (TypeError, ValueError, OSError):
             pass
     return value  # Return as-is if we can't parse
@@ -106,11 +104,16 @@ def _parse_datetime(value: Any) -> Any:
 
 def _is_datetime_field(field_type: Any) -> bool:
     """Check if a field type is datetime or Optional[datetime]."""
-    # Handle Optional[datetime] which is Union[datetime, None]
+    import types
+    from typing import Union
+
     origin = get_origin(field_type)
     if origin is not None:
-        args = get_args(field_type)
-        return datetime in args
+        # Only check Union types (Optional, X | Y) — not list, dict, etc.
+        if origin is Union or origin is getattr(types, "UnionType", None):
+            args = get_args(field_type)
+            return datetime in args
+        return False
     return field_type is datetime
 
 
@@ -442,7 +445,7 @@ class BaseSurrealModel(BaseModel):
         Get the ID of the model instance.
         """
         if hasattr(self, "id"):
-            id_value = getattr(self, "id")
+            id_value = self.id
             return str(id_value) if id_value is not None else None
 
         if hasattr(self, "model_config"):
@@ -525,6 +528,7 @@ class BaseSurrealModel(BaseModel):
             if "id" in data:
                 data["id"] = _parse_record_id(data["id"])
             return data
+        return data  # Always return data, even for non-dict input
 
     def _update_from_db(self, record: dict[str, Any]) -> None:
         """

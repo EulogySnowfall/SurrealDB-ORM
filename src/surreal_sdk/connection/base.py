@@ -13,12 +13,12 @@ if TYPE_CHECKING:
     from ..functions import FunctionNamespace
     from ..transaction import BaseTransaction
 from ..types import (
+    AuthResponse,
+    DeleteResponse,
+    InfoResponse,
     QueryResponse,
     RecordResponse,
     RecordsResponse,
-    AuthResponse,
-    InfoResponse,
-    DeleteResponse,
 )
 
 
@@ -510,7 +510,7 @@ class BaseSurrealConnection(ABC):
 
         # Build parameterized query
         if params:
-            param_placeholders = ", ".join(f"${key}" for key in params.keys())
+            param_placeholders = ", ".join(f"${key}" for key in params)
             sql = f"RETURN {function}({param_placeholders});"
         else:
             sql = f"RETURN {function}();"

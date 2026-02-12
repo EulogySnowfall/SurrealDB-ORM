@@ -9,75 +9,73 @@ This package provides:
 - CLI tools for schema management
 """
 
+# Re-export LiveAction from SDK for convenience
+from surreal_sdk.streaming.live_select import LiveAction
+
+from .aggregations import Aggregation, Avg, Count, Max, Min, Sum
+from .auth import AuthenticatedUserMixin
+from .cache import QueryCache
 from .connection_config import ConnectionConfig
 from .connection_manager import SurrealDBConnectionManager
+from .debug import QueryLogger
 from .enum import OrderBy
-from .model_base import (
-    BaseSurrealModel,
-    SurrealConfigDict,
-    SurrealDbError,
-    get_registered_models,
-)
-from .query_set import QuerySet
-from .types import (
-    EncryptionAlgorithm,
-    FieldType,
-    SchemaMode,
-    TableType,
-)
 from .fields import (
     Computed,
     Encrypted,
+    ForeignKey,
     GeoField,
     LineStringField,
+    ManyToMany,
     MultiPointField,
     PointField,
     PolygonField,
-    VectorField,
-)
-from .fields import (
-    ForeignKey,
-    ManyToMany,
     Relation,
     RelationInfo,
+    VectorField,
     get_relation_info,
     is_foreign_key,
     is_graph_relation,
     is_many_to_many,
     is_relation_field,
 )
-from .auth import AuthenticatedUserMixin
-from .aggregations import Aggregation, Count, Sum, Avg, Min, Max
-from .q import Q
-from .subquery import Subquery
-from .cache import QueryCache
-from .prefetch import Prefetch
-from .search import SearchScore, SearchHighlight
-from .surreal_function import SurrealFunc
-from .utils import retry_on_conflict
-from .live import LiveModelStream, ModelChangeEvent, ChangeModelStream
 from .geo import GeoDistance
-from .debug import QueryLogger
 from .introspection import generate_models_from_db, schema_diff
+from .live import ChangeModelStream, LiveModelStream, ModelChangeEvent
 from .migrations.operations import DefineAnalyzer, DefineEvent, RemoveEvent
+from .model_base import (
+    BaseSurrealModel,
+    SurrealConfigDict,
+    SurrealDbError,
+    get_registered_models,
+)
+from .prefetch import Prefetch
+from .q import Q
+from .query_set import QuerySet
+from .search import SearchHighlight, SearchScore
 from .signals import (
-    Signal,
-    pre_save,
-    post_save,
-    pre_delete,
-    post_delete,
-    pre_update,
-    post_update,
-    post_live_change,
     # Around signals (generator-based middleware pattern)
     AroundSignal,
-    around_save,
+    Signal,
     around_delete,
+    around_save,
     around_update,
+    post_delete,
+    post_live_change,
+    post_save,
+    post_update,
+    pre_delete,
+    pre_save,
+    pre_update,
 )
-
-# Re-export LiveAction from SDK for convenience
-from surreal_sdk.streaming.live_select import LiveAction
+from .subquery import Subquery
+from .surreal_function import SurrealFunc
+from .types import (
+    EncryptionAlgorithm,
+    FieldType,
+    SchemaMode,
+    TableType,
+)
+from .utils import retry_on_conflict
 
 __all__ = [
     # Connection

@@ -48,9 +48,7 @@ class TestAttachAccess:
         introspector = DatabaseIntrospector()
         access_stmt = "DEFINE ACCESS user_auth ON users TYPE RECORD"
 
-        with patch(
-            "surreal_orm.migrations.db_introspector.parse_define_access"
-        ) as mock_parse:
+        with patch("surreal_orm.migrations.db_introspector.parse_define_access") as mock_parse:
             mock_parse.return_value = {
                 "name": "user_auth",
                 "table": "users",
@@ -69,9 +67,7 @@ class TestAttachAccess:
         state = SchemaState()
         introspector = DatabaseIntrospector()
 
-        with patch(
-            "surreal_orm.migrations.db_introspector.parse_define_access"
-        ) as mock_parse:
+        with patch("surreal_orm.migrations.db_introspector.parse_define_access") as mock_parse:
             mock_parse.return_value = {
                 "name": "auth",
                 "table": "nonexistent",
@@ -89,9 +85,7 @@ class TestAttachAccess:
         state = SchemaState()
         introspector = DatabaseIntrospector()
 
-        with patch(
-            "surreal_orm.migrations.db_introspector.parse_define_access"
-        ) as mock_parse:
+        with patch("surreal_orm.migrations.db_introspector.parse_define_access") as mock_parse:
             mock_parse.return_value = {
                 "name": "auth",
                 "table": None,

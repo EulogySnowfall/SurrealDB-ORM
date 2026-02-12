@@ -7,8 +7,9 @@ relations, and server functions via both HTTP and WebSocket protocols.
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -16,7 +17,7 @@ from pydantic import BaseModel
 from src.surreal_sdk.connection.http import HTTPConnection
 from src.surreal_sdk.connection.websocket import WebSocketConnection
 from src.surreal_sdk.exceptions import QueryError
-from tests.conftest import SURREALDB_URL, SURREALDB_WS_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER, SURREALDB_WS_URL
 
 SURREALDB_DATABASE = "test_sdk_integration"
 

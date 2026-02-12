@@ -1,7 +1,7 @@
 """Unit tests for surreal_sdk.protocol — CBOR and RPC protocol."""
 
 import json
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from uuid import UUID
 
@@ -22,7 +22,6 @@ from surreal_sdk.protocol.rpc import (
     RPCResponse,
     SurrealJSONEncoder,
 )
-
 
 # ── CBOR Types ──────────────────────────────────────────────────────
 
@@ -94,7 +93,7 @@ class TestCBOREncodeDecode:
         assert decoded.value == "2h"
 
     def test_datetime_roundtrip(self) -> None:
-        original = datetime(2026, 2, 11, 12, 0, 0, tzinfo=timezone.utc)
+        original = datetime(2026, 2, 11, 12, 0, 0, tzinfo=UTC)
         encoded = encode(original)
         decoded = decode(encoded)
         assert isinstance(decoded, datetime)
@@ -102,7 +101,7 @@ class TestCBOREncodeDecode:
         assert decoded.month == 2
 
     def test_datetime_with_tz(self) -> None:
-        original = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        original = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
         encoded = encode(original)
         decoded = decode(encoded)
         assert decoded.tzinfo is not None
@@ -147,7 +146,7 @@ class TestCBOREncodeDecode:
     def test_nested_structure(self) -> None:
         data = {
             "id": RecordId(table="users", id="abc"),
-            "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "created_at": datetime(2026, 1, 1, tzinfo=UTC),
             "score": Decimal("99.5"),
         }
         encoded = encode(data)
@@ -254,9 +253,7 @@ class TestRPCRequest:
         assert req.params == ["users:1"]
 
     def test_signin_factory_full(self) -> None:
-        req = RPCRequest.signin(
-            user="root", password="root", namespace="test", database="test", access="myaccess"
-        )
+        req = RPCRequest.signin(user="root", password="root", namespace="test", database="test", access="myaccess")
         assert req.method == "signin"
         params = req.params
         assert params["user"] == "root"
@@ -328,10 +325,12 @@ class TestRPCResponse:
         assert resp.result == [{"id": "1"}]
 
     def test_from_dict_error(self) -> None:
-        resp = RPCResponse.from_dict({
-            "id": 1,
-            "error": {"code": 400, "message": "parse error"},
-        })
+        resp = RPCResponse.from_dict(
+            {
+                "id": 1,
+                "error": {"code": 400, "message": "parse error"},
+            }
+        )
         assert resp.is_error is True
         assert resp.error is not None
         assert resp.error.code == 400

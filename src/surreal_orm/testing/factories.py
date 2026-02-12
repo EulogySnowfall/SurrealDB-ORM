@@ -34,7 +34,7 @@ from __future__ import annotations
 import random
 import string
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from surreal_orm.model_base import BaseSurrealModel
@@ -244,7 +244,7 @@ class Faker:
 
     def _gen_datetime(self) -> datetime:
         seconds_back = random.randint(0, 365 * 24 * 3600)
-        return datetime.now(tz=timezone.utc) - timedelta(seconds=seconds_back)
+        return datetime.now(tz=UTC) - timedelta(seconds=seconds_back)
 
     def _gen_choice(self) -> Any:
         items = self.kwargs.get("items")
@@ -282,7 +282,7 @@ class _FactoryMeta(type):
         for attr_name, attr_value in namespace.items():
             if attr_name.startswith("_") or attr_name == "Meta":
                 continue
-            if isinstance(attr_value, (Faker, str, int, float, bool, list, dict)):
+            if isinstance(attr_value, (Faker, str, int, float, bool, list, dict, tuple, set, bytes)) or attr_value is None:
                 field_defs[attr_name] = attr_value
 
         cls = super().__new__(mcs, name, bases, namespace)
@@ -340,8 +340,8 @@ class ModelFactory(metaclass=_FactoryMeta):
                 data[field_name] = overrides[field_name]
             elif isinstance(field_def, Faker):
                 data[field_name] = field_def.generate()
-            elif isinstance(field_def, (list, dict)):
-                data[field_name] = copy.copy(field_def)
+            elif isinstance(field_def, (list, dict, tuple, set)):
+                data[field_name] = copy.deepcopy(field_def)
             else:
                 data[field_name] = field_def
         # Apply any overrides for fields not in _field_defs
@@ -405,4 +405,4 @@ class ModelFactory(metaclass=_FactoryMeta):
         return instances
 
 
-__all__ = ["ModelFactory", "Faker"]
+__all__ = ["Faker", "ModelFactory"]

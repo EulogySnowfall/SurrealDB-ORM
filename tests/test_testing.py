@@ -6,16 +6,16 @@ Unit tests (no DB required) + integration tests (marked with @pytest.mark.integr
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from datetime import date, datetime
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import pytest
 
 import surreal_orm
 from surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from surreal_orm.testing import Faker, ModelFactory, SurrealFixture, fixture
-from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
-
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 # ---------------------------------------------------------------------------
 # Test models

@@ -1,6 +1,8 @@
 """Tests for WebSocket connection module."""
 
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
+
 import pytest
 
 from src.surreal_sdk.connection.websocket import WebSocketConnection

@@ -4,8 +4,7 @@ Tests for the debug module — QueryLog and QueryLogger.
 
 from __future__ import annotations
 
-from surreal_orm.debug import QueryLog, QueryLogger, _log_query, _active_logger
-
+from surreal_orm.debug import QueryLog, QueryLogger, _active_logger, _log_query
 
 # ---------------------------------------------------------------------------
 # QueryLog

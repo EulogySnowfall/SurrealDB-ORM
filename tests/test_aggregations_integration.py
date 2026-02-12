@@ -1,12 +1,14 @@
 """Integration tests for ORM v0.3.0 features: aggregations and GROUP BY."""
 
+from collections.abc import AsyncGenerator
+from typing import Any
+
 import pytest
 from pydantic import Field
-from typing import AsyncGenerator, Any
-from src.surreal_orm.model_base import BaseSurrealModel
-from src.surreal_orm import SurrealDBConnectionManager, Count, Sum, Avg, Min, Max
-from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
 
+from src.surreal_orm import Avg, Count, Max, Min, Sum, SurrealDBConnectionManager
+from src.surreal_orm.model_base import BaseSurrealModel
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_aggregations"
 

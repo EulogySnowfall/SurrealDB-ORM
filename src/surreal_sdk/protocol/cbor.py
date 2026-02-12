@@ -19,7 +19,7 @@ Custom CBOR Tags used by SurrealDB:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -59,7 +59,7 @@ class RecordId:
         return f"{self.table}:{self.id}"
 
     @classmethod
-    def parse(cls, value: str) -> "RecordId":
+    def parse(cls, value: str) -> RecordId:
         """Parse a record ID string into a RecordId object."""
         if ":" in value:
             table, id_part = value.split(":", 1)
@@ -107,7 +107,7 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
         # Encode datetime as tagged ISO 8601 string
         # Ensure timezone-aware for consistency
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
+            value = value.replace(tzinfo=UTC)
         encoder.encode(CBORTag(TAG_DATETIME, value.isoformat()))
     elif isinstance(value, UUID):
         # Encode UUID as tagged string

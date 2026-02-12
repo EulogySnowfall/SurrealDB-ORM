@@ -6,13 +6,14 @@ using mocks instead of real database connections.
 """
 
 import inspect
+import sys
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-import sys
 
 from src.surreal_orm.auth.access import AccessDefinition, AccessGenerator
 from src.surreal_orm.auth.mixins import AuthenticatedUserMixin
+from src.surreal_orm.fields import Encrypted
 from src.surreal_orm.model_base import (
     BaseSurrealModel,
     SurrealConfigDict,
@@ -20,7 +21,6 @@ from src.surreal_orm.model_base import (
     clear_model_registry,
 )
 from src.surreal_orm.types import EncryptionAlgorithm, TableType
-from src.surreal_orm.fields import Encrypted
 from src.surreal_sdk.connection.base import BaseSurrealConnection
 from src.surreal_sdk.types import AuthResponse
 
@@ -897,7 +897,7 @@ class TestBug4AuthenticateAndValidateToken:
     def test_sdk_has_authenticate_method(self) -> None:
         """BaseSurrealConnection must have an authenticate() method."""
         assert hasattr(BaseSurrealConnection, "authenticate")
-        fn = getattr(BaseSurrealConnection, "authenticate")
+        fn = BaseSurrealConnection.authenticate
         assert inspect.iscoroutinefunction(fn)
 
     def test_authenticate_token_return_annotation(self) -> None:

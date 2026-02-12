@@ -2,13 +2,6 @@
 Unit tests for migration state and diff logic.
 """
 
-from src.surreal_orm.migrations.state import (
-    AccessState,
-    FieldState,
-    IndexState,
-    SchemaState,
-    TableState,
-)
 from src.surreal_orm.migrations.operations import (
     AddField,
     CreateIndex,
@@ -17,6 +10,13 @@ from src.surreal_orm.migrations.operations import (
     DropField,
     DropIndex,
     DropTable,
+)
+from src.surreal_orm.migrations.state import (
+    AccessState,
+    FieldState,
+    IndexState,
+    SchemaState,
+    TableState,
 )
 
 

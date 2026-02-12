@@ -4,14 +4,17 @@ Live Select Stream Implementation.
 Provides async iterator pattern for real-time change notifications via WebSocket Live Queries.
 """
 
-from typing import Any, Callable, Awaitable, Coroutine, Self
-from dataclasses import dataclass, field
-from enum import StrEnum
 import asyncio
 import re
+from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any, Self
 
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
+
+_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class LiveAction(StrEnum):
@@ -134,6 +137,8 @@ class LiveSelectStream:
         """
         self.connection = connection
         self.table = table
+        if not _SAFE_TABLE_RE.match(table):
+            raise ValueError(f"Invalid table name: {table!r}")
         self.where = where
         self.params = params or {}
         self.diff = diff
@@ -165,8 +170,9 @@ class LiveSelectStream:
         UUID) so that LIVE SELECT filters behave the same as parameterized
         queries.
         """
-        from datetime import datetime, date
+        from datetime import date, datetime
         from uuid import UUID
+
         from ..protocol.cbor import RecordId
 
         if value is None:
@@ -354,6 +360,7 @@ class LiveSelectManager:
         """Initialize manager."""
         self.connection = connection
         self._streams: dict[str, LiveSelectStream] = {}
+        self._tasks: set[asyncio.Task[Any]] = set()
 
     async def watch(
         self,
@@ -393,7 +400,9 @@ class LiveSelectManager:
         self._streams[live_id] = stream
 
         # Start background task to forward to callback
-        asyncio.create_task(self._forward_to_callback(stream, callback))
+        task = asyncio.create_task(self._forward_to_callback(stream, callback))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
         return live_id
 

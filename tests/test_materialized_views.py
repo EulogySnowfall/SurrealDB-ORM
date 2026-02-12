@@ -6,10 +6,9 @@ from __future__ import annotations
 
 import pytest
 
-from surreal_orm.migrations.operations import CreateTable
 from surreal_orm.migrations.define_parser import parse_define_table
+from surreal_orm.migrations.operations import CreateTable
 from surreal_orm.migrations.state import SchemaState, TableState
-
 
 # ---------------------------------------------------------------------------
 # CreateTable — view_query

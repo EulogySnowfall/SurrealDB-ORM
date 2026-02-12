@@ -5,16 +5,22 @@ Implements the RPC protocol for SurrealDB communication.
 Supports both JSON and CBOR serialization formats.
 """
 
-from .rpc import RPCRequest, RPCResponse, RPCError
 from .cbor import (
     CBOR_AVAILABLE,
+    Duration,
     RecordId,
     Table,
-    Duration,
-    encode as cbor_encode,
+)
+from .cbor import (
     decode as cbor_decode,
+)
+from .cbor import (
+    encode as cbor_encode,
+)
+from .cbor import (
     is_available as cbor_is_available,
 )
+from .rpc import RPCError, RPCRequest, RPCResponse
 
 __all__ = [
     # RPC

@@ -22,9 +22,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, AsyncGenerator, AsyncIterator, Awaitable, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from .model_base import BaseSurrealModel

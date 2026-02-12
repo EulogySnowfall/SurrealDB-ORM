@@ -25,7 +25,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Self
 
-
 _active_logger: ContextVar[QueryLogger | None] = ContextVar("_active_query_logger", default=None)
 
 

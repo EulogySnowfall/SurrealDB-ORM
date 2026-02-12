@@ -5,14 +5,15 @@ Tests server-side computed field evaluation against a running SurrealDB instance
 Requires the test container to be running (docker compose up).
 """
 
+from collections.abc import AsyncGenerator
+from typing import Any
+
 import pytest
-from typing import Any, AsyncGenerator
 
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.fields.computed import Computed
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
-from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
-
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 # ---------------------------------------------------------------------------
 # Connection config

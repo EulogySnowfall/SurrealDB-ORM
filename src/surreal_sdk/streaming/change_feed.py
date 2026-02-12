@@ -5,12 +5,16 @@ Provides CDC (Change Data Capture) streaming via SurrealDB Change Feeds.
 This is stateless and ideal for microservices architectures.
 """
 
-from typing import Any, AsyncGenerator, AsyncIterator
-from datetime import datetime
 import asyncio
+import re
+from collections.abc import AsyncGenerator, AsyncIterator
+from datetime import UTC, datetime
+from typing import Any
 
 from ..connection.http import HTTPConnection
 from ..exceptions import ChangeFeedError
+
+_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class ChangeFeedStream:
@@ -52,6 +56,8 @@ class ChangeFeedStream:
         """
         self.connection = connection
         self.table = table
+        if not _SAFE_TABLE_RE.match(table):
+            raise ValueError(f"Invalid table name: {table!r}")
         self.poll_interval = poll_interval
         self.batch_size = batch_size
         self._cursor: str | None = None
@@ -92,7 +98,7 @@ class ChangeFeedStream:
             List of change records
         """
         if since is None:
-            since = self._cursor or datetime.utcnow().isoformat() + "Z"
+            since = self._cursor or datetime.now(UTC).isoformat() + "Z"
         elif isinstance(since, datetime):
             since = since.isoformat() + "Z"
 
@@ -131,7 +137,7 @@ class ChangeFeedStream:
             Change records as they become available
         """
         if since is None:
-            since = datetime.utcnow().isoformat() + "Z"
+            since = datetime.now(UTC).isoformat() + "Z"
         elif isinstance(since, datetime):
             since = since.isoformat() + "Z"
 
@@ -180,7 +186,7 @@ class ChangeFeedStream:
             Batches of change records
         """
         if since is None:
-            since = datetime.utcnow().isoformat() + "Z"
+            since = datetime.now(UTC).isoformat() + "Z"
         elif isinstance(since, datetime):
             since = since.isoformat() + "Z"
 
@@ -269,7 +275,7 @@ class MultiTableChangeFeed:
                     pass
 
             if not any(stream._cursor for stream in self.streams.values()):
-                await asyncio.sleep(self.streams[list(self.streams.keys())[0]].poll_interval)
+                await asyncio.sleep(next(iter(self.streams.values())).poll_interval)
 
     def stop(self) -> None:
         """Stop all streams."""

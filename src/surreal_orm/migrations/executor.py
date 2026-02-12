@@ -280,7 +280,11 @@ class MigrationExecutor:
             for sql in migration.backwards_sql():
                 if sql:
                     logger.debug(f"Executing: {sql[:100]}...")
-                    await client.query(sql)
+                    try:
+                        await client.query(sql)
+                    except Exception as e:
+                        logger.error(f"Rollback failed for migration {name}, SQL: {sql[:200]}... Error: {e}")
+                        raise RuntimeError(f"Rollback failed for migration {name}: {e}") from e
 
             # Handle async data migrations backwards
             for op in reversed(migration.operations):

@@ -4,10 +4,9 @@ Tests for DEFINE EVENT support — operations, parser, state diff, and introspec
 
 from __future__ import annotations
 
-from surreal_orm.migrations.operations import DefineEvent, RemoveEvent
 from surreal_orm.migrations.define_parser import parse_define_event
+from surreal_orm.migrations.operations import DefineEvent, RemoveEvent
 from surreal_orm.migrations.state import EventState, SchemaState, TableState
-
 
 # ---------------------------------------------------------------------------
 # DefineEvent operation

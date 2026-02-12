@@ -12,9 +12,9 @@ from .base import BaseSurrealConnection
 
 if TYPE_CHECKING:
     from ..transaction import HTTPTransaction
+from ..exceptions import ConnectionError, QueryError
 from ..protocol.rpc import RPCRequest, RPCResponse
 from ..types import AuthResponse
-from ..exceptions import ConnectionError, QueryError
 
 
 class HTTPConnection(BaseSurrealConnection):

@@ -4,12 +4,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.surreal_sdk.exceptions import TransactionError
 from src.surreal_sdk.transaction import (
     HTTPTransaction,
-    WebSocketTransaction,
     TransactionStatement,
+    WebSocketTransaction,
 )
-from src.surreal_sdk.exceptions import TransactionError
 from src.surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
 
 

@@ -18,15 +18,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar
 
-from surreal_sdk.streaming.live_select import LiveAction, LiveChange, LiveSelectStream, ReconnectCallback
-from surreal_sdk.streaming.change_feed import ChangeFeedStream
-from surreal_sdk.connection.websocket import WebSocketConnection
 from surreal_sdk.connection.http import HTTPConnection
+from surreal_sdk.connection.websocket import WebSocketConnection
+from surreal_sdk.streaming.change_feed import ChangeFeedStream
+from surreal_sdk.streaming.live_select import LiveAction, LiveChange, LiveSelectStream, ReconnectCallback
 
 if TYPE_CHECKING:
     from .model_base import BaseSurrealModel
@@ -353,7 +353,7 @@ class ChangeModelStream(Generic[T]):
 
 
 __all__ = [
-    "ModelChangeEvent",
-    "LiveModelStream",
     "ChangeModelStream",
+    "LiveModelStream",
+    "ModelChangeEvent",
 ]

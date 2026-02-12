@@ -9,18 +9,16 @@ Bug #5: Session cleanup for WebSocket callback tasks
 Bug #6: Documentation updates (manual verification)
 """
 
-from datetime import datetime, date, time
+from datetime import date, datetime, time
 from decimal import Decimal
 from uuid import UUID
 
 import pytest
 
 from surreal_orm import BaseSurrealModel, SurrealConfigDict, SurrealDBConnectionManager
-from surreal_sdk import SurrealDB, HTTPConnection, WebSocketConnection
+from surreal_sdk import HTTPConnection, SurrealDB, WebSocketConnection
 from surreal_sdk.protocol.rpc import RPCRequest
-
 from tests.conftest import SURREALDB_URL, SURREALDB_WS_URL
-
 
 # =============================================================================
 # Bug #1: datetime serialization

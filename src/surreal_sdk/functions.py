@@ -4,7 +4,8 @@ Function call API for SurrealDB SDK.
 Provides a fluent interface for calling SurrealDB built-in and custom functions.
 """
 
-from typing import TYPE_CHECKING, Any, Generator
+from collections.abc import Generator
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .connection.base import BaseSurrealConnection
@@ -167,7 +168,7 @@ class FunctionNamespace:
         # Prevent recursion on special attributes
         if name.startswith("_"):
             raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
-        return FunctionNamespace(self._connection, self._path + [name])
+        return FunctionNamespace(self._connection, [*self._path, name])
 
     def __call__(self, *args: Any) -> FunctionCall:
         """

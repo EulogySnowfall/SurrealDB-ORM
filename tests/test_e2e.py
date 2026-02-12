@@ -1,10 +1,13 @@
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
+
 import pytest
 from pydantic import Field
+
 from src import surreal_orm
 from src.surreal_orm.model_base import SurrealDbError
 from src.surreal_orm.query_set import SurrealDbError as QuerySetError
-from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_e2e"
 

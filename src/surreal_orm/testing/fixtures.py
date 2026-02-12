@@ -24,8 +24,9 @@ Example::
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
 from surreal_orm.model_base import BaseSurrealModel
 

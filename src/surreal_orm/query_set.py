@@ -1,34 +1,38 @@
 from __future__ import annotations
 
-from .constants import LOOKUP_OPERATORS, like_to_regex
-from .enum import OrderBy
-from .q import Q
-from .utils import remove_quotes_for_variables, format_thing, parse_record_id
-from . import BaseSurrealModel, SurrealDBConnectionManager
-from .aggregations import Aggregation
-from .subquery import Subquery
-from .prefetch import Prefetch
-from .search import SearchScore, SearchHighlight
-from .geo import GeoDistance
-from typing import TYPE_CHECKING, Self, Any, Sequence, cast
+from collections.abc import Sequence
 from datetime import datetime
+from typing import TYPE_CHECKING, Any, Self, cast
+
 from pydantic_core import ValidationError
 
+from . import BaseSurrealModel, SurrealDBConnectionManager
+from .aggregations import Aggregation
+from .constants import LOOKUP_OPERATORS, like_to_regex
+from .enum import OrderBy
+from .geo import GeoDistance
+from .prefetch import Prefetch
+from .q import Q
+from .search import SearchHighlight, SearchScore
+from .subquery import Subquery
+from .utils import (
+    SAFE_IDENTIFIER_RE as _SAFE_IDENTIFIER_RE,
+)
+from .utils import (
+    format_thing,
+    parse_record_id,
+    remove_quotes_for_variables,
+    validate_identifier,
+)
+
 if TYPE_CHECKING:
-    from .live import LiveModelStream, ChangeModelStream
     from surreal_sdk.streaming.live_select import ReconnectCallback
 
+    from .live import ChangeModelStream, LiveModelStream
+
 import logging
-import re as _re
 
-_SAFE_IDENTIFIER_RE = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
-
-class SurrealDbError(Exception):
-    """Error from SurrealDB operations."""
-
-    pass
-
+from .model_base import SurrealDbError
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +286,7 @@ class QuerySet:
         if field_name.startswith("-"):
             field_name = field_name[1:]
             order_type = OrderBy.DESC
+        validate_identifier(field_name, "order_by field")
         self._order_by = f"{field_name} {order_type}"
         return self
 
@@ -776,6 +781,7 @@ class QuerySet:
                 parts = traversal.split("->")
                 if len(parts) >= 3:
                     edge = parts[1]
+                    validate_identifier(edge, "edge name")
                     # Use SELECT VALUE out.* for more reliable record extraction
                     query = f"SELECT VALUE out.* FROM {edge} WHERE in = {source_thing};"
                     result = await client.query(query, {**self._variables, **variables})
@@ -789,6 +795,7 @@ class QuerySet:
                 parts = traversal.split("<-")
                 if len(parts) >= 3:
                     edge = parts[1]
+                    validate_identifier(edge, "edge name")
                     # Use SELECT VALUE in.* for more reliable record extraction
                     query = f"SELECT VALUE in.* FROM {edge} WHERE out = {source_thing};"
                     result = await client.query(query, {**self._variables, **variables})
@@ -1330,13 +1337,14 @@ class QuerySet:
         Execute the query and return the first result.
 
         This method modifies the QuerySet to limit the results to one and retrieves the first record.
-        If no records are found, it returns `None`.
+        If no records are found, it raises ``DoesNotExist``.
 
         Returns:
-            BaseSurrealModel | dict | None: The first model instance if available, a dictionary if
-            model validation fails, or `None` if no results are found.
+            BaseSurrealModel | dict: The first model instance if available, or a dictionary if
+            model validation fails.
 
         Raises:
+            DoesNotExist: If no records match the query.
             SurrealDbError: If there is an issue executing the query.
 
         Example:
@@ -1489,6 +1497,7 @@ class QuerySet:
             total = await Order.objects().filter(status="paid").sum("amount")
             ```
         """
+        validate_identifier(field, "aggregation field")
         where_clause = self._compile_where_clause()
         query = f"SELECT math::sum({field}) AS total FROM {self._model_table}{where_clause} GROUP ALL;"
 
@@ -1517,6 +1526,7 @@ class QuerySet:
             avg_age = await User.objects().filter(active=True).avg("age")
             ```
         """
+        validate_identifier(field, "aggregation field")
         where_clause = self._compile_where_clause()
         query = f"SELECT math::mean({field}) AS average FROM {self._model_table}{where_clause} GROUP ALL;"
 
@@ -1545,6 +1555,7 @@ class QuerySet:
             min_price = await Product.objects().min("price")
             ```
         """
+        validate_identifier(field, "aggregation field")
         where_clause = self._compile_where_clause()
         query = f"SELECT math::min({field}) AS minimum FROM {self._model_table}{where_clause} GROUP ALL;"
 
@@ -1572,6 +1583,7 @@ class QuerySet:
             max_price = await Product.objects().max("price")
             ```
         """
+        validate_identifier(field, "aggregation field")
         where_clause = self._compile_where_clause()
         query = f"SELECT math::max({field}) AS maximum FROM {self._model_table}{where_clause} GROUP ALL;"
 
@@ -1630,7 +1642,7 @@ class QuerySet:
             results = await self._run_query_on_client(client, "SELECT * FROM users;")
             ```
         """
-        from .debug import _log_query, _start_timer, _elapsed_ms
+        from .debug import _elapsed_ms, _log_query, _start_timer
 
         final_query = remove_quotes_for_variables(query)
         start = _start_timer()
@@ -1661,7 +1673,7 @@ class QuerySet:
         await client.delete(self._model_table)
         return True
 
-    async def query(self, query: str, variables: dict[str, Any] = {}) -> Any:
+    async def query(self, query: str, variables: dict[str, Any] | None = None) -> Any:
         """
         Execute a custom SQL query on the SurrealDB database.
 
@@ -1671,8 +1683,8 @@ class QuerySet:
 
         Args:
             query (str): The custom SQL query string to execute.
-            variables (dict[str, Any], optional): A dictionary of variables to substitute into the query.
-                Defaults to an empty dictionary.
+            variables (dict[str, Any] | None, optional): A dictionary of variables to substitute into the query.
+                Defaults to None (empty dict).
 
         Returns:
             Any: The result of the query, typically a model instance or a list of model instances.
@@ -1686,6 +1698,7 @@ class QuerySet:
             results = await queryset.query(custom_query, variables={'status': 'active'})
             ```
         """
+        variables = variables or {}
         if f"FROM {self._model_table}" not in query:
             raise SurrealDbError(f"The query must include 'FROM {self._model_table}' to reference the correct table.")
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
@@ -1787,9 +1800,14 @@ class QuerySet:
 
         # Build SET clause
         set_parts = []
+        update_vars: dict[str, Any] = {}
         for field, value in data.items():
-            set_parts.append(f"{field} = {repr(value)}")
+            validate_identifier(field, "field name")
+            var_name = f"_bu{len(update_vars)}"
+            update_vars[var_name] = value
+            set_parts.append(f"{field} = ${var_name}")
         set_clause = ", ".join(set_parts)
+        self._variables.update(update_vars)
 
         query = f"UPDATE {self._model_table} SET {set_clause}{where_clause};"
 

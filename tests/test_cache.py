@@ -1,13 +1,12 @@
 """Tests for QueryCache — v0.11.0."""
 
 import time
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest
 
 from src.surreal_orm.cache import QueryCache
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
-
 
 # ── Test model ───────────────────────────────────────────────────────────────
 
@@ -209,9 +208,8 @@ class TestQueryCacheExport:
 @pytest.fixture(scope="module", autouse=True)
 async def _setup_connection() -> AsyncGenerator[None, None]:
     """Set up ORM connection for integration tests."""
-    from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
-
     from src.surreal_orm import SurrealDBConnectionManager
+    from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
     SurrealDBConnectionManager.set_connection(
         SURREALDB_URL,

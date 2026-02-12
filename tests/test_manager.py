@@ -1,8 +1,11 @@
+from collections.abc import AsyncGenerator
+from typing import Any
+
 import pytest
-from typing import AsyncGenerator, Any
+
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.connection_manager import SurrealDbConnectionError
-from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_manager"
 

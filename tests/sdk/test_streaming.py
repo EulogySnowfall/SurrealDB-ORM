@@ -1,13 +1,15 @@
 """Tests for streaming modules (Change Feeds and Live Queries)."""
 
-from typing import Any, AsyncGenerator
-import pytest
+from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import MagicMock
 
-from src.surreal_sdk.streaming.change_feed import ChangeFeedStream, MultiTableChangeFeed
-from src.surreal_sdk.streaming.live_query import LiveQuery, LiveQueryManager, LiveNotification, LiveAction
+import pytest
+
 from src.surreal_sdk.connection.http import HTTPConnection
 from src.surreal_sdk.connection.websocket import WebSocketConnection
+from src.surreal_sdk.streaming.change_feed import ChangeFeedStream, MultiTableChangeFeed
+from src.surreal_sdk.streaming.live_query import LiveAction, LiveNotification, LiveQuery, LiveQueryManager
 
 
 class TestChangeFeedStream:

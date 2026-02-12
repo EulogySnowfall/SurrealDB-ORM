@@ -5,9 +5,9 @@ Unit tests for types.py - Enums and type definitions.
 import pytest
 
 from src.surreal_orm.types import (
+    PYTHON_TO_SURREAL_TYPE,
     EncryptionAlgorithm,
     FieldType,
-    PYTHON_TO_SURREAL_TYPE,
     SchemaMode,
     TableType,
 )

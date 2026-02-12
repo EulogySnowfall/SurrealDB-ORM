@@ -230,7 +230,7 @@ class QueryCache:
         if cls._signals_connected:
             return
 
-        from .signals import post_save, post_delete, post_update
+        from .signals import post_delete, post_save, post_update
 
         @post_save.connect()
         async def _invalidate_on_save(sender: type, **kwargs: Any) -> None:

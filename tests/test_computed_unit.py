@@ -5,9 +5,9 @@ Tests the Computed field type, introspection, server_fields auto-inclusion,
 and migration VALUE clause generation — all without a running database.
 """
 
-import pytest
 from typing import Annotated, get_args, get_origin
 
+import pytest
 from pydantic import Field
 
 from src.surreal_orm.fields.computed import (
@@ -18,13 +18,13 @@ from src.surreal_orm.fields.computed import (
     get_computed_expression,
     is_computed_field,
 )
+from src.surreal_orm.migrations.introspector import ModelIntrospector
+from src.surreal_orm.migrations.operations import AddField
 from src.surreal_orm.model_base import (
     BaseSurrealModel,
     SurrealConfigDict,
     clear_model_registry,
 )
-from src.surreal_orm.migrations.introspector import ModelIntrospector
-from src.surreal_orm.migrations.operations import AddField
 
 
 @pytest.fixture(autouse=True)

@@ -1,14 +1,13 @@
 """Tests for Subquery class — v0.11.0."""
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest
 
-from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
-from src.surreal_orm.subquery import Subquery
-from src.surreal_orm.q import Q
 from src.surreal_orm.aggregations import Count
-
+from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
+from src.surreal_orm.q import Q
+from src.surreal_orm.subquery import Subquery
 
 # ── Test models ──────────────────────────────────────────────────────────────
 
@@ -266,9 +265,8 @@ class TestSubqueryExport:
 @pytest.fixture(scope="module", autouse=True)
 async def _setup_connection() -> AsyncGenerator[None, None]:
     """Set up ORM connection for integration tests."""
-    from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
-
     from src.surreal_orm import SurrealDBConnectionManager
+    from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
     SurrealDBConnectionManager.set_connection(
         SURREALDB_URL,

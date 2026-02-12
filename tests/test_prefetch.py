@@ -1,12 +1,11 @@
 """Tests for Prefetch class — v0.11.0."""
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest
 
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from src.surreal_orm.prefetch import Prefetch
-
 
 # ── Test models ──────────────────────────────────────────────────────────────
 
@@ -120,9 +119,8 @@ class TestPrefetchExport:
 @pytest.fixture(scope="module", autouse=True)
 async def _setup_connection() -> AsyncGenerator[None, None]:
     """Set up ORM connection for integration tests."""
-    from tests.conftest import SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE
-
     from src.surreal_orm import SurrealDBConnectionManager
+    from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
     SurrealDBConnectionManager.set_connection(
         SURREALDB_URL,
@@ -172,14 +170,14 @@ class TestPrefetchIntegration:
 
         for user in users:
             assert hasattr(user, "wrote")
-            wrote = getattr(user, "wrote")
+            wrote = user.wrote
             assert isinstance(wrote, list)
 
         # Alice has 2 posts, Bob has 1
         alice = next(u for u in users if u.name == "Alice")
         bob = next(u for u in users if u.name == "Bob")
-        assert len(getattr(alice, "wrote")) == 2
-        assert len(getattr(bob, "wrote")) == 1
+        assert len(alice.wrote) == 2
+        assert len(bob.wrote) == 1
 
     async def test_prefetch_with_prefetch_object(self) -> None:
         """Prefetch with Prefetch object and custom to_attr."""

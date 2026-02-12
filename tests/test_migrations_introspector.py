@@ -4,6 +4,8 @@ Unit tests for model introspection.
 
 import pytest
 
+from src.surreal_orm.fields import Encrypted
+from src.surreal_orm.migrations.introspector import ModelIntrospector, introspect_models
 from src.surreal_orm.model_base import (
     BaseSurrealModel,
     SurrealConfigDict,
@@ -11,8 +13,6 @@ from src.surreal_orm.model_base import (
     get_registered_models,
 )
 from src.surreal_orm.types import SchemaMode, TableType
-from src.surreal_orm.fields import Encrypted
-from src.surreal_orm.migrations.introspector import ModelIntrospector, introspect_models
 
 
 @pytest.fixture(autouse=True)

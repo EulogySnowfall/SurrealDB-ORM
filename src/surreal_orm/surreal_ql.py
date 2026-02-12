@@ -1,9 +1,10 @@
+import logging
 from typing import Any, Self
-from .connection_manager import SurrealDBConnectionManager
-from .utils import remove_quotes_for_variables
+
 from surreal_sdk import HTTPConnection
 
-import logging
+from .connection_manager import SurrealDBConnectionManager
+from .utils import remove_quotes_for_variables
 
 logger = logging.getLogger(__name__)
 
