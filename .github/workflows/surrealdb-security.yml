@@ -89,13 +89,14 @@ jobs:
           IS_SECURITY_PATCH="false"
 
           # Check for security-related keywords in release notes
-          if echo "$RELEASE_NOTES" | grep -iE "(security|vulnerability|CVE|fix|patch|critical|exploit|injection|xss|csrf|auth)" > /dev/null; then
+          # Note: "fix" and "patch" alone are too broad (every release has fixes)
+          if echo "$RELEASE_NOTES" | grep -iE "(security|vulnerability|CVE-[0-9]|critical.*(fix|patch)|exploit|injection|xss|csrf)" > /dev/null; then
             IS_SECURITY_PATCH="true"
           fi
 
           # Also check release title
           RELEASE_TITLE=$(gh api repos/surrealdb/surrealdb/releases/latest -q '.name')
-          if echo "$RELEASE_TITLE" | grep -iE "(security|patch|fix|hotfix)" > /dev/null; then
+          if echo "$RELEASE_TITLE" | grep -iE "(security|hotfix|CVE)" > /dev/null; then
             IS_SECURITY_PATCH="true"
           fi
 
@@ -283,6 +284,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          BRANCH_NAME="${{ steps.branch.outputs.branch-name }}"
+
+          # Skip if a PR already exists for this branch
+          EXISTING_PR=$(gh pr list --head "$BRANCH_NAME" --state open --json number -q '.[0].number')
+          if [[ -n "$EXISTING_PR" ]]; then
+            echo "PR #$EXISTING_PR already exists for $BRANCH_NAME — skipping creation"
+            echo "pr-number=$EXISTING_PR" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           IS_SECURITY="${{ needs.check-surrealdb-release.outputs.is-security-patch }}"
 
           if [[ "$IS_SECURITY" == "true" ]]; then
@@ -293,7 +304,7 @@ jobs:
             LABELS="dependencies,surrealdb"
           fi
 
-          PR_BODY=$(cat << 'EOF'
+          PR_BODY=$(cat <<'EOF'
           ## SurrealDB Update
 
           This PR updates the SurrealDB version used in development and CI.
@@ -319,11 +330,16 @@ jobs:
           EOF
           )
 
+          # Create labels if they don't exist (idempotent)
+          for label in $(echo "$LABELS" | tr ',' ' '); do
+            gh label create "$label" --force 2>/dev/null || true
+          done
+
           gh pr create \
             --title "$TITLE" \
             --body "$PR_BODY" \
             --label "$LABELS" \
-            --head "${{ steps.branch.outputs.branch-name }}" \
+            --head "$BRANCH_NAME" \
             --base main
 
   # =============================================================================
@@ -470,8 +486,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          ISSUE_TITLE="⚠️ SurrealDB v${{ needs.check-surrealdb-release.outputs.latest-version }} - Integration tests failed"
+
+          # Skip if an open issue with the same title already exists
+          EXISTING=$(gh issue list --state open --search "$ISSUE_TITLE" --json number -q '.[0].number')
+          if [[ -n "$EXISTING" ]]; then
+            echo "Issue #$EXISTING already exists — skipping creation"
+            exit 0
+          fi
+
           gh issue create \
-            --title "⚠️ SurrealDB v${{ needs.check-surrealdb-release.outputs.latest-version }} - Integration tests failed" \
+            --title "$ISSUE_TITLE" \
             --label "bug,surrealdb,needs-investigation" \
             --body "## SurrealDB Compatibility Issue
 
