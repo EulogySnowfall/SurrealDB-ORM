@@ -330,17 +330,20 @@ jobs:
           EOF
           )
 
-          # Create labels if they don't exist (idempotent)
+          # Create the PR first, then add labels as best-effort
+          PR_URL=$(gh pr create \
+            --title "$TITLE" \
+            --body "$PR_BODY" \
+            --head "$BRANCH_NAME" \
+            --base main)
+
+          # Add labels (best-effort — GITHUB_TOKEN in scheduled runs may lack label scope)
+          PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
           for label in $(echo "$LABELS" | tr ',' ' '); do
             gh label create "$label" --force 2>/dev/null || true
           done
-
-          gh pr create \
-            --title "$TITLE" \
-            --body "$PR_BODY" \
-            --label "$LABELS" \
-            --head "$BRANCH_NAME" \
-            --base main
+          gh pr edit "$PR_NUM" --add-label "$LABELS" 2>/dev/null || true
+          echo "pr-number=$PR_NUM" >> $GITHUB_OUTPUT
 
   # =============================================================================
   # Auto-merge security patches
