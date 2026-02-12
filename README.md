@@ -5,11 +5,69 @@
 [![codecov](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM/graph/badge.svg?token=XUONTG2M6Z)](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM)
 ![GitHub License](https://img.shields.io/github/license/EulogySnowfall/SurrealDB-ORM)
 
-> **Alpha Software** - APIs may change. Use in non-production environments.
+> **Beta Software** - Core APIs are stabilizing. Feedback welcome!
 
 **SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, and JWT authentication.
 
 **Includes a custom SDK (`surreal_sdk`)** - Zero dependency on the official `surrealdb` package!
+
+---
+
+## What's New in 0.14.0
+
+### Testing & Developer Experience (Alpha → Beta)
+
+This release transitions the ORM from **Alpha to Beta** and adds first-class testing and debugging utilities.
+
+- **Test Fixtures** — Declarative test data with automatic cleanup
+
+  ```python
+  from surreal_orm.testing import SurrealFixture, fixture
+
+  @fixture
+  class UserFixtures(SurrealFixture):
+      alice = User(name="Alice", role="admin")
+      bob = User(name="Bob", role="player")
+
+  async with UserFixtures.load() as fixtures:
+      assert fixtures.alice.get_id() is not None
+  # Automatic cleanup on exit
+  ```
+
+- **Model Factories** — Factory Boy-style data generation (zero dependencies)
+
+  ```python
+  from surreal_orm.testing import ModelFactory, Faker
+
+  class UserFactory(ModelFactory):
+      class Meta:
+          model = User
+
+      name = Faker("name")
+      email = Faker("email")
+      age = Faker("random_int", min=18, max=80)
+      role = "player"
+
+  user = UserFactory.build()            # In-memory (unit tests)
+  user = await UserFactory.create()     # Saved to DB (integration tests)
+  users = await UserFactory.create_batch(50)
+  ```
+
+- **QueryLogger** — Profile and debug ORM queries
+
+  ```python
+  from surreal_orm.debug import QueryLogger
+
+  async with QueryLogger() as logger:
+      users = await User.objects().filter(role="admin").exec()
+      await user.save()
+
+  for q in logger.queries:
+      print(f"{q.sql} — {q.duration_ms:.1f}ms")
+  print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
+  ```
+
+- **15 Jupyter Notebooks** — Comprehensive examples covering all ORM features, from setup to testing
 
 ---
 

@@ -29,71 +29,7 @@
 | 0.11.0  | Released | Advanced Queries & Caching                                |
 | 0.12.0  | Released | Vector Search & Full-Text Search                          |
 | 0.13.0  | Released | Events, Geospatial & Materialized Views                   |
-| 0.14.0  | Planned  | Testing & Developer Experience                            |
-
----
-
-## v0.5.5.1 - Critical Bug Fixes (Released)
-
-**Goal:** Fix production-reported bugs affecting record ID handling and protocol issues.
-
-**Status:** Implemented and released.
-
-### Record ID Escaping (Issue #8 - Critical)
-
-SurrealDB interprets unquoted IDs starting with digits as number tokens, causing parse errors:
-
-```python
-# Before: Generated invalid SurrealQL
-await Player.objects().get("7abc123")
-# SELECT * FROM players:7abc123  ← Parse error!
-
-# After: Properly escaped with backticks
-await Player.objects().get("7abc123")
-# SELECT * FROM players:`7abc123`  ← Works!
-```
-
-**Implementation:**
-
-- New `escape_record_id()` utility escapes IDs with backticks when needed
-- New `format_thing()` generates correct thing references
-- All CRUD methods (`get()`, `save()`, `update()`, `merge()`, `delete()`) use proper escaping
-
-### CBOR Protocol for HTTP (Issue #3 - High)
-
-HTTP connections now support and default to CBOR protocol, fixing `data:` prefix strings:
-
-```python
-# CBOR properly handles strings that look like record links
-SurrealDBConnectionManager.set_connection(
-    url="http://localhost:8000",
-    user="root",
-    password="root",
-    namespace="ns",
-    database="db",
-    protocol="cbor",  # Default, can also use "json"
-)
-```
-
-### Full Record ID Format (Issue #1 - High)
-
-`QuerySet.get()` now correctly handles both ID formats:
-
-```python
-# Both formats now work
-player = await Player.objects().get("abc123")
-player = await Player.objects().get("players:abc123")
-```
-
-### get_related() Direction Fix (Issue #7 - Medium)
-
-Fixed `get_related()` with `direction="in"` returning empty results:
-
-```python
-# Now correctly returns related records for both directions
-await user.get_related("follows", direction="out")  # Users this user follows
-await user.get_related("follows", direction="in")   # Users following this user
-```
+| 0.14.0  | Released | Testing & Developer Experience (Alpha → Beta)             |
 
 ---
 
@@ -459,6 +395,44 @@ class MyModel(BaseSurrealModel):
 - **merge() returns self** - Now returns the updated model instance
 - **save() updates self** - Updates original instance instead of returning new object
 - **NULL values fix** - `_update_from_db()` preserves `__pydantic_fields_set__`
+
+---
+
+## v0.5.5.1 - Critical Bug Fixes (Released)
+
+**Goal:** Fix production-reported bugs affecting record ID handling and protocol issues.
+
+**Status:** Implemented and released.
+
+### Record ID Escaping (Issue #8 - Critical)
+
+IDs starting with digits (e.g., `7qvdzsc14e5clo8sg064`) caused parse errors. All ID handling now uses backtick escaping when needed:
+
+```python
+# Now works correctly
+table = await GameTable.objects().get("7qvdzsc14e5clo8sg064")
+# Generates: SELECT * FROM game_tables:`7qvdzsc14e5clo8sg064`
+```
+
+New utility functions: `needs_id_escaping()`, `escape_record_id()`, `format_thing()`, `parse_record_id()`
+
+### CBOR HTTP Protocol (Issue #3)
+
+Strings starting with `data:` (like data URLs) were interpreted as record links under JSON protocol. CBOR is now the default protocol for HTTP connections:
+
+```python
+SurrealDBConnectionManager.set_connection(
+    url="http://localhost:8000",
+    protocol="cbor",  # Now the default
+)
+```
+
+### Other Fixes
+
+- **Issue #1:** Full record ID format in `.get()` (e.g., `get("players:abc123")`)
+- **Issue #2:** `remove_relation()` with string IDs uses parameterized queries
+- **Issue #7:** `get_related()` with `direction="in"` uses `SELECT VALUE field.*`
+- **Bug fix:** `update()` uses `get_table_name()` instead of `__class__.__name__`
 
 ---
 
@@ -1213,9 +1187,11 @@ class Likes(BaseSurrealModel):
 
 ---
 
-## v0.14.0 - Testing & Developer Experience (Planned)
+## v0.14.0 - Testing & Developer Experience (Released)
 
-**Goal:** First-class testing utilities and developer tooling.
+**Goal:** First-class testing utilities, developer tooling, and Alpha → Beta transition.
+
+**Status:** Implemented and released.
 
 ### Test Fixtures
 
@@ -1263,7 +1239,7 @@ users = await UserFactory.create_batch(50)
 admin = await UserFactory.create(role="admin")
 ```
 
-### Debug Toolbar
+### QueryLogger
 
 Query inspection and performance profiling:
 
@@ -1354,9 +1330,9 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 | Geospatial Fields            | 0.13.0  | Medium   | Done   | -                |
 | Materialized Views           | 0.13.0  | Medium   | Done   | -                |
 | TYPE RELATION enforcement    | 0.13.0  | Low      | Done   | Relations        |
-| Test Fixtures                | 0.14.0  | High     | -      | -                |
-| Model Factories              | 0.14.0  | High     | -      | -                |
-| Debug Toolbar / QueryLogger  | 0.14.0  | Medium   | -      | -                |
+| Test Fixtures                | 0.14.0  | High     | Done   | -                |
+| Model Factories              | 0.14.0  | High     | Done   | -                |
+| Debug Toolbar / QueryLogger  | 0.14.0  | Medium   | Done   | -                |
 
 ---
 

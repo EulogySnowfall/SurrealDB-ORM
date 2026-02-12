@@ -15,7 +15,6 @@ from surreal_orm.fields.geometry import (
 )
 from surreal_orm.geo import GeoDistance
 
-
 # ---------------------------------------------------------------------------
 # GeoField types
 # ---------------------------------------------------------------------------

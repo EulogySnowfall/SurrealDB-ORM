@@ -115,7 +115,7 @@ jobs:
 
       - name: Start SurrealDB
         run: |
-          docker compose -f devops/docker-compose.yml up -d surrealdb-ci
+          docker compose -f devops/docker-compose.yml up -d surrealdb
           ./devops/wait-for-healthy.sh localhost 8000 60
 
       - name: Run integration tests

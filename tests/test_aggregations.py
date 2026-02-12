@@ -2,15 +2,16 @@
 
 import pytest
 from pydantic import Field
-from src.surreal_orm.model_base import BaseSurrealModel
+
 from src.surreal_orm.aggregations import (
     Aggregation,
-    Count,
-    Sum,
     Avg,
-    Min,
+    Count,
     Max,
+    Min,
+    Sum,
 )
+from src.surreal_orm.model_base import BaseSurrealModel
 
 
 class Order(BaseSurrealModel):
@@ -192,7 +193,7 @@ def test_compile_where_clause_in_operator() -> None:
 
 def test_aggregations_exported_from_init() -> None:
     """Test that aggregation classes are exported from surreal_orm."""
-    from src.surreal_orm import Count, Sum, Avg, Min, Max, Aggregation
+    from src.surreal_orm import Aggregation, Avg, Count, Max, Min, Sum
 
     assert Count is not None
     assert Sum is not None
@@ -255,7 +256,7 @@ def test_model_delete_accepts_tx_parameter() -> None:
 def test_model_has_transaction_classmethod() -> None:
     """Test that Model has transaction() class method."""
     assert hasattr(Order, "transaction")
-    assert callable(getattr(Order, "transaction"))
+    assert callable(Order.transaction)
 
 
 def test_connection_manager_has_transaction_method() -> None:
@@ -263,4 +264,4 @@ def test_connection_manager_has_transaction_method() -> None:
     from src.surreal_orm import SurrealDBConnectionManager
 
     assert hasattr(SurrealDBConnectionManager, "transaction")
-    assert callable(getattr(SurrealDBConnectionManager, "transaction"))
+    assert callable(SurrealDBConnectionManager.transaction)

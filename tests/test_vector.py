@@ -1,12 +1,11 @@
 """Tests for VectorField type and similar_to() — v0.12.0."""
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest
 
 from src.surreal_orm.fields.vector import VectorField, get_vector_info, is_vector_field
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
-
 
 # ── Test models ──────────────────────────────────────────────────────────────
 
@@ -140,12 +139,13 @@ class TestVectorFieldExport:
 async def _setup_connection() -> AsyncGenerator[None, None]:
     """Set up ORM connection for integration tests."""
     from src.surreal_orm import SurrealDBConnectionManager
+    from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
     SurrealDBConnectionManager.set_connection(
-        "http://localhost:8001",
-        "root",
-        "root",
-        "test",
+        SURREALDB_URL,
+        SURREALDB_USER,
+        SURREALDB_PASS,
+        SURREALDB_NAMESPACE,
         "test_vector",
     )
     yield

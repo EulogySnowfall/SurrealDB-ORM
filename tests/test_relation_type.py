@@ -4,11 +4,10 @@ Tests for TYPE RELATION — CreateTable relation support, parser, diff, enum.
 
 from __future__ import annotations
 
-from surreal_orm.migrations.operations import CreateTable
 from surreal_orm.migrations.define_parser import parse_define_table
+from surreal_orm.migrations.operations import CreateTable
 from surreal_orm.migrations.state import SchemaState, TableState
 from surreal_orm.types import TableType
-
 
 # ---------------------------------------------------------------------------
 # TableType enum

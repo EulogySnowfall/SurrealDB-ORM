@@ -7,7 +7,7 @@ before being applied.
 """
 
 from dataclasses import MISSING
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -126,7 +126,7 @@ class MigrationGenerator:
         lines = [
             '"""',
             f"Migration: {name}",
-            f"Generated: {datetime.now(timezone.utc).isoformat()}",
+            f"Generated: {datetime.now(UTC).isoformat()}",
             "",
             "Auto-generated migration file. Review before applying.",
             '"""',
@@ -226,9 +226,7 @@ class MigrationGenerator:
         if isinstance(value, str):
             # Use repr for proper escaping
             return repr(value)
-        elif isinstance(value, bool):
-            return str(value)
-        elif isinstance(value, (int, float)):
+        elif isinstance(value, (bool, int, float)):
             return str(value)
         elif isinstance(value, list):
             items = [self._format_value(v) for v in value]

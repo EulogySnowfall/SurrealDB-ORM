@@ -1,6 +1,7 @@
 """Tests for ORM v0.3.1 features: bulk operations."""
 
 from pydantic import Field
+
 from src.surreal_orm.model_base import BaseSurrealModel
 from src.surreal_orm.query_set import QuerySet
 
@@ -22,7 +23,7 @@ def test_queryset_has_bulk_create_method() -> None:
     """Test that QuerySet has bulk_create method."""
     qs = Item.objects()
     assert hasattr(qs, "bulk_create")
-    assert callable(getattr(qs, "bulk_create"))
+    assert callable(qs.bulk_create)
 
 
 def test_bulk_create_signature() -> None:
@@ -47,7 +48,7 @@ def test_queryset_has_bulk_update_method() -> None:
     """Test that QuerySet has bulk_update method."""
     qs = Item.objects()
     assert hasattr(qs, "bulk_update")
-    assert callable(getattr(qs, "bulk_update"))
+    assert callable(qs.bulk_update)
 
 
 def test_bulk_update_signature() -> None:
@@ -70,7 +71,7 @@ def test_queryset_has_bulk_delete_method() -> None:
     """Test that QuerySet has bulk_delete method."""
     qs = Item.objects()
     assert hasattr(qs, "bulk_delete")
-    assert callable(getattr(qs, "bulk_delete"))
+    assert callable(qs.bulk_delete)
 
 
 def test_bulk_delete_signature() -> None:

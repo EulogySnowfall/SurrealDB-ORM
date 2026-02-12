@@ -1,6 +1,6 @@
 """Tests for CBOR protocol support in the SDK."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -8,19 +8,19 @@ import pytest
 
 from src.surreal_sdk.protocol import cbor as cbor_module
 from src.surreal_sdk.protocol.cbor import (
+    TAG_DATETIME,
+    TAG_NONE,
+    TAG_RECORDID,
+    TAG_STRING_DECIMAL,
+    TAG_STRING_DURATION,
+    TAG_STRING_UUID,
+    TAG_TABLE,
+    Duration,
     RecordId,
     Table,
-    Duration,
-    encode,
     decode,
+    encode,
     is_available,
-    TAG_NONE,
-    TAG_TABLE,
-    TAG_RECORDID,
-    TAG_STRING_UUID,
-    TAG_STRING_DECIMAL,
-    TAG_DATETIME,
-    TAG_STRING_DURATION,
 )
 from src.surreal_sdk.protocol.rpc import RPCRequest, RPCResponse
 
@@ -121,7 +121,7 @@ class TestCBOREncodeDecode:
 
     def test_encode_decode_datetime(self) -> None:
         """Encode and decode datetime with custom tag."""
-        data = datetime(2026, 2, 3, 12, 30, 45, tzinfo=timezone.utc)
+        data = datetime(2026, 2, 3, 12, 30, 45, tzinfo=UTC)
         encoded = encode(data)
         decoded = decode(encoded)
         assert decoded == data
@@ -213,7 +213,7 @@ class TestRPCRequestCBOR:
 
     def test_rpc_request_to_cbor_with_datetime(self) -> None:
         """RPCRequest should serialize datetime params to CBOR."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         request = RPCRequest(
             id=1,
             method="create",

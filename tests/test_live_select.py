@@ -1,8 +1,8 @@
 """Tests for LiveSelectStream and related classes."""
 
 from surreal_sdk.streaming.live_select import (
-    LiveChange,
     LiveAction,
+    LiveChange,
     LiveSubscriptionParams,
 )
 

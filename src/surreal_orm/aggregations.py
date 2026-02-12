@@ -16,6 +16,8 @@ Example:
 
 from abc import ABC, abstractmethod
 
+from .utils import validate_identifier
+
 
 class Aggregation(ABC):
     """Base class for aggregation functions."""
@@ -72,6 +74,7 @@ class Sum(Aggregation):
     """
 
     def __init__(self, field: str):
+        validate_identifier(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
@@ -96,6 +99,7 @@ class Avg(Aggregation):
     """
 
     def __init__(self, field: str):
+        validate_identifier(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
@@ -120,6 +124,7 @@ class Min(Aggregation):
     """
 
     def __init__(self, field: str):
+        validate_identifier(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
@@ -144,6 +149,7 @@ class Max(Aggregation):
     """
 
     def __init__(self, field: str):
+        validate_identifier(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
@@ -156,9 +162,9 @@ class Max(Aggregation):
 
 __all__ = [
     "Aggregation",
-    "Count",
-    "Sum",
     "Avg",
-    "Min",
+    "Count",
     "Max",
+    "Min",
+    "Sum",
 ]

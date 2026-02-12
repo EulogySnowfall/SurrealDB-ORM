@@ -1,21 +1,27 @@
 """Tests for the RPC protocol module."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
 import pytest
 
-from src.surreal_sdk.protocol.rpc import RPCRequest, RPCResponse, RPCError, RPCMethod
 from src.surreal_sdk.protocol.cbor import (
     CBOR_AVAILABLE,
+    Duration,
     RecordId,
     Table,
-    Duration,
-    encode as cbor_encode,
+)
+from src.surreal_sdk.protocol.cbor import (
     decode as cbor_decode,
+)
+from src.surreal_sdk.protocol.cbor import (
+    encode as cbor_encode,
+)
+from src.surreal_sdk.protocol.cbor import (
     is_available as cbor_is_available,
 )
+from src.surreal_sdk.protocol.rpc import RPCError, RPCMethod, RPCRequest, RPCResponse
 
 
 class TestRPCRequest:
@@ -237,7 +243,7 @@ class TestCBOREncodeDecode:
 
     def test_encode_decode_datetime(self) -> None:
         """Test encoding and decoding datetime."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         data = {"timestamp": now}
 
         encoded = cbor_encode(data)

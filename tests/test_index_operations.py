@@ -6,7 +6,6 @@ from src.surreal_orm.migrations.define_parser import parse_define_analyzer, pars
 from src.surreal_orm.migrations.operations import CreateIndex, DefineAnalyzer, RemoveAnalyzer
 from src.surreal_orm.migrations.state import AnalyzerState, IndexState, SchemaState, TableState
 
-
 # ==================== CreateIndex Tests ====================
 
 

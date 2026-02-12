@@ -12,9 +12,9 @@ from .base import BaseSurrealConnection
 
 if TYPE_CHECKING:
     from ..transaction import HTTPTransaction
+from ..exceptions import ConnectionError, QueryError
 from ..protocol.rpc import RPCRequest, RPCResponse
 from ..types import AuthResponse
-from ..exceptions import ConnectionError, QueryError
 
 
 class HTTPConnection(BaseSurrealConnection):
@@ -551,6 +551,13 @@ class HTTPConnection(BaseSurrealConnection):
         from ..types import RecordsResponse
 
         result = await self.rpc("merge", [self._to_thing(thing), data])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def patch(self, thing: str, patches: list[dict[str, Any]]) -> Any:
+        """Apply JSON Patch operations with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("patch", [self._to_thing(thing), patches])
         return RecordsResponse.from_rpc_result(result)
 
     async def delete(self, thing: str) -> Any:

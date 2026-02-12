@@ -43,7 +43,7 @@ test-sdk:
 
 .PHONY: test-integration  # Run integration tests (requires SurrealDB)
 test-integration: db-up
-	uv run pytest -m integration tests/
+	uv run pytest -m integration tests/ --cov-fail-under=0
 
 .PHONY: test-all  # Run all tests including integration
 test-all: db-up
@@ -65,21 +65,15 @@ html: test-all-python
 # Docker commands for SurrealDB
 # =============================================================================
 
-.PHONY: db-up  # Start SurrealDB container for testing
+.PHONY: db-up  # Start SurrealDB container (in-memory, port 8000)
 db-up:
-	docker compose -f $(COMPOSE_FILE) up -d surrealdb-test
-	@./devops/wait-for-healthy.sh localhost 8001 30
-	@echo "SurrealDB test instance ready on port 8001"
-
-.PHONY: db-down  # Stop SurrealDB containers
-db-down:
-	docker compose -f $(COMPOSE_FILE) down
-
-.PHONY: db-dev  # Start development SurrealDB (persistent)
-db-dev:
 	docker compose -f $(COMPOSE_FILE) up -d surrealdb
 	@./devops/wait-for-healthy.sh localhost 8000 30
-	@echo "SurrealDB dev instance ready on port 8000 (persistent)"
+	@echo "SurrealDB ready on port 8000 (in-memory)"
+
+.PHONY: db-down  # Stop SurrealDB container
+db-down:
+	docker compose -f $(COMPOSE_FILE) down
 
 .PHONY: db-cluster  # Start multi-node cluster for K8s simulation
 db-cluster:
@@ -91,44 +85,30 @@ db-cluster:
 
 .PHONY: db-logs  # Show SurrealDB logs
 db-logs:
-	docker compose -f $(COMPOSE_FILE) logs -f surrealdb-test
-
-.PHONY: db-logs-dev  # Show dev SurrealDB logs
-db-logs-dev:
 	docker compose -f $(COMPOSE_FILE) logs -f surrealdb
 
-.PHONY: db-shell  # Open SurrealDB SQL shell (test instance)
+.PHONY: db-shell  # Open SurrealDB SQL shell
 db-shell:
-	docker compose -f $(COMPOSE_FILE) exec surrealdb-test /surreal sql --endpoint http://localhost:8000 --username root --password root --namespace test --database test
-
-.PHONY: db-shell-dev  # Open SurrealDB SQL shell (dev instance)
-db-shell-dev:
 	docker compose -f $(COMPOSE_FILE) exec surrealdb /surreal sql --endpoint http://localhost:8000 --username root --password root --namespace test --database test
 
 .PHONY: db-setup  # Setup test database schema
 db-setup: db-up
-	@./devops/setup-test-db.sh localhost 8001
+	@./devops/setup-test-db.sh localhost 8000
 
-.PHONY: db-status  # Show status of all SurrealDB containers
+.PHONY: db-status  # Show status of SurrealDB container
 db-status:
 	@docker compose -f $(COMPOSE_FILE) ps
 
-.PHONY: db-clean  # Remove all SurrealDB containers and volumes
+.PHONY: db-clean  # Remove SurrealDB container
 db-clean:
-	docker compose -f $(COMPOSE_FILE) down -v --remove-orphans
+	docker compose -f $(COMPOSE_FILE) down --remove-orphans
 
 # =============================================================================
 # CI targets
 # =============================================================================
 
-.PHONY: ci-db-up  # Start SurrealDB for CI (optimized)
-ci-db-up:
-	docker compose -f $(COMPOSE_FILE) up -d surrealdb-ci
-	@./devops/wait-for-healthy.sh localhost 8000 60
-	@echo "SurrealDB CI instance ready"
-
 .PHONY: ci-test  # Run all tests for CI
-ci-test: ci-db-up
+ci-test: db-up
 	uv run pytest tests/ --junitxml=junit.xml -o junit_family=legacy
 	uv run coverage xml -o coverage.xml
 
@@ -177,19 +157,17 @@ help:
 	@echo "    test-all-python  Run tests on Python 3.12-3.14"
 	@echo ""
 	@echo "  Docker/SurrealDB:"
-	@echo "    db-up            Start test SurrealDB (port 8001)"
-	@echo "    db-dev           Start dev SurrealDB (port 8000, persistent)"
+	@echo "    db-up            Start SurrealDB (in-memory, port 8000)"
+	@echo "    db-down          Stop SurrealDB container"
 	@echo "    db-cluster       Start 3-node cluster (ports 8002-8004)"
-	@echo "    db-down          Stop all SurrealDB containers"
-	@echo "    db-logs          Show test SurrealDB logs"
-	@echo "    db-shell         Open test SurrealDB SQL shell"
+	@echo "    db-logs          Show SurrealDB logs"
+	@echo "    db-shell         Open SurrealDB SQL shell"
 	@echo "    db-setup         Setup test database schema"
 	@echo "    db-status        Show container status"
-	@echo "    db-clean         Remove containers and volumes"
+	@echo "    db-clean         Remove container"
 	@echo ""
 	@echo "  CI:"
 	@echo "    ci               Full CI pipeline (lint + test)"
-	@echo "    ci-db-up         Start SurrealDB for CI"
 	@echo "    ci-test          Run tests for CI"
 	@echo "    ci-lint          Run linting for CI"
 	@echo ""

@@ -1,13 +1,15 @@
 """Tests for streaming modules (Change Feeds and Live Queries)."""
 
-from typing import Any, AsyncGenerator
-import pytest
+from collections.abc import AsyncGenerator
+from typing import Any
 from unittest.mock import MagicMock
 
-from src.surreal_sdk.streaming.change_feed import ChangeFeedStream, MultiTableChangeFeed
-from src.surreal_sdk.streaming.live_query import LiveQuery, LiveQueryManager, LiveNotification, LiveAction
+import pytest
+
 from src.surreal_sdk.connection.http import HTTPConnection
 from src.surreal_sdk.connection.websocket import WebSocketConnection
+from src.surreal_sdk.streaming.change_feed import ChangeFeedStream, MultiTableChangeFeed
+from src.surreal_sdk.streaming.live_query import LiveAction, LiveNotification, LiveQuery, LiveQueryManager
 
 
 class TestChangeFeedStream:
@@ -134,7 +136,7 @@ class TestStreamingIntegration:
     @pytest.fixture(scope="function")
     async def http_connection(self) -> AsyncGenerator[HTTPConnection, None]:
         """Create a connected HTTP connection."""
-        conn = HTTPConnection("http://localhost:8001", "test", "test")
+        conn = HTTPConnection("http://localhost:8000", "test", "test")
         try:
             await conn.connect()
             await conn.signin("root", "root")
@@ -146,7 +148,7 @@ class TestStreamingIntegration:
     async def ws_connection(self) -> AsyncGenerator[WebSocketConnection, None]:
         """Create a connected WebSocket connection."""
         conn = WebSocketConnection(
-            "ws://localhost:8001",
+            "ws://localhost:8000",
             "test",
             "test",
             auto_reconnect=False,

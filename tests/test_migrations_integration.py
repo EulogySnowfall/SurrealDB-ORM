@@ -5,29 +5,26 @@ These tests require a running SurrealDB instance.
 Run with: pytest -m integration tests/test_migrations_integration.py
 """
 
-import pytest
-import tempfile
 import shutil
+import tempfile
 from pathlib import Path
 
+import pytest
+
 from src import surreal_orm
+from src.surreal_orm.migrations.executor import MIGRATIONS_TABLE, MigrationExecutor
+from src.surreal_orm.migrations.generator import MigrationGenerator
+from src.surreal_orm.migrations.introspector import introspect_models
+from src.surreal_orm.migrations.operations import AddField, CreateTable
+from src.surreal_orm.migrations.state import SchemaState
 from src.surreal_orm.model_base import (
     BaseSurrealModel,
     SurrealConfigDict,
     clear_model_registry,
 )
 from src.surreal_orm.types import SchemaMode
-from src.surreal_orm.migrations.executor import MigrationExecutor, MIGRATIONS_TABLE
-from src.surreal_orm.migrations.generator import MigrationGenerator
-from src.surreal_orm.migrations.introspector import introspect_models
-from src.surreal_orm.migrations.state import SchemaState
-from src.surreal_orm.migrations.operations import CreateTable, AddField
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
-
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
 SURREALDB_DATABASE = "test_migrations"
 
 

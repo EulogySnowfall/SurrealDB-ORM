@@ -4,12 +4,16 @@ Live Query Streaming Implementation.
 Provides real-time change notifications via WebSocket Live Queries.
 """
 
-from typing import Any, Callable, Awaitable
+import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
+
+_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 class LiveAction(StrEnum):
@@ -90,6 +94,8 @@ class LiveQuery:
         """
         self.connection = connection
         self.table = table
+        if not _SAFE_TABLE_RE.match(table):
+            raise ValueError(f"Invalid table name: {table!r}")
         self.where = where
         self.diff = diff
         self._live_id: str | None = None

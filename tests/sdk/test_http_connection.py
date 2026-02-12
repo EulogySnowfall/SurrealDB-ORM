@@ -1,6 +1,7 @@
 """Tests for HTTP connection module."""
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+
 import pytest
 
 from src.surreal_sdk.connection.http import HTTPConnection
@@ -163,7 +164,7 @@ class TestHTTPConnectionIntegration:
     @pytest.fixture(scope="function")
     async def connection(self) -> AsyncGenerator[HTTPConnection, None]:
         """Create a connected HTTP connection."""
-        conn = HTTPConnection("http://localhost:8001", "test", "test")
+        conn = HTTPConnection("http://localhost:8000", "test", "test")
         try:
             await conn.connect()
             await conn.signin("root", "root")

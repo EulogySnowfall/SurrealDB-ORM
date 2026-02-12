@@ -6,7 +6,7 @@ in a specific order, with optional dependencies on other migrations.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -41,7 +41,7 @@ class Migration:
     name: str
     dependencies: list[str] = field(default_factory=list)
     operations: list["Operation"] = field(default_factory=list)
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def forwards_sql(self) -> list[str]:
         """

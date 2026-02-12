@@ -9,24 +9,20 @@ Bug fixes included:
 - Issue #7 (MEDIUM): get_related() with direction=in not working
 """
 
-from datetime import datetime, timezone
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 
 import pytest
 
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.model_base import BaseSurrealModel
 from src.surreal_orm.utils import (
-    needs_id_escaping,
     escape_record_id,
     format_thing,
+    needs_id_escaping,
     parse_record_id,
 )
-
-
-# Test URLs - use same ports as other integration tests
-SURREALDB_URL = "http://localhost:8001"
-
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 # =============================================================================
 # Test Models
@@ -223,9 +219,9 @@ async def setup_connection() -> AsyncGenerator[None, None]:
     """Setup connection for integration tests."""
     SurrealDBConnectionManager.set_connection(
         SURREALDB_URL,
-        "root",
-        "root",
-        "test",
+        SURREALDB_USER,
+        SURREALDB_PASS,
+        SURREALDB_NAMESPACE,
         "test_bugfixes_0551",
     )
     yield
@@ -558,10 +554,10 @@ class TestConnectionManagerProtocol:
     def test_set_connection_default_protocol(self) -> None:
         """set_connection should use CBOR protocol by default."""
         SurrealDBConnectionManager.set_connection(
-            "http://localhost:8000",
-            "root",
-            "root",
-            "test",
+            SURREALDB_URL,
+            SURREALDB_USER,
+            SURREALDB_PASS,
+            SURREALDB_NAMESPACE,
             "test_protocol",
         )
         # The protocol is a private attribute, so we test it indirectly
@@ -572,10 +568,10 @@ class TestConnectionManagerProtocol:
     def test_set_connection_json_protocol(self) -> None:
         """set_connection should accept JSON protocol."""
         SurrealDBConnectionManager.set_connection(
-            "http://localhost:8000",
-            "root",
-            "root",
-            "test",
+            SURREALDB_URL,
+            SURREALDB_USER,
+            SURREALDB_PASS,
+            SURREALDB_NAMESPACE,
             "test_protocol",
             protocol="json",
         )
@@ -610,9 +606,9 @@ class TestCBORProtocolCRUD:
         # Setup with explicit CBOR protocol
         SurrealDBConnectionManager.set_connection(
             SURREALDB_URL,
-            "root",
-            "root",
-            "test",
+            SURREALDB_USER,
+            SURREALDB_PASS,
+            SURREALDB_NAMESPACE,
             "test_cbor_protocol",
             protocol="cbor",
         )
@@ -770,9 +766,9 @@ class TestJSONProtocolCRUD:
         # Setup with explicit JSON protocol
         SurrealDBConnectionManager.set_connection(
             SURREALDB_URL,
-            "root",
-            "root",
-            "test",
+            SURREALDB_USER,
+            SURREALDB_PASS,
+            SURREALDB_NAMESPACE,
             "test_json_protocol",
             protocol="json",
         )
@@ -906,7 +902,7 @@ class TestSDKLevelProtocols:
         from src.surreal_sdk.connection.http import HTTPConnection
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_cbor", protocol="cbor") as conn:
-            await conn.signin("root", "root")
+            await conn.signin(SURREALDB_USER, SURREALDB_PASS)
 
             # Clean up
             await conn.query("DELETE sdk_cbor_test;")
@@ -938,7 +934,7 @@ class TestSDKLevelProtocols:
         from src.surreal_sdk.connection.http import HTTPConnection
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_json", protocol="json") as conn:
-            await conn.signin("root", "root")
+            await conn.signin(SURREALDB_USER, SURREALDB_PASS)
 
             # Clean up
             await conn.query("DELETE sdk_json_test;")
@@ -970,7 +966,7 @@ class TestSDKLevelProtocols:
         from src.surreal_sdk.connection.http import HTTPConnection
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_data", protocol="cbor") as conn:
-            await conn.signin("root", "root")
+            await conn.signin(SURREALDB_USER, SURREALDB_PASS)
 
             # Clean up
             await conn.query("DELETE sdk_data_test;")
@@ -989,7 +985,7 @@ class TestSDKLevelProtocols:
         from src.surreal_sdk.connection.http import HTTPConnection
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_relate", protocol="cbor") as conn:
-            await conn.signin("root", "root")
+            await conn.signin(SURREALDB_USER, SURREALDB_PASS)
 
             # Clean up
             await conn.query("DELETE sdk_author;")
@@ -1060,7 +1056,7 @@ class TestIssue9DatetimeValidation:
     def test_from_db_with_python_datetime(self) -> None:
         """from_db should handle Python datetime objects (from CBOR)."""
         # CBOR decoder returns Python datetime objects directly
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         record = {
             "id": "test2",
             "name": "CBOR Record",
@@ -1230,9 +1226,9 @@ class TestIssue9DatetimeIntegration:
         # Setup connection
         SurrealDBConnectionManager.set_connection(
             SURREALDB_URL,
-            "root",
-            "root",
-            "test",
+            SURREALDB_USER,
+            SURREALDB_PASS,
+            SURREALDB_NAMESPACE,
             "test_datetime",
             protocol="cbor",
         )
@@ -1612,8 +1608,8 @@ class TestRelationQuerySetNumericIdEscaping:
 
     def test_build_traversal_query_escapes_numeric_source_id(self) -> None:
         """_build_traversal_query should escape source IDs starting with digits."""
-        from src.surreal_orm.relations import RelationQuerySet
         from src.surreal_orm.fields.relation import RelationInfo
+        from src.surreal_orm.relations import RelationQuerySet
 
         # Create a mock instance with a numeric ID
         class MockInstance:
@@ -1643,8 +1639,8 @@ class TestRelationQuerySetNumericIdEscaping:
 
     def test_build_traversal_query_no_escape_for_normal_source_id(self) -> None:
         """_build_traversal_query should not escape normal source IDs."""
-        from src.surreal_orm.relations import RelationQuerySet
         from src.surreal_orm.fields.relation import RelationInfo
+        from src.surreal_orm.relations import RelationQuerySet
 
         class MockInstance:
             def get_table_name(self):

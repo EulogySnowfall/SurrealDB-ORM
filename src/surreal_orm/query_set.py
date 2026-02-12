@@ -1,34 +1,38 @@
 from __future__ import annotations
 
-from .constants import LOOKUP_OPERATORS
-from .enum import OrderBy
-from .q import Q
-from .utils import remove_quotes_for_variables, format_thing, parse_record_id
-from . import BaseSurrealModel, SurrealDBConnectionManager
-from .aggregations import Aggregation
-from .subquery import Subquery
-from .prefetch import Prefetch
-from .search import SearchScore, SearchHighlight
-from .geo import GeoDistance
-from typing import TYPE_CHECKING, Self, Any, Sequence, cast
+from collections.abc import Sequence
 from datetime import datetime
+from typing import TYPE_CHECKING, Any, Self, cast
+
 from pydantic_core import ValidationError
 
+from . import BaseSurrealModel, SurrealDBConnectionManager
+from .aggregations import Aggregation
+from .constants import LOOKUP_OPERATORS, like_to_regex
+from .enum import OrderBy
+from .geo import GeoDistance
+from .prefetch import Prefetch
+from .q import Q
+from .search import SearchHighlight, SearchScore
+from .subquery import Subquery
+from .utils import (
+    SAFE_IDENTIFIER_RE as _SAFE_IDENTIFIER_RE,
+)
+from .utils import (
+    format_thing,
+    parse_record_id,
+    remove_quotes_for_variables,
+    validate_identifier,
+)
+
 if TYPE_CHECKING:
-    from .live import LiveModelStream, ChangeModelStream
     from surreal_sdk.streaming.live_select import ReconnectCallback
 
+    from .live import ChangeModelStream, LiveModelStream
+
 import logging
-import re as _re
 
-_SAFE_IDENTIFIER_RE = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
-
-
-class SurrealDbError(Exception):
-    """Error from SurrealDB operations."""
-
-    pass
-
+from .model_base import SurrealDbError
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +286,7 @@ class QuerySet:
         if field_name.startswith("-"):
             field_name = field_name[1:]
             order_type = OrderBy.DESC
+        validate_identifier(field_name, "order_by field")
         self._order_by = f"{field_name} {order_type}"
         return self
 
@@ -312,7 +317,10 @@ class QuerySet:
         self._group_by_fields = list(fields)
         return self
 
-    def annotate(self, **aggregations: Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance) -> Self:
+    def annotate(
+        self,
+        **aggregations: (Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance),
+    ) -> Self:
         """
         Add aggregation functions, subqueries, search annotations, or geo distances.
 
@@ -615,6 +623,10 @@ class QuerySet:
         """
         if not _SAFE_IDENTIFIER_RE.match(field):
             raise ValueError(f"Invalid field name for nearby(): {field!r}")
+        if not isinstance(point, (tuple, list)) or len(point) != 2 or not all(isinstance(c, (int, float)) for c in point):
+            raise TypeError(f"point must be a (longitude, latitude) tuple of numbers, got {point!r}")
+        if not isinstance(max_distance, (int, float)):
+            raise TypeError(f"max_distance must be a number, got {type(max_distance).__name__!r}")
         self._geo_field = field
         self._geo_point = point
         self._geo_max_distance = max_distance
@@ -769,6 +781,7 @@ class QuerySet:
                 parts = traversal.split("->")
                 if len(parts) >= 3:
                     edge = parts[1]
+                    validate_identifier(edge, "edge name")
                     # Use SELECT VALUE out.* for more reliable record extraction
                     query = f"SELECT VALUE out.* FROM {edge} WHERE in = {source_thing};"
                     result = await client.query(query, {**self._variables, **variables})
@@ -782,6 +795,7 @@ class QuerySet:
                 parts = traversal.split("<-")
                 if len(parts) >= 3:
                     edge = parts[1]
+                    validate_identifier(edge, "edge name")
                     # Use SELECT VALUE in.* for more reliable record extraction
                     query = f"SELECT VALUE in.* FROM {edge} WHERE out = {source_thing};"
                     result = await client.query(query, {**self._variables, **variables})
@@ -955,11 +969,17 @@ class QuerySet:
         Returns:
             str: The rendered SurrealQL condition.
         """
+
+        # ── Helper: bind a value as $_fN and return the var name ──────
+        def _bind(val: Any) -> str:
+            vn = f"_f{counter[0]}"
+            counter[0] += 1
+            variables[vn] = val
+            return vn
+
         op = LOOKUP_OPERATORS.get(lookup_name, "=")
 
-        # Subquery values: compile to inline sub-SELECT.
-        # Collection operators (IN, NOT IN, etc.) use the array directly;
-        # scalar operators (=, !=, >, etc.) wrap with array::first().
+        # ── Subquery values ──────────────────────────────────────────
         if isinstance(value, Subquery):
             sub_sql = value.to_surql(variables, counter)
             _COLLECTION_LOOKUPS = {"in", "not_in", "containsall", "containsany"}
@@ -967,6 +987,7 @@ class QuerySet:
                 return f"{field_name} {op} {sub_sql}"
             return f"{field_name} {op} array::first({sub_sql})"
 
+        # ── IS NULL / IS NOT NULL ────────────────────────────────────
         if lookup_name == "isnull":
             if not isinstance(value, bool):
                 raise TypeError(
@@ -974,25 +995,68 @@ class QuerySet:
                 )
             return f"{field_name} IS {'NULL' if value else 'NOT NULL'}"
 
-        # Backwards compat: strings starting with $ are variable references
+        # ── Backwards compat: $variable references ───────────────────
+        # Must come before function-based lookups so $var isn't processed
+        # by like_to_regex(), .lower(), etc.
         if isinstance(value, str) and value.startswith("$"):
             return f"{field_name} {op} {value}"
 
+        # ── Function-based lookups (no SurrealQL operator equivalent) ─
+        # startswith / istartswith → string::starts_with()
+        if lookup_name in ("startswith", "istartswith"):
+            return f"string::starts_with({field_name}, ${_bind(value)})"
+
+        # endswith / iendswith → string::ends_with()
+        if lookup_name in ("endswith", "iendswith"):
+            return f"string::ends_with({field_name}, ${_bind(value)})"
+
+        # like → string::matches(field, regex)  (LIKE pattern converted to regex)
+        if lookup_name == "like":
+            if not isinstance(value, str):
+                raise TypeError(f"Value for 'like' lookup on '{field_name}' must be a string, got {type(value).__name__!r}.")
+            return f"string::matches({field_name}, ${_bind(like_to_regex(value))})"
+
+        # ilike → string::matches(field, (?i)regex)  (case-insensitive)
+        if lookup_name == "ilike":
+            if not isinstance(value, str):
+                raise TypeError(f"Value for 'ilike' lookup on '{field_name}' must be a string, got {type(value).__name__!r}.")
+            return f"string::matches({field_name}, ${_bind('(?i)' + like_to_regex(value))})"
+
+        # icontains → string::contains(string::lowercase(field), lowercase(value))
+        if lookup_name == "icontains":
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"Value for 'icontains' lookup on '{field_name}' must be a string, got {type(value).__name__!r}."
+                )
+            return f"string::contains(string::lowercase({field_name}), ${_bind(value.lower())})"
+
+        # regex → string::matches(field, pattern)
+        if lookup_name == "regex":
+            if not isinstance(value, str):
+                raise TypeError(f"Value for 'regex' lookup on '{field_name}' must be a string, got {type(value).__name__!r}.")
+            return f"string::matches({field_name}, ${_bind(value)})"
+
+        # iregex → string::matches(field, (?i)pattern)
+        if lookup_name == "iregex":
+            if not isinstance(value, str):
+                raise TypeError(f"Value for 'iregex' lookup on '{field_name}' must be a string, got {type(value).__name__!r}.")
+            return f"string::matches({field_name}, ${_bind('(?i)' + value)})"
+
+        # match → @@ (full-text search operator)
+        if lookup_name == "match":
+            return f"{field_name} @@ ${_bind(value)}"
+
+        # ── Collection lookups (IN, NOT IN, CONTAINSALL, CONTAINSANY) ─
         if lookup_name in ("in", "not_in", "containsall", "containsany"):
             if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple, set)):
                 raise TypeError(
                     f"Value for lookup '{lookup_name}' on field '{field_name}' "
                     f"must be a list, tuple, or set, got {type(value).__name__!r}."
                 )
-            var_name = f"_f{counter[0]}"
-            counter[0] += 1
-            variables[var_name] = list(value)
-            return f"{field_name} {op} ${var_name}"
+            return f"{field_name} {op} ${_bind(list(value))}"
 
-        var_name = f"_f{counter[0]}"
-        counter[0] += 1
-        variables[var_name] = value
-        return f"{field_name} {op} ${var_name}"
+        # ── Generic operator-based lookup (exact, gt, gte, lt, lte, contains, etc.)
+        return f"{field_name} {op} ${_bind(value)}"
 
     def _render_q(
         self,
@@ -1122,12 +1186,13 @@ class QuerySet:
             self._variables[var_name] = query_text
             where_parts.append(f"{field_name} @{ref_idx}@ ${var_name}")
 
-        # Geo: append distance filter (parameterized)
+        # Geo: append distance filter
+        # Note: SurrealDB cannot parse variables inside tuple constructors,
+        # so coordinates are inlined. max_distance is still parameterized.
         if self._geo_field and self._geo_point is not None and self._geo_max_distance is not None:
-            self._variables["_geo_lon"] = self._geo_point[0]
-            self._variables["_geo_lat"] = self._geo_point[1]
             self._variables["_geo_max"] = self._geo_max_distance
-            geo_expr = f"geo::distance({self._geo_field}, ($_geo_lon, $_geo_lat)) <= $_geo_max"
+            lon, lat = self._geo_point
+            geo_expr = f"geo::distance({self._geo_field}, ({lon}, {lat})) <= $_geo_max"
             where_parts.append(geo_expr)
 
         if where_parts:
@@ -1286,13 +1351,14 @@ class QuerySet:
         Execute the query and return the first result.
 
         This method modifies the QuerySet to limit the results to one and retrieves the first record.
-        If no records are found, it returns `None`.
+        If no records are found, it raises ``DoesNotExist``.
 
         Returns:
-            BaseSurrealModel | dict | None: The first model instance if available, a dictionary if
-            model validation fails, or `None` if no results are found.
+            BaseSurrealModel | dict: The first model instance if available, or a dictionary if
+            model validation fails.
 
         Raises:
+            DoesNotExist: If no records match the query.
             SurrealDbError: If there is an issue executing the query.
 
         Example:
@@ -1445,6 +1511,7 @@ class QuerySet:
             total = await Order.objects().filter(status="paid").sum("amount")
             ```
         """
+        validate_identifier(field, "aggregation field")
         where_clause = self._compile_where_clause()
         query = f"SELECT math::sum({field}) AS total FROM {self._model_table}{where_clause} GROUP ALL;"
 
@@ -1473,6 +1540,7 @@ class QuerySet:
             avg_age = await User.objects().filter(active=True).avg("age")
             ```
         """
+        validate_identifier(field, "aggregation field")
         where_clause = self._compile_where_clause()
         query = f"SELECT math::mean({field}) AS average FROM {self._model_table}{where_clause} GROUP ALL;"
 
@@ -1501,6 +1569,7 @@ class QuerySet:
             min_price = await Product.objects().min("price")
             ```
         """
+        validate_identifier(field, "aggregation field")
         where_clause = self._compile_where_clause()
         query = f"SELECT math::min({field}) AS minimum FROM {self._model_table}{where_clause} GROUP ALL;"
 
@@ -1528,6 +1597,7 @@ class QuerySet:
             max_price = await Product.objects().max("price")
             ```
         """
+        validate_identifier(field, "aggregation field")
         where_clause = self._compile_where_clause()
         query = f"SELECT math::max({field}) AS maximum FROM {self._model_table}{where_clause} GROUP ALL;"
 
@@ -1586,7 +1656,12 @@ class QuerySet:
             results = await self._run_query_on_client(client, "SELECT * FROM users;")
             ```
         """
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        from .debug import _elapsed_ms, _log_query, _start_timer
+
+        final_query = remove_quotes_for_variables(query)
+        start = _start_timer()
+        result = await client.query(final_query, self._variables)
+        _log_query(final_query, self._variables, _elapsed_ms(start))
         # SDK returns QueryResponse, extract all records
         return cast(list[Any], result.all_records)
 
@@ -1612,7 +1687,7 @@ class QuerySet:
         await client.delete(self._model_table)
         return True
 
-    async def query(self, query: str, variables: dict[str, Any] = {}) -> Any:
+    async def query(self, query: str, variables: dict[str, Any] | None = None) -> Any:
         """
         Execute a custom SQL query on the SurrealDB database.
 
@@ -1622,8 +1697,8 @@ class QuerySet:
 
         Args:
             query (str): The custom SQL query string to execute.
-            variables (dict[str, Any], optional): A dictionary of variables to substitute into the query.
-                Defaults to an empty dictionary.
+            variables (dict[str, Any] | None, optional): A dictionary of variables to substitute into the query.
+                Defaults to None (empty dict).
 
         Returns:
             Any: The result of the query, typically a model instance or a list of model instances.
@@ -1637,6 +1712,7 @@ class QuerySet:
             results = await queryset.query(custom_query, variables={'status': 'active'})
             ```
         """
+        variables = variables or {}
         if f"FROM {self._model_table}" not in query:
             raise SurrealDbError(f"The query must include 'FROM {self._model_table}' to reference the correct table.")
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
@@ -1738,9 +1814,14 @@ class QuerySet:
 
         # Build SET clause
         set_parts = []
+        update_vars: dict[str, Any] = {}
         for field, value in data.items():
-            set_parts.append(f"{field} = {repr(value)}")
+            validate_identifier(field, "field name")
+            var_name = f"_bu{len(update_vars)}"
+            update_vars[var_name] = value
+            set_parts.append(f"{field} = ${var_name}")
         set_clause = ", ".join(set_parts)
+        self._variables.update(update_vars)
 
         query = f"UPDATE {self._model_table} SET {set_clause}{where_clause};"
 

@@ -5,8 +5,8 @@ This module extracts schema information from Pydantic models to build
 a SchemaState that can be compared against the current database state.
 """
 
-from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 import types
+from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
@@ -227,22 +227,20 @@ class ModelIntrospector:
             return PYTHON_TO_SURREAL_TYPE[python_type].value
 
         # Handle string type names
+        _TYPE_MAP = {
+            "str": FieldType.STRING.value,
+            "int": FieldType.INT.value,
+            "float": FieldType.FLOAT.value,
+            "bool": FieldType.BOOL.value,
+            "datetime": FieldType.DATETIME.value,
+            "uuid": FieldType.UUID.value,
+            "bytes": FieldType.BYTES.value,
+        }
+
         if isinstance(python_type, type):
-            type_name = python_type.__name__.lower()
-            if type_name == "str":
-                return FieldType.STRING.value
-            elif type_name == "int":
-                return FieldType.INT.value
-            elif type_name == "float":
-                return FieldType.FLOAT.value
-            elif type_name == "bool":
-                return FieldType.BOOL.value
-            elif type_name == "datetime":
-                return FieldType.DATETIME.value
-            elif type_name == "uuid":
-                return FieldType.UUID.value
-            elif type_name == "bytes":
-                return FieldType.BYTES.value
+            result = _TYPE_MAP.get(python_type.__name__.lower())
+            if result is not None:
+                return result
 
         # Fallback
         return FieldType.ANY.value

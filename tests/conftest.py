@@ -5,20 +5,33 @@ This module manages the SurrealDB test container lifecycle:
 - Checks if the test container is already running
 - Starts it if needed before integration tests
 - Stops it after tests only if we started it
+
+Shared connection constants are defined here so every test file can import them
+instead of hardcoding URLs, credentials, and ports.
 """
 
+import os
 import subprocess
 import time
-from typing import Generator
+from collections.abc import Generator
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# Shared connection constants (import these in test files)
+# ---------------------------------------------------------------------------
+TEST_PORT = int(os.getenv("SURREALDB_PORT", "8000"))
+SURREALDB_URL = os.getenv("SURREALDB_URL", f"http://localhost:{TEST_PORT}")
+SURREALDB_WS_URL = os.getenv("SURREALDB_WS_URL", f"ws://localhost:{TEST_PORT}")
+SURREALDB_USER = os.getenv("SURREALDB_USER", "root")
+SURREALDB_PASS = os.getenv("SURREALDB_PASS", "root")
+SURREALDB_NAMESPACE = os.getenv("SURREALDB_NAMESPACE", "test")
 
 # Container configuration
-CONTAINER_NAME = "surrealdb-test"
-TEST_PORT = 8001
+CONTAINER_NAME = "surrealdb-orm"
 COMPOSE_FILE = "devops/docker-compose.yml"
 HEALTH_CHECK_TIMEOUT = 30  # seconds
+SKIP_CONTAINER = os.getenv("SURREALDB_SKIP_CONTAINER", "").lower() in ("1", "true", "yes")
 
 
 def is_container_running() -> bool:
@@ -44,14 +57,14 @@ def is_port_responding(port: int = TEST_PORT) -> bool:
             s.settimeout(2)
             s.connect(("localhost", port))
             return True
-    except (socket.timeout, ConnectionRefusedError, OSError):
+    except (TimeoutError, ConnectionRefusedError, OSError):
         return False
 
 
 def is_surrealdb_healthy(port: int = TEST_PORT) -> bool:
     """Check if SurrealDB is healthy via /health endpoint."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     try:
         url = f"http://localhost:{port}/health"
@@ -66,7 +79,7 @@ def start_container() -> bool:
     """Start the SurrealDB test container."""
     try:
         result = subprocess.run(
-            ["docker", "compose", "-f", COMPOSE_FILE, "up", "-d", "surrealdb-test"],
+            ["docker", "compose", "-f", COMPOSE_FILE, "up", "-d", "surrealdb"],
             capture_output=True,
             text=True,
             timeout=60,
@@ -93,7 +106,7 @@ def stop_container() -> None:
     """Stop the SurrealDB test container."""
     try:
         subprocess.run(
-            ["docker", "compose", "-f", COMPOSE_FILE, "stop", "surrealdb-test"],
+            ["docker", "compose", "-f", COMPOSE_FILE, "stop", "surrealdb"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -112,7 +125,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
     Start the SurrealDB container if:
     1. We're running integration tests
-    2. The container is not already running
+    2. The container is not already running / SurrealDB is not already healthy
     """
     global _container_started_by_tests
 
@@ -122,16 +135,22 @@ def pytest_configure(config: pytest.Config) -> None:
         # Not running integration tests, no need for container
         return
 
-    # Check if container is already running and healthy
-    if is_container_running() and is_surrealdb_healthy():
-        print(f"\n[conftest] SurrealDB test container already running on port {TEST_PORT}")
+    # Honor SURREALDB_SKIP_CONTAINER (e.g. CI provides its own SurrealDB service)
+    if SKIP_CONTAINER:
+        print(f"\n[conftest] SURREALDB_SKIP_CONTAINER set — skipping container management (port {TEST_PORT})")
+        _container_started_by_tests = False
+        return
+
+    # If SurrealDB is already healthy (container or external), skip startup
+    if is_surrealdb_healthy():
+        print(f"\n[conftest] SurrealDB already healthy on port {TEST_PORT}")
         _container_started_by_tests = False
         return
 
     # Start the container
-    print(f"\n[conftest] Starting SurrealDB test container on port {TEST_PORT}...")
+    print(f"\n[conftest] Starting SurrealDB container on port {TEST_PORT}...")
     if start_container():
-        print("[conftest] SurrealDB test container started successfully")
+        print("[conftest] SurrealDB container started successfully")
         _container_started_by_tests = True
     else:
         print("[conftest] WARNING: Could not start SurrealDB container. Integration tests may fail.")
@@ -147,9 +166,9 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     global _container_started_by_tests
 
     if _container_started_by_tests:
-        print("\n[conftest] Stopping SurrealDB test container (started by tests)...")
+        print("\n[conftest] Stopping SurrealDB container (started by tests)...")
         stop_container()
-        print("[conftest] SurrealDB test container stopped")
+        print("[conftest] SurrealDB container stopped")
         _container_started_by_tests = False
     else:
         # Container was already running before tests, leave it running

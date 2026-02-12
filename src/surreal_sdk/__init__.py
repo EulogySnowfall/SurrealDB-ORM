@@ -17,62 +17,64 @@ from typing import Any
 
 from .connection.base import BaseSurrealConnection
 from .connection.http import HTTPConnection
-from .connection.websocket import WebSocketConnection
 from .connection.pool import ConnectionPool
-from .streaming.change_feed import ChangeFeedStream
-from .streaming.live_query import LiveQuery, LiveQueryManager, LiveNotification
-from .streaming.live_select import (
-    LiveSelectStream,
-    LiveSelectManager,
-    LiveChange,
-    LiveAction,
-    LiveSubscriptionParams,
+from .connection.websocket import WebSocketConnection
+from .exceptions import (
+    AuthenticationError,
+    ConnectionError,
+    QueryError,
+    SurrealDBError,
+    TimeoutError,
+    TransactionConflictError,
+    TransactionError,
 )
-from .protocol.rpc import RPCRequest, RPCResponse, RPCError
+from .functions import (
+    ArrayFunctions,
+    CryptoFunctions,
+    FunctionCall,
+    FunctionNamespace,
+    MathFunctions,
+    StringFunctions,
+    TimeFunctions,
+)
 from .protocol.cbor import (
     CBOR_AVAILABLE,
+    Duration,
     RecordId,
     Table,
-    Duration,
+)
+from .protocol.cbor import (
     is_available as cbor_is_available,
 )
-from .types import (
-    ResponseStatus,
-    QueryResult,
-    QueryResponse,
-    RecordResponse,
-    RecordsResponse,
-    AuthResponse,
-    InfoResponse,
-    LiveQueryId,
-    DeleteResponse,
-)
-from .exceptions import (
-    SurrealDBError,
-    ConnectionError,
-    AuthenticationError,
-    QueryError,
-    TimeoutError,
-    TransactionError,
-    TransactionConflictError,
+from .protocol.rpc import RPCError, RPCRequest, RPCResponse
+from .streaming.change_feed import ChangeFeedStream
+from .streaming.live_query import LiveNotification, LiveQuery, LiveQueryManager
+from .streaming.live_select import (
+    LiveAction,
+    LiveChange,
+    LiveSelectManager,
+    LiveSelectStream,
+    LiveSubscriptionParams,
 )
 from .transaction import (
     BaseTransaction,
     HTTPTransaction,
-    WebSocketTransaction,
     TransactionStatement,
+    WebSocketTransaction,
 )
-from .functions import (
-    FunctionCall,
-    FunctionNamespace,
-    MathFunctions,
-    TimeFunctions,
-    ArrayFunctions,
-    StringFunctions,
-    CryptoFunctions,
+from .types import (
+    AuthResponse,
+    DeleteResponse,
+    InfoResponse,
+    LiveQueryId,
+    QueryResponse,
+    QueryResult,
+    RecordResponse,
+    RecordsResponse,
+    ResponseStatus,
 )
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 __all__ = [
     # Connections
     "BaseSurrealConnection",

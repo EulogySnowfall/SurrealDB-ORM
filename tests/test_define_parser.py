@@ -18,7 +18,6 @@ from src.surreal_orm.migrations.define_parser import (
 )
 from src.surreal_orm.migrations.state import FieldState, IndexState
 
-
 # ==================== parse_define_field ====================
 
 

@@ -2,34 +2,32 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+from typing import Any
+
 import pytest
-from typing import Any, AsyncGenerator
 from pydantic import Field
 
 from surreal_orm import (
-    BaseSurrealModel,
-    SurrealConfigDict,
-    SurrealDBConnectionManager,
-    Signal,
-    pre_save,
-    post_save,
-    pre_delete,
-    post_delete,
-    pre_update,
-    post_update,
     # Around signals
     AroundSignal,
-    around_save,
+    BaseSurrealModel,
+    Signal,
+    SurrealConfigDict,
+    SurrealDBConnectionManager,
     around_delete,
+    around_save,
     around_update,
+    post_delete,
+    post_save,
+    post_update,
+    pre_delete,
+    pre_save,
+    pre_update,
 )
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
-
-# Test URLs - use same ports as other integration tests
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
+# Each test file uses its own database for isolation
 SURREALDB_DATABASE = "test_signals"
 
 

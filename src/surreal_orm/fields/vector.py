@@ -139,4 +139,4 @@ def get_vector_info(field_type: Any) -> tuple[int, str] | None:
     return None
 
 
-__all__ = ["VectorField", "is_vector_field", "get_vector_info"]
+__all__ = ["VectorField", "get_vector_info", "is_vector_field"]

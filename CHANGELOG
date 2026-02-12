@@ -6,6 +6,79 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.14.0] - 2026-02-11
+
+### Added
+
+- **Test Fixtures** — Declarative test data with automatic cleanup
+  - `SurrealFixture` base class for declaring fixtures as class attributes
+  - `@fixture` decorator scans class attributes for `BaseSurrealModel` instances
+  - `load()` async context manager: saves all instances on enter, deletes them on exit
+  - Fixture instances accessible by attribute name (e.g., `fixtures.alice`)
+  - Deep-copies templates on each `load()` to avoid state leakage across calls
+  - Duck-type detection for cross-import-path compatibility
+  - New file: `src/surreal_orm/testing/fixtures.py`
+
+- **Model Factories** — Factory Boy-style data generation with zero external dependencies
+  - `ModelFactory` with `_FactoryMeta` metaclass for declarative factory definitions
+  - `build()` / `build_batch(n)` — create in-memory instances (unit tests, no DB)
+  - `create()` / `create_batch(n)` — create and save to DB (integration tests)
+  - Override any field at call time: `create(role="admin")`
+  - Built-in `Faker` with 14 providers: `name`, `first_name`, `last_name`, `email`, `random_int`, `random_float`, `text`, `sentence`, `word`, `uuid`, `boolean`, `date`, `datetime`, `choice`
+  - New file: `src/surreal_orm/testing/factories.py`
+
+- **QueryLogger** — Profile and debug all ORM queries with timing
+  - `QueryLog` dataclass: `sql`, `variables`, `duration_ms`, `timestamp`
+  - `QueryLogger` async context manager with `total_queries` and `total_ms` properties
+  - Async-safe activation via `contextvars.ContextVar`
+  - All query paths instrumented: `QuerySet.exec()`, `save()`, `update()`, `merge()`, `delete()`, `raw_query()`, `atomic_append/remove/set_add()`
+  - New file: `src/surreal_orm/debug.py`
+
+- **Testing Subpackage** — `surreal_orm.testing` with public exports
+  - `from surreal_orm.testing import SurrealFixture, fixture, ModelFactory, Faker`
+  - New file: `src/surreal_orm/testing/__init__.py`
+
+- **15 Themed Jupyter Notebooks** — Comprehensive examples in `examples/`
+  - `00_setup` — Prerequisites, Docker, connection config
+  - `01_models_crud` — Model definition, CRUD operations
+  - `02_queries_filters` — Filters, Q objects, lookups
+  - `03_aggregations` — Count, Sum, Avg, Min, Max, GROUP BY
+  - `04_relations_graph` — ForeignKey, ManyToMany, graph traversal
+  - `05_transactions_bulk` — Transactions, bulk operations, atomic ops
+  - `06_signals` — Pre/post/around signals
+  - `07_auth` — User tables, signup, signin, token validation
+  - `08_computed_functions` — Computed fields, SurrealFunc, raw_query
+  - `09_advanced_queries` — Subqueries, QueryCache
+  - `10_search_vectors` — Vector search, full-text search, hybrid search
+  - `11_geospatial` — GeoField, PointField, nearby(), GeoDistance
+  - `12_realtime` — Live queries, change feeds
+  - `13_migrations_schema` — Migration system, schema introspection
+  - `14_testing_debug` — SurrealFixture, ModelFactory, QueryLogger
+
+- **Shared Test Connection Constants** — Centralized in `tests/conftest.py`
+  - `SURREALDB_URL`, `SURREALDB_WS_URL`, `SURREALDB_USER`, `SURREALDB_PASS`, `SURREALDB_NAMESPACE`
+  - All env-variable-backed with sensible defaults
+  - `SURREALDB_SKIP_CONTAINER` support for CI environments
+
+### Changed
+
+- Alpha → Beta transition (`Development Status :: 4 - Beta` classifier)
+- `conftest.py` uses `/health` endpoint as primary readiness signal (no longer requires Docker container name check)
+- `QuerySet.nearby()` validates coordinate types and tuple length
+- `SurrealFixture.load()` uses `object.__new__(cls)` to avoid type checker warnings
+- Version bump to 0.14.0
+
+### Fixed
+
+- **Notebook 05** — `async with SurrealDBConnectionManager.transaction()` → `async with await` (coroutine needs `await` before entering context manager)
+- **Notebook 09** — `annotate()` with `Subquery` returns dicts via GROUP ALL path; rewrote to use `values().annotate()` pattern
+- **Notebook 11** — SurrealDB cannot parse `$variable` references inside tuple constructors; geo coordinates now inlined in query string
+- **Notebook 14** — `@fixture` decorator `isinstance()` failed across dual-import paths; added duck-type fallback check
+- **CI pipeline** — Docker Compose service name `surrealdb-ci` → `surrealdb`
+- Hardcoded URLs/credentials in 6 test files replaced with shared `conftest` constants
+
+---
+
 ## [0.13.0] - 2026-02-10
 
 ### Added

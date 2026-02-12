@@ -2,6 +2,7 @@ import inspect
 
 import pytest
 from pydantic import Field
+
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict, SurrealDbError
 from src.surreal_orm.query_set import QuerySet
 from src.surreal_sdk.exceptions import TransactionConflictError, TransactionError
@@ -77,7 +78,7 @@ def test_str_dunnder(model_test: ModelTest) -> None:
     assert str(model_test) == "id='1' name='Test' age=45"
 
 
-async def failed_model_validation() -> None:
+async def test_failed_model_validation() -> None:
     class ModelTestInvalide(BaseSurrealModel):
         name: str = Field(..., max_length=100)
         age: int = Field(..., ge=0, le=125)
@@ -156,6 +157,93 @@ def test_queryset_compile_not_in() -> None:
     assert qs._variables["_f0"] == [1, 2]
 
 
+# ==================== SurrealQL operator compilation ====================
+
+
+def test_queryset_compile_startswith() -> None:
+    """startswith generates string::starts_with() function call."""
+    qs = ModelTest.objects().filter(name__startswith="Al")
+    query = qs._compile_query()
+    assert "string::starts_with(name, $_f0)" in query
+    assert qs._variables["_f0"] == "Al"
+
+
+def test_queryset_compile_endswith() -> None:
+    """endswith generates string::ends_with() function call."""
+    qs = ModelTest.objects().filter(name__endswith="ce")
+    query = qs._compile_query()
+    assert "string::ends_with(name, $_f0)" in query
+    assert qs._variables["_f0"] == "ce"
+
+
+def test_queryset_compile_like() -> None:
+    """like converts LIKE pattern to regex and uses string::matches()."""
+    qs = ModelTest.objects().filter(name__like="%ali%")
+    query = qs._compile_query()
+    assert "string::matches(name, $_f0)" in query
+    assert qs._variables["_f0"] == "^.*ali.*$"
+
+
+def test_queryset_compile_ilike() -> None:
+    """ilike converts to case-insensitive regex with (?i) prefix."""
+    qs = ModelTest.objects().filter(name__ilike="%ali%")
+    query = qs._compile_query()
+    assert "string::matches(name, $_f0)" in query
+    assert qs._variables["_f0"] == "(?i)^.*ali.*$"
+
+
+def test_queryset_compile_icontains() -> None:
+    """icontains uses string::contains with string::lowercase."""
+    qs = ModelTest.objects().filter(name__icontains="HELLO")
+    query = qs._compile_query()
+    assert "string::contains(string::lowercase(name), $_f0)" in query
+    assert qs._variables["_f0"] == "hello"
+
+
+def test_queryset_compile_regex() -> None:
+    """regex uses string::matches() function."""
+    qs = ModelTest.objects().filter(name__regex="gr(a|e)y")
+    query = qs._compile_query()
+    assert "string::matches(name, $_f0)" in query
+    assert qs._variables["_f0"] == "gr(a|e)y"
+
+
+def test_queryset_compile_iregex() -> None:
+    """iregex uses string::matches() with (?i) prefix."""
+    qs = ModelTest.objects().filter(name__iregex="hello")
+    query = qs._compile_query()
+    assert "string::matches(name, $_f0)" in query
+    assert qs._variables["_f0"] == "(?i)hello"
+
+
+def test_queryset_compile_match_fts() -> None:
+    """match generates @@ operator for full-text search."""
+    qs = ModelTest.objects().filter(name__match="quantum")
+    query = qs._compile_query()
+    assert "name @@ $_f0" in query
+    assert qs._variables["_f0"] == "quantum"
+
+
+def test_queryset_compile_contains() -> None:
+    """contains generates CONTAINS operator (arrays and strings)."""
+    qs = ModelTest.objects().filter(name__contains="test")
+    query = qs._compile_query()
+    assert "name CONTAINS $_f0" in query
+    assert qs._variables["_f0"] == "test"
+
+
+def test_like_to_regex_patterns() -> None:
+    """like_to_regex correctly converts LIKE patterns to anchored regex."""
+    from src.surreal_orm.constants import like_to_regex
+
+    assert like_to_regex("%ali%") == "^.*ali.*$"
+    assert like_to_regex("ali%") == "^ali.*$"
+    assert like_to_regex("%ali") == "^.*ali$"
+    assert like_to_regex("a_i") == "^a.i$"
+    assert like_to_regex("exact") == "^exact$"
+    assert like_to_regex("%a.b%") == "^.*a\\.b.*$"
+
+
 # ==================== v0.5.9: TransactionConflictError ====================
 
 
@@ -210,6 +298,7 @@ def test_remove_relation_signature_has_reverse() -> None:
 def test_atomic_ops_reject_invalid_field_name() -> None:
     """Atomic ops must reject field names that could cause SurrealQL injection."""
     import asyncio
+
     from src.surreal_orm.model_base import _SAFE_IDENTIFIER_RE
 
     # Valid field names should pass the regex

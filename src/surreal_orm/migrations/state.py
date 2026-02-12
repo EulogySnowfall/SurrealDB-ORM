@@ -343,10 +343,10 @@ class SchemaState:
                         )
                     )
                 # Add all indexes
-                for index_name, index_state in target_table.indexes.items():
+                for _index_name, index_state in target_table.indexes.items():
                     operations.append(self._create_index_from_state(table_name, index_state))
                 # Add all events
-                for event_name, event_state in target_table.events.items():
+                for _event_name, event_state in target_table.events.items():
                     operations.append(
                         DefineEvent(
                             name=event_state.name,

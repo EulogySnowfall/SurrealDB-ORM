@@ -10,7 +10,79 @@
 
 ---
 
-## Current Version: 0.13.0 (Alpha)
+## Current Version: 0.14.0 (Beta)
+
+### What's New in 0.14.0
+
+- **Test Fixtures** — Declarative test data with automatic cleanup via `SurrealFixture` + `@fixture`
+
+  ```python
+  from surreal_orm.testing import SurrealFixture, fixture
+
+  @fixture
+  class UserFixtures(SurrealFixture):
+      alice = User(name="Alice", role="admin")
+      bob = User(name="Bob", role="player")
+
+  async with UserFixtures.load() as fixtures:
+      assert fixtures.alice.get_id() is not None
+  # Automatic cleanup on exit
+  ```
+
+  - `@fixture` decorator scans class attributes for `BaseSurrealModel` instances
+  - `load()` async context manager: saves on enter, deletes on exit
+  - Fixture instances accessible by attribute name (e.g., `fixtures.alice`)
+  - New files: `src/surreal_orm/testing/fixtures.py`
+
+- **Model Factories** — Factory Boy-style data generation with zero external dependencies
+
+  ```python
+  from surreal_orm.testing import ModelFactory, Faker
+
+  class UserFactory(ModelFactory):
+      class Meta:
+          model = User
+
+      name = Faker("name")
+      email = Faker("email")
+      age = Faker("random_int", min=18, max=80)
+      role = "player"
+
+  user = UserFactory.build()              # In-memory (unit tests)
+  user = await UserFactory.create()       # Saved to DB (integration tests)
+  users = await UserFactory.create_batch(50)
+  admin = await UserFactory.create(role="admin")  # Override fields
+  ```
+
+  - Built-in `Faker` with 14 providers: name, email, random_int, random_float, text, sentence, word, uuid, boolean, date, datetime, choice, first_name, last_name
+  - `build()` / `build_batch()` for unit tests (no DB)
+  - `create()` / `create_batch()` for integration tests (saves to DB)
+  - New files: `src/surreal_orm/testing/factories.py`
+
+- **QueryLogger** — Profile and debug all ORM queries with timing
+
+  ```python
+  from surreal_orm.debug import QueryLogger
+
+  async with QueryLogger() as logger:
+      users = await User.objects().filter(role="admin").exec()
+      await user.save()
+
+  for q in logger.queries:
+      print(f"{q.sql} — {q.duration_ms:.1f}ms")
+  print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
+  ```
+
+  - `QueryLog` dataclass: `sql`, `variables`, `duration_ms`, `timestamp`
+  - `QueryLogger` async context manager with `total_queries` and `total_ms` properties
+  - Async-safe via `contextvars.ContextVar`
+  - All query paths instrumented: `QuerySet`, `save()`, `update()`, `merge()`, `delete()`, `raw_query()`, `atomic_*()`
+  - New file: `src/surreal_orm/debug.py`
+
+- **15 Jupyter Notebooks** — Comprehensive themed examples in `examples/`:
+  - `00_setup` through `14_testing_debug`, ordered from simple to complex
+  - Each notebook covers a theme (CRUD, Queries, Relations, Signals, Auth, Search, Geo, Realtime, etc.)
+  - Practical use cases: e-commerce, social network, admin dashboard, AI/RAG pipeline
 
 ### What's New in 0.13.0
 
@@ -1027,6 +1099,11 @@ src/
 │   ├── prefetch.py              # Prefetch class for prefetch_related()
 │   ├── types.py                 # TableType enum, SurrealConfigDict
 │   ├── introspection.py         # Public API: generate_models_from_db, schema_diff
+│   ├── debug.py                 # QueryLogger + QueryLog for query profiling
+│   ├── testing/                 # Testing utilities
+│   │   ├── __init__.py          # Exports: SurrealFixture, fixture, ModelFactory, Faker
+│   │   ├── fixtures.py          # SurrealFixture + @fixture decorator
+│   │   └── factories.py         # ModelFactory + Faker (zero external deps)
 │   └── migrations/              # Migration system
 │       ├── operations.py        # CreateTable, AddField, etc.
 │       ├── state.py             # SchemaState with diff algorithm
@@ -1188,9 +1265,10 @@ class User(BaseSurrealModel):
 # Filter with Django-style lookups
 users = await User.objects().filter(age__gte=18, name__startswith="A").exec()
 
-# Supported lookups:
-# exact, gt, gte, lt, lte, in, like, ilike, contains, icontains,
-# startswith, istartswith, endswith, iendswith, match, regex, isnull
+# Supported lookups (all generate valid SurrealQL for v2.6+):
+# exact, gt, gte, lt, lte, in, not_in, contains, not_contains,
+# containsall, containsany, like, ilike, icontains, startswith,
+# istartswith, endswith, iendswith, regex, iregex, match, isnull
 ```
 
 **JWT Authentication:**
@@ -1437,6 +1515,19 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `TableType.RELATION` and `TableType.ANY` enum values
 - [x] `parse_define_table()` extracts AS, RELATION IN/OUT/ENFORCED clauses
 - [x] `DatabaseIntrospector` parses events, relations; `ModelCodeGenerator` generates GeoField
+
+### Completed (0.14.0) - Testing & Developer Experience
+
+- [x] `QueryLogger` async context manager with `QueryLog` dataclass for query profiling
+- [x] `_log_query()` + `_start_timer()` + `_elapsed_ms()` instrumentation helpers
+- [x] All query paths instrumented (QuerySet, save, update, merge, delete, raw_query, atomic_*)
+- [x] `SurrealFixture` base class + `@fixture` decorator for declarative test data
+- [x] `ModelFactory` with `_FactoryMeta` metaclass for Factory Boy-style factories
+- [x] Built-in `Faker` with 14 providers (no external dependencies)
+- [x] `build()` / `build_batch()` for unit tests, `create()` / `create_batch()` for integration tests
+- [x] `surreal_orm.testing` subpackage with public exports
+- [x] 15 themed Jupyter notebooks in `examples/` (00_setup through 14_testing_debug)
+- [x] Alpha → Beta transition (pyproject.toml classifier updated)
 
 ---
 

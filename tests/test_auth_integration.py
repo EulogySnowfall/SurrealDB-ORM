@@ -8,6 +8,8 @@ Run with: pytest -m integration tests/test_auth_integration.py
 import pytest
 
 from src import surreal_orm
+from src.surreal_orm.auth import AccessDefinition, AccessGenerator, AuthenticatedUserMixin
+from src.surreal_orm.fields import Encrypted
 from src.surreal_orm.model_base import (
     BaseSurrealModel,
     SurrealConfigDict,
@@ -15,14 +17,8 @@ from src.surreal_orm.model_base import (
     clear_model_registry,
 )
 from src.surreal_orm.types import TableType
-from src.surreal_orm.fields import Encrypted
-from src.surreal_orm.auth import AuthenticatedUserMixin, AccessDefinition, AccessGenerator
+from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
-
-SURREALDB_URL = "http://localhost:8001"
-SURREALDB_USER = "root"
-SURREALDB_PASS = "root"
-SURREALDB_NAMESPACE = "test"
 SURREALDB_DATABASE = "test_auth"
 
 

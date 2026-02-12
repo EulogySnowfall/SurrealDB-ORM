@@ -28,6 +28,16 @@ class SurrealFunc:
     """
 
     def __init__(self, expression: str) -> None:
+        # Basic safety check: reject expressions containing statement terminators
+        # that could be used for injection
+        _dangerous = {"define ", "remove ", "delete ", "drop ", "info "}
+        lower = expression.lower().strip()
+        for pattern in _dangerous:
+            if pattern in lower and ";" in expression:
+                raise ValueError(
+                    f"SurrealFunc expression contains potentially dangerous pattern: {pattern.strip()!r}. "
+                    "Only use SurrealFunc with developer-controlled expressions."
+                )
         self.expression = expression
 
     def __repr__(self) -> str:
@@ -96,7 +106,7 @@ class SurrealMathFunction(SurrealFunction):
     ATAN = "math::atan"
     BOTTOM = "math::bottom"
     CEIL = "math::ceil"
-    CLAAMP = "math::clamp"
+    CLAMP = "math::clamp"
     COS = "math::cos"
     COT = "math::cot"
     COUNT = "count"  # https://surrealdb.com/docs/surrealql/functions/database/count
@@ -125,7 +135,7 @@ class SurrealMathFunction(SurrealFunction):
     LOG10_2 = "math::log10_2"
     LOG10_E = "math::log10_e"
     LOG2 = "math::log2"
-    LOG2_10 = "math::log2_20"
+    LOG2_10 = "math::log2_10"
     LOG2_E = "math::log2_e"
     ###
     PI = "math::pi"

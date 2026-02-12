@@ -4,9 +4,12 @@ WebSocket Connection Implementation for SurrealDB SDK.
 Provides stateful WebSocket-based connection for real-time features.
 """
 
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Self
 import asyncio
 import json
+import random
+import re
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Self
 
 import aiohttp
 from aiohttp import ClientWSTimeout
@@ -14,12 +17,15 @@ from aiohttp import ClientWSTimeout
 from .base import BaseSurrealConnection
 
 if TYPE_CHECKING:
-    from ..transaction import WebSocketTransaction
     from ..streaming.live_select import LiveSelectStream, LiveSubscriptionParams
-from ..protocol.rpc import RPCRequest, RPCResponse
-from ..protocol import cbor as cbor_module
-from ..exceptions import ConnectionError, LiveQueryError, TimeoutError
+    from ..transaction import WebSocketTransaction
+import builtins
 
+from ..exceptions import ConnectionError, LiveQueryError, TimeoutError
+from ..protocol import cbor as cbor_module
+from ..protocol.rpc import RPCRequest, RPCResponse
+
+_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 # Type alias for live query callbacks
 LiveCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
@@ -88,7 +94,7 @@ class WebSocketConnection(BaseSurrealConnection):
         self._request_id = 0
         self._pending: dict[int, asyncio.Future[RPCResponse]] = {}
         self._live_callbacks: dict[str, LiveCallback] = {}
-        self._live_subscriptions: dict[str, "LiveSubscriptionParams"] = {}
+        self._live_subscriptions: dict[str, LiveSubscriptionParams] = {}
         self._reader_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._closing = False
@@ -193,11 +199,11 @@ class WebSocketConnection(BaseSurrealConnection):
                 elif msg.type == aiohttp.WSMsgType.BINARY:
                     # CBOR protocol uses binary messages
                     await self._handle_message_cbor(msg.data)
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    break
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    break
-                elif msg.type == aiohttp.WSMsgType.CLOSE:
+                elif (
+                    msg.type == aiohttp.WSMsgType.ERROR
+                    or msg.type == aiohttp.WSMsgType.CLOSED
+                    or msg.type == aiohttp.WSMsgType.CLOSE
+                ):
                     break
 
         except asyncio.CancelledError:
@@ -272,9 +278,18 @@ class WebSocketConnection(BaseSurrealConnection):
         attempts = 0
         while attempts < self.max_reconnect_attempts and not self._closing:
             attempts += 1
-            await asyncio.sleep(self.reconnect_interval)
+            delay = min(self.reconnect_interval * (2 ** (attempts - 1)), 30.0)
+            jitter = delay * random.uniform(0.5, 1.0)
+            await asyncio.sleep(jitter)
 
             try:
+                # Close old session before creating new one
+                if self._session and not self._session.closed:
+                    try:
+                        await self._session.close()
+                    except Exception:
+                        pass  # Best-effort cleanup of old session before reconnect
+
                 self._session = aiohttp.ClientSession()
                 self._ws = await self._session.ws_connect(
                     self.url,
@@ -312,7 +327,9 @@ class WebSocketConnection(BaseSurrealConnection):
 
                 # Call reconnect callback if provided
                 if params.on_reconnect:
-                    asyncio.create_task(params.on_reconnect(old_id, new_id))
+                    task = asyncio.create_task(params.on_reconnect(old_id, new_id))
+                    self._callback_tasks.add(task)
+                    task.add_done_callback(self._callback_tasks.discard)
 
             except Exception:
                 # Failed to resubscribe, skip this one
@@ -320,6 +337,8 @@ class WebSocketConnection(BaseSurrealConnection):
 
     async def _resubscribe_one(self, params: "LiveSubscriptionParams") -> str:
         """Resubscribe a single live query."""
+        if not _SAFE_TABLE_RE.match(params.table):
+            raise ValueError(f"Invalid table name: {params.table!r}")
         # Build query
         sql = f"LIVE SELECT * FROM {params.table}"
         if params.where:
@@ -403,7 +422,7 @@ class WebSocketConnection(BaseSurrealConnection):
             response = await asyncio.wait_for(future, timeout=self.timeout)
             return response
 
-        except asyncio.TimeoutError:
+        except builtins.TimeoutError:
             self._pending.pop(request.id, None)
             raise TimeoutError(f"Request timed out after {self.timeout}s")
         except Exception as e:
@@ -432,6 +451,8 @@ class WebSocketConnection(BaseSurrealConnection):
         Raises:
             LiveQueryError: If live query fails to start
         """
+        if not _SAFE_TABLE_RE.match(table):
+            raise ValueError(f"Invalid table name: {table!r}")
         sql = f"LIVE SELECT * FROM {table}"
         if diff:
             sql += " DIFF"
@@ -577,3 +598,91 @@ class WebSocketConnection(BaseSurrealConnection):
             auto_resubscribe=auto_resubscribe,
             on_reconnect=on_reconnect,
         )
+
+    # CBOR-aware CRUD overrides ────────────────────────────────────────
+
+    def _to_thing(self, thing: str) -> Any:
+        """Convert "table:id" to RecordId for CBOR protocol."""
+        if self.protocol == "cbor" and ":" in thing:
+            from ..protocol.cbor import RecordId
+
+            table, id_part = thing.split(":", 1)
+            if id_part.startswith("`") and id_part.endswith("`"):
+                id_part = id_part[1:-1].replace("``", "`")
+            return RecordId(table=table, id=id_part)
+        return thing
+
+    async def select(self, thing: str) -> Any:
+        """Select records with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("select", [self._to_thing(thing)])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def create(self, thing: str, data: dict[str, Any] | None = None) -> Any:
+        """Create a record with CBOR-aware thing conversion."""
+        from ..types import RecordResponse
+
+        params: list[Any] = [self._to_thing(thing)]
+        if data:
+            params.append(data)
+        result = await self.rpc("create", params)
+        return RecordResponse.from_rpc_result(result)
+
+    async def insert(self, table: str, data: list[dict[str, Any]] | dict[str, Any]) -> Any:
+        """Insert records (table name only, no thing conversion)."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("insert", [table, data])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def update(self, thing: str, data: dict[str, Any]) -> Any:
+        """Update records with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("update", [self._to_thing(thing), data])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def upsert(self, thing: str, data: dict[str, Any]) -> Any:
+        """Upsert records with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("upsert", [self._to_thing(thing), data])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def merge(self, thing: str, data: dict[str, Any]) -> Any:
+        """Merge records with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("merge", [self._to_thing(thing), data])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def patch(self, thing: str, patches: list[dict[str, Any]]) -> Any:
+        """Apply JSON Patch with CBOR-aware thing conversion."""
+        from ..types import RecordsResponse
+
+        result = await self.rpc("patch", [self._to_thing(thing), patches])
+        return RecordsResponse.from_rpc_result(result)
+
+    async def delete(self, thing: str) -> Any:
+        """Delete records with CBOR-aware thing conversion."""
+        from ..types import DeleteResponse
+
+        result = await self.rpc("delete", [self._to_thing(thing)])
+        return DeleteResponse.from_rpc_result(result)
+
+    async def relate(
+        self,
+        from_thing: str,
+        relation: str,
+        to_thing: str,
+        data: dict[str, Any] | None = None,
+    ) -> Any:
+        """Create a graph relation with CBOR-aware thing conversion."""
+        from ..types import RecordResponse
+
+        params: list[Any] = [self._to_thing(from_thing), relation, self._to_thing(to_thing)]
+        if data:
+            params.append(data)
+        result = await self.rpc("relate", params)
+        return RecordResponse.from_rpc_result(result)

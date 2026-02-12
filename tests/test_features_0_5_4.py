@@ -6,17 +6,13 @@ Feature #2: remove_relation() accepts string IDs
 Feature #3: raw_query() class method for arbitrary SurrealQL
 """
 
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest
 
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.model_base import BaseSurrealModel
-
-
-# Test URLs - use same ports as other integration tests
-SURREALDB_URL = "http://localhost:8001"
-
+from tests.conftest import SURREALDB_URL
 
 # =============================================================================
 # Test Models
@@ -132,7 +128,7 @@ class TestRawQueryMethod:
     def test_raw_query_method_exists(self) -> None:
         """raw_query() should be a class method on BaseSurrealModel."""
         assert hasattr(BaseSurrealModel, "raw_query")
-        assert callable(getattr(BaseSurrealModel, "raw_query"))
+        assert callable(BaseSurrealModel.raw_query)
 
     def test_raw_query_is_async(self) -> None:
         """raw_query() should be an async method."""

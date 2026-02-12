@@ -1,6 +1,8 @@
 """Tests for WebSocket connection module."""
 
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
+
 import pytest
 
 from src.surreal_sdk.connection.websocket import WebSocketConnection
@@ -86,7 +88,7 @@ class TestWebSocketConnectionIntegration:
     async def connection(self) -> AsyncGenerator[WebSocketConnection, None]:
         """Create a connected WebSocket connection."""
         conn = WebSocketConnection(
-            "ws://localhost:8001",
+            "ws://localhost:8000",
             "test",
             "test",
             auto_reconnect=False,

@@ -7,7 +7,6 @@ built-in functions for encryption, validation, and other operations.
 
 from .computed import Computed, get_computed_expression, is_computed_field
 from .encrypted import Encrypted, EncryptedField, EncryptedFieldInfo
-from .vector import VectorField, get_vector_info, is_vector_field
 from .geometry import (
     GeoField,
     LineStringField,
@@ -28,6 +27,7 @@ from .relation import (
     is_many_to_many,
     is_relation_field,
 )
+from .vector import VectorField, get_vector_info, is_vector_field
 
 __all__ = [
     # Computed fields

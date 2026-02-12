@@ -24,10 +24,12 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Literal
+from typing import Any, Literal
 
 from surreal_sdk import HTTPConnection, WebSocketConnection
 from surreal_sdk.exceptions import SurrealDBError
@@ -58,6 +60,7 @@ class SurrealDBConnectionManager:
     _configs: dict[str, ConnectionConfig] = {}
     _clients: dict[str, HTTPConnection] = {}
     _ws_clients: dict[str, WebSocketConnection] = {}
+    _connection_lock: asyncio.Lock | None = None
 
     # --- legacy class-level getters (kept in sync for backward compat) -----
     # These mirror the "default" config so that code like
@@ -284,44 +287,53 @@ class SurrealDBConnectionManager:
         if existing is not None and existing.is_connected:
             return existing
 
-        config = cls._configs.get(name)
-        if config is None:
-            raise ValueError(f"Connection {name!r} not configured. Call set_connection() or add_connection() first.")
+        if cls._connection_lock is None:
+            cls._connection_lock = asyncio.Lock()
+        async with cls._connection_lock:
+            # Double-check after acquiring the lock (another coroutine may
+            # have created the connection while we were waiting).
+            existing = cls._clients.get(name)
+            if existing is not None and existing.is_connected:
+                return existing
 
-        _client: HTTPConnection | None = None
-        try:
-            _client = HTTPConnection(
-                config.url,
-                config.namespace,
-                config.database,
-                protocol=config.protocol,
-            )
-            await _client.connect()
-            await _client.signin(config.user, config.password)
+            config = cls._configs.get(name)
+            if config is None:
+                raise ValueError(f"Connection {name!r} not configured. Call set_connection() or add_connection() first.")
 
-            cls._clients[name] = _client
+            _client: HTTPConnection | None = None
+            try:
+                _client = HTTPConnection(
+                    config.url,
+                    config.namespace,
+                    config.database,
+                    protocol=config.protocol,
+                )
+                await _client.connect()
+                await _client.signin(config.user, config.password)
 
-            # Keep legacy alias in sync
-            if name == "default":
-                cls.__client = _client
+                cls._clients[name] = _client
 
-            return _client
-        except SurrealDBError as e:
-            logger.warning("Can't get connection '%s': %s", name, e)
-            if _client is not None:
-                try:
-                    await _client.close()
-                except Exception:
-                    pass
-            raise SurrealDbConnectionError(f"Can't connect to the database: {e}")
-        except Exception as e:
-            logger.warning("Can't get connection '%s': %s", name, e)
-            if _client is not None:
-                try:
-                    await _client.close()
-                except Exception:
-                    pass
-            raise SurrealDbConnectionError("Can't connect to the database.")
+                # Keep legacy alias in sync
+                if name == "default":
+                    cls.__client = _client
+
+                return _client
+            except SurrealDBError as e:
+                logger.warning("Can't get connection '%s': %s", name, e)
+                if _client is not None:
+                    try:
+                        await _client.close()
+                    except Exception:
+                        pass  # Best-effort cleanup; original error is re-raised below
+                raise SurrealDbConnectionError(f"Can't connect to the database: {e}")
+            except Exception as e:
+                logger.warning("Can't get connection '%s': %s", name, e)
+                if _client is not None:
+                    try:
+                        await _client.close()
+                    except Exception:
+                        pass  # Best-effort cleanup; original error is re-raised below
+                raise SurrealDbConnectionError("Can't connect to the database.")
 
     @classmethod
     async def get_ws_client(cls, name: str | None = None) -> WebSocketConnection:
@@ -715,7 +727,7 @@ class SurrealDBConnectionManager:
         Create a transaction context manager for atomic operations.
 
         Usage:
-            async with SurrealDBConnectionManager.transaction() as tx:
+            async with await SurrealDBConnectionManager.transaction() as tx:
                 user = User(name="Alice")
                 await user.save(tx=tx)
                 order = Order(user_id=user.id)

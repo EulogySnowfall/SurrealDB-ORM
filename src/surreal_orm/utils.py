@@ -3,11 +3,39 @@ import functools
 import logging
 import random
 import re
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+# Shared identifier validation regex — used by query_set, model_base, aggregations, etc.
+SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def validate_identifier(name: str, context: str = "identifier") -> None:
+    """Validate that a string is a safe SurrealQL identifier.
+
+    Raises:
+        ValueError: If the name contains characters outside ``[a-zA-Z0-9_]``
+            or does not start with a letter/underscore.
+    """
+    if not SAFE_IDENTIFIER_RE.match(name):
+        raise ValueError(
+            f"Invalid {context}: {name!r}. "
+            "Only letters, digits, and underscores are allowed "
+            "(must start with a letter or underscore)."
+        )
+
+
+def escape_single_quotes(value: str) -> str:
+    """Escape single quotes for embedding in SurrealQL string literals.
+
+    SurrealDB uses doubled single quotes (``''``) for escaping inside
+    single-quoted strings.
+    """
+    return value.replace("'", "''")
 
 
 def remove_quotes_for_variables(query: str) -> str:

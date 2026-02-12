@@ -103,4 +103,4 @@ class SearchHighlight:
         return hash(("SearchHighlight", self.open_tag, self.close_tag, self.ref))
 
 
-__all__ = ["SearchScore", "SearchHighlight"]
+__all__ = ["SearchHighlight", "SearchScore"]

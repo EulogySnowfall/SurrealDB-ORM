@@ -14,7 +14,6 @@ import pytest
 from surreal_orm.connection_config import ConnectionConfig
 from surreal_orm.connection_manager import SurrealDBConnectionManager
 
-
 # ---------------------------------------------------------------------------
 # Fixture: clean registry before each test
 # ---------------------------------------------------------------------------

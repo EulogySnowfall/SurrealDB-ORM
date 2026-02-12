@@ -771,10 +771,10 @@ def parse_define_event(statement: str) -> EventState:
 
 
 __all__ = [
-    "parse_define_field",
-    "parse_define_table",
-    "parse_define_index",
     "parse_define_access",
     "parse_define_analyzer",
     "parse_define_event",
+    "parse_define_field",
+    "parse_define_index",
+    "parse_define_table",
 ]

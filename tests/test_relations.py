@@ -1,7 +1,7 @@
 """Tests for ORM v0.4.0 features: relations and graph traversal."""
 
 from pydantic import Field
-from src.surreal_orm.model_base import BaseSurrealModel
+
 from src.surreal_orm.fields.relation import (
     ForeignKey,
     ManyToMany,
@@ -13,7 +13,7 @@ from src.surreal_orm.fields.relation import (
     is_many_to_many,
     is_relation_field,
 )
-
+from src.surreal_orm.model_base import BaseSurrealModel
 
 # ==================== Test Models ====================
 
@@ -288,7 +288,7 @@ def test_queryset_has_select_related() -> None:
     """Test that QuerySet has select_related method."""
     qs = User.objects()
     assert hasattr(qs, "select_related")
-    assert callable(getattr(qs, "select_related"))
+    assert callable(qs.select_related)
 
 
 def test_queryset_select_related_is_chainable() -> None:
@@ -308,7 +308,7 @@ def test_queryset_has_prefetch_related() -> None:
     """Test that QuerySet has prefetch_related method."""
     qs = User.objects()
     assert hasattr(qs, "prefetch_related")
-    assert callable(getattr(qs, "prefetch_related"))
+    assert callable(qs.prefetch_related)
 
 
 def test_queryset_prefetch_related_is_chainable() -> None:
@@ -328,7 +328,7 @@ def test_queryset_has_traverse() -> None:
     """Test that QuerySet has traverse method."""
     qs = User.objects()
     assert hasattr(qs, "traverse")
-    assert callable(getattr(qs, "traverse"))
+    assert callable(qs.traverse)
 
 
 def test_queryset_traverse_is_chainable() -> None:
@@ -348,7 +348,7 @@ def test_queryset_has_graph_query() -> None:
     """Test that QuerySet has graph_query method."""
     qs = User.objects()
     assert hasattr(qs, "graph_query")
-    assert callable(getattr(qs, "graph_query"))
+    assert callable(qs.graph_query)
 
 
 def test_queryset_chain_filter_and_traverse() -> None:
@@ -364,19 +364,19 @@ def test_queryset_chain_filter_and_traverse() -> None:
 def test_model_has_relate_method() -> None:
     """Test that BaseSurrealModel has relate method."""
     assert hasattr(User, "relate")
-    assert callable(getattr(User, "relate"))
+    assert callable(User.relate)
 
 
 def test_model_has_remove_relation_method() -> None:
     """Test that BaseSurrealModel has remove_relation method."""
     assert hasattr(User, "remove_relation")
-    assert callable(getattr(User, "remove_relation"))
+    assert callable(User.remove_relation)
 
 
 def test_model_has_get_related_method() -> None:
     """Test that BaseSurrealModel has get_related method."""
     assert hasattr(User, "get_related")
-    assert callable(getattr(User, "get_related"))
+    assert callable(User.get_related)
 
 
 def test_model_relate_signature() -> None:
