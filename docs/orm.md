@@ -859,13 +859,13 @@ async with User.objects().filter(role="admin").live() as stream:
 
 ### ModelChangeEvent Properties
 
-| Property         | Type           | Description                                     |
-| ---------------- | -------------- | ----------------------------------------------- |
-| `action`         | `LiveAction`   | CREATE, UPDATE, or DELETE                        |
-| `instance`       | `T`            | Full Pydantic model instance via `from_db()`     |
-| `record_id`      | `str`          | Affected record ID (e.g., `"users:abc123"`)      |
-| `changed_fields` | `list[str]`    | Changed field names (only in DIFF mode)          |
-| `raw`            | `dict`         | Original raw data from the database              |
+| Property         | Type         | Description                                  |
+| ---------------- | ------------ | -------------------------------------------- |
+| `action`         | `LiveAction` | CREATE, UPDATE, or DELETE                    |
+| `instance`       | `T`          | Full Pydantic model instance via `from_db()` |
+| `record_id`      | `str`        | Affected record ID (e.g., `"users:abc123"`)  |
+| `changed_fields` | `list[str]`  | Changed field names (only in DIFF mode)      |
+| `raw`            | `dict`       | Original raw data from the database          |
 
 ### With Filters
 
