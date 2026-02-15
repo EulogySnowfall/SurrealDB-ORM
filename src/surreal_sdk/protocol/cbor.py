@@ -96,16 +96,17 @@ def _preprocess_for_cbor(data: Any) -> Any:
     ``NONE`` (absent/unset), and SCHEMAFULL tables with ``option<T>`` fields
     reject ``NULL``.
 
-    This function recursively walks dicts and lists, replacing Python ``None``
-    with ``CBORTag(TAG_NONE, None)`` so that SurrealDB receives the correct
-    NONE value instead of NULL.
+    This function recursively walks common container types (dicts, lists,
+    tuples, sets), replacing Python ``None`` with ``CBORTag(TAG_NONE, None)``
+    so that SurrealDB receives the correct NONE value instead of NULL.
     """
     if data is None:
         return CBORTag(TAG_NONE, None)
     if isinstance(data, dict):
         return {k: _preprocess_for_cbor(v) for k, v in data.items()}
-    if isinstance(data, list):
-        return [_preprocess_for_cbor(item) for item in data]
+    if isinstance(data, (list, tuple, set, frozenset)):
+        converted = [_preprocess_for_cbor(item) for item in data]
+        return type(data)(converted)
     return data
 
 

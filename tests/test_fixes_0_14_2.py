@@ -237,8 +237,8 @@ class TestTokenCache:
 
     def test_invalidate_cache_specific_token(self) -> None:
         """invalidate_token_cache(token) should remove only that token."""
-        AuthenticatedUserMixin._token_cache["tok1"] = ("users:1", time.time() + 300)
-        AuthenticatedUserMixin._token_cache["tok2"] = ("users:2", time.time() + 300)
+        AuthenticatedUserMixin._token_cache["tok1"] = ("users:1", time.monotonic() + 300)
+        AuthenticatedUserMixin._token_cache["tok2"] = ("users:2", time.monotonic() + 300)
 
         AuthenticatedUserMixin.invalidate_token_cache("tok1")
 
@@ -247,8 +247,8 @@ class TestTokenCache:
 
     def test_invalidate_cache_all(self) -> None:
         """invalidate_token_cache() without args should clear all."""
-        AuthenticatedUserMixin._token_cache["tok1"] = ("users:1", time.time() + 300)
-        AuthenticatedUserMixin._token_cache["tok2"] = ("users:2", time.time() + 300)
+        AuthenticatedUserMixin._token_cache["tok1"] = ("users:1", time.monotonic() + 300)
+        AuthenticatedUserMixin._token_cache["tok2"] = ("users:2", time.monotonic() + 300)
 
         AuthenticatedUserMixin.invalidate_token_cache()
 
@@ -294,7 +294,7 @@ class TestTokenCache:
             password: Encrypted
 
         # Pre-populate cache
-        TestUser._token_cache["my_token"] = ("TestUser:cached", time.time() + 300)
+        TestUser._token_cache["my_token"] = ("TestUser:cached", time.monotonic() + 300)
 
         mock_ephemeral = AsyncMock()
         mock_ephemeral.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=True, raw={}))
@@ -319,7 +319,7 @@ class TestTokenCache:
             password: Encrypted
 
         # Pre-populate cache with expired entry
-        TestUser._token_cache["my_token"] = ("TestUser:old", time.time() - 10)
+        TestUser._token_cache["my_token"] = ("TestUser:old", time.monotonic() - 10)
 
         mock_ephemeral = AsyncMock()
         mock_ephemeral.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=True, raw={}))

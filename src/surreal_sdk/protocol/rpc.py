@@ -28,6 +28,8 @@ def _strip_none_values(data: Any) -> Any:
         return {k: _strip_none_values(v) for k, v in data.items() if v is not None}
     if isinstance(data, list):
         return [_strip_none_values(item) for item in data]
+    if isinstance(data, tuple):
+        return tuple(_strip_none_values(item) for item in data)
     return data
 
 

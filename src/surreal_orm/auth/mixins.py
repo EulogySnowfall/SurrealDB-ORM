@@ -68,6 +68,7 @@ class AuthenticatedUserMixin:
     # --- Token cache (shared across all subclasses) ---
     _token_cache: ClassVar[dict[str, tuple[str, float]]] = {}
     _token_cache_ttl: ClassVar[int] = 300  # seconds
+    _token_cache_max_size: ClassVar[int] = 1000  # max cached tokens
 
     # Stub for mypy — overridden by BaseSurrealModel.get_connection_name()
     @classmethod
@@ -75,15 +76,18 @@ class AuthenticatedUserMixin:
         return "default"
 
     @classmethod
-    def configure_token_cache(cls, *, ttl: int = 300) -> None:
+    def configure_token_cache(cls, *, ttl: int = 300, max_size: int = 1000) -> None:
         """
         Configure the in-memory token validation cache.
 
         Args:
             ttl: Time-to-live in seconds for cached entries (default 300).
                  Set to 0 to disable caching.
+            max_size: Maximum number of cached tokens (default 1000).
+                      Oldest entries are evicted when the limit is reached.
         """
-        cls._token_cache_ttl = ttl
+        AuthenticatedUserMixin._token_cache_ttl = ttl
+        AuthenticatedUserMixin._token_cache_max_size = max_size
 
     @classmethod
     def invalidate_token_cache(cls, token: str | None = None) -> None:
@@ -467,7 +471,7 @@ class AuthenticatedUserMixin:
             cached = cls._token_cache.get(token)
             if cached is not None:
                 record_id, expires_at = cached
-                if time.time() < expires_at:
+                if time.monotonic() < expires_at:
                     return record_id
                 # Expired — remove stale entry
                 cls._token_cache.pop(token, None)
@@ -487,9 +491,13 @@ class AuthenticatedUserMixin:
 
             record_id = str(first_qr.result)
 
-            # --- Store in cache ---
+            # --- Store in cache (with eviction) ---
             if use_cache and cls._token_cache_ttl > 0:
-                cls._token_cache[token] = (record_id, time.time() + cls._token_cache_ttl)
+                # Evict oldest entry if cache is full
+                if len(cls._token_cache) >= cls._token_cache_max_size:
+                    oldest_key = next(iter(cls._token_cache))
+                    cls._token_cache.pop(oldest_key, None)
+                cls._token_cache[token] = (record_id, time.monotonic() + cls._token_cache_ttl)
 
             return record_id
         except (SurrealDBError, AuthenticationError, QueryError):
