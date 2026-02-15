@@ -123,6 +123,17 @@ class SurrealDBConnectionManager:
             database=database,
             protocol=protocol,
         )
+
+        # Invalidate cached clients when config changes so get_client()
+        # creates a fresh connection with the new settings.
+        old_config = cls._configs.get(name)
+        if old_config is not None and old_config != config:
+            cls._clients.pop(name, None)
+            cls._ws_clients.pop(name, None)
+            if name == "default":
+                cls.__client = None
+                cls.__ws_client = None
+
         cls._configs[name] = config
 
         # Keep legacy class vars in sync when touching "default"

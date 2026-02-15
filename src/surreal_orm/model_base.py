@@ -712,6 +712,26 @@ class BaseSurrealModel(BaseModel):
         return any(isinstance(v, SurrealFunc) for v in data.values())
 
     @staticmethod
+    def _has_complex_nested_data(data: dict[str, Any]) -> bool:
+        """Check if any values contain deeply nested structures.
+
+        Returns ``True`` if any value is a dict with nested dicts/lists, or a
+        list containing dicts.  These structures can trigger SurrealDB v2.6
+        CBOR parameter-binding issues where nested objects are silently
+        replaced with empty objects (GitHub Issue #55).
+        """
+        for value in data.values():
+            if isinstance(value, dict) and value:
+                for v in value.values():
+                    if isinstance(v, (dict, list)):
+                        return True
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        return True
+        return False
+
+    @staticmethod
     def _build_set_clause(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """
         Build a ``SET field = value, ...`` clause from a data dict.
@@ -735,16 +755,19 @@ class BaseSurrealModel(BaseModel):
                 variables[var_name] = value
         return ", ".join(set_parts), variables
 
-    async def _execute_save_with_funcs(
+    async def _execute_save_using_query(
         self,
         tx: "BaseTransaction | None",
         table: str,
         id: str | None,
         data: dict[str, Any],
-        created: bool,
         extra_vars: dict[str, Any] | None = None,
     ) -> None:
-        """Execute save using raw query when data contains SurrealFunc values."""
+        """Build a SET-clause query from *data* and execute it.
+
+        Shared implementation for :meth:`_execute_save_with_funcs` and
+        :meth:`_execute_save_with_set_clause`.
+        """
         set_clause, variables = self._build_set_clause(data)
         if extra_vars:
             conflicting = set(variables) & set(extra_vars)
@@ -782,6 +805,39 @@ class BaseSurrealModel(BaseModel):
 
         self._db_persisted = True
 
+    async def _execute_save_with_funcs(
+        self,
+        tx: "BaseTransaction | None",
+        table: str,
+        id: str | None,
+        data: dict[str, Any],
+        created: bool,
+        extra_vars: dict[str, Any] | None = None,
+    ) -> None:
+        """Execute save using raw query when data contains SurrealFunc values."""
+        await self._execute_save_using_query(tx, table, id, data, extra_vars)
+
+    async def _execute_save_with_set_clause(
+        self,
+        tx: "BaseTransaction | None",
+        table: str,
+        id: str | None,
+        data: dict[str, Any],
+        created: bool,
+        extra_vars: dict[str, Any] | None = None,
+    ) -> None:
+        """Execute save using explicit SET clause for complex nested data.
+
+        This path is used when data contains deeply nested dicts/lists to work
+        around SurrealDB v2.6 CBOR variable-binding limitations where nested
+        objects are silently replaced with empty objects (GitHub Issue #55).
+
+        Each field is bound as a separate ``$_sv_<field>`` query variable via
+        :meth:`_build_set_clause`, which SurrealDB handles more reliably than
+        a single monolithic data parameter.
+        """
+        await self._execute_save_using_query(tx, table, id, data, extra_vars)
+
     async def _execute_save(
         self,
         tx: "BaseTransaction | None",
@@ -796,6 +852,14 @@ class BaseSurrealModel(BaseModel):
         if self._has_surreal_funcs(data):
             await self._execute_save_with_funcs(tx, table, id, data, created, extra_vars)
             return
+
+        # If data contains complex nested dicts/lists, use SET-clause path
+        # to work around SurrealDB v2.6 CBOR variable-binding limitations
+        # (GitHub Issue #55).
+        if self._has_complex_nested_data(data):
+            await self._execute_save_with_set_clause(tx, table, id, data, created, extra_vars)
+            return
+
         if tx is not None:
             # Use transaction
             if self._db_persisted and id is not None:
@@ -1132,6 +1196,8 @@ class BaseSurrealModel(BaseModel):
         cls,
         query: str,
         variables: dict[str, Any] | None = None,
+        *,
+        inline_dicts: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Execute a raw SurrealQL query.
@@ -1143,6 +1209,10 @@ class BaseSurrealModel(BaseModel):
             query: The raw SurrealQL query string to execute.
             variables: Optional dictionary of variables to bind in the query.
                 Use $variable_name syntax in the query to reference them.
+            inline_dicts: If ``True``, automatically convert complex dict/list
+                variables to inline JSON in the query string.  Use this when
+                CBOR parameter binding fails for large nested structures
+                (SurrealDB v2.6 limitation, GitHub Issue #55).
 
         Returns:
             list[dict[str, Any]]: Raw query results as a list of dictionaries.
@@ -1155,6 +1225,13 @@ class BaseSurrealModel(BaseModel):
             results = await User.raw_query(
                 "SELECT * FROM users WHERE status = $status AND age > $min_age",
                 variables={"status": "active", "min_age": 18}
+            )
+
+            # Large nested dict with inline_dicts
+            results = await User.raw_query(
+                "UPDATE game_tables:abc SET game_state = $state;",
+                variables={"state": large_nested_dict},
+                inline_dicts=True,
             )
 
             # Complex graph query
@@ -1172,7 +1249,13 @@ class BaseSurrealModel(BaseModel):
             Use this for edge cases where the standard QuerySet API is insufficient.
         """
         client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
-        vars_ = variables or {}
+        vars_ = dict(variables) if variables else {}
+
+        if inline_dicts and vars_:
+            from .utils import inline_dict_variables
+
+            query, vars_ = inline_dict_variables(query, vars_)
+
         start = _start_timer()
         result = await client.query(query, vars_)
         _log_query(query, vars_, _elapsed_ms(start))
