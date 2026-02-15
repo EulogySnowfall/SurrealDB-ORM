@@ -333,6 +333,35 @@ class TestTokenCache:
             assert result == "TestUser:new"
             mock_ephemeral.authenticate.assert_called_once()
 
+    async def test_validate_token_max_size_zero(self) -> None:
+        """max_size=0 should disable caching without raising StopIteration."""
+
+        class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER)
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        TestUser._token_cache.clear()
+        TestUser._token_cache_max_size = 0
+        TestUser._token_cache_ttl = 300
+
+        mock_ephemeral = AsyncMock()
+        mock_ephemeral.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=True, raw={}))
+        mock_first_qr = MagicMock(result="TestUser:abc")
+        mock_auth_result = MagicMock(first_result=mock_first_qr)
+        mock_ephemeral.query = AsyncMock(return_value=mock_auth_result)
+        mock_ephemeral.close = AsyncMock()
+
+        with patch.object(TestUser, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)):
+            result = await TestUser.validate_token("my_token")
+            assert result == "TestUser:abc"
+            # Cache should remain empty (caching disabled)
+            assert len(TestUser._token_cache) == 0
+
+        # Reset
+        TestUser._token_cache_max_size = 1000
+
 
 class TestValidateTokenLocal:
     """Tests for validate_token_local() — local JWT decode."""

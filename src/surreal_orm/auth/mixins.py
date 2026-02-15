@@ -87,7 +87,7 @@ class AuthenticatedUserMixin:
                       Oldest entries are evicted when the limit is reached.
         """
         AuthenticatedUserMixin._token_cache_ttl = ttl
-        AuthenticatedUserMixin._token_cache_max_size = max_size
+        AuthenticatedUserMixin._token_cache_max_size = max(0, max_size)
 
     @classmethod
     def invalidate_token_cache(cls, token: str | None = None) -> None:
@@ -492,9 +492,9 @@ class AuthenticatedUserMixin:
             record_id = str(first_qr.result)
 
             # --- Store in cache (with eviction) ---
-            if use_cache and cls._token_cache_ttl > 0:
+            if use_cache and cls._token_cache_ttl > 0 and cls._token_cache_max_size > 0:
                 # Evict oldest entry if cache is full
-                if len(cls._token_cache) >= cls._token_cache_max_size:
+                if len(cls._token_cache) >= cls._token_cache_max_size and cls._token_cache:
                     oldest_key = next(iter(cls._token_cache))
                     cls._token_cache.pop(oldest_key, None)
                 cls._token_cache[token] = (record_id, time.monotonic() + cls._token_cache_ttl)
