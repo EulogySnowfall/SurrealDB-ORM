@@ -10,7 +10,73 @@
 
 ---
 
-## Current Version: 0.14.0 (Beta)
+## Current Version: 0.14.2 (Beta)
+
+### What's New in 0.14.2
+
+- **CBOR None → NONE Encoding Fix** — Python `None` is now correctly encoded as SurrealDB `NONE` (absent field) instead of `NULL`
+
+  ```python
+  # Before (v0.14.1): None → CBOR null → SurrealDB NULL → rejected by option<T>
+  # After (v0.14.2): None → CBORTag(TAG_NONE) → SurrealDB NONE → accepted
+
+  class Player(BaseSurrealModel):
+      model_config = SurrealConfigDict(table_name="players", schema_mode="SCHEMAFULL")
+      nickname: str | None = None  # option<string> in SurrealDB
+
+  player = Player(nickname=None)
+  await player.save()  # Now works on SCHEMAFULL tables
+  ```
+
+  - `_preprocess_for_cbor()` recursively converts `None` to `CBORTag(TAG_NONE, None)` before `cbor2.dumps()`
+  - JSON protocol: `_strip_none_values()` strips None keys from dicts (JSON has no NONE concept)
+  - Fixes Issue #2 and likely Issue #4 (large nested dict parameter binding)
+
+- **Token Validation Cache** — In-memory TTL cache for `validate_token()` to avoid ephemeral HTTP connections
+
+  ```python
+  # Configure cache TTL (default: 300 seconds)
+  User.configure_token_cache(ttl=600)
+
+  # Cached validation — no network call on cache hit
+  record_id = await User.validate_token(token)  # First call: HTTP roundtrip
+  record_id = await User.validate_token(token)  # Cache hit: instant
+
+  # Local JWT decode — zero network calls (trusted backend only)
+  record_id = User.validate_token_local(token)
+
+  # Cache management
+  User.invalidate_token_cache(token)  # Invalidate specific token
+  User.invalidate_token_cache()       # Clear entire cache
+  ```
+
+  - `_token_cache: ClassVar[dict]` with `(record_id, expires_at)` entries
+  - `validate_token_local()` decodes JWT payload locally, checks `exp` claim
+  - `configure_token_cache(ttl=)` and `invalidate_token_cache(token=)` classmethods
+
+- **`validate_assignment=True`** — Pydantic now validates field assignments on `BaseSurrealModel`
+
+  ```python
+  event = Event(started_at=datetime.now())
+  event.started_at = "2026-02-13T10:00:00Z"  # Auto-coerced to datetime
+  assert isinstance(event.started_at, datetime)  # True
+  ```
+
+- **`flexible_fields` Config** — Discoverable alternative to `json_schema_extra` for FLEXIBLE TYPE
+
+  ```python
+  class GameSession(BaseSurrealModel):
+      model_config = SurrealConfigDict(
+          table_name="game_sessions",
+          schema_mode="SCHEMAFULL",
+          flexible_fields=["game_state", "metadata"],  # NEW
+      )
+      game_state: dict | None = None   # → DEFINE FIELD FLEXIBLE TYPE option<object>
+      metadata: dict | None = None     # → DEFINE FIELD FLEXIBLE TYPE option<object>
+  ```
+
+  - `SurrealConfigDict(flexible_fields=["field1", "field2"])` in model config
+  - Migration introspector checks both `json_schema_extra` and `flexible_fields`
 
 ### What's New in 0.14.0
 
@@ -1515,6 +1581,17 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `TableType.RELATION` and `TableType.ANY` enum values
 - [x] `parse_define_table()` extracts AS, RELATION IN/OUT/ENFORCED clauses
 - [x] `DatabaseIntrospector` parses events, relations; `ModelCodeGenerator` generates GeoField
+
+### Completed (0.14.2) - Production Fixes
+
+- [x] CBOR None → NONE encoding (`_preprocess_for_cbor()` in `cbor.py`)
+- [x] JSON None stripping (`_strip_none_values()` in `rpc.py`)
+- [x] Token validation cache with TTL (`_token_cache` in `auth/mixins.py`)
+- [x] `validate_token_local()` for local JWT decode
+- [x] `configure_token_cache()` and `invalidate_token_cache()` classmethods
+- [x] `validate_assignment=True` on `BaseSurrealModel`
+- [x] `flexible_fields` in `SurrealConfigDict` + introspector support
+- [x] 38 new unit tests for all fixes
 
 ### Completed (0.14.0) - Testing & Developer Experience
 

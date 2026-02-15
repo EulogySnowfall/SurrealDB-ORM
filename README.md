@@ -13,6 +13,44 @@
 
 ---
 
+## What's New in 0.14.2
+
+### Production Fixes
+
+Five improvements from real production usage (FastAPI + SurrealDB, multi-pod K8s):
+
+- **CBOR None → NONE Encoding** — Python `None` is now correctly encoded as SurrealDB `NONE` (absent field) instead of `NULL`. Fixes `option<T>` rejection on SCHEMAFULL tables and large nested dict parameter binding failures.
+
+- **Token Validation Cache** — `validate_token()` now uses an in-memory TTL cache (default 300s) to avoid ephemeral HTTP connections on every call. New `validate_token_local()` decodes JWT locally without any network call.
+
+  ```python
+  # Cached validation — no network call on cache hit
+  record_id = await User.validate_token(token)
+
+  # Local JWT decode — zero network calls (trusted backend only)
+  record_id = User.validate_token_local(token)
+
+  # Cache management
+  User.configure_token_cache(ttl=600)
+  User.invalidate_token_cache()
+  ```
+
+- **`validate_assignment=True`** — Pydantic now auto-validates field assignments, so `event.started_at = "2026-02-13T10:00:00Z"` is auto-coerced to `datetime`.
+
+- **`flexible_fields` Config** — Discoverable way to mark fields as `FLEXIBLE TYPE` in migrations:
+
+  ```python
+  class GameSession(BaseSurrealModel):
+      model_config = SurrealConfigDict(
+          table_name="game_sessions",
+          schema_mode="SCHEMAFULL",
+          flexible_fields=["game_state", "metadata"],
+      )
+      game_state: dict | None = None   # → DEFINE FIELD FLEXIBLE TYPE option<object>
+  ```
+
+---
+
 ## What's New in 0.14.1
 
 ### Typed Functions API Documentation
