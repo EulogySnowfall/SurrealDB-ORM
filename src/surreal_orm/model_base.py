@@ -174,6 +174,9 @@ class SurrealConfigDict(ConfigDict):
         relation_in: IN table(s) for TYPE RELATION constraint.
         relation_out: OUT table(s) for TYPE RELATION constraint.
         enforced: Whether the TYPE RELATION constraint is enforced.
+        flexible_fields: List of field names that should use ``FLEXIBLE TYPE``
+            in migrations.  FLEXIBLE allows nested structures (arrays inside
+            objects, etc.) that would otherwise be stripped by SCHEMAFULL tables.
     """
 
     primary_key: str | None
@@ -193,6 +196,7 @@ class SurrealConfigDict(ConfigDict):
     relation_in: str | list[str] | None
     relation_out: str | list[str] | None
     enforced: bool | None
+    flexible_fields: list[str] | None
 
 
 class BaseSurrealModel(BaseModel):
@@ -221,10 +225,12 @@ class BaseSurrealModel(BaseModel):
             password: str = Field(alias="password_hash")
     """
 
-    # Default config that enables alias support:
+    # Default config:
     # - populate_by_name: Accept both field name and alias when loading from DB
+    # - validate_assignment: Auto-validate field assignments (e.g., ISO string → datetime)
     model_config = ConfigDict(
         populate_by_name=True,
+        validate_assignment=True,
     )
 
     # Private attribute to track if this instance has been persisted to the database.

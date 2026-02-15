@@ -6,6 +6,31 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.14.2] - 2026-02-15
+
+### Fixed
+
+- **CBOR None → NONE Encoding** (HIGH) — Python `None` was encoded as CBOR `null` (SurrealDB `NULL`) instead of `CBORTag(TAG_NONE)` (SurrealDB `NONE`). This caused `option<T>` fields on SCHEMAFULL tables to reject updates with `None` values. `_preprocess_for_cbor()` now recursively converts `None` to `CBORTag(TAG_NONE, None)` before `cbor2.dumps()`.
+- **JSON Protocol None Handling** (HIGH) — Added `_strip_none_values()` to recursively strip `None` keys from dicts before JSON encoding, since JSON `null` maps to SurrealDB `NULL` and JSON has no `NONE` concept.
+- **`validate_token()` Connection Overhead** (HIGH) — Added in-memory TTL cache (default 300s) to avoid creating an ephemeral HTTP connection on every call. Under concurrent web traffic, this previously caused connection refusals.
+
+### Added
+
+- **`validate_token_local()`** — New classmethod that decodes JWT payload locally (base64, no crypto verification) and extracts record ID from claims. Checks `exp` for expiry. Zero network calls — for trusted backend scenarios only.
+- **`configure_token_cache(ttl=)`** — Classmethod to configure token validation cache TTL.
+- **`invalidate_token_cache(token=)`** — Classmethod to clear cached token(s).
+- **`flexible_fields` Config** — `SurrealConfigDict(flexible_fields=["game_state"])` as discoverable alternative to `Field(json_schema_extra={"flexible": True})` for migration `FLEXIBLE TYPE` generation.
+- **38 new unit tests** — Full coverage for CBOR NONE encoding, JSON None stripping, token cache, `validate_token_local()`, `flexible_fields` introspection, and `validate_assignment` behavior.
+
+### Changed
+
+- **`validate_assignment=True`** — Enabled on `BaseSurrealModel.model_config`. Pydantic now validates field assignments, auto-coercing ISO 8601 strings to `datetime` objects on `model.field = "2026-02-13T10:00:00Z"`.
+- `_introspect_field()` now accepts `model` parameter and checks `model_config.flexible_fields` in addition to `json_schema_extra`.
+- `test_null_roundtrip` updated to expect absent field (NONE) instead of NULL value.
+- Version bump to 0.14.2
+
+---
+
 ## [0.14.1] - 2026-02-11
 
 ### Added

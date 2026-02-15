@@ -87,6 +87,29 @@ class Duration:
         return self.value
 
 
+def _preprocess_for_cbor(data: Any) -> Any:
+    """
+    Pre-process data before CBOR encoding to handle None → NONE correctly.
+
+    cbor2 natively encodes ``None`` as CBOR null, which SurrealDB interprets
+    as ``NULL``.  SurrealDB distinguishes ``NULL`` (explicit null) from
+    ``NONE`` (absent/unset), and SCHEMAFULL tables with ``option<T>`` fields
+    reject ``NULL``.
+
+    This function recursively walks common container types (dicts, lists,
+    tuples, sets), replacing Python ``None`` with ``CBORTag(TAG_NONE, None)``
+    so that SurrealDB receives the correct NONE value instead of NULL.
+    """
+    if data is None:
+        return CBORTag(TAG_NONE, None)
+    if isinstance(data, dict):
+        return {k: _preprocess_for_cbor(v) for k, v in data.items()}
+    if isinstance(data, (list, tuple, set, frozenset)):
+        converted = [_preprocess_for_cbor(item) for item in data]
+        return type(data)(converted)
+    return data
+
+
 def _cbor_default_encoder(encoder: Any, value: Any) -> None:
     """
     Custom CBOR encoder for SurrealDB types.
@@ -118,9 +141,6 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
     elif isinstance(value, Duration):
         # Encode Duration as tagged string
         encoder.encode(CBORTag(TAG_STRING_DURATION, value.value))
-    elif value is None:
-        # SurrealDB uses a special tag for None
-        encoder.encode(CBORTag(TAG_NONE, None))
     else:
         # Fall back to raising TypeError for unsupported types
         raise TypeError(f"Cannot CBOR encode {type(value)}")
@@ -164,13 +184,17 @@ def encode(data: Any) -> bytes:
     """
     Encode data to CBOR bytes using SurrealDB's custom tags.
 
+    Pre-processes the data to convert Python ``None`` values to SurrealDB's
+    ``NONE`` (CBORTag 6) instead of CBOR null (which maps to SurrealDB ``NULL``).
+
     Args:
         data: Python object to encode
 
     Returns:
         CBOR-encoded bytes
     """
-    result: bytes = cbor2.dumps(data, default=_cbor_default_encoder)
+    processed = _preprocess_for_cbor(data)
+    result: bytes = cbor2.dumps(processed, default=_cbor_default_encoder)
     return result
 
 

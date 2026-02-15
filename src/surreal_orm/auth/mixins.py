@@ -5,7 +5,12 @@ Provides signup/signin methods for USER type models using
 SurrealDB's native JWT authentication.
 """
 
-from typing import TYPE_CHECKING, Any, Self
+from __future__ import annotations
+
+import base64
+import json
+import time
+from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from surreal_sdk.exceptions import AuthenticationError, QueryError, SurrealDBError
 
@@ -23,6 +28,10 @@ class AuthenticatedUserMixin:
     Each auth operation (signup, signin, authenticate_token) creates an
     **ephemeral** connection that is closed after use, leaving the root
     singleton connection untouched.
+
+    Token validation results are cached in-memory (TTL-based) to avoid
+    creating an ephemeral connection on every request.  Configure via
+    :meth:`configure_token_cache`.
 
     Example:
         class User(AuthenticatedUserMixin, BaseSurrealModel):
@@ -48,10 +57,18 @@ class AuthenticatedUserMixin:
             email="test@example.com", password="secret"
         )
 
-        # Validate a token and get the record ID
+        # Validate a token and get the record ID (cached)
         record_id = await User.validate_token(token)
         # "users:johndoe"
+
+        # Lightweight local validation (no network call)
+        record_id = User.validate_token_local(token)
     """
+
+    # --- Token cache (shared across all subclasses) ---
+    _token_cache: ClassVar[dict[str, tuple[str, float]]] = {}
+    _token_cache_ttl: ClassVar[int] = 300  # seconds
+    _token_cache_max_size: ClassVar[int] = 1000  # max cached tokens
 
     # Stub for mypy — overridden by BaseSurrealModel.get_connection_name()
     @classmethod
@@ -59,7 +76,84 @@ class AuthenticatedUserMixin:
         return "default"
 
     @classmethod
-    async def _create_auth_client(cls) -> "HTTPConnection":
+    def configure_token_cache(cls, *, ttl: int = 300, max_size: int = 1000) -> None:
+        """
+        Configure the in-memory token validation cache.
+
+        Args:
+            ttl: Time-to-live in seconds for cached entries (default 300).
+                 Set to 0 to disable caching.
+            max_size: Maximum number of cached tokens (default 1000).
+                      Oldest entries are evicted when the limit is reached.
+        """
+        AuthenticatedUserMixin._token_cache_ttl = ttl
+        AuthenticatedUserMixin._token_cache_max_size = max(0, max_size)
+
+    @classmethod
+    def invalidate_token_cache(cls, token: str | None = None) -> None:
+        """
+        Invalidate cached token validation results.
+
+        Args:
+            token: Specific token to invalidate.  If ``None``, clears the
+                   entire cache.
+        """
+        if token is None:
+            cls._token_cache.clear()
+        else:
+            cls._token_cache.pop(token, None)
+
+    @classmethod
+    def validate_token_local(cls, token: str) -> str | None:
+        """
+        Decode a JWT token locally and return the record ID.
+
+        This performs **no network call** and **no cryptographic signature
+        verification**.  It simply base64-decodes the JWT payload, extracts
+        the record ID (``ID`` claim), and checks the ``exp`` claim for
+        expiry.
+
+        Use this in **trusted backend** scenarios where the token was already
+        validated at the edge (e.g., API gateway) and you only need the
+        record ID for routing/context.
+
+        Args:
+            token: JWT token string (header.payload.signature)
+
+        Returns:
+            Record ID string (e.g., ``"users:abc123"``) or ``None`` if the
+            token is malformed or expired.
+        """
+        try:
+            parts = token.split(".")
+            if len(parts) != 3:
+                return None
+
+            # Decode the payload (second part) with padding fix
+            payload_b64 = parts[1]
+            padding = 4 - len(payload_b64) % 4
+            if padding != 4:
+                payload_b64 += "=" * padding
+
+            payload_bytes = base64.urlsafe_b64decode(payload_b64)
+            claims = json.loads(payload_bytes)
+
+            # Check expiry
+            exp = claims.get("exp")
+            if exp is not None and time.time() > exp:
+                return None
+
+            # Extract record ID — SurrealDB uses "ID" claim
+            record_id = claims.get("ID") or claims.get("id")
+            if record_id is None:
+                return None
+
+            return str(record_id)
+        except Exception:
+            return None
+
+    @classmethod
+    async def _create_auth_client(cls) -> HTTPConnection:
         """
         Create an isolated HTTP connection for auth operations.
 
@@ -343,6 +437,8 @@ class AuthenticatedUserMixin:
     async def validate_token(
         cls,
         token: str,
+        *,
+        use_cache: bool = True,
     ) -> str | None:
         """
         Validate a JWT token and return the record ID.
@@ -351,10 +447,16 @@ class AuthenticatedUserMixin:
         only validates the token and returns the ``$auth`` record ID without
         fetching the full user record.
 
-        An ephemeral connection is used so the root singleton is not affected.
+        Results are cached in-memory (default TTL 300 s) to avoid creating an
+        ephemeral HTTP connection on every call.  Disable with
+        ``use_cache=False`` or ``configure_token_cache(ttl=0)``.
+
+        An ephemeral connection is used on cache miss so the root singleton
+        is not affected.
 
         Args:
             token: JWT token from previous signup/signin
+            use_cache: Whether to use the in-memory cache (default ``True``)
 
         Returns:
             Record ID string (e.g., ``"users:johndoe"``) if valid, None otherwise
@@ -364,6 +466,17 @@ class AuthenticatedUserMixin:
             if record_id:
                 print(f"Token belongs to {record_id}")
         """
+        # --- Cache hit ---
+        if use_cache and cls._token_cache_ttl > 0:
+            cached = cls._token_cache.get(token)
+            if cached is not None:
+                record_id, expires_at = cached
+                if time.monotonic() < expires_at:
+                    return record_id
+                # Expired — remove stale entry
+                cls._token_cache.pop(token, None)
+
+        # --- Cache miss — ephemeral connection ---
         client = await cls._create_auth_client()
         try:
             response = await client.authenticate(token)
@@ -376,7 +489,17 @@ class AuthenticatedUserMixin:
             if first_qr is None or first_qr.result is None:
                 return None
 
-            return str(first_qr.result)
+            record_id = str(first_qr.result)
+
+            # --- Store in cache (with eviction) ---
+            if use_cache and cls._token_cache_ttl > 0 and cls._token_cache_max_size > 0:
+                # Evict oldest entry if cache is full
+                if len(cls._token_cache) >= cls._token_cache_max_size and cls._token_cache:
+                    oldest_key = next(iter(cls._token_cache))
+                    cls._token_cache.pop(oldest_key, None)
+                cls._token_cache[token] = (record_id, time.monotonic() + cls._token_cache_ttl)
+
+            return record_id
         except (SurrealDBError, AuthenticationError, QueryError):
             return None
         finally:
