@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import json
 import logging
 import random
 import re
@@ -155,6 +156,84 @@ def parse_record_id(full_id: str) -> tuple[str | None, str]:
         id_part = id_part[1:-1].replace("``", "`")
 
     return table, id_part
+
+
+def _is_complex_value(value: Any) -> bool:
+    """Check if a value is a complex nested dict/list that may fail CBOR variable binding.
+
+    A value is considered "complex" if it's a dict containing any nested dict
+    or list values, or a list containing dicts.  These structures can trigger
+    SurrealDB v2.6 CBOR parameter-binding issues (GitHub Issue #55).
+    """
+    if isinstance(value, dict):
+        for v in value.values():
+            if isinstance(v, (dict, list)):
+                return True
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                return True
+    return False
+
+
+class _SurrealJSONEncoder(json.JSONEncoder):
+    """JSON encoder that handles datetime, Decimal, UUID for SurrealQL inlining."""
+
+    def default(self, obj: Any) -> Any:
+        from datetime import date, datetime, time
+        from decimal import Decimal
+        from uuid import UUID
+
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if isinstance(obj, date):
+            return obj.isoformat()
+        if isinstance(obj, time):
+            return obj.isoformat()
+        if isinstance(obj, Decimal):
+            return float(obj)
+        if isinstance(obj, UUID):
+            return str(obj)
+        return super().default(obj)
+
+
+def inline_dict_variables(
+    query: str,
+    variables: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Replace complex dict/list variables with inline JSON in a SurrealQL query.
+
+    For each variable that contains a deeply nested dict or list,
+    the ``$name`` reference in the query string is replaced with the JSON
+    literal and the variable is removed from the bindings dict.
+
+    This works around SurrealDB v2.6 CBOR variable-binding limitations
+    with complex nested objects (GitHub Issue #55).
+
+    .. warning::
+
+        Inlined values bypass CBOR parameter binding.  Only use this with
+        trusted, application-generated data — never with raw user input.
+
+    Args:
+        query: SurrealQL query string with ``$variable`` references.
+        variables: Variables dict. Not mutated — a new dict is returned.
+
+    Returns:
+        ``(modified_query, remaining_variables)`` tuple.
+    """
+    remaining: dict[str, Any] = {}
+    for key, value in variables.items():
+        if _is_complex_value(value):
+            try:
+                json_str = json.dumps(value, cls=_SurrealJSONEncoder)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Failed to serialize variable '{key}' to JSON for inlining: {e}") from e
+            # Replace $key with inline JSON (word-boundary to avoid partial matches)
+            query = re.sub(rf"\${re.escape(key)}\b", json_str, query)
+        else:
+            remaining[key] = value
+    return query, remaining
 
 
 def retry_on_conflict(

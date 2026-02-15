@@ -10,7 +10,39 @@
 
 ---
 
-## Current Version: 0.14.2 (Beta)
+## Current Version: 0.14.3 (Beta)
+
+### What's New in 0.14.3
+
+- **Large Nested Dict Parameter Binding Fix (Issue #55)** — Complex nested dicts are no longer silently saved as `{}` when using CBOR parameter binding
+
+  ```python
+  # Before (v0.14.2): large nested dicts saved as {} via CBOR parameter binding
+  table.game_state = {"players": [...], "deck": [...], "settings": {...}}
+  await table.save()  # game_state saved as {} in SurrealDB
+
+  # After (v0.14.3): automatic SET-clause routing for complex nested data
+  await table.save()  # game_state saved correctly
+  ```
+
+  - `_execute_save()` auto-detects complex nested data and routes through explicit `SET field = $_sv_field` queries instead of monolithic RPC `upsert`/`merge` calls
+  - `_has_complex_nested_data()` heuristic detects dicts containing nested dicts/lists, and lists containing dicts
+  - `_execute_save_with_set_clause()` reuses `_build_set_clause()` for reliable per-field variable binding
+
+- **`raw_query(inline_dicts=True)`** — Inline large nested dict variables directly in the query string
+
+  ```python
+  # Bypass CBOR variable binding for complex parameters
+  await GameTable.raw_query(
+      "UPDATE game_tables:abc SET game_state = $state;",
+      variables={"state": large_nested_dict},
+      inline_dicts=True,  # NEW — converts $state to inline JSON
+  )
+  ```
+
+  - `inline_dict_variables()` utility replaces `$var` references with JSON literals for complex variables
+  - Simple (non-dict) variables remain as parameterized bindings
+  - Word-boundary matching prevents `$state` from matching `$state_backup`
 
 ### What's New in 0.14.2
 

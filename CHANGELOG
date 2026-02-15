@@ -6,6 +6,32 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.14.3] - 2026-02-15
+
+### Fixed
+
+- **Large Nested Dict Parameter Binding** (Issue #55) — SurrealDB v2.6's CBOR parameter binding silently drops complex nested structures (dicts with nested dicts/lists, lists of dicts), receiving `{}` instead of actual data. Two fixes:
+  - **`save()` auto-routing**: `_execute_save()` now detects complex nested data via `_has_complex_nested_data()` and routes through a SET-clause query path (`_execute_save_with_set_clause()`) where each field is bound as a separate `$_sv_field` variable, avoiding the problematic single-object CBOR binding.
+  - **`raw_query(inline_dicts=True)`**: New parameter on `raw_query()` that serializes complex dict/list variables as inline JSON in the query string, bypassing CBOR parameter binding entirely.
+
+### Added
+
+- **`_has_complex_nested_data(data)`** — Static method on `BaseSurrealModel` that detects dicts containing nested dicts/lists or lists containing dicts.
+- **`_execute_save_with_set_clause()`** — New internal method that builds explicit `SET field = $_sv_field` queries for complex data, reusing `_build_set_clause()`.
+- **`inline_dicts` parameter on `raw_query()`** — When `True`, complex dict/list variables are inlined as JSON in the query string.
+- **`inline_dict_variables(query, variables)`** — New utility function in `utils.py` that replaces `$var` references with inline JSON for complex variables.
+- **`_is_complex_value(value)`** — New utility function detecting nested dicts/lists.
+- **`_SurrealJSONEncoder`** — JSON encoder in `utils.py` handling datetime, Decimal, UUID for inline serialization.
+- **Integration tests** — `tests/test_issue_55.py` covering SDK and ORM save/query paths against real SurrealDB.
+- **Unit tests** — `tests/test_issue_55_unit.py` covering detection heuristics, inline-dict helpers, JSON encoder, and save routing logic.
+
+### Changed
+
+- `_execute_save()` now checks `_has_complex_nested_data()` before the direct RPC path and routes to SET-clause path when needed.
+- Version bump to 0.14.3
+
+---
+
 ## [0.14.2] - 2026-02-15
 
 ### Fixed

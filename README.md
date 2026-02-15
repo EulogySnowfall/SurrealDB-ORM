@@ -13,6 +13,36 @@
 
 ---
 
+## What's New in 0.14.3
+
+### Fix: Large Nested Dict Parameter Binding (Issue #55)
+
+SurrealDB v2.6's CBOR parameter binding silently drops complex nested structures — dicts with nested dicts/lists arrive as `{}` on the server. Two fixes:
+
+- **`save()` auto-routing** — Complex nested data is now automatically routed through a SET-clause query path where each field is bound as a separate variable, avoiding the problematic single-object CBOR binding.
+
+  ```python
+  class GameSession(BaseSurrealModel):
+      model_config = SurrealConfigDict(table_name="game_sessions")
+      game_state: dict | None = None  # Large nested dict (~20KB+)
+
+  session = GameSession(game_state={"players": [...], "deck": [...], "nested": {...}})
+  await session.save()  # Automatically uses SET-clause path
+  ```
+
+- **`raw_query(inline_dicts=True)`** — New parameter that inlines complex dict/list variables as JSON in the query string, bypassing CBOR parameter binding entirely.
+
+  ```python
+  large_state = {"players": [...], "deck": [...], "melds": {...}}
+  results = await GameSession.raw_query(
+      "UPSERT game_sessions:test SET game_state = $state",
+      variables={"state": large_state},
+      inline_dicts=True,  # Inlines $state as JSON in the query
+  )
+  ```
+
+---
+
 ## What's New in 0.14.2
 
 ### Production Fixes
