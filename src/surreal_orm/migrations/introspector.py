@@ -99,7 +99,7 @@ class ModelIntrospector:
                 continue
 
             field_type_hint = type_hints.get(field_name, field_info.annotation)
-            field_state = self._introspect_field(field_name, field_type_hint, field_info)
+            field_state = self._introspect_field(field_name, field_type_hint, field_info, model)
             table_state.fields[field_name] = field_state
 
         # Generate access definition for USER tables
@@ -113,6 +113,7 @@ class ModelIntrospector:
         name: str,
         type_hint: Any,
         field_info: FieldInfo,
+        model: type["BaseSurrealModel"] | None = None,
     ) -> FieldState:
         """
         Extract field state from type hint and field info.
@@ -121,6 +122,7 @@ class ModelIntrospector:
             name: Field name
             type_hint: Type annotation for the field
             field_info: Pydantic FieldInfo
+            model: The model class (used to read ``flexible_fields`` from config)
 
         Returns:
             FieldState representing the field definition
@@ -175,12 +177,18 @@ class ModelIntrospector:
                 # Can't serialize factory, skip default
                 pass
 
-        # Check for flexible type
+        # Check for flexible type (via json_schema_extra or model_config.flexible_fields)
         flexible = False
         if hasattr(field_info, "json_schema_extra") and field_info.json_schema_extra:
             if isinstance(field_info.json_schema_extra, dict):
                 flexible_val = field_info.json_schema_extra.get("flexible", False)
                 flexible = flexible_val is True
+
+        if not flexible and model is not None:
+            model_config = getattr(model, "model_config", {})
+            flexible_fields = model_config.get("flexible_fields") or []
+            if name in flexible_fields:
+                flexible = True
 
         return FieldState(
             name=name,

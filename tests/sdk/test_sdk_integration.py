@@ -723,12 +723,19 @@ class TestHTTPDataTypes:
 
     @pytest.mark.integration
     async def test_null_roundtrip(self, http: HTTPConnection) -> None:
-        """None/null values survive a create/select round-trip."""
+        """None values are sent as NONE (absent) via CBOR, not NULL.
+
+        Since v0.14.2, Python None is encoded as CBORTag(TAG_NONE) which
+        SurrealDB treats as NONE (absent field), not NULL.  On SCHEMAFULL
+        tables with ``option<T>`` this is required — NULL is rejected but
+        NONE is accepted.
+        """
         await cleanup(http, "sdk_types_test")
         await http.create("sdk_types_test:1", {"value": None})
         resp = await http.select("sdk_types_test:1")
         assert resp.first is not None
-        assert resp.first["value"] is None
+        # Field is absent (NONE) — not stored as NULL
+        assert "value" not in resp.first
         await cleanup(http, "sdk_types_test")
 
     @pytest.mark.integration

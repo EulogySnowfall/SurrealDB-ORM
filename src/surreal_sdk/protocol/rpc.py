@@ -15,6 +15,22 @@ from uuid import UUID
 from . import cbor as cbor_module
 
 
+def _strip_none_values(data: Any) -> Any:
+    """
+    Recursively strip None values from dicts for JSON protocol.
+
+    JSON encodes ``None`` as ``null``, which SurrealDB interprets as ``NULL``.
+    SurrealDB's ``option<T>`` on SCHEMAFULL tables rejects ``NULL`` — it expects
+    ``NONE`` (absent field).  Since JSON has no ``NONE`` concept, the safest
+    approach is to omit keys whose value is ``None``.
+    """
+    if isinstance(data, dict):
+        return {k: _strip_none_values(v) for k, v in data.items() if v is not None}
+    if isinstance(data, list):
+        return [_strip_none_values(item) for item in data]
+    return data
+
+
 class SurrealJSONEncoder(json.JSONEncoder):
     """
     Custom JSON encoder for SurrealDB types.
@@ -66,8 +82,15 @@ class RPCRequest:
         }
 
     def to_json(self) -> str:
-        """Serialize to JSON string with custom encoder for datetime, UUID, etc."""
-        return json.dumps(self.to_dict(), cls=SurrealJSONEncoder)
+        """Serialize to JSON string with custom encoder for datetime, UUID, etc.
+
+        None values inside params are stripped (omitted) because JSON ``null``
+        maps to SurrealDB ``NULL``, which is rejected by ``option<T>`` on
+        SCHEMAFULL tables.  Omitting the key produces ``NONE`` (absent).
+        """
+        data = self.to_dict()
+        data["params"] = _strip_none_values(data["params"])
+        return json.dumps(data, cls=SurrealJSONEncoder)
 
     def to_cbor(self) -> bytes:
         """
