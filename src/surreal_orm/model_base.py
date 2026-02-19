@@ -110,9 +110,7 @@ def _parse_datetime(value: Any) -> Any:
             seconds, nanoseconds = value
             # Convert nanoseconds to microseconds (Python datetime precision)
             microseconds = nanoseconds // 1000
-            return datetime.fromtimestamp(seconds, tz=UTC).replace(
-                microsecond=microseconds
-            )
+            return datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=microseconds)
         except (TypeError, ValueError, OSError):
             pass
     return value  # Return as-is if we can't parse
@@ -306,9 +304,7 @@ class BaseSurrealModel(BaseModel):
     def _check_not_view(self) -> None:
         """Raise ``TypeError`` if this model is a materialized view."""
         if self.__class__._is_view():
-            raise TypeError(
-                f"Cannot modify materialized view '{self.__class__.get_table_name()}'"
-            )
+            raise TypeError(f"Cannot modify materialized view '{self.__class__.get_table_name()}'")
 
     @classmethod
     def get_connection_name(cls) -> str:
@@ -469,7 +465,7 @@ class BaseSurrealModel(BaseModel):
         Get the ID of the model instance.
         """
         if hasattr(self, "id"):
-            id_value = self.id  # type: ignore
+            id_value = self.id
             return str(id_value) if id_value is not None else None
 
         if hasattr(self, "model_config"):
@@ -602,9 +598,7 @@ class BaseSurrealModel(BaseModel):
         """
         record_id = self.get_id()
         if not record_id:
-            raise SurrealDbError(
-                "Can't refresh data, not recorded yet."
-            )  # pragma: no cover
+            raise SurrealDbError("Can't refresh data, not recorded yet.")  # pragma: no cover
 
         client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
         thing = format_thing(self.get_table_name(), record_id)
@@ -612,15 +606,11 @@ class BaseSurrealModel(BaseModel):
 
         # SDK returns RecordsResponse with .records list
         if result.is_empty:
-            raise SurrealDbError(
-                "Can't refresh data, no record found."
-            )  # pragma: no cover
+            raise SurrealDbError("Can't refresh data, no record found.")  # pragma: no cover
 
         record = result.first
         if record is None:
-            raise SurrealDbError(
-                "Can't refresh data, no record found."
-            )  # pragma: no cover
+            raise SurrealDbError("Can't refresh data, no record found.")  # pragma: no cover
 
         # Update instance fields without marking them as user-set
         self._update_from_db(record)
@@ -725,22 +715,16 @@ class BaseSurrealModel(BaseModel):
         exclude_fields = {"id"} | self.get_server_fields()
         id = self.get_id()
         table = self.get_table_name()
-        data = self.model_dump(
-            exclude=exclude_fields, exclude_unset=True, by_alias=True
-        )
+        data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
 
         # Merge server-side function values
         if server_values:
             for key, val in server_values.items():
                 if not _SAFE_IDENTIFIER_RE.match(key):
-                    raise ValueError(
-                        f"Invalid server_values key {key!r}; keys must be valid identifiers."
-                    )
+                    raise ValueError(f"Invalid server_values key {key!r}; keys must be valid identifiers.")
                 if key in exclude_fields:
-                    raise ValueError(
-                        f"server_values may not set reserved or server-generated field: {key!r}"
-                    )
+                    raise ValueError(f"server_values may not set reserved or server-generated field: {key!r}")
                 if not isinstance(val, SurrealFunc):
                     raise TypeError(
                         f"All server_values must be SurrealFunc instances; got {type(val).__name__!r} for key {key!r}."
@@ -852,9 +836,7 @@ class BaseSurrealModel(BaseModel):
             result = await tx.query(query, variables)
             _log_query(query, variables, _elapsed_ms(start))
         else:
-            client = await SurrealDBConnectionManager.get_client(
-                self.get_connection_name()
-            )
+            client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
             start = _start_timer()
             result = await client.query(query, variables)
             _log_query(query, variables, _elapsed_ms(start))
@@ -911,18 +893,14 @@ class BaseSurrealModel(BaseModel):
         """Execute the actual save operation (wrapped by around_save signal)."""
         # If data contains SurrealFunc values, use raw query path
         if self._has_surreal_funcs(data):
-            await self._execute_save_with_funcs(
-                tx, table, id, data, created, extra_vars
-            )
+            await self._execute_save_with_funcs(tx, table, id, data, created, extra_vars)
             return
 
         # If data contains complex nested dicts/lists, use SET-clause path
         # to work around SurrealDB v2.6 CBOR variable-binding limitations
         # (GitHub Issue #55).
         if self._has_complex_nested_data(data):
-            await self._execute_save_with_set_clause(
-                tx, table, id, data, created, extra_vars
-            )
+            await self._execute_save_with_set_clause(tx, table, id, data, created, extra_vars)
             return
 
         if tx is not None:
@@ -969,9 +947,7 @@ class BaseSurrealModel(BaseModel):
 
         # SDK returns RecordResponse
         if not result.exists:
-            raise SurrealDbError(
-                "Can't save data, no record returned."
-            )  # pragma: no cover
+            raise SurrealDbError("Can't save data, no record returned.")  # pragma: no cover
 
         # Update self's attributes from the database response
         record = result.record
@@ -1000,9 +976,7 @@ class BaseSurrealModel(BaseModel):
 
         # Build exclude set: always exclude 'id' and any server-generated fields
         exclude_fields = {"id"} | self.get_server_fields()
-        data = self.model_dump(
-            exclude=exclude_fields, exclude_unset=True, by_alias=True
-        )
+        data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
         record_id = self.get_id()
 
@@ -1032,9 +1006,7 @@ class BaseSurrealModel(BaseModel):
                 await tx.merge(thing, data)
                 _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
             else:
-                client = await SurrealDBConnectionManager.get_client(
-                    self.get_connection_name()
-                )
+                client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
                 result = await client.merge(thing, data)
                 _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
@@ -1134,9 +1106,7 @@ class BaseSurrealModel(BaseModel):
                     await tx.query(query, variables)
                     _log_query(query, variables, _elapsed_ms(start))
                 else:
-                    client = await SurrealDBConnectionManager.get_client(
-                        self.get_connection_name()
-                    )
+                    client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                     start = _start_timer()
                     await client.query(query, variables)
                     _log_query(query, variables, _elapsed_ms(start))
@@ -1151,9 +1121,7 @@ class BaseSurrealModel(BaseModel):
                     if hasattr(self, key):
                         setattr(self, key, value)
             else:
-                client = await SurrealDBConnectionManager.get_client(
-                    self.get_connection_name()
-                )
+                client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
                 await client.merge(thing, data_set)
                 _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
@@ -1208,17 +1176,13 @@ class BaseSurrealModel(BaseModel):
                 _log_query(f"DELETE {thing}", {}, _elapsed_ms(start))
                 logger.info(f"Record deleted (in transaction) -> {thing}.")
             else:
-                client = await SurrealDBConnectionManager.get_client(
-                    self.get_connection_name()
-                )
+                client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
                 result = await client.delete(thing)
                 _log_query(f"DELETE {thing}", {}, _elapsed_ms(start))
 
                 if not result.success:
-                    raise SurrealDbError(
-                        f"Can't delete Record id -> '{record_id}' not found!"
-                    )
+                    raise SurrealDbError(f"Can't delete Record id -> '{record_id}' not found!")
 
                 logger.info(f"Record deleted -> {result.deleted!r}.")
 
@@ -1374,9 +1338,7 @@ class BaseSurrealModel(BaseModel):
                 params={"table_id": "tables:abc", "pod_id": "pod-1", "ttl": 30},
             )
         """
-        return await SurrealDBConnectionManager.call_function(
-            function, params=params, return_type=return_type
-        )
+        return await SurrealDBConnectionManager.call_function(function, params=params, return_type=return_type)
 
     # ==================== Atomic Array Operations ====================
 
@@ -1554,9 +1516,7 @@ class BaseSurrealModel(BaseModel):
             from_thing, to_thing = to_thing, from_thing
 
         if tx is not None:
-            await tx.relate(
-                from_thing, relation, to_thing, edge_data if edge_data else None
-            )
+            await tx.relate(from_thing, relation, to_thing, edge_data if edge_data else None)
             return {"in": from_thing, "out": to_thing, **edge_data}
 
         client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
@@ -1644,9 +1604,7 @@ class BaseSurrealModel(BaseModel):
                     await tx.query(query, {"target_id": target_id})
                     return
 
-                client = await SurrealDBConnectionManager.get_client(
-                    self.get_connection_name()
-                )
+                client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 await client.query(query, {"target_id": target_id})
                 return
         else:
@@ -1659,13 +1617,9 @@ class BaseSurrealModel(BaseModel):
 
         # Delete edge where in=source and out=target (or reversed)
         if reverse:
-            query = (
-                f"DELETE {relation} WHERE in = {target_thing} AND out = {source_thing};"
-            )
+            query = f"DELETE {relation} WHERE in = {target_thing} AND out = {source_thing};"
         else:
-            query = (
-                f"DELETE {relation} WHERE in = {source_thing} AND out = {target_thing};"
-            )
+            query = f"DELETE {relation} WHERE in = {source_thing} AND out = {target_thing};"
 
         if tx is not None:
             await tx.query(query)
@@ -1738,9 +1692,7 @@ class BaseSurrealModel(BaseModel):
                 queries.append(f"DELETE {rel} WHERE out = {source_thing};")
 
         if not queries:
-            raise ValueError(
-                f"Invalid direction: {direction!r}. Expected one of 'out', 'in', or 'both'."
-            )
+            raise ValueError(f"Invalid direction: {direction!r}. Expected one of 'out', 'in', or 'both'.")
 
         if tx is not None:
             for query in queries:
@@ -1756,7 +1708,7 @@ class BaseSurrealModel(BaseModel):
         self,
         relation: str,
         direction: Literal["out", "in", "both"] = ...,
-        model_class: type[_M] = ...,  # type: ignore
+        model_class: type[_M] = ...,
     ) -> list[_M]: ...
 
     @overload
