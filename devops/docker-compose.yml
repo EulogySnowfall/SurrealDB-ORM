@@ -13,7 +13,7 @@ services:
   # Data is lost when the container stops — clean slate every time.
   # =============================================================================
   surrealdb:
-    image: surrealdb/surrealdb:latest
+    image: surrealdb/surrealdb:v2.6
     container_name: surrealdb-orm
     ports:
       - "8000:8000"
@@ -26,7 +26,7 @@ services:
   # Activated with: docker compose --profile cluster up -d
   # =============================================================================
   surrealdb-node1:
-    image: surrealdb/surrealdb:latest
+    image: surrealdb/surrealdb:v2.6
     container_name: surrealdb-node1
     ports:
       - "8002:8000"
@@ -37,7 +37,7 @@ services:
       - surrealdb-net
 
   surrealdb-node2:
-    image: surrealdb/surrealdb:latest
+    image: surrealdb/surrealdb:v2.6
     container_name: surrealdb-node2
     ports:
       - "8003:8000"
@@ -48,7 +48,7 @@ services:
       - surrealdb-net
 
   surrealdb-node3:
-    image: surrealdb/surrealdb:latest
+    image: surrealdb/surrealdb:v2.6
     container_name: surrealdb-node3
     ports:
       - "8004:8000"

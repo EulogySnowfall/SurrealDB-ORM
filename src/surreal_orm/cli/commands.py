@@ -12,7 +12,7 @@ from typing import Any
 try:
     import click
 except ImportError:
-    click = None  # type: ignore
+    click = None
 
 
 def require_click() -> None:
@@ -30,45 +30,45 @@ def run_async(coro: Any) -> Any:
 # Only define CLI if click is available
 if click is not None:
 
-    @click.group()
-    @click.option(
+    @click.group()  # type: ignore[untyped-decorator]
+    @click.option(  # type: ignore[untyped-decorator]
         "--migrations-dir",
         "-m",
         default="migrations",
         help="Migrations directory (default: migrations)",
     )
-    @click.option(
+    @click.option(  # type: ignore[untyped-decorator]
         "--url",
         "-u",
         envvar="SURREAL_URL",
         default="http://localhost:8000",
         help="SurrealDB URL",
     )
-    @click.option(
+    @click.option(  # type: ignore[untyped-decorator]
         "--namespace",
         "-n",
         envvar="SURREAL_NAMESPACE",
         help="SurrealDB namespace",
     )
-    @click.option(
+    @click.option(  # type: ignore[untyped-decorator]
         "--database",
         "-d",
         envvar="SURREAL_DATABASE",
         help="SurrealDB database",
     )
-    @click.option(
+    @click.option(  # type: ignore[untyped-decorator]
         "--user",
         envvar="SURREAL_USER",
         default="root",
         help="SurrealDB user",
     )
-    @click.option(
+    @click.option(  # type: ignore[untyped-decorator]
         "--password",
         envvar="SURREAL_PASSWORD",
         default="root",
         help="SurrealDB password",
     )
-    @click.pass_context
+    @click.pass_context  # type: ignore[untyped-decorator]
     def cli(
         ctx: click.Context,
         migrations_dir: str,
@@ -87,11 +87,11 @@ if click is not None:
         ctx.obj["user"] = user
         ctx.obj["password"] = password
 
-    @cli.command()
-    @click.option("--name", "-n", required=True, help="Migration name")
-    @click.option("--empty", is_flag=True, help="Create empty migration for manual editing")
-    @click.option("--models", "-m", multiple=True, help="Specific model modules to include")
-    @click.pass_context
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.option("--name", "-n", required=True, help="Migration name")  # type: ignore[untyped-decorator]
+    @click.option("--empty", is_flag=True, help="Create empty migration for manual editing")  # type: ignore[untyped-decorator]
+    @click.option("--models", "-m", multiple=True, help="Specific model modules to include")  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
     def makemigrations(
         ctx: click.Context,
         name: str,
@@ -147,10 +147,10 @@ if click is not None:
         for op in operations:
             click.echo(f"  - {op.describe()}")
 
-    @cli.command()
-    @click.option("--target", "-t", help="Target migration name")
-    @click.option("--fake", is_flag=True, help="Mark as applied without executing")
-    @click.pass_context
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.option("--target", "-t", help="Target migration name")  # type: ignore[untyped-decorator]
+    @click.option("--fake", is_flag=True, help="Mark as applied without executing")  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
     def migrate(ctx: click.Context, target: str | None, fake: bool) -> None:
         """Apply pending schema migrations."""
         from ..connection_manager import SurrealDBConnectionManager
@@ -181,9 +181,9 @@ if click is not None:
             click.echo(f"Migration failed: {e}", err=True)
             sys.exit(1)
 
-    @cli.command()
-    @click.option("--target", "-t", help="Target migration name")
-    @click.pass_context
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.option("--target", "-t", help="Target migration name")  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
     def upgrade(ctx: click.Context, target: str | None) -> None:
         """Apply data migrations to transform records."""
         from ..connection_manager import SurrealDBConnectionManager
@@ -213,9 +213,9 @@ if click is not None:
             click.echo(f"Upgrade failed: {e}", err=True)
             sys.exit(1)
 
-    @cli.command()
-    @click.argument("target")
-    @click.pass_context
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.argument("target")  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
     def rollback(ctx: click.Context, target: str) -> None:
         """Rollback migrations to TARGET."""
         from ..connection_manager import SurrealDBConnectionManager
@@ -245,8 +245,8 @@ if click is not None:
             click.echo(f"Rollback failed: {e}", err=True)
             sys.exit(1)
 
-    @cli.command()
-    @click.pass_context
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
     def status(ctx: click.Context) -> None:
         """Show migration status."""
         from ..connection_manager import SurrealDBConnectionManager
@@ -287,9 +287,9 @@ if click is not None:
             click.echo(f"Status failed: {e}", err=True)
             sys.exit(1)
 
-    @cli.command()
-    @click.argument("migration")
-    @click.pass_context
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.argument("migration")  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
     def sqlmigrate(ctx: click.Context, migration: str) -> None:
         """Show SQL for MIGRATION without executing."""
         from ..migrations.executor import MigrationExecutor
@@ -309,9 +309,9 @@ if click is not None:
             click.echo(f"Error: {e}", err=True)
             sys.exit(1)
 
-    @cli.command()
-    @click.option("--output", "-o", help="Output file path (default: print to stdout)")
-    @click.pass_context
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.option("--output", "-o", help="Output file path (default: print to stdout)")  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
     def inspectdb(ctx: click.Context, output: str | None) -> None:
         """Generate Python models from existing database tables."""
         from ..connection_manager import SurrealDBConnectionManager
@@ -337,15 +337,15 @@ if click is not None:
             click.echo(f"Introspection failed: {e}", err=True)
             sys.exit(1)
 
-    @cli.command()
-    @click.option("--models", "-m", multiple=True, help="Model modules to compare")
-    @click.pass_context
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.option("--models", "-m", multiple=True, help="Model modules to compare")  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
     def schemadiff(ctx: click.Context, models: tuple[str, ...]) -> None:
         """Compare Python models against the live database schema."""
         from ..connection_manager import SurrealDBConnectionManager
         from ..introspection import schema_diff
 
-        async def run() -> list:
+        async def run() -> list[Any]:
             SurrealDBConnectionManager.set_connection(
                 url=ctx.obj["url"],
                 user=ctx.obj["user"],
@@ -377,8 +377,8 @@ if click is not None:
             click.echo(f"Schema diff failed: {e}", err=True)
             sys.exit(1)
 
-    @cli.command()
-    @click.pass_context
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
     def shell(ctx: click.Context) -> None:
         """Start an interactive SurrealDB shell."""
         from ..connection_manager import SurrealDBConnectionManager
@@ -406,10 +406,10 @@ if click is not None:
                         continue
 
                     result = await client.query(query)
-                    if result.is_empty:  # type: ignore[attr-defined]
+                    if result.is_empty:
                         click.echo("(empty result)")
                     else:
-                        for record in result.all_records:  # type: ignore[attr-defined]
+                        for record in result.all_records:
                             click.echo(record)
                 except KeyboardInterrupt:
                     break
@@ -422,7 +422,7 @@ if click is not None:
 
 else:
     # Placeholder CLI if click is not installed
-    def cli() -> None:  # type: ignore
+    def cli() -> None:
         """CLI placeholder when click is not installed."""
         require_click()
 

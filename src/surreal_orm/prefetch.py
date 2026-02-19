@@ -60,7 +60,7 @@ class Prefetch:
     def __init__(
         self,
         relation_name: str,
-        queryset: QuerySet | None = None,
+        queryset: QuerySet[Any] | None = None,
         to_attr: str | None = None,
     ) -> None:
         self.relation_name = relation_name

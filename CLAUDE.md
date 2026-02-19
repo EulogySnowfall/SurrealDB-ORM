@@ -10,7 +10,57 @@
 
 ---
 
-## Current Version: 0.14.3 (Beta)
+## Current Version: 0.14.4 (Beta)
+
+### What's New in 0.14.4
+
+- **Datetime Serialization Fix** (HIGH) — Python `datetime` objects now survive `save()` / `merge()` round-trips as native SurrealDB datetime values. Previously, `model_dump()` converted datetimes to ISO strings that were sent as plain text via CBOR parameter binding.
+
+  ```python
+  from datetime import UTC, datetime
+
+  class Event(BaseSurrealModel):
+      model_config = SurrealConfigDict(table_name="events")
+      occurred_at: datetime | None = None
+
+  event = Event(occurred_at=datetime.now(UTC))
+  await event.save()  # datetime correctly encoded via CBOR datetime tag
+
+  loaded = await Event.objects().get(event.id)
+  assert isinstance(loaded.occurred_at, datetime)  # True
+  ```
+
+  - `_restore_datetime_fields()` re-injects datetime objects after `model_dump()` in `save()` and `update()`
+  - `_extract_datetime_values()` handles datetime in inline dict variables (replaces with `d"..."` SurrealQL literals)
+
+- **Generic `QuerySet[T]`** — `QuerySet` is now a generic class. All terminal methods return properly typed instances:
+
+  ```python
+  # Full type inference: user is User, not Any
+  user = await User.objects().get("user:alice")
+  user.name  # IDE autocomplete works
+
+  # exec() returns list[User]
+  users = await User.objects().filter(role="admin").exec()
+  ```
+
+  - `exec()` → `list[T]`, `get()` → `T`, `first()` → `T`, `all()` → `list[T]`
+  - `bulk_create()` → `list[T]`, `live()` → `LiveModelStream[T]`, `changes()` → `ChangeModelStream[T]`
+  - `objects()` returns `QuerySet[Self]`
+
+- **Typed `get_related()` via `@overload`** — Return type inferred from `model_class` parameter:
+
+  ```python
+  # Returns list[Book] — fully typed
+  books = await author.get_related("wrote", direction="out", model_class=Book)
+
+  # Returns list[dict[str, Any]] — raw dicts when no model_class
+  raw = await author.get_related("wrote", direction="out")
+  ```
+
+- **mypy strict mode** — `strict = true` in `pyproject.toml`. All 64 source files pass with zero errors.
+
+- **Docker Compose pinned to SurrealDB v2.6** — Prevents accidental use of incompatible SurrealDB versions.
 
 ### What's New in 0.14.3
 
@@ -1613,6 +1663,18 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `TableType.RELATION` and `TableType.ANY` enum values
 - [x] `parse_define_table()` extracts AS, RELATION IN/OUT/ENFORCED clauses
 - [x] `DatabaseIntrospector` parses events, relations; `ModelCodeGenerator` generates GeoField
+
+### Completed (0.14.4) - Datetime Fix, Typed QuerySet & get_related
+
+- [x] Datetime serialization fix: `_restore_datetime_fields()` in `model_base.py`
+- [x] Datetime inline dict fix: `_extract_datetime_values()` in `utils.py`
+- [x] Generic `QuerySet[T]` with TypeVar bound to `BaseSurrealModel`
+- [x] Terminal methods typed: `exec() → list[T]`, `get() → T`, `first() → T`, `all() → list[T]`
+- [x] `objects()` returns `QuerySet[Self]`
+- [x] `get_related()` `@overload` stubs: `model_class: type[_M] → list[_M]`, `None → list[dict]`
+- [x] mypy strict mode (`strict = true` in `pyproject.toml`) — 64 files, 0 errors
+- [x] Docker Compose pinned to SurrealDB v2.6
+- [x] 24 new unit tests + 10 new integration tests
 
 ### Completed (0.14.2) - Production Fixes
 

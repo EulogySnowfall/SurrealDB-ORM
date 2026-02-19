@@ -121,7 +121,7 @@ class Signal:
         # Check if sender is actually the handler function (decorator without parens)
         if sender is not None and callable(sender) and not isinstance(sender, type):
             # @signal.connect used without parentheses - sender is the function
-            handler: SignalHandler = sender  # type: ignore
+            handler: SignalHandler = sender
             with self._lock:
                 if None not in self._handlers:
                     self._handlers[None] = []
@@ -379,7 +379,7 @@ class AroundSignal:
 
         # Check if sender is actually the handler function (decorator without parens)
         if sender is not None and callable(sender) and not isinstance(sender, type):
-            handler: AroundHandler = sender  # type: ignore
+            handler: AroundHandler = sender
             with self._lock:
                 if None not in self._handlers:
                     self._handlers[None] = []

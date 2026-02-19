@@ -1,6 +1,6 @@
 [project]
 name = "surrealdb-orm"
-version = "0.14.3"
+version = "0.14.4"
 description = "SurrealDB ORM as 'DJango style' for Python with async support. Works with pydantic validation."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -80,13 +80,10 @@ ignore = [
 
 [tool.mypy]
 python_version = "3.12"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-check_untyped_defs = true
 exclude = "^(tests|examples)/"
 mypy_path = "src"
-explicit_package_bases = true
+strict = true
+warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 module = ["aiohttp.*", "httpx.*", "click.*"]

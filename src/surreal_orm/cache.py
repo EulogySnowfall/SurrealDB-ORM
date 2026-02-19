@@ -230,19 +230,24 @@ class QueryCache:
         if cls._signals_connected:
             return
 
-        from .signals import post_delete, post_save, post_update
+        from .signals import SignalHandler, post_delete, post_save, post_update
 
-        @post_save.connect()
         async def _invalidate_on_save(sender: type, **kwargs: Any) -> None:
             cls.invalidate(sender)
 
-        @post_delete.connect()
         async def _invalidate_on_delete(sender: type, **kwargs: Any) -> None:
             cls.invalidate(sender)
 
-        @post_update.connect()
         async def _invalidate_on_update(sender: type, **kwargs: Any) -> None:
             cls.invalidate(sender)
+
+        _on_save: SignalHandler = _invalidate_on_save
+        _on_delete: SignalHandler = _invalidate_on_delete
+        _on_update: SignalHandler = _invalidate_on_update
+
+        post_save.connect()(_on_save)
+        post_delete.connect()(_on_delete)
+        post_update.connect()(_on_update)
 
         cls._signals_connected = True
 

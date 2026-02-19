@@ -935,3 +935,298 @@ class TestFR5RemoveAllRelationsList:
         param = sig.parameters["relation"]
         annotation = str(param.annotation)
         assert "list" in annotation or "list[str]" in annotation
+
+
+# =============================================================================
+# Feature 2: Generic QuerySet[T] — type-level tests
+# =============================================================================
+
+
+class TestGenericQuerySet:
+    """Verify that QuerySet is properly parameterized as Generic[T]."""
+
+    def test_queryset_is_generic(self) -> None:
+        """QuerySet should be a Generic class."""
+        import typing
+
+        assert hasattr(QuerySet, "__class_getitem__"), "QuerySet must support subscripting (Generic[T])"
+        # Subscript should not raise
+        alias = QuerySet[ModelTest]
+        origin = typing.get_origin(alias)
+        assert origin is QuerySet
+
+    def test_objects_returns_typed_queryset(self) -> None:
+        """ModelTest.objects() should return a QuerySet parameterised with ModelTest."""
+        qs = ModelTest.objects()
+        assert isinstance(qs, QuerySet)
+        assert qs.model is ModelTest
+
+    def test_queryset_model_preserved_through_chaining(self) -> None:
+        """Chained methods should preserve the model reference."""
+        qs = ModelTest.objects().filter(age__gte=18).limit(10).offset(5)
+        assert qs.model is ModelTest
+
+    def test_queryset_select_preserves_model(self) -> None:
+        """select() should preserve model reference."""
+        qs = ModelTest.objects().select("id", "name")
+        assert qs.model is ModelTest
+
+    def test_queryset_order_by_preserves_model(self) -> None:
+        """order_by() should preserve model reference."""
+        qs = ModelTest.objects().order_by("-age")
+        assert qs.model is ModelTest
+
+
+# =============================================================================
+# Feature 3: get_related() @overload — signature tests
+# =============================================================================
+
+
+class TestGetRelatedOverloads:
+    """Verify that get_related() has proper @overload signatures."""
+
+    def test_get_related_has_overloads(self) -> None:
+        """get_related should have __overloaded__ or overload metadata."""
+        from typing import get_overloads
+
+        overloads = get_overloads(BaseSurrealModel.get_related)
+        assert len(overloads) == 2, f"Expected 2 overloads, got {len(overloads)}"
+
+    def test_overload_signatures(self) -> None:
+        """First overload should accept model_class: type[_M], second should accept None."""
+        from typing import get_overloads
+
+        overloads = get_overloads(BaseSurrealModel.get_related)
+        sig0 = inspect.signature(overloads[0])
+        sig1 = inspect.signature(overloads[1])
+
+        # First overload: model_class has no None default
+        p0 = sig0.parameters["model_class"]
+        # Second overload: model_class defaults to None
+        p1 = sig1.parameters["model_class"]
+        assert "None" in str(p1.annotation)
+
+
+# =============================================================================
+# Feature 1: Datetime serialization — _restore_datetime_fields + inline fix
+# =============================================================================
+
+
+class TestRestoreDatetimeFields:
+    """Verify _restore_datetime_fields re-injects datetime objects."""
+
+    def test_restore_stringified_datetime(self) -> None:
+        """If model_dump() stringifies a datetime, _restore_datetime_fields re-injects it."""
+        from datetime import UTC, datetime
+
+        class DtModel(BaseSurrealModel):
+            id: str | None = None
+            created_at: datetime | None = None
+
+        now = datetime(2026, 2, 19, 10, 30, 45, tzinfo=UTC)
+        m = DtModel(id="1", created_at=now)
+
+        # Simulate model_dump() returning a stringified datetime
+        data: dict[str, object] = {"id": "1", "created_at": "2026-02-19T10:30:45+00:00"}
+        result = m._restore_datetime_fields(data)  # type: ignore[arg-type]
+        assert isinstance(result["created_at"], datetime)
+        assert result["created_at"] == now
+
+    def test_restore_preserves_real_datetime(self) -> None:
+        """If model_dump() already has a datetime, it should be left alone."""
+        from datetime import UTC, datetime
+
+        class DtModel(BaseSurrealModel):
+            id: str | None = None
+            created_at: datetime | None = None
+
+        now = datetime(2026, 2, 19, 10, 30, 45, tzinfo=UTC)
+        m = DtModel(id="1", created_at=now)
+
+        data: dict[str, object] = {"id": "1", "created_at": now}
+        result = m._restore_datetime_fields(data)  # type: ignore[arg-type]
+        assert result["created_at"] is now
+
+    def test_restore_ignores_non_datetime_strings(self) -> None:
+        """String fields that are NOT datetime should not be touched."""
+        class StrModel(BaseSurrealModel):
+            id: str | None = None
+            name: str = ""
+
+        m = StrModel(id="1", name="hello")
+        data: dict[str, object] = {"id": "1", "name": "hello"}
+        result = m._restore_datetime_fields(data)  # type: ignore[arg-type]
+        assert result["name"] == "hello"
+
+    def test_restore_none_datetime_untouched(self) -> None:
+        """None values for datetime fields should not be changed."""
+        from datetime import datetime
+
+        class DtModel(BaseSurrealModel):
+            id: str | None = None
+            created_at: datetime | None = None
+
+        m = DtModel(id="1", created_at=None)
+        data: dict[str, object] = {"id": "1", "created_at": None}
+        result = m._restore_datetime_fields(data)  # type: ignore[arg-type]
+        assert result["created_at"] is None
+
+
+class TestExtractDatetimeValues:
+    """Verify _extract_datetime_values replaces datetimes with markers."""
+
+    def test_extract_single_datetime(self) -> None:
+        from datetime import UTC, datetime
+
+        from src.surreal_orm.utils import _extract_datetime_values
+
+        dt = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
+        markers: dict[str, str] = {}
+        counter = [0]
+        result = _extract_datetime_values(dt, markers, counter)
+
+        assert result == "__SURQL_DT_0__"
+        assert "__SURQL_DT_0__" in markers
+        assert markers["__SURQL_DT_0__"] == f'd"{dt.isoformat()}"'
+        assert counter[0] == 1
+
+    def test_extract_from_nested_dict(self) -> None:
+        from datetime import UTC, datetime
+
+        from src.surreal_orm.utils import _extract_datetime_values
+
+        dt = datetime(2026, 3, 1, 8, 0, 0, tzinfo=UTC)
+        value = {"name": "test", "ts": dt, "nested": {"inner_ts": dt}}
+        markers: dict[str, str] = {}
+        counter = [0]
+        result = _extract_datetime_values(value, markers, counter)
+
+        assert result["name"] == "test"
+        assert result["ts"] == "__SURQL_DT_0__"
+        assert result["nested"]["inner_ts"] == "__SURQL_DT_1__"
+        assert len(markers) == 2
+        assert counter[0] == 2
+
+    def test_extract_from_list(self) -> None:
+        from datetime import UTC, datetime
+
+        from src.surreal_orm.utils import _extract_datetime_values
+
+        dt = datetime(2026, 6, 15, 0, 0, 0, tzinfo=UTC)
+        value = [dt, "plain", dt]
+        markers: dict[str, str] = {}
+        counter = [0]
+        result = _extract_datetime_values(value, markers, counter)
+
+        assert result[0] == "__SURQL_DT_0__"
+        assert result[1] == "plain"
+        assert result[2] == "__SURQL_DT_1__"
+        assert counter[0] == 2
+
+    def test_naive_datetime_gets_utc(self) -> None:
+        from datetime import UTC, datetime
+
+        from src.surreal_orm.utils import _extract_datetime_values
+
+        naive = datetime(2026, 1, 1, 0, 0, 0)
+        markers: dict[str, str] = {}
+        counter = [0]
+        _extract_datetime_values(naive, markers, counter)
+
+        # Should have UTC timezone in the d"..." literal
+        assert "+00:00" in markers["__SURQL_DT_0__"]
+
+    def test_no_datetimes_passthrough(self) -> None:
+        from src.surreal_orm.utils import _extract_datetime_values
+
+        value = {"key": "value", "num": 42, "items": [1, 2, 3]}
+        markers: dict[str, str] = {}
+        counter = [0]
+        result = _extract_datetime_values(value, markers, counter)
+
+        assert result == value
+        assert len(markers) == 0
+
+
+class TestInlineDictWithDatetime:
+    """Verify inline_dict_variables() correctly handles datetime in complex dicts."""
+
+    def test_datetime_in_complex_dict_becomes_d_literal(self) -> None:
+        """datetime inside a complex dict should become a d'...' SurrealQL literal."""
+        from datetime import UTC, datetime
+
+        from src.surreal_orm.utils import inline_dict_variables
+
+        dt = datetime(2026, 2, 19, 10, 30, 45, tzinfo=UTC)
+        query = "UPDATE t SET data = $data;"
+        variables = {"data": {"nested": {"ts": dt}}}
+
+        new_query, remaining = inline_dict_variables(query, variables)
+
+        # $data should be replaced (not in remaining)
+        assert "data" not in remaining
+        # Query should contain d"..." literal, NOT a plain ISO string
+        assert 'd"2026-02-19T10:30:45+00:00"' in new_query
+        # Should NOT contain the marker placeholder
+        assert "__SURQL_DT_" not in new_query
+
+    def test_simple_variables_preserved(self) -> None:
+        """Non-complex variables should remain in the bindings dict."""
+        from src.surreal_orm.utils import inline_dict_variables
+
+        query = "UPDATE t SET name = $name, data = $data;"
+        variables = {"name": "hello", "data": {"nested": {"key": "val"}}}
+
+        new_query, remaining = inline_dict_variables(query, variables)
+
+        assert "name" in remaining
+        assert remaining["name"] == "hello"
+        assert "data" not in remaining
+
+    def test_no_complex_values_passthrough(self) -> None:
+        """If no complex values, query and variables should be unchanged."""
+        from src.surreal_orm.utils import inline_dict_variables
+
+        query = "SELECT * FROM t WHERE id = $id;"
+        variables = {"id": "abc123"}
+
+        new_query, remaining = inline_dict_variables(query, variables)
+
+        assert new_query == query
+        assert remaining == variables
+
+
+class TestIsDatetimeField:
+    """Verify _is_datetime_field detects datetime types correctly."""
+
+    def test_plain_datetime(self) -> None:
+        from datetime import datetime
+
+        from src.surreal_orm.model_base import _is_datetime_field
+
+        assert _is_datetime_field(datetime) is True
+
+    def test_optional_datetime(self) -> None:
+        from datetime import datetime
+
+        from src.surreal_orm.model_base import _is_datetime_field
+
+        assert _is_datetime_field(datetime | None) is True
+
+    def test_string_type(self) -> None:
+        from src.surreal_orm.model_base import _is_datetime_field
+
+        assert _is_datetime_field(str) is False
+
+    def test_optional_string(self) -> None:
+        from src.surreal_orm.model_base import _is_datetime_field
+
+        assert _is_datetime_field(str | None) is False
+
+    def test_list_of_datetime(self) -> None:
+        from datetime import datetime
+
+        from src.surreal_orm.model_base import _is_datetime_field
+
+        # list[datetime] should NOT match — it's a list, not a datetime
+        assert _is_datetime_field(list[datetime]) is False

@@ -13,6 +13,53 @@
 
 ---
 
+## What's New in 0.14.4
+
+### Fix: Datetime Serialization Round-Trip
+
+Python `datetime` objects now survive `save()` / `merge()` round-trips as native SurrealDB datetime values. Previously, datetimes were serialized as plain ISO strings, causing silent type mismatches with `TYPE datetime` schema fields.
+
+```python
+from datetime import UTC, datetime
+
+class Event(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="events")
+    occurred_at: datetime | None = None
+
+event = Event(occurred_at=datetime.now(UTC))
+await event.save()  # datetime now correctly encoded via CBOR datetime tag
+
+loaded = await Event.objects().get(event.id)
+assert isinstance(loaded.occurred_at, datetime)  # True — no more plain strings
+```
+
+### Generic `QuerySet[T]` — Full Type Inference
+
+`QuerySet` is now generic. All terminal methods return properly typed model instances:
+
+```python
+# Before (v0.14.3): user is Any — no type inference
+user = await User.objects().get("user:alice")
+
+# After (v0.14.4): user is User — full IDE autocomplete and mypy checking
+user = await User.objects().get("user:alice")
+user.name  # IDE knows this is a str
+```
+
+### Typed `get_related()` via `@overload`
+
+Return type is now inferred from the `model_class` parameter:
+
+```python
+# Returns list[Book] — fully typed
+books = await author.get_related("wrote", direction="out", model_class=Book)
+
+# Returns list[dict[str, Any]] — raw dicts when no model_class
+raw = await author.get_related("wrote", direction="out")
+```
+
+---
+
 ## What's New in 0.14.3
 
 ### Fix: Large Nested Dict Parameter Binding (Issue #55)

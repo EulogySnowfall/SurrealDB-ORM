@@ -48,7 +48,7 @@ class Subquery:
         posts = await Post.objects().filter(author_id__in=Subquery(recent)).exec()
     """
 
-    def __init__(self, queryset: QuerySet) -> None:
+    def __init__(self, queryset: QuerySet[Any]) -> None:
         self.queryset = queryset
 
     def to_surql(

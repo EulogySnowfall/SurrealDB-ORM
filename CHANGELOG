@@ -6,6 +6,40 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.14.4] - 2026-02-19
+
+### Fixed
+
+- **Datetime Serialization Round-Trip** (HIGH) — Python `datetime` objects were serialized as plain ISO 8601 strings during `save()` and `merge()`, causing silent type mismatches with SurrealDB `TYPE datetime` and `TYPE option<datetime>` schema fields. Two fixes:
+  - **`_restore_datetime_fields()`** — After `model_dump()` in `save()` and `update()`, re-injects original `datetime` objects from the model instance if Pydantic stringified them. Ensures datetime objects reach the CBOR encoder as native datetime values (properly encoded as `CBORTag(12, iso_string)`).
+  - **`inline_dict_variables()` datetime support** — `_extract_datetime_values()` recursively replaces `datetime` objects with `__SURQL_DT_N__` placeholder markers before `json.dumps()`, then post-replaces them with `d"<iso>"` SurrealQL datetime literals.
+
+### Added
+
+- **Generic `QuerySet[T]`** — `QuerySet` is now a generic class parameterized by the model type. All terminal methods return properly typed instances:
+  - `exec()` → `list[T]`, `get()` → `T`, `first()` → `T`, `all()` → `list[T]`
+  - `bulk_create()` → `list[T]`, `live()` → `LiveModelStream[T]`, `changes()` → `ChangeModelStream[T]`
+  - `objects()` returns `QuerySet[Self]` — full type inference from model to query result
+- **Typed `get_related()` via `@overload`** — Return type is now inferred from the `model_class` parameter:
+  - `get_related("wrote", model_class=Book)` → `list[Book]`
+  - `get_related("wrote")` → `list[dict[str, Any]]`
+- **`_restore_datetime_fields()`** — Instance method on `BaseSurrealModel` that re-injects datetime objects after `model_dump()`.
+- **`_extract_datetime_values()`** — Utility function in `utils.py` for recursive datetime placeholder extraction in inline dict variables.
+- **10 new integration tests** — `tests/test_features_0_14_4.py` covering datetime round-trips (save, merge, inline, None), QuerySet typed returns, and `get_related()` typed returns.
+- **24 new unit tests** — Covering `Generic QuerySet[T]`, `get_related()` overloads, `_restore_datetime_fields()`, `_extract_datetime_values()`, inline dict datetime handling, and `_is_datetime_field()`.
+
+### Changed
+
+- **mypy strict mode** — Enabled `strict = true` in `pyproject.toml`. All 64 source files pass mypy strict with zero errors.
+- **Docker Compose pinned to SurrealDB v2.6** — All images in `devops/docker-compose.yml` pinned from `surrealdb/surrealdb:latest` to `surrealdb/surrealdb:v2.6` to prevent accidental use of incompatible versions.
+- `QuerySet` class now inherits from `Generic[T]` with `T = TypeVar("T", bound="BaseSurrealModel")`.
+- `objects()` classmethod return type changed from `QuerySet` to `QuerySet[Self]`.
+- `get_related()` now has two `@overload` stubs with `_M = TypeVar("_M", bound="BaseSurrealModel")`.
+- Multiple files updated for mypy strict compliance: `cli/commands.py`, `auth/mixins.py`, `cache.py`, `live.py`, `signals.py`, `subquery.py`, `prefetch.py`, `fields/computed.py`, `migrations/executor.py`.
+- Version bump to 0.14.4
+
+---
+
 ## [0.14.3] - 2026-02-15
 
 ### Fixed

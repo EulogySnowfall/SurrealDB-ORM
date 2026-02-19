@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
 
 from pydantic_core import ValidationError
 
@@ -36,8 +36,10 @@ from .model_base import SurrealDbError
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T", bound="BaseSurrealModel")
 
-class QuerySet:
+
+class QuerySet(Generic[T]):
     """
     A class used to build, execute, and manage queries on a SurrealDB table associated with a specific model.
 
@@ -52,7 +54,7 @@ class QuerySet:
         ```
     """
 
-    def __init__(self, model: type[BaseSurrealModel]) -> None:
+    def __init__(self, model: type[T]) -> None:
         """
         Initialize the QuerySet with a specific model.
 
@@ -82,7 +84,7 @@ class QuerySet:
         self._offset: int | None = None
         self._order_by: str | None = None
         self._model_table: str = model.get_table_name()
-        self._variables: dict = {}
+        self._variables: dict[str, Any] = {}
         self._group_by_fields: list[str] = []
         self._annotations: dict[str, Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance] = {}
         # Vector similarity search (KNN)
@@ -705,7 +707,7 @@ class QuerySet:
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), variables)
-        return cast(list[dict[str, Any]], result.all_records)
+        return result.all_records
 
     def traverse(self, path: str) -> Self:
         """
@@ -857,7 +859,7 @@ class QuerySet:
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
 
-        return cast(list[dict[str, Any]], result.all_records)
+        return result.all_records
 
     async def _execute_prefetch(
         self,
@@ -1229,7 +1231,7 @@ class QuerySet:
         query += ";"
         return query
 
-    async def exec(self) -> Any:
+    async def exec(self) -> list[T]:
         """
         Execute the compiled query and return the results.
 
@@ -1273,7 +1275,7 @@ class QuerySet:
                     "Combining .search() or .similar_to() with aggregation/subquery "
                     "annotations is not supported. Execute them as separate queries."
                 )
-            return await self._execute_annotate()
+            return await self._execute_annotate()  # type: ignore[return-value]
 
         query = self._compile_query()
 
@@ -1298,7 +1300,7 @@ class QuerySet:
             cache_key = QueryCache.make_key(query, key_vars, self._model_table)
             cached = QueryCache.get(cache_key)
             if cached is not None:
-                return cached
+                return cached  # type: ignore[no-any-return]
 
         results = await self._execute_query(query)
 
@@ -1322,7 +1324,7 @@ class QuerySet:
 
         try:
             # surrealdb SDK 1.0.8 returns records directly, not wrapped in {"result": ...}
-            parsed = self.model.from_db(cast(dict | list | None, results))
+            parsed = self.model.from_db(cast(dict[str, Any] | list[Any] | None, results))
         except ValidationError as e:
             logger.info(f"Pydantic invalid format for the class, returning dict value: {e}")
             parsed = results
@@ -1342,11 +1344,11 @@ class QuerySet:
         if cache_key is not None:
             from .cache import QueryCache
 
-            QueryCache.set(cache_key, parsed, self._model_table, self._cache_ttl)  # type: ignore[arg-type]
+            QueryCache.set(cache_key, parsed, self._model_table, self._cache_ttl)
 
-        return parsed
+        return parsed  # type: ignore[return-value]
 
-    async def first(self) -> Any:
+    async def first(self) -> T:
         """
         Execute the query and return the first result.
 
@@ -1373,7 +1375,7 @@ class QuerySet:
 
         raise self.model.DoesNotExist("Query returned no results.")
 
-    async def get(self, id_item: Any = None, *, id: Any = None) -> Any:
+    async def get(self, id_item: Any = None, *, id: Any = None) -> T:
         """
         Retrieve a single record by its unique identifier or based on the current QuerySet filters.
 
@@ -1421,7 +1423,7 @@ class QuerySet:
             # SDK returns RecordsResponse
             if result.is_empty:
                 raise self.model.DoesNotExist("Record not found.")
-            return self.model.from_db(cast(dict | list | None, result.first))
+            return self.model.from_db(cast(dict[str, Any] | list[Any] | None, result.first))  # type: ignore[return-value]
         else:
             result = await self.exec()
             if len(result) > 1:
@@ -1431,7 +1433,7 @@ class QuerySet:
                 raise self.model.DoesNotExist("Record not found.")
             return result[0]
 
-    async def all(self) -> Any:
+    async def all(self) -> list[T]:
         """
         Fetch all records from the associated table.
 
@@ -1450,7 +1452,7 @@ class QuerySet:
         """
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.select(self._model_table)
-        return self.model.from_db(cast(dict | list | None, result.records))
+        return self.model.from_db(cast(dict[str, Any] | list[Any] | None, result.records))  # type: ignore[return-value]
 
     # ==================== Aggregation Methods ====================
 
@@ -1718,16 +1720,16 @@ class QuerySet:
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), variables)
         # SDK returns QueryResponse, extract all records
-        return self.model.from_db(cast(dict | list | None, result.all_records))
+        return self.model.from_db(cast(dict[str, Any] | list[Any] | None, result.all_records))
 
     # ==================== Bulk Operations ====================
 
     async def bulk_create(
         self,
-        instances: Sequence[BaseSurrealModel],
+        instances: Sequence[T],
         atomic: bool = False,
         batch_size: int | None = None,
-    ) -> list[BaseSurrealModel]:
+    ) -> list[T]:
         """
         Create multiple model instances in the database efficiently.
 
@@ -1758,7 +1760,7 @@ class QuerySet:
         if not instances:
             return []
 
-        created: list[BaseSurrealModel] = []
+        created: list[T] = []
 
         if atomic:
             # Use transaction for atomicity
@@ -1881,7 +1883,7 @@ class QuerySet:
         auto_resubscribe: bool = True,
         diff: bool = False,
         on_reconnect: ReconnectCallback | None = None,
-    ) -> LiveModelStream[BaseSurrealModel]:
+    ) -> LiveModelStream[T]:
         """
         Subscribe to real-time changes for this query via WebSocket Live Query.
 
@@ -1924,7 +1926,7 @@ class QuerySet:
 
         return LiveModelStream(
             model=self.model,
-            connection=None,  # type: ignore[arg-type]  # resolved in __aenter__
+            connection=None,  # resolved in __aenter__
             table=self._model_table,
             where=where_clause,
             params=params or None,
@@ -1939,7 +1941,7 @@ class QuerySet:
         since: str | datetime | None = None,
         poll_interval: float = 0.1,
         batch_size: int = 100,
-    ) -> ChangeModelStream[BaseSurrealModel]:
+    ) -> ChangeModelStream[T]:
         """
         Stream change feed events for this model's table via HTTP.
 
@@ -1975,7 +1977,7 @@ class QuerySet:
 
         return ChangeModelStream(
             model=self.model,
-            connection=None,  # type: ignore[arg-type]  # resolved at iteration time
+            connection=None,  # resolved at iteration time
             table=self._model_table,
             since=since,
             poll_interval=poll_interval,
