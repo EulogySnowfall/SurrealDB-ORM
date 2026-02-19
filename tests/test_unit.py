@@ -1049,6 +1049,7 @@ class TestRestoreDatetimeFields:
 
     def test_restore_ignores_non_datetime_strings(self) -> None:
         """String fields that are NOT datetime should not be touched."""
+
         class StrModel(BaseSurrealModel):
             id: str | None = None
             name: str = ""
