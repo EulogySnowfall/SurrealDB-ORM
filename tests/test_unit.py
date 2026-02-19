@@ -1001,7 +1001,7 @@ class TestGetRelatedOverloads:
         sig1 = inspect.signature(overloads[1])
 
         # First overload: model_class has no None default
-        p0 = sig0.parameters["model_class"]
+        _p0 = sig0.parameters["model_class"]
         # Second overload: model_class defaults to None
         p1 = sig1.parameters["model_class"]
         assert "None" in str(p1.annotation)
@@ -1125,7 +1125,7 @@ class TestExtractDatetimeValues:
         assert counter[0] == 2
 
     def test_naive_datetime_gets_utc(self) -> None:
-        from datetime import UTC, datetime
+        from datetime import datetime
 
         from src.surreal_orm.utils import _extract_datetime_values
 

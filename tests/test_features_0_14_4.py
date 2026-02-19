@@ -127,7 +127,6 @@ async def test_datetime_update_roundtrip() -> None:
 async def test_datetime_inline_dict_roundtrip() -> None:
     """datetime inside inline_dicts=True should become d'...' literal, not plain string."""
     dt = datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
-    data = {"events": [{"ts": dt.isoformat(), "type": "test"}], "meta": {"created": dt.isoformat()}}
 
     await DatetimeModel.raw_query(
         "UPSERT dt_model:dt_inline SET name = 'inline test', created_at = $ts;",
