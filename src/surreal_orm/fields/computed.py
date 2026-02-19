@@ -117,7 +117,7 @@ class Computed:
 
     def __new__(cls, expression: str) -> "_ComputedDefault":  # type: ignore[misc]
         """``Computed("expr")`` → ``_ComputedDefault("expr")``."""
-        return _ComputedDefault(expression)  # type: ignore[return-value]
+        return _ComputedDefault(expression)
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,15 @@
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, Self, get_args, get_origin
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    Self,
+    TypeVar,
+    get_args,
+    get_origin,
+    overload,
+)
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
@@ -15,6 +24,8 @@ from .utils import format_thing, parse_record_id
 if TYPE_CHECKING:
     from surreal_sdk.transaction import BaseTransaction, HTTPTransaction
 
+    from .query_set import QuerySet
+
 
 class SurrealDbError(Exception):
     """Error from SurrealDB operations."""
@@ -26,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 # Global registry of all SurrealDB models for migration introspection
 _MODEL_REGISTRY: list[type["BaseSurrealModel"]] = []
+
+# TypeVar for @overload on get_related() — binds to any BaseSurrealModel subclass
+_M = TypeVar("_M", bound="BaseSurrealModel")
 
 
 def get_registered_models() -> list[type["BaseSurrealModel"]]:
@@ -463,7 +477,7 @@ class BaseSurrealModel(BaseModel):
         return None  # pragma: no cover
 
     @classmethod
-    def from_db(cls, record: dict | list | None) -> Self | list[Self]:
+    def from_db(cls, record: dict[str, Any] | list[Any] | None) -> Self | list[Self]:
         """
         Create an instance from a SurrealDB record.
 
@@ -602,6 +616,34 @@ class BaseSurrealModel(BaseModel):
         self._update_from_db(record)
         return None
 
+    def _restore_datetime_fields(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Re-inject ``datetime`` objects that Pydantic may have stringified.
+
+        ``model_dump(mode="python")`` preserves ``datetime`` by default, but
+        custom Pydantic serializers or sub-model configs can convert them to
+        ISO strings.  This method detects such cases and restores the original
+        ``datetime`` object from the model instance so that the CBOR encoder
+        can emit a proper ``CBORTag(TAG_DATETIME, ...)`` on the wire.
+
+        Handles aliased fields: when ``model_dump(by_alias=True)`` is used,
+        dict keys may be aliases rather than Python field names.
+        """
+        field_types = self.__class__.model_fields
+        # Build alias → field_name mapping so aliased keys are resolved
+        alias_to_field: dict[str, str] = {}
+        for field_name, field_info in field_types.items():
+            if field_info.alias:
+                alias_to_field[field_info.alias] = field_name
+        for key, value in data.items():
+            if isinstance(value, str):
+                field_name = alias_to_field.get(key, key)
+                if field_name in field_types:
+                    if _is_datetime_field(field_types[field_name].annotation):
+                        original = getattr(self, field_name, None)
+                        if isinstance(original, datetime):
+                            data[key] = original
+        return data
+
     async def save(
         self,
         tx: "BaseTransaction | None" = None,
@@ -674,6 +716,7 @@ class BaseSurrealModel(BaseModel):
         id = self.get_id()
         table = self.get_table_name()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
+        data = self._restore_datetime_fields(data)
 
         # Merge server-side function values
         if server_values:
@@ -934,6 +977,7 @@ class BaseSurrealModel(BaseModel):
         # Build exclude set: always exclude 'id' and any server-generated fields
         exclude_fields = {"id"} | self.get_server_fields()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
+        data = self._restore_datetime_fields(data)
         record_id = self.get_id()
 
         if record_id is None:
@@ -1163,7 +1207,7 @@ class BaseSurrealModel(BaseModel):
         return self
 
     @classmethod
-    def objects(cls) -> Any:
+    def objects(cls) -> "QuerySet[Self]":
         """
         Return a QuerySet for the model class.
         """
@@ -1659,12 +1703,28 @@ class BaseSurrealModel(BaseModel):
         for query in queries:
             await client.query(query)
 
+    @overload
+    async def get_related(
+        self,
+        relation: str,
+        direction: Literal["out", "in", "both"] = ...,
+        model_class: type[_M] = ...,
+    ) -> list[_M]: ...
+
+    @overload
+    async def get_related(
+        self,
+        relation: str,
+        direction: Literal["out", "in", "both"] = ...,
+        model_class: None = ...,
+    ) -> list[dict[str, Any]]: ...
+
     async def get_related(
         self,
         relation: str,
         direction: Literal["out", "in", "both"] = "out",
         model_class: type["BaseSurrealModel"] | None = None,
-    ) -> list["BaseSurrealModel"] | list[dict[str, Any]]:
+    ) -> list[Any]:
         """
         Get records related through a graph relation.
 

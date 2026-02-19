@@ -197,6 +197,36 @@ class _SurrealJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+def _extract_datetime_values(
+    value: Any,
+    markers: dict[str, str],
+    counter: list[int],
+) -> Any:
+    """Replace ``datetime`` objects with placeholder markers for inline JSON.
+
+    Walks the value recursively.  Each ``datetime`` found is replaced with a
+    unique ``__SURQL_DT_N__`` placeholder string and the corresponding
+    SurrealQL ``d"<iso>"`` literal is stored in *markers*.  After
+    ``json.dumps()``, the caller replaces ``"__SURQL_DT_N__"`` (including
+    the surrounding JSON quotes) with the unwrapped literal.
+    """
+    from datetime import UTC, datetime
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        marker = f"__SURQL_DT_{counter[0]}__"
+        counter[0] += 1
+        markers[marker] = f'd"{value.isoformat()}"'
+        return marker
+    if isinstance(value, dict):
+        return {k: _extract_datetime_values(v, markers, counter) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        converted = [_extract_datetime_values(item, markers, counter) for item in value]
+        return type(value)(converted)
+    return value
+
+
 def inline_dict_variables(
     query: str,
     variables: dict[str, Any],
@@ -225,10 +255,21 @@ def inline_dict_variables(
     remaining: dict[str, Any] = {}
     for key, value in variables.items():
         if _is_complex_value(value):
+            # Extract datetime objects as markers so they become d"..." literals
+            dt_markers: dict[str, str] = {}
+            counter = [0]
+            processed = _extract_datetime_values(value, dt_markers, counter)
+
             try:
-                json_str = json.dumps(value, cls=_SurrealJSONEncoder)
+                json_str = json.dumps(processed, cls=_SurrealJSONEncoder)
             except (TypeError, ValueError) as e:
                 raise ValueError(f"Failed to serialize variable '{key}' to JSON for inlining: {e}") from e
+
+            # Replace datetime marker strings (with JSON quotes) with
+            # unwrapped SurrealQL d"..." literals.
+            for marker, literal in dt_markers.items():
+                json_str = json_str.replace(f'"{marker}"', literal)
+
             # Replace $key with inline JSON (word-boundary to avoid partial matches)
             query = re.sub(rf"\${re.escape(key)}\b", json_str, query)
         else:

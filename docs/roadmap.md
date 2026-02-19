@@ -30,6 +30,7 @@
 | 0.12.0  | Released | Vector Search & Full-Text Search                          |
 | 0.13.0  | Released | Events, Geospatial & Materialized Views                   |
 | 0.14.0  | Released | Testing & Developer Experience (Alpha → Beta)             |
+| 0.14.4  | Released | Datetime Fix, Typed QuerySet[T] & get_related, mypy strict|
 
 ---
 
@@ -1333,6 +1334,10 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 | Test Fixtures                | 0.14.0  | High     | Done   | -                |
 | Model Factories              | 0.14.0  | High     | Done   | -                |
 | Debug Toolbar / QueryLogger  | 0.14.0  | Medium   | Done   | -                |
+| Datetime serialization fix   | 0.14.4  | High     | Done   | -                |
+| Generic QuerySet[T]          | 0.14.4  | High     | Done   | QuerySet         |
+| Typed get_related() overloads| 0.14.4  | Medium   | Done   | Relations        |
+| mypy strict mode             | 0.14.4  | Medium   | Done   | -                |
 
 ---
 

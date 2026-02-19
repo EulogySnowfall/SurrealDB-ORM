@@ -169,7 +169,7 @@ class AuthenticatedUserMixin:
         from ..connection_manager import SurrealDBConnectionManager
         from ..model_base import SurrealDbError
 
-        conn_name = cls.get_connection_name()  # type: ignore[attr-defined]
+        conn_name = cls.get_connection_name()
         config = SurrealDBConnectionManager.get_config(conn_name)
 
         if config is None:
@@ -228,7 +228,7 @@ class AuthenticatedUserMixin:
         access_name = config.get("access_name") or f"{table_name.lower()}_auth"
 
         # Get connection info from named connection config
-        conn_name = cls.get_connection_name()  # type: ignore[attr-defined]
+        conn_name = cls.get_connection_name()
         conn_config = SurrealDBConnectionManager.get_config(conn_name)
         if conn_config is None:
             raise SurrealDbError(f"Connection '{conn_name}' not configured.")
@@ -261,7 +261,7 @@ class AuthenticatedUserMixin:
             await client.close()
 
         # Fetch the created user via the root singleton (guaranteed access)
-        root_client = await SurrealDBConnectionManager.get_client(conn_name)  # type: ignore[attr-defined]
+        root_client = await SurrealDBConnectionManager.get_client(conn_name)
 
         identifier_field = config.get("identifier_field", "email")
         identifier_value = credentials.get(identifier_field)
@@ -274,10 +274,10 @@ class AuthenticatedUserMixin:
             {"identifier": identifier_value},
         )
 
-        if result.is_empty:  # type: ignore[attr-defined]
+        if result.is_empty:
             raise cls.DoesNotExist("User not found after signup")  # type: ignore[attr-defined]
 
-        user = cls.from_db(result.first)  # type: ignore
+        user = cls.from_db(result.first)  # type: ignore[attr-defined]
         return user, token
 
     @classmethod
@@ -319,7 +319,7 @@ class AuthenticatedUserMixin:
         access_name = config.get("access_name") or f"{table_name.lower()}_auth"
 
         # Get connection info from named connection config
-        conn_name = cls.get_connection_name()  # type: ignore[attr-defined]
+        conn_name = cls.get_connection_name()
         conn_config = SurrealDBConnectionManager.get_config(conn_name)
         if conn_config is None:
             raise SurrealDbError(f"Connection '{conn_name}' not configured.")
@@ -350,7 +350,7 @@ class AuthenticatedUserMixin:
             await client.close()
 
         # Fetch user via root singleton (guaranteed access)
-        root_client = await SurrealDBConnectionManager.get_client(conn_name)  # type: ignore[attr-defined]
+        root_client = await SurrealDBConnectionManager.get_client(conn_name)
 
         identifier_field = config.get("identifier_field", "email")
         identifier_value = credentials.get(identifier_field)
@@ -363,10 +363,10 @@ class AuthenticatedUserMixin:
             {"identifier": identifier_value},
         )
 
-        if result.is_empty:  # type: ignore[attr-defined]
+        if result.is_empty:
             raise cls.DoesNotExist("User not found after signin")  # type: ignore[attr-defined]
 
-        user = cls.from_db(result.first)  # type: ignore
+        user = cls.from_db(result.first)  # type: ignore[attr-defined]
         return user, token
 
     @classmethod
@@ -406,7 +406,7 @@ class AuthenticatedUserMixin:
 
             # Get the record ID from $auth (returns a RecordId scalar, not a list)
             auth_result = await client.query("RETURN $auth")
-            first_qr = auth_result.first_result  # type: ignore[union-attr]
+            first_qr = auth_result.first_result
             if first_qr is None or first_qr.result is None:
                 return None
 
@@ -421,16 +421,16 @@ class AuthenticatedUserMixin:
         config = getattr(cls, "model_config", {})
         table_name = config.get("table_name") or cls.__name__
 
-        root_client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())  # type: ignore[attr-defined]
+        root_client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
         result = await root_client.query(
             f"SELECT * FROM {table_name} WHERE id = type::thing($record_id)",
             {"record_id": record_id},
         )
 
-        if result.is_empty:  # type: ignore[attr-defined]
+        if result.is_empty:
             return None
 
-        user = cls.from_db(result.first)  # type: ignore
+        user = cls.from_db(result.first)  # type: ignore[attr-defined]
         return user, record_id
 
     @classmethod
@@ -485,7 +485,7 @@ class AuthenticatedUserMixin:
                 return None
 
             auth_result = await client.query("RETURN $auth")
-            first_qr = auth_result.first_result  # type: ignore[union-attr]
+            first_qr = auth_result.first_result
             if first_qr is None or first_qr.result is None:
                 return None
 
@@ -538,12 +538,12 @@ class AuthenticatedUserMixin:
         password_field = config.get("password_field", "password")
 
         try:
-            await cls.signin(**{identifier_field: identifier_value, password_field: old_password})  # type: ignore[attr-defined]
+            await cls.signin(**{identifier_field: identifier_value, password_field: old_password})
         except SurrealDbError:
             raise SurrealDbError("Invalid current password") from None
 
         # Update the password via root singleton (needs root permissions)
-        client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())  # type: ignore[attr-defined]
+        client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
         table_name = config.get("table_name") or cls.__name__
 
         # Get encryption algorithm

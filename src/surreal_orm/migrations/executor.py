@@ -65,10 +65,10 @@ class MigrationExecutor:
         client = await SurrealDBConnectionManager.get_client()
         result = await client.query(f"SELECT name, applied_at FROM {MIGRATIONS_TABLE} ORDER BY applied_at;")
 
-        if result.is_empty:  # type: ignore[attr-defined]
+        if result.is_empty:
             return []
 
-        return [r["name"] for r in result.all_records]  # type: ignore[attr-defined]
+        return [r["name"] for r in result.all_records]
 
     def get_available_migrations(self) -> list[str]:
         """
@@ -137,7 +137,7 @@ class MigrationExecutor:
         if migration is None or type(migration).__name__ != "Migration":
             raise ImportError(f"Migration file must define 'migration' variable: {name}")
 
-        return migration  # type: ignore[return-value, no-any-return]
+        return migration  # type: ignore[no-any-return]
 
     def _sort_by_dependencies(self, migrations: list[Migration]) -> list[Migration]:
         """

@@ -121,13 +121,13 @@ class LiveModelStream(Generic[T]):
             try:
                 instance = self._model.model_validate({"id": parsed_id})
             except Exception:
-                instance = self._model.model_construct(id=parsed_id)  # type: ignore[arg-type]
+                instance = self._model.model_construct(id=parsed_id)
         else:
             result = self._model.from_db(change.result)
             if isinstance(result, list):
-                instance = result[0] if result else self._model.model_construct(id=parsed_id)  # type: ignore[arg-type]
+                instance = result[0] if result else self._model.model_construct(id=parsed_id)
             else:
-                instance = result  # type: ignore[assignment]
+                instance = result
 
         event: ModelChangeEvent[T] = ModelChangeEvent(
             action=change.action,
@@ -316,11 +316,11 @@ class ChangeModelStream(Generic[T]):
                     try:
                         result = self._model.from_db(record)
                         if isinstance(result, list):
-                            instance = result[0] if result else self._model.model_construct(id=parsed_id)  # type: ignore[arg-type]
+                            instance = result[0] if result else self._model.model_construct(id=parsed_id)
                         else:
-                            instance = result  # type: ignore[assignment]
+                            instance = result
                     except Exception:
-                        instance = self._model.model_construct(id=parsed_id)  # type: ignore[arg-type]
+                        instance = self._model.model_construct(id=parsed_id)
 
                     events.append(
                         ModelChangeEvent(
@@ -341,7 +341,7 @@ class ChangeModelStream(Generic[T]):
         if self._iterator is None:
             self._iterator = self._stream_events()
 
-        return await self._iterator.__anext__()  # type: ignore[no-any-return, union-attr]
+        return await self._iterator.__anext__()
 
     async def _stream_events(self) -> AsyncIterator[ModelChangeEvent[T]]:
         """Internal generator that yields ModelChangeEvent from the change feed."""
