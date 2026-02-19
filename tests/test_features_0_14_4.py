@@ -128,15 +128,18 @@ async def test_datetime_inline_dict_roundtrip() -> None:
     """datetime inside inline_dicts=True should become d'...' literal, not plain string."""
     dt = datetime(2026, 6, 15, 12, 0, 0, tzinfo=UTC)
 
+    # Pass a datetime object inside a complex dict with inline_dicts=True
+    # so that _extract_datetime_values() converts it to a d"..." SurrealQL literal.
     await DatetimeModel.raw_query(
-        "UPSERT dt_model:dt_inline SET name = 'inline test', created_at = $ts;",
-        variables={"ts": dt.isoformat()},
+        "UPSERT dt_model:dt_inline SET name = $data.name, created_at = $data.created_at;",
+        variables={"data": {"name": "inline test", "created_at": dt}},
+        inline_dicts=True,
     )
 
     loaded = await DatetimeModel.objects().get("dt_inline")
     assert loaded.name == "inline test"
-    # created_at was set via a plain ISO string variable — SurrealDB should parse it
-    assert isinstance(loaded.created_at, (datetime, str))
+    assert isinstance(loaded.created_at, datetime)
+    assert loaded.created_at.replace(microsecond=0) == dt.replace(microsecond=0)
 
 
 @pytest.mark.integration
