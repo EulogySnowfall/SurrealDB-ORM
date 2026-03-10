@@ -281,23 +281,14 @@ class BaseSurrealConnection(ABC):
             vars: Query variables
 
         Returns:
-            QueryResponse containing results for each statement
-
-        Raises:
-            TableNotFoundError: If a statement references a non-existent table
-                (SurrealDB 3.0 returns ERR status instead of empty arrays).
+            QueryResponse containing results for each statement.
+            Callers should check ``response.is_ok`` for per-statement errors.
+            SurrealDB 3.0 returns ERR status for non-existent tables instead
+            of empty arrays — use ``TableNotFoundError.is_table_not_found()``
+            on error results to detect this case.
         """
-        from ..exceptions import TableNotFoundError
-
         result = await self.rpc("query", [sql, vars or {}])
-        response = QueryResponse.from_rpc_result(result)
-
-        # SurrealDB 3.0: check for table-not-found errors in query results
-        for qr in response.results:
-            if qr.is_error and isinstance(qr.result, str) and TableNotFoundError.is_table_not_found(qr.result):
-                raise TableNotFoundError(message=qr.result, query=sql)
-
-        return response
+        return QueryResponse.from_rpc_result(result)
 
     async def select(self, thing: str) -> RecordsResponse:
         """

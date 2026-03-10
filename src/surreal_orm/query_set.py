@@ -1659,12 +1659,20 @@ class QuerySet(Generic[T]):
             results = await self._run_query_on_client(client, "SELECT * FROM users;")
             ```
         """
+        from surreal_sdk.exceptions import TableNotFoundError
+
         from .debug import _elapsed_ms, _log_query, _start_timer
 
         final_query = remove_quotes_for_variables(query)
         start = _start_timer()
         result = await client.query(final_query, self._variables)
         _log_query(final_query, self._variables, _elapsed_ms(start))
+
+        # SurrealDB 3.0: detect table-not-found in query results
+        for qr in result.results:
+            if qr.is_error and isinstance(qr.result, str) and TableNotFoundError.is_table_not_found(qr.result):
+                raise TableNotFoundError(message=qr.result, query=final_query)
+
         # SDK returns QueryResponse, extract all records
         return cast(list[Any], result.all_records)
 
@@ -1715,11 +1723,20 @@ class QuerySet(Generic[T]):
             results = await queryset.query(custom_query, variables={'status': 'active'})
             ```
         """
+        from surreal_sdk.exceptions import TableNotFoundError
+
         variables = variables or {}
         if f"FROM {self._model_table}" not in query:
             raise SurrealDbError(f"The query must include 'FROM {self._model_table}' to reference the correct table.")
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), variables)
+        final_query = remove_quotes_for_variables(query)
+        result = await client.query(final_query, variables)
+
+        # SurrealDB 3.0: detect table-not-found in query results
+        for qr in result.results:
+            if qr.is_error and isinstance(qr.result, str) and TableNotFoundError.is_table_not_found(qr.result):
+                raise TableNotFoundError(message=qr.result, query=final_query)
+
         # SDK returns QueryResponse, extract all records
         return self.model.from_db(cast(dict[str, Any] | list[Any] | None, result.all_records))
 

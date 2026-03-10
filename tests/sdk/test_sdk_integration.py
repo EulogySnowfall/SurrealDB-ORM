@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from src.surreal_sdk.connection.http import HTTPConnection
 from src.surreal_sdk.connection.websocket import WebSocketConnection
-from src.surreal_sdk.exceptions import QueryError, TableNotFoundError
+from src.surreal_sdk.exceptions import QueryError
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER, SURREALDB_WS_URL
 
 SURREALDB_DATABASE = "test_sdk_integration"
@@ -539,12 +539,11 @@ class TestHTTPTransactions:
         except ValueError:
             pass
 
-        # SurrealDB 3.0: table may not exist after rollback; handle both cases
-        try:
-            result = await http.query("SELECT * FROM sdk_tx_test")
+        # SurrealDB 3.0: table may not exist after rollback — result.is_ok is False
+        result = await http.query("SELECT * FROM sdk_tx_test")
+        if result.is_ok:
             assert len(result.all_records) == 0
-        except TableNotFoundError:
-            pass  # Table doesn't exist — rollback succeeded
+        # else: ERR status means table doesn't exist — rollback succeeded
 
     @pytest.mark.integration
     async def test_transaction_mixed_ops(self, http: HTTPConnection) -> None:

@@ -387,16 +387,11 @@ class TestHTTPTransactionIntegration:
             pass
 
         # Verify no records exist
-        # SurrealDB 3.0: table may not exist after rollback; handle both cases
-        from src.surreal_sdk.exceptions import TableNotFoundError
-
-        try:
-            result = await connection.query("SELECT * FROM tx_rollback_test")
-            if result.is_ok:
-                assert len(result.all_records) == 0
-            # else: ERR status means table doesn't exist — rollback succeeded
-        except TableNotFoundError:
-            pass  # Table doesn't exist — rollback succeeded
+        # SurrealDB 3.0: table may not exist after rollback — result.is_ok is False
+        result = await connection.query("SELECT * FROM tx_rollback_test")
+        if result.is_ok:
+            assert len(result.all_records) == 0
+        # else: ERR status means table doesn't exist — rollback succeeded
 
     @pytest.mark.asyncio
     @pytest.mark.integration
