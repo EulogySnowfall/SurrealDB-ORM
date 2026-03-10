@@ -6,6 +6,41 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.20.0] - 2026-03-10
+
+### V2 LTS Branch — SurrealDB 2.X Maintenance
+
+This release establishes the **V2 LTS maintenance branch** for SurrealDB 2.X backward compatibility.
+The `main` branch now targets SurrealDB 3.X (version 0.30.x), while the `v2` branch (version 0.20.x)
+continues to receive security updates and bug fixes for SurrealDB 2.X users.
+
+### Added
+
+- **V2 LTS branch setup** — Protected `v2` branch with its own CI/CD pipeline, separate from `main`.
+- **SurrealDB 2.X Version Monitor** — Daily automated workflow (`surrealdb-security.yml`) that:
+  - Checks for new SurrealDB 2.X releases (ignores 3.X+)
+  - Runs full unit + integration test suite against new versions
+  - Auto-creates PRs targeting the `v2` branch when tests pass
+  - Bumps ORM version and creates tagged releases for security patches
+  - Creates GitHub issues when tests fail for manual investigation
+- **CI targeting V2** — `ci.yml` now triggers on pushes/PRs to the `v2` branch.
+- **Dependabot auto-merge for V2** — `dependabot-automerge.yml` merges into `v2` branch and bumps patch version.
+- **Publish workflow for V2** — `publish.yml` triggers on `v0.20.*` tags for PyPI releases.
+
+### Changed
+
+- **Version bump to 0.20.0** — All version files updated (`pyproject.toml`, `surreal_orm/__init__.py`, `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`).
+- **Versioning scheme**: `0.20.Z` where Z is incremented for security/bug fix patches.
+
+### Policy
+
+- **No new features** are developed on this branch.
+- **Security vulnerabilities** and **bug fixes** are actively maintained.
+- **SurrealDB 2.X compatibility** is automatically validated daily.
+- Security patches trigger automatic version bumps (0.20.0 -> 0.20.1 -> 0.20.2, etc.).
+
+---
+
 ## [0.14.4] - 2026-02-19
 
 ### Fixed

@@ -224,9 +224,9 @@ jobs:
       - name: Checkout main after merge
         if: steps.wait-merge.outputs.merged == 'true'
         run: |
-          git fetch origin main
-          git checkout main
-          git pull origin main
+          git fetch origin v2
+          git checkout v2
+          git pull origin v2
 
       - name: Configure Git
         if: steps.wait-merge.outputs.merged == 'true'
@@ -258,7 +258,7 @@ jobs:
           # Commit version bump
           git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml
           git commit -m "chore(release): bump version to $NEW_VERSION [skip ci]"
-          git push origin main
+          git push origin v2
 
           # Create and push tag
           git tag -a "$NEW_TAG" -m "Security patch: ${{ steps.dependabot-metadata.outputs.dependency-names }}"
