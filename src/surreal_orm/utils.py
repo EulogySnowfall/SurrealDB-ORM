@@ -220,9 +220,7 @@ def _extract_datetime_values(
         markers[marker] = f'd"{value.isoformat()}"'
         return marker
     if isinstance(value, dict):
-        return {
-            k: _extract_datetime_values(v, markers, counter) for k, v in value.items()
-        }
+        return {k: _extract_datetime_values(v, markers, counter) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         converted = [_extract_datetime_values(item, markers, counter) for item in value]
         return type(value)(converted)
@@ -265,9 +263,7 @@ def inline_dict_variables(
             try:
                 json_str = json.dumps(processed, cls=_SurrealJSONEncoder)
             except (TypeError, ValueError) as e:
-                raise ValueError(
-                    f"Failed to serialize variable '{key}' to JSON for inlining: {e}"
-                ) from e
+                raise ValueError(f"Failed to serialize variable '{key}' to JSON for inlining: {e}") from e
 
             # Replace datetime marker strings (with JSON quotes) with
             # unwrapped SurrealQL d"..." literals.
