@@ -253,7 +253,7 @@ class AuthResponse:
             # SurrealDB 3.x: {"token": "...", "refresh": "..."}
             token = data.get("token")
             refresh_token = data.get("refresh")
-            success = True
+            success = token is not None
         elif data is None:
             # signin/signup with no token return = success
             success = True

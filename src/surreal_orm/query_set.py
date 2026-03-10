@@ -644,6 +644,7 @@ class QuerySet(Generic[T]):
         text_query: str,
         text_limit: int = 20,
         rrf_k: int = 60,
+        ef: int = 100,
     ) -> list[dict[str, Any]]:
         """
         Combine vector similarity and full-text search using Reciprocal Rank Fusion.
@@ -665,6 +666,7 @@ class QuerySet(Generic[T]):
             text_query: Search query string.
             text_limit: Number of FTS results to consider.
             rrf_k: Reciprocal Rank Fusion constant (default 60).
+            ef: HNSW search effort (default 100).
 
         Returns:
             list[dict]: Results ordered by combined RRF score.
@@ -694,7 +696,7 @@ class QuerySet(Generic[T]):
 
         query = (
             f"LET $vec_results = (SELECT id, vector::distance::knn() AS _d "
-            f"FROM {table} WHERE {vector_field} <|{vector_limit},100|> $_hybrid_vec "
+            f"FROM {table} WHERE {vector_field} <|{vector_limit},{ef}|> $_hybrid_vec "
             f"ORDER BY _d);\n"
             f"LET $fts_results = (SELECT id, search::score(0) AS _s "
             f"FROM {table} WHERE {text_field} @0@ $_hybrid_text "

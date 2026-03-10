@@ -329,7 +329,7 @@ class SurrealDBConnectionManager:
                         f"DEFINE NAMESPACE IF NOT EXISTS `{config.namespace}`; "
                         f"DEFINE DATABASE IF NOT EXISTS `{config.database}`;"
                     )
-                except Exception:
+                except SurrealDBError:
                     logger.debug(
                         "Could not auto-create namespace/database for '%s' (may lack root privileges).",
                         name,
@@ -412,7 +412,7 @@ class SurrealDBConnectionManager:
                 await _ws_client.query(
                     f"DEFINE NAMESPACE IF NOT EXISTS `{config.namespace}`; DEFINE DATABASE IF NOT EXISTS `{config.database}`;"
                 )
-            except Exception:
+            except SurrealDBError:
                 logger.debug(
                     "Could not auto-create namespace/database (WS) for '%s'.",
                     name,

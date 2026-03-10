@@ -222,6 +222,19 @@ class TestAuthResponse:
         assert resp.success is True
         assert resp.token is None
 
+    def test_from_rpc_result_v3_dict(self) -> None:
+        """SurrealDB 3.0: signin returns {token, refresh} dict."""
+        resp = AuthResponse.from_rpc_result({"token": "jwt_token", "refresh": "refresh_token"})
+        assert resp.success is True
+        assert resp.token == "jwt_token"
+        assert resp.refresh_token == "refresh_token"
+
+    def test_from_rpc_result_v3_dict_missing_token(self) -> None:
+        """Malformed dict without token key should not report success."""
+        resp = AuthResponse.from_rpc_result({"foo": "bar"})
+        assert resp.success is False
+        assert resp.token is None
+
     def test_from_rpc_result_other(self) -> None:
         resp = AuthResponse.from_rpc_result(42)
         assert resp.success is False
