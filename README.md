@@ -1,15 +1,46 @@
-# SurrealDB-ORM
+# SurrealDB-ORM (V2 LTS - SurrealDB 2.X)
 
 ![Python](https://img.shields.io/badge/python-3.12%2B-blue)
-![CI](https://github.com/EulogySnowfall/SurrealDB-ORM/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/EulogySnowfall/SurrealDB-ORM/actions/workflows/ci.yml/badge.svg?branch=v2)
 [![codecov](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM/graph/badge.svg?token=XUONTG2M6Z)](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM)
 ![GitHub License](https://img.shields.io/github/license/EulogySnowfall/SurrealDB-ORM)
 
-> **Beta Software** - Core APIs are stabilizing. Feedback welcome!
+> **V2 LTS Branch** - Maintenance-only for SurrealDB 2.X compatibility. For SurrealDB 3.X, see the [`main` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main).
 
 **SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, and JWT authentication.
 
 **Includes a custom SDK (`surreal_sdk`)** - Zero dependency on the official `surrealdb` package!
+
+---
+
+## Branch Strategy
+
+| Branch | SurrealDB Version | Status | Version |
+|--------|-------------------|--------|---------|
+| [`main`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main) | 3.X | Active development | 0.30.x |
+| [`v2`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (this branch) | 2.X | LTS maintenance | 0.20.x |
+
+### V2 LTS Policy
+
+- **No new features** are developed on this branch
+- **Security vulnerabilities** and **bug fixes** are actively maintained
+- **SurrealDB 2.X compatibility updates** are automatically monitored and applied
+- A daily workflow checks for new SurrealDB 2.X releases (< 3.0), runs integration tests, and auto-creates PRs
+- Security patches trigger automatic version bumps and PyPI releases
+
+### SurrealDB Compatibility
+
+Tested with SurrealDB: v2.6.0
+
+---
+
+## What's New in 0.20.0
+
+Version 0.20.0 is the first release on the V2 LTS branch, establishing the maintenance baseline for SurrealDB 2.X compatibility.
+
+- **LTS branch setup** - Automated security monitoring for SurrealDB 2.X releases
+- **Branch protection** - CI/CD pipeline targeting V2 branch with auto-merge for dependency updates
+- **Version bump** - From 0.14.4 to 0.20.0 to distinguish the LTS maintenance line
 
 ---
 
