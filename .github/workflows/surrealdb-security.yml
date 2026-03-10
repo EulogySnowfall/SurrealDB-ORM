@@ -241,7 +241,7 @@ jobs:
           ref: main
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Configure Git
         run: |
@@ -307,7 +307,7 @@ jobs:
 
       - name: Push branch and create PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           IS_SECURITY: ${{ needs.check-release.outputs.is-security-patch }}
         run: |
           git push -u origin "$BRANCH"
@@ -345,7 +345,7 @@ jobs:
       - name: Wait for PR merge and tag (security patches only)
         if: needs.check-release.outputs.is-security-patch == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           echo "PR will be auto-merged after CI passes."
           echo "Tag v${NEW_ORM_VERSION} will be created by the Dependabot workflow on merge."
