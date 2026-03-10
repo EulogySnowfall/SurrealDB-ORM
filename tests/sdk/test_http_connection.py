@@ -168,6 +168,8 @@ class TestHTTPConnectionIntegration:
         try:
             await conn.connect()
             await conn.signin("root", "root")
+            # SurrealDB 3.0 requires namespace/database to exist before use
+            await conn.query("DEFINE NAMESPACE IF NOT EXISTS test; DEFINE DATABASE IF NOT EXISTS test;")
             yield conn
         finally:
             await conn.close()
