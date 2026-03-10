@@ -15,10 +15,10 @@
 
 ## Branch Strategy
 
-| Branch | SurrealDB Version | Status | Version |
-|--------|-------------------|--------|---------|
-| [`main`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main) | 3.X | Active development | 0.30.x |
-| [`v2`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (this branch) | 2.X | LTS maintenance | 0.20.x |
+| Branch                                                                        | SurrealDB Version | Status             | Version |
+| ----------------------------------------------------------------------------- | ----------------- | ------------------ | ------- |
+| [`main`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main)           | 3.X               | Active development | 0.30.x  |
+| [`v2`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (this branch) | 2.X               | LTS maintenance    | 0.20.x  |
 
 ### V2 LTS Policy
 
