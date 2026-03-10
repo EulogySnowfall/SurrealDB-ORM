@@ -2,12 +2,13 @@
 
 ## Supported Versions
 
-Only the **latest released version** receives security updates until v1.0.0:
+Two release lines are actively maintained, one per SurrealDB major version:
 
-| Version    | Supported          |
-| ---------- | ------------------ |
-| **0.14.x** | :white_check_mark: |
-| < 0.14.x   | :x:                |
+| Version     | SurrealDB   | Branch | Supported          |
+| ----------- | ----------- | ------ | ------------------ |
+| **0.30.x+** | >= 3.0      | `main` | :white_check_mark: |
+| **0.20.x**  | 2.6.x       | `v2`   | :white_check_mark: |
+| < 0.20.x    | -           | -      | :x:                |
 
 ## Versioning Scheme
 

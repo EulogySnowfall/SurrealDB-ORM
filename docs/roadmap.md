@@ -1,36 +1,37 @@
 # SurrealDB-ORM Roadmap
 
-> Planning document for future ORM features - Last updated: February 2026
+> Planning document for future ORM features - Last updated: March 2026
 
 ---
 
 ## Version History
 
-| Version | Status   | Focus                                                     |
-| ------- | -------- | --------------------------------------------------------- |
-| 0.1.x   | Released | Basic ORM (Models, QuerySet, CRUD)                        |
-| 0.2.x   | Released | Custom SDK, Migrations, JWT Auth, CLI                     |
-| 0.3.0   | Released | ORM Transactions + Aggregations                           |
-| 0.3.1   | Released | Bulk Operations + Bug Fixes                               |
-| 0.4.0   | Released | Relations & Graph Traversal                               |
-| 0.5.0   | Released | SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls |
-| 0.5.1   | Released | Security Workflows (Dependabot, SurrealDB monitoring)     |
-| 0.5.2   | Released | Bug Fixes & FieldType Improvements                        |
-| 0.5.3   | Released | ORM Improvements: Upsert, server_fields, merge() fix      |
-| 0.5.5.1 | Released | Critical Bug Fixes: ID escaping, CBOR HTTP, get_related   |
-| 0.5.7   | Released | Django-style Model Signals                                |
-| 0.5.8   | Released | Around Signals (Generator-based middleware)               |
-| 0.5.9   | Released | Atomic Array Ops, Relation Direction, Array Filtering     |
-| 0.6.0   | Released | Q Objects, Parameterized Filters, SurrealFunc             |
-| 0.7.0   | Released | Performance & DX: refresh, call_function, FETCH, extras   |
-| 0.8.0   | Released | Auth Module Fixes + Computed Fields                       |
-| 0.9.0   | Released | ORM Live Models + Change Feed Integration                 |
-| 0.10.0  | Released | Schema Introspection & Multi-DB                           |
-| 0.11.0  | Released | Advanced Queries & Caching                                |
-| 0.12.0  | Released | Vector Search & Full-Text Search                          |
-| 0.13.0  | Released | Events, Geospatial & Materialized Views                   |
-| 0.14.0  | Released | Testing & Developer Experience (Alpha → Beta)             |
-| 0.14.4  | Released | Datetime Fix, Typed QuerySet[T] & get_related, mypy strict|
+| Version | Status   | Focus                                                      |
+| ------- | -------- | ---------------------------------------------------------- |
+| 0.1.x   | Released | Basic ORM (Models, QuerySet, CRUD)                         |
+| 0.2.x   | Released | Custom SDK, Migrations, JWT Auth, CLI                      |
+| 0.3.0   | Released | ORM Transactions + Aggregations                            |
+| 0.3.1   | Released | Bulk Operations + Bug Fixes                                |
+| 0.4.0   | Released | Relations & Graph Traversal                                |
+| 0.5.0   | Released | SDK Real-time: Live Select, Auto-Resubscribe, Typed Calls  |
+| 0.5.1   | Released | Security Workflows (Dependabot, SurrealDB monitoring)      |
+| 0.5.2   | Released | Bug Fixes & FieldType Improvements                         |
+| 0.5.3   | Released | ORM Improvements: Upsert, server_fields, merge() fix       |
+| 0.5.5.1 | Released | Critical Bug Fixes: ID escaping, CBOR HTTP, get_related    |
+| 0.5.7   | Released | Django-style Model Signals                                 |
+| 0.5.8   | Released | Around Signals (Generator-based middleware)                |
+| 0.5.9   | Released | Atomic Array Ops, Relation Direction, Array Filtering      |
+| 0.6.0   | Released | Q Objects, Parameterized Filters, SurrealFunc              |
+| 0.7.0   | Released | Performance & DX: refresh, call_function, FETCH, extras    |
+| 0.8.0   | Released | Auth Module Fixes + Computed Fields                        |
+| 0.9.0   | Released | ORM Live Models + Change Feed Integration                  |
+| 0.10.0  | Released | Schema Introspection & Multi-DB                            |
+| 0.11.0  | Released | Advanced Queries & Caching                                 |
+| 0.12.0  | Released | Vector Search & Full-Text Search                           |
+| 0.13.0  | Released | Events, Geospatial & Materialized Views                    |
+| 0.14.0  | Released | Testing & Developer Experience (Alpha → Beta)              |
+| 0.14.4  | Released | Datetime Fix, Typed QuerySet[T] & get_related, mypy strict |
+| 0.30.0  | Alpha    | SurrealDB 3.0 Compatibility                                |
 
 ---
 
@@ -1260,84 +1261,248 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 
 ---
 
+## v0.30.0 - SurrealDB 3.0 Compatibility (Alpha)
+
+**Goal:** Full compatibility with SurrealDB >= 3.0. The `v2` branch preserves SurrealDB 2.x support.
+
+**Status:** Alpha — Core compatibility done, tests passing.
+
+### Phase 1: Core Compatibility (Done)
+
+- [x] Docker Compose upgraded to `surrealdb/surrealdb:v3`
+- [x] Auth token format: `signin`/`signup` return `{token, refresh}` dict — `AuthResponse` dataclass updated
+- [x] Time function renames: `time::from::*` → `time::from_*`, `time::is::leap_year` → `time::is_leap_year`
+- [x] `type::thing()` → `type::record()` in auth module
+- [x] `SEARCH ANALYZER` → `FULLTEXT ANALYZER` in migrations + parsers (backward-compatible parsing)
+- [x] `MTREE` vector index removed — only `HNSW` supported
+- [x] KNN vector search requires EF parameter — `similar_to()` always generates `<|K,EF|>` (default ef=100)
+- [x] `hybrid_search()` KNN syntax updated with EF parameter
+- [x] Namespace/database auto-creation via `DEFINE ... IF NOT EXISTS` after signin
+- [x] Schema introspection handles `none | T` nullable format (SurrealDB 3.0) alongside `option<T>` (v2.x)
+- [x] All 1658 unit tests passing
+- [x] All 362 integration tests passing against SurrealDB 3.0.2
+- [x] mypy strict: 0 errors, ruff: clean
+
+### Phase 2: New SurrealDB 3.0 Features (Planned)
+
+- [ ] `DEFINE API` — REST API endpoint definitions in migrations
+- [ ] `DEFINE CONFIG GRAPHQL` — GraphQL schema configuration
+- [ ] Refresh token support — `AuthResponse.refresh_token` flow in auth mixin
+- [ ] Bearer access method — `DEFINE ACCESS ... TYPE BEARER` support
+- [ ] Record references — `references<record<T>>` field type
+- [ ] `REBUILD INDEX` migration operation
+- [ ] `DEFINE BUCKET` — Object/file storage integration (see details below)
+- [ ] Enhanced `DEFINE TABLE ... AS` — Materialized view improvements
+- [ ] SurrealQL enhancements: `UPSERT ... ON DUPLICATE KEY UPDATE`, improved `IF/ELSE`
+
+#### File & Bucket Management (SurrealDB 3.0)
+
+SurrealDB 3.0 introduces native object/file storage via `DEFINE BUCKET`. This enables storing and retrieving files (images, documents, blobs) directly in SurrealDB without external storage services.
+
+**SurrealDB 3.0 Bucket Syntax:**
+
+```sql
+-- Define a bucket with constraints
+DEFINE BUCKET avatars
+  BACKEND memory             -- memory | file | s3 | gcs
+  CACHE 3600                 -- cache TTL in seconds
+  PERMISSIONS
+    FOR select WHERE $auth.id = user_id
+    FOR create WHERE $auth.role = "admin";
+
+-- Store a file
+CREATE file:avatars/user123.png CONTENT <binary data>;
+
+-- Retrieve a file
+SELECT * FROM file:avatars/user123.png;
+
+-- List files in a bucket
+SELECT * FROM file:avatars;
+
+-- Delete a file
+DELETE file:avatars/user123.png;
+```
+
+**Planned ORM Integration:**
+
+```python
+from surreal_orm import BaseSurrealModel, SurrealConfigDict
+from surreal_orm.fields import FileField, ImageField
+from surreal_orm.storage import Bucket, BucketBackend
+
+# 1. Bucket definition (migration operations)
+from surreal_orm.migrations.operations import DefineBucket, RemoveBucket
+
+DefineBucket(
+    name="avatars",
+    backend=BucketBackend.S3,
+    cache=3600,
+    permissions={"select": "$auth.id = user_id"},
+)
+
+# 2. FileField on models
+class User(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="users")
+    name: str
+    avatar: FileField | None = None       # → file reference in "avatars" bucket
+    resume: FileField | None = None       # → file reference in "documents" bucket
+
+# 3. File upload/download via ORM
+user = await User.objects().get("user:alice")
+
+# Upload a file
+await user.upload_file("avatar", file_data=b"...", filename="alice.png", bucket="avatars")
+
+# Download a file
+data = await user.download_file("avatar")
+
+# Delete a file (removes from bucket, clears field)
+await user.delete_file("avatar")
+
+# 4. Bucket management via SDK
+from surreal_sdk import SurrealDB
+
+async with SurrealDB.http("http://localhost:8000", "ns", "db") as db:
+    # List files in a bucket
+    files = await db.bucket_list("avatars")
+
+    # Upload directly
+    await db.bucket_put("avatars", "photo.png", data=binary_data)
+
+    # Download
+    data = await db.bucket_get("avatars", "photo.png")
+
+    # Delete
+    await db.bucket_delete("avatars", "photo.png")
+
+# 5. Bucket introspection
+from surreal_orm import generate_models_from_db
+# DatabaseIntrospector parses INFO FOR DB → BucketState
+# ModelCodeGenerator generates FileField annotations
+```
+
+**Implementation scope:**
+
+| Component                       | Description                                                |
+| ------------------------------- | ---------------------------------------------------------- |
+| `DefineBucket` / `RemoveBucket` | Migration operations for `DEFINE BUCKET` / `REMOVE BUCKET` |
+| `BucketState`                   | Schema state dataclass for diff detection                  |
+| `parse_define_bucket()`         | Parser for `DEFINE BUCKET` statements                      |
+| `BucketBackend` enum            | `MEMORY`, `FILE`, `S3`, `GCS` backend types                |
+| `FileField`                     | Model field type storing file references                   |
+| `ImageField`                    | `FileField` subclass with image validation (size, format)  |
+| `bucket_list/put/get/delete`    | SDK methods for bucket CRUD                                |
+| `upload_file/download_file`     | ORM model methods for file operations                      |
+| `DatabaseIntrospector`          | Parse buckets from `INFO FOR DB`                           |
+| `ModelCodeGenerator`            | Generate `FileField` annotations from bucket schema        |
+
+### Phase 3: SDK Enhancements (Planned)
+
+- [ ] GraphQL endpoint support via `DEFINE CONFIG GRAPHQL`
+- [ ] REST API client for `DEFINE API` endpoints
+- [ ] Refresh token rotation in `WebSocketConnection`
+- [ ] Connection pool with health checks for SurrealDB 3.0
+
+---
+
 ## Future Versions (Planned)
 
-| Version | Focus            | Key Features                                                |
-| ------- | ---------------- | ----------------------------------------------------------- |
-| 0.15.0  | Graph Power      | Recursive traversal, shortest path, path collection         |
-| 0.16.0  | ML & Data        | SurrealML inference, JSONL import/export, DB dump/restore   |
-| 0.17.0  | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring    |
+| Version     | Focus            | Key Features                                                                  |
+| ----------- | ---------------- | ----------------------------------------------------------------------------- |
+| 0.30.0-beta | SurrealDB 3.0    | Refresh tokens, Bearer access, Record references, DEFINE API                  |
+| 0.30.0      | SurrealDB 3.0    | GraphQL config, REBUILD INDEX, Bucket/file storage (DEFINE BUCKET, FileField) |
+| 0.31.0      | Graph Power      | Recursive traversal, shortest path, path collection                           |
+| 0.32.0      | ML & Data        | SurrealML inference, JSONL import/export, DB dump/restore                     |
+| 0.33.0      | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring                      |
 
 ---
 
 ## Implementation Priority
 
-| Feature                      | Version | Priority | Status | Dependencies     |
-| ---------------------------- | ------- | -------- | ------ | ---------------- |
-| Model Transactions           | 0.3.0   | Critical | Done   | SDK transactions |
-| Aggregations (count/sum/avg) | 0.3.0   | High     | Done   | SDK functions    |
-| GROUP BY                     | 0.3.0   | High     | Done   | Aggregations     |
-| Bulk Operations              | 0.3.1   | Medium   | Done   | Transactions     |
-| Relations (ForeignKey)       | 0.4.0   | High     | Done   | -                |
-| Graph Traversal              | 0.4.0   | High     | Done   | Relations        |
-| Live Select Stream           | 0.5.0   | High     | Done   | SDK WebSocket    |
-| Auto-Resubscribe             | 0.5.0   | High     | Done   | Live Select      |
-| Typed Function Calls         | 0.5.0   | Medium   | Done   | SDK functions    |
-| Security Workflows           | 0.5.1   | High     | Done   | -                |
-| FieldType Improvements       | 0.5.2   | Medium   | Done   | -                |
-| Upsert & server_fields       | 0.5.3   | High     | Done   | -                |
-| Record ID Escaping           | 0.5.5.1 | Critical | Done   | -                |
-| CBOR HTTP Protocol           | 0.5.5.1 | High     | Done   | SDK CBOR         |
-| get_related() direction fix  | 0.5.5.1 | Medium   | Done   | Relations        |
-| Model Signals                | 0.5.7   | High     | Done   | -                |
-| Around Signals               | 0.5.8   | Medium   | Done   | Model Signals    |
-| Atomic Array Ops             | 0.5.9   | High     | Done   | -                |
-| Relation Direction Control   | 0.5.9   | Medium   | Done   | Relations        |
-| Array Filtering Operators    | 0.5.9   | Medium   | Done   | -                |
-| Transaction Conflict Retry   | 0.5.9   | High     | Done   | -                |
-| Q Objects (OR/AND/NOT)       | 0.6.0   | High     | Done   | -                |
-| Parameterized Filters        | 0.6.0   | High     | Done   | -                |
-| SurrealFunc                  | 0.6.0   | High     | Done   | -                |
-| remove_all_relations()       | 0.6.0   | Medium   | Done   | Relations        |
-| `-field` ordering            | 0.6.0   | Low      | Done   | -                |
-| isnull bug fix               | 0.6.0   | Medium   | Done   | -                |
-| merge(refresh=False)         | 0.7.0   | High     | Done   | -                |
-| call_function()              | 0.7.0   | High     | Done   | SDK call()       |
-| extra_vars for SurrealFunc   | 0.7.0   | Medium   | Done   | SurrealFunc      |
-| FETCH clause (N+1 fix)       | 0.7.0   | Medium   | Done   | -                |
-| remove_all_relations() list  | 0.7.0   | Low      | Done   | Relations        |
-| Auth: Ephemeral connections  | 0.8.0   | Critical | Done   | -                |
-| Auth: Configurable access    | 0.8.0   | High     | Done   | -                |
-| Auth: signup returns token   | 0.8.0   | High     | Done   | -                |
-| Auth: authenticate/validate  | 0.8.0   | Medium   | Done   | SDK authenticate |
-| SDK: authenticate() method   | 0.8.0   | Medium   | Done   | -                |
-| Computed Fields              | 0.8.0   | Medium   | Done   | SDK functions    |
-| ORM Live Models              | 0.9.0   | Medium   | Done   | SDK live queries |
-| Change Feed ORM Integration  | 0.9.0   | Medium   | Done   | SDK change feeds |
-| post_live_change signal      | 0.9.0   | Low      | Done   | Live Models      |
-| WebSocket ConnectionManager  | 0.9.0   | Medium   | Done   | SDK WebSocket    |
-| Schema Introspection         | 0.10.0  | High     | Done   | Migrations       |
-| Multi-Database Routing       | 0.10.0  | High     | Done   | ConnectionManager|
-| Subqueries                   | 0.11.0  | High     | Done   | QuerySet         |
-| Query Cache                  | 0.11.0  | Medium   | Done   | -                |
-| Prefetch Objects             | 0.11.0  | Medium   | Done   | Relations        |
-| VectorField + HNSW Index     | 0.12.0  | Critical | Done   | Migrations       |
-| similar_to() KNN search      | 0.12.0  | Critical | Done   | VectorField      |
-| Full-Text Analyzer + Index   | 0.12.0  | High     | Done   | Migrations       |
-| search() QuerySet method     | 0.12.0  | High     | Done   | FTS Index        |
-| Hybrid Search (Vector + FTS) | 0.12.0  | Medium   | Done   | Vector + FTS     |
-| Advanced Index Operations    | 0.12.0  | High     | Done   | Migrations       |
-| DEFINE EVENT (triggers)      | 0.13.0  | High     | Done   | Migrations       |
-| Geospatial Fields            | 0.13.0  | Medium   | Done   | -                |
-| Materialized Views           | 0.13.0  | Medium   | Done   | -                |
-| TYPE RELATION enforcement    | 0.13.0  | Low      | Done   | Relations        |
-| Test Fixtures                | 0.14.0  | High     | Done   | -                |
-| Model Factories              | 0.14.0  | High     | Done   | -                |
-| Debug Toolbar / QueryLogger  | 0.14.0  | Medium   | Done   | -                |
-| Datetime serialization fix   | 0.14.4  | High     | Done   | -                |
-| Generic QuerySet[T]          | 0.14.4  | High     | Done   | QuerySet         |
-| Typed get_related() overloads| 0.14.4  | Medium   | Done   | Relations        |
-| mypy strict mode             | 0.14.4  | Medium   | Done   | -                |
+| Feature                       | Version | Priority | Status  | Dependencies         |
+| ----------------------------- | ------- | -------- | ------- | -------------------- |
+| Model Transactions            | 0.3.0   | Critical | Done    | SDK transactions     |
+| Aggregations (count/sum/avg)  | 0.3.0   | High     | Done    | SDK functions        |
+| GROUP BY                      | 0.3.0   | High     | Done    | Aggregations         |
+| Bulk Operations               | 0.3.1   | Medium   | Done    | Transactions         |
+| Relations (ForeignKey)        | 0.4.0   | High     | Done    | -                    |
+| Graph Traversal               | 0.4.0   | High     | Done    | Relations            |
+| Live Select Stream            | 0.5.0   | High     | Done    | SDK WebSocket        |
+| Auto-Resubscribe              | 0.5.0   | High     | Done    | Live Select          |
+| Typed Function Calls          | 0.5.0   | Medium   | Done    | SDK functions        |
+| Security Workflows            | 0.5.1   | High     | Done    | -                    |
+| FieldType Improvements        | 0.5.2   | Medium   | Done    | -                    |
+| Upsert & server_fields        | 0.5.3   | High     | Done    | -                    |
+| Record ID Escaping            | 0.5.5.1 | Critical | Done    | -                    |
+| CBOR HTTP Protocol            | 0.5.5.1 | High     | Done    | SDK CBOR             |
+| get_related() direction fix   | 0.5.5.1 | Medium   | Done    | Relations            |
+| Model Signals                 | 0.5.7   | High     | Done    | -                    |
+| Around Signals                | 0.5.8   | Medium   | Done    | Model Signals        |
+| Atomic Array Ops              | 0.5.9   | High     | Done    | -                    |
+| Relation Direction Control    | 0.5.9   | Medium   | Done    | Relations            |
+| Array Filtering Operators     | 0.5.9   | Medium   | Done    | -                    |
+| Transaction Conflict Retry    | 0.5.9   | High     | Done    | -                    |
+| Q Objects (OR/AND/NOT)        | 0.6.0   | High     | Done    | -                    |
+| Parameterized Filters         | 0.6.0   | High     | Done    | -                    |
+| SurrealFunc                   | 0.6.0   | High     | Done    | -                    |
+| remove_all_relations()        | 0.6.0   | Medium   | Done    | Relations            |
+| `-field` ordering             | 0.6.0   | Low      | Done    | -                    |
+| isnull bug fix                | 0.6.0   | Medium   | Done    | -                    |
+| merge(refresh=False)          | 0.7.0   | High     | Done    | -                    |
+| call_function()               | 0.7.0   | High     | Done    | SDK call()           |
+| extra_vars for SurrealFunc    | 0.7.0   | Medium   | Done    | SurrealFunc          |
+| FETCH clause (N+1 fix)        | 0.7.0   | Medium   | Done    | -                    |
+| remove_all_relations() list   | 0.7.0   | Low      | Done    | Relations            |
+| Auth: Ephemeral connections   | 0.8.0   | Critical | Done    | -                    |
+| Auth: Configurable access     | 0.8.0   | High     | Done    | -                    |
+| Auth: signup returns token    | 0.8.0   | High     | Done    | -                    |
+| Auth: authenticate/validate   | 0.8.0   | Medium   | Done    | SDK authenticate     |
+| SDK: authenticate() method    | 0.8.0   | Medium   | Done    | -                    |
+| Computed Fields               | 0.8.0   | Medium   | Done    | SDK functions        |
+| ORM Live Models               | 0.9.0   | Medium   | Done    | SDK live queries     |
+| Change Feed ORM Integration   | 0.9.0   | Medium   | Done    | SDK change feeds     |
+| post_live_change signal       | 0.9.0   | Low      | Done    | Live Models          |
+| WebSocket ConnectionManager   | 0.9.0   | Medium   | Done    | SDK WebSocket        |
+| Schema Introspection          | 0.10.0  | High     | Done    | Migrations           |
+| Multi-Database Routing        | 0.10.0  | High     | Done    | ConnectionManager    |
+| Subqueries                    | 0.11.0  | High     | Done    | QuerySet             |
+| Query Cache                   | 0.11.0  | Medium   | Done    | -                    |
+| Prefetch Objects              | 0.11.0  | Medium   | Done    | Relations            |
+| VectorField + HNSW Index      | 0.12.0  | Critical | Done    | Migrations           |
+| similar_to() KNN search       | 0.12.0  | Critical | Done    | VectorField          |
+| Full-Text Analyzer + Index    | 0.12.0  | High     | Done    | Migrations           |
+| search() QuerySet method      | 0.12.0  | High     | Done    | FTS Index            |
+| Hybrid Search (Vector + FTS)  | 0.12.0  | Medium   | Done    | Vector + FTS         |
+| Advanced Index Operations     | 0.12.0  | High     | Done    | Migrations           |
+| DEFINE EVENT (triggers)       | 0.13.0  | High     | Done    | Migrations           |
+| Geospatial Fields             | 0.13.0  | Medium   | Done    | -                    |
+| Materialized Views            | 0.13.0  | Medium   | Done    | -                    |
+| TYPE RELATION enforcement     | 0.13.0  | Low      | Done    | Relations            |
+| Test Fixtures                 | 0.14.0  | High     | Done    | -                    |
+| Model Factories               | 0.14.0  | High     | Done    | -                    |
+| Debug Toolbar / QueryLogger   | 0.14.0  | Medium   | Done    | -                    |
+| Datetime serialization fix    | 0.14.4  | High     | Done    | -                    |
+| Generic QuerySet[T]           | 0.14.4  | High     | Done    | QuerySet             |
+| Typed get_related() overloads | 0.14.4  | Medium   | Done    | Relations            |
+| mypy strict mode              | 0.14.4  | Medium   | Done    | -                    |
+| SurrealDB 3.0 compat          | 0.30.0  | Critical | Done    | -                    |
+| Auth token {token, refresh}   | 0.30.0  | Critical | Done    | Auth module          |
+| KNN EF parameter required     | 0.30.0  | High     | Done    | Vector search        |
+| FULLTEXT ANALYZER rename      | 0.30.0  | High     | Done    | Migrations           |
+| MTREE removal                 | 0.30.0  | High     | Done    | Migrations           |
+| Function renames (time::\*)   | 0.30.0  | High     | Done    | -                    |
+| type::thing → type::record    | 0.30.0  | Medium   | Done    | Auth                 |
+| NS/DB auto-creation           | 0.30.0  | High     | Done    | ConnectionManager    |
+| none \| T nullable format     | 0.30.0  | Medium   | Done    | Introspection        |
+| Refresh token flow            | 0.30.0β | High     | Planned | Auth                 |
+| DEFINE API support            | 0.30.0β | Medium   | Planned | Migrations           |
+| Record references field       | 0.30.0β | Medium   | Planned | Fields               |
+| DEFINE BUCKET (migrations)    | 0.30.0  | High     | Planned | Migrations           |
+| BucketBackend enum + parser   | 0.30.0  | High     | Planned | DEFINE BUCKET        |
+| FileField / ImageField        | 0.30.0  | High     | Planned | DEFINE BUCKET        |
+| SDK bucket CRUD methods       | 0.30.0  | High     | Planned | SDK                  |
+| ORM upload/download helpers   | 0.30.0  | Medium   | Planned | FileField + SDK      |
+| Bucket introspection          | 0.30.0  | Medium   | Planned | DatabaseIntrospector |
 
 ---
 

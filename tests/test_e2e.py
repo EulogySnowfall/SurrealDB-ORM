@@ -7,6 +7,7 @@ from pydantic import Field
 from src import surreal_orm
 from src.surreal_orm.model_base import SurrealDbError
 from src.surreal_orm.query_set import SurrealDbError as QuerySetError
+from surreal_sdk.exceptions import TableNotFoundError
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_e2e"
@@ -227,7 +228,11 @@ async def test_multi_select() -> None:
         age: int = Field(..., ge=0, le=125)
 
     # Clean up from any previous test runs
-    await MultiSelectTest.objects().delete_table()
+    # SurrealDB 3.0: table may not exist yet, so delete_table() can raise
+    try:
+        await MultiSelectTest.objects().delete_table()
+    except TableNotFoundError:
+        pass
 
     await MultiSelectTest(name="Ian", age=23).save()
     await MultiSelectTest(name="Yan", age=32).save()

@@ -6,6 +6,32 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.30.0-alpha] - 2026-03-09
+
+### Breaking Changes (SurrealDB 3.0 Migration)
+
+### Changed
+
+- **SurrealDB 3.0 Support** — All code and tests now target SurrealDB >= 3.0. The `v2` branch preserves SurrealDB 2.x compatibility.
+- **Docker Compose upgraded to SurrealDB v3** — All 4 services in `devops/docker-compose.yml` now use `surrealdb/surrealdb:v3` image.
+- **Auth token format** — `signin`/`signup` RPC now returns `{token, refresh}` dict instead of plain string token. New `AuthResponse` dataclass in `surreal_sdk/types.py` handles both formats with `refresh_token` field.
+- **KNN vector search requires EF parameter** — SurrealDB 3.0 requires the search effort (EF) parameter for KNN queries. `similar_to()` now always generates `<|K,EF|>` syntax (default ef=100 when not specified). The old `<|K|>` syntax is no longer supported.
+- **`SEARCH ANALYZER` renamed to `FULLTEXT ANALYZER`** — Migration operations and parsers updated. Both keywords are accepted during parsing for backward compatibility.
+- **`MTREE` vector index type removed** — SurrealDB 3.0 only supports `HNSW` for vector indexes. Parser and migration code updated.
+- **Time functions renamed** — `time::from::micros` → `time::from_micros`, `time::from::millis` → `time::from_millis`, etc. All `time::from::*` renamed to `time::from_*`. Also `time::is::leap_year` → `time::is_leap_year`.
+- **`type::thing()` renamed to `type::record()`** — Auth module updated to use new function name.
+- **Non-existent tables return errors** — SurrealDB 3.0 returns errors instead of empty arrays for queries on non-existent tables. `ConnectionManager` now auto-creates namespace/database with `DEFINE NAMESPACE/DATABASE IF NOT EXISTS` after signin.
+- **Live queries require existing tables** — `LIVE SELECT` on non-existent tables now fails. Tables must be created before subscribing.
+- **Schema introspection `none | T` format** — SurrealDB 3.0 reports nullable fields as `none | int` instead of `option<int>`. The `define_parser` now handles both formats.
+
+### Fixed
+
+- **Namespace/database auto-creation** — `SurrealDBConnectionManager.get_client()` and `get_ws_client()` now execute `DEFINE NAMESPACE/DATABASE IF NOT EXISTS` after signin to prevent "namespace does not exist" errors in SurrealDB 3.0.
+- **Test infrastructure** — `conftest.py` now ensures namespace/database exist before tests run. All integration test fixtures updated with `DEFINE TABLE IF NOT EXISTS` before live queries and `try/except` wrappers for cleanup operations on non-existent tables.
+- **`hybrid_search()` KNN syntax** — Updated to include EF parameter: `<|K,100|>` instead of `<|K|>`.
+
+---
+
 ## [0.14.4] - 2026-02-19
 
 ### Fixed

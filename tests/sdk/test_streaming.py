@@ -140,6 +140,8 @@ class TestStreamingIntegration:
         try:
             await conn.connect()
             await conn.signin("root", "root")
+            # SurrealDB 3.0: ensure ns/db exist
+            await conn.query("DEFINE NAMESPACE IF NOT EXISTS `test`; DEFINE DATABASE IF NOT EXISTS `test`;")
             yield conn
         finally:
             await conn.close()
@@ -156,6 +158,8 @@ class TestStreamingIntegration:
         try:
             await conn.connect()
             await conn.signin("root", "root")
+            # SurrealDB 3.0: ensure ns/db exist
+            await conn.query("DEFINE NAMESPACE IF NOT EXISTS `test`; DEFINE DATABASE IF NOT EXISTS `test`;")
             yield conn
         finally:
             await conn.close()
@@ -181,6 +185,9 @@ class TestStreamingIntegration:
         async def callback(notification: LiveNotification) -> None:
             notifications.append(notification)
 
+        # SurrealDB 3.0: table must exist for LIVE SELECT
+        await ws_connection.query("DEFINE TABLE IF NOT EXISTS lq_test;")
+
         live = LiveQuery(ws_connection, "lq_test")
 
         # Subscribe
@@ -199,6 +206,9 @@ class TestStreamingIntegration:
 
         async def dummy_callback(notification: Any) -> None:
             pass
+
+        # SurrealDB 3.0: tables must exist for LIVE SELECT
+        await ws_connection.query("DEFINE TABLE IF NOT EXISTS lqm_test1; DEFINE TABLE IF NOT EXISTS lqm_test2;")
 
         manager = LiveQueryManager(ws_connection)
 

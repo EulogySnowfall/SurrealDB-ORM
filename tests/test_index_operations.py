@@ -80,7 +80,7 @@ class TestCreateIndexFTS:
             bm25=True,
         )
         sql = ci.forwards()
-        assert "SEARCH ANALYZER my_az" in sql
+        assert "FULLTEXT ANALYZER my_az" in sql
         assert "BM25" in sql
         # Should not have parenthesized params
         assert "BM25(" not in sql
@@ -118,7 +118,7 @@ class TestCreateIndexFTS:
             highlights=True,
         )
         sql = ci.forwards()
-        assert sql == ("DEFINE INDEX ft_title ON posts FIELDS title SEARCH ANALYZER my_az BM25(1.2,0.75) HIGHLIGHTS;")
+        assert sql == ("DEFINE INDEX ft_title ON posts FIELDS title FULLTEXT ANALYZER my_az BM25(1.2,0.75) HIGHLIGHTS;")
 
 
 class TestCreateIndexStandard:
@@ -211,18 +211,20 @@ class TestParseDefineIndexFTS:
     """Test parse_define_index with FTS statements."""
 
     def test_bm25_default(self) -> None:
-        idx = parse_define_index("DEFINE INDEX ft_title ON posts FIELDS title SEARCH ANALYZER my_az BM25")
+        idx = parse_define_index("DEFINE INDEX ft_title ON posts FIELDS title FULLTEXT ANALYZER my_az BM25")
         assert idx.search_analyzer == "my_az"
         assert idx.bm25 is True
         assert idx.highlights is False
 
     def test_bm25_params(self) -> None:
-        idx = parse_define_index("DEFINE INDEX ft_title ON posts FIELDS title SEARCH ANALYZER my_az BM25(1.2, 0.75) HIGHLIGHTS")
+        idx = parse_define_index(
+            "DEFINE INDEX ft_title ON posts FIELDS title FULLTEXT ANALYZER my_az BM25(1.2, 0.75) HIGHLIGHTS"
+        )
         assert idx.bm25 == (1.2, 0.75)
         assert idx.highlights is True
 
     def test_highlights_only(self) -> None:
-        idx = parse_define_index("DEFINE INDEX ft_title ON posts FIELDS title SEARCH ANALYZER my_az BM25 HIGHLIGHTS")
+        idx = parse_define_index("DEFINE INDEX ft_title ON posts FIELDS title FULLTEXT ANALYZER my_az BM25 HIGHLIGHTS")
         assert idx.bm25 is True
         assert idx.highlights is True
 
@@ -237,7 +239,7 @@ class TestParseDefineIndexRegression:
         assert idx.bm25 is None
 
     def test_search_analyzer_only(self) -> None:
-        idx = parse_define_index("DEFINE INDEX ft_idx ON posts FIELDS title SEARCH ANALYZER my_az")
+        idx = parse_define_index("DEFINE INDEX ft_idx ON posts FIELDS title FULLTEXT ANALYZER my_az")
         assert idx.search_analyzer == "my_az"
         assert idx.bm25 is None
 

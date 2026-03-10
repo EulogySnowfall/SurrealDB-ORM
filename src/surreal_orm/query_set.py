@@ -523,7 +523,7 @@ class QuerySet(Generic[T]):
         """
         Find records by vector similarity using SurrealDB's KNN operator.
 
-        Requires a vector index (HNSW or MTREE) on the target field.  The
+        Requires an HNSW vector index on the target field.  The
         query uses the ``<|N|>`` (or ``<|N, EF|>``) operator to perform
         nearest-neighbour search.
 
@@ -561,7 +561,7 @@ class QuerySet(Generic[T]):
         Perform full-text search on indexed fields.
 
         Each keyword argument maps a field name to a search query string.
-        The field must have a ``SEARCH ANALYZER`` index with BM25 scoring
+        The field must have a ``FULLTEXT ANALYZER`` index with BM25 scoring
         in SurrealDB.
 
         Each field gets a unique match-reference index (``@0@``, ``@1@``,
@@ -644,6 +644,7 @@ class QuerySet(Generic[T]):
         text_query: str,
         text_limit: int = 20,
         rrf_k: int = 60,
+        ef: int = 100,
     ) -> list[dict[str, Any]]:
         """
         Combine vector similarity and full-text search using Reciprocal Rank Fusion.
@@ -665,6 +666,7 @@ class QuerySet(Generic[T]):
             text_query: Search query string.
             text_limit: Number of FTS results to consider.
             rrf_k: Reciprocal Rank Fusion constant (default 60).
+            ef: HNSW search effort (default 100).
 
         Returns:
             list[dict]: Results ordered by combined RRF score.
@@ -694,7 +696,7 @@ class QuerySet(Generic[T]):
 
         query = (
             f"LET $vec_results = (SELECT id, vector::distance::knn() AS _d "
-            f"FROM {table} WHERE {vector_field} <|{vector_limit}|> $_hybrid_vec "
+            f"FROM {table} WHERE {vector_field} <|{vector_limit},{ef}|> $_hybrid_vec "
             f"ORDER BY _d);\n"
             f"LET $fts_results = (SELECT id, search::score(0) AS _s "
             f"FROM {table} WHERE {text_field} @0@ $_hybrid_text "
@@ -1173,13 +1175,12 @@ class QuerySet(Generic[T]):
         if filter_vars:
             self._variables.update(filter_vars)
 
-        # KNN: append <|K|> or <|K, EF|> condition
+        # KNN: append <|K, EF|> condition
+        # SurrealDB 3.0 requires the EF (search effort) parameter; default to 100
         if self._knn_field and self._knn_vector is not None and self._knn_limit is not None:
             self._variables["_knn_vec"] = self._knn_vector
-            if self._knn_ef is not None:
-                knn_op = f"{self._knn_field} <|{self._knn_limit},{self._knn_ef}|> $_knn_vec"
-            else:
-                knn_op = f"{self._knn_field} <|{self._knn_limit}|> $_knn_vec"
+            ef = self._knn_ef if self._knn_ef is not None else 100
+            knn_op = f"{self._knn_field} <|{self._knn_limit},{ef}|> $_knn_vec"
             where_parts.append(knn_op)
 
         # FTS: append @N@ conditions
@@ -1658,12 +1659,20 @@ class QuerySet(Generic[T]):
             results = await self._run_query_on_client(client, "SELECT * FROM users;")
             ```
         """
+        from surreal_sdk.exceptions import TableNotFoundError
+
         from .debug import _elapsed_ms, _log_query, _start_timer
 
         final_query = remove_quotes_for_variables(query)
         start = _start_timer()
         result = await client.query(final_query, self._variables)
         _log_query(final_query, self._variables, _elapsed_ms(start))
+
+        # SurrealDB 3.0: detect table-not-found in query results
+        for qr in result.results:
+            if qr.is_error and isinstance(qr.result, str) and TableNotFoundError.is_table_not_found(qr.result):
+                raise TableNotFoundError(message=qr.result, query=final_query)
+
         # SDK returns QueryResponse, extract all records
         return cast(list[Any], result.all_records)
 
@@ -1714,11 +1723,20 @@ class QuerySet(Generic[T]):
             results = await queryset.query(custom_query, variables={'status': 'active'})
             ```
         """
+        from surreal_sdk.exceptions import TableNotFoundError
+
         variables = variables or {}
         if f"FROM {self._model_table}" not in query:
             raise SurrealDbError(f"The query must include 'FROM {self._model_table}' to reference the correct table.")
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), variables)
+        final_query = remove_quotes_for_variables(query)
+        result = await client.query(final_query, variables)
+
+        # SurrealDB 3.0: detect table-not-found in query results
+        for qr in result.results:
+            if qr.is_error and isinstance(qr.result, str) and TableNotFoundError.is_table_not_found(qr.result):
+                raise TableNotFoundError(message=qr.result, query=final_query)
+
         # SDK returns QueryResponse, extract all records
         return self.model.from_db(cast(dict[str, Any] | list[Any] | None, result.all_records))
 

@@ -179,22 +179,22 @@ def _is_complex_value(value: Any) -> bool:
 class _SurrealJSONEncoder(json.JSONEncoder):
     """JSON encoder that handles datetime, Decimal, UUID for SurrealQL inlining."""
 
-    def default(self, obj: Any) -> Any:
+    def default(self, o: Any) -> Any:
         from datetime import date, datetime, time
         from decimal import Decimal
         from uuid import UUID
 
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        if isinstance(obj, date):
-            return obj.isoformat()
-        if isinstance(obj, time):
-            return obj.isoformat()
-        if isinstance(obj, Decimal):
-            return float(obj)
-        if isinstance(obj, UUID):
-            return str(obj)
-        return super().default(obj)
+        if isinstance(o, datetime):
+            return o.isoformat()
+        if isinstance(o, date):
+            return o.isoformat()
+        if isinstance(o, time):
+            return o.isoformat()
+        if isinstance(o, Decimal):
+            return float(o)
+        if isinstance(o, UUID):
+            return str(o)
+        return super().default(o)
 
 
 def _extract_datetime_values(

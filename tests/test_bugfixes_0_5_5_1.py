@@ -903,6 +903,8 @@ class TestSDKLevelProtocols:
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_cbor", protocol="cbor") as conn:
             await conn.signin(SURREALDB_USER, SURREALDB_PASS)
+            # SurrealDB 3.0: ensure ns/db exist
+            await conn.query("DEFINE NAMESPACE IF NOT EXISTS `test`; DEFINE DATABASE IF NOT EXISTS `test_sdk_cbor`;")
 
             # Clean up
             await conn.query("DELETE sdk_cbor_test;")
@@ -935,6 +937,8 @@ class TestSDKLevelProtocols:
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_json", protocol="json") as conn:
             await conn.signin(SURREALDB_USER, SURREALDB_PASS)
+            # SurrealDB 3.0: ensure ns/db exist
+            await conn.query("DEFINE NAMESPACE IF NOT EXISTS `test`; DEFINE DATABASE IF NOT EXISTS `test_sdk_json`;")
 
             # Clean up
             await conn.query("DELETE sdk_json_test;")
@@ -967,6 +971,8 @@ class TestSDKLevelProtocols:
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_data", protocol="cbor") as conn:
             await conn.signin(SURREALDB_USER, SURREALDB_PASS)
+            # SurrealDB 3.0: ensure ns/db exist
+            await conn.query("DEFINE NAMESPACE IF NOT EXISTS `test`; DEFINE DATABASE IF NOT EXISTS `test_sdk_data`;")
 
             # Clean up
             await conn.query("DELETE sdk_data_test;")
@@ -986,6 +992,8 @@ class TestSDKLevelProtocols:
 
         async with HTTPConnection(SURREALDB_URL, "test", "test_sdk_relate", protocol="cbor") as conn:
             await conn.signin(SURREALDB_USER, SURREALDB_PASS)
+            # SurrealDB 3.0: ensure ns/db exist
+            await conn.query("DEFINE NAMESPACE IF NOT EXISTS `test`; DEFINE DATABASE IF NOT EXISTS `test_sdk_relate`;")
 
             # Clean up
             await conn.query("DELETE sdk_author;")

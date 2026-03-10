@@ -75,6 +75,8 @@ async def setup_live_integration() -> AsyncGenerator[None, Any]:
                 await client.query(f"REMOVE TABLE IF EXISTS {table};")
             except Exception:
                 pass  # Table may not exist yet; safe to ignore
+            # SurrealDB 3.0: table must exist for LIVE SELECT
+            await client.query(f"DEFINE TABLE IF NOT EXISTS {table};")
 
     except Exception:
         pass  # Connection may not be ready; tests will fail explicitly if needed

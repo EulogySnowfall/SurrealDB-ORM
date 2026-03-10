@@ -7,6 +7,7 @@ from surreal_sdk.exceptions import (
     LiveQueryError,
     QueryError,
     SurrealDBError,
+    TableNotFoundError,
     TimeoutError,
     TransactionConflictError,
     TransactionError,
@@ -59,6 +60,38 @@ class TestQueryError:
     def test_inherits_surreal_error(self) -> None:
         err = QueryError("error")
         assert isinstance(err, SurrealDBError)
+
+
+class TestTableNotFoundError:
+    def test_inherits_query_error(self) -> None:
+        err = TableNotFoundError("The table 'users' does not exist")
+        assert isinstance(err, QueryError)
+        assert isinstance(err, SurrealDBError)
+
+    def test_catchable_as_query_error(self) -> None:
+        """Existing code catching QueryError still catches TableNotFoundError."""
+        try:
+            raise TableNotFoundError("The table 'users' does not exist")
+        except QueryError:
+            pass  # Should be caught here
+
+    def test_is_table_not_found_does_not_exist(self) -> None:
+        assert TableNotFoundError.is_table_not_found("The table 'users' does not exist")
+
+    def test_is_table_not_found_not_found(self) -> None:
+        assert TableNotFoundError.is_table_not_found("table not found")
+
+    def test_is_table_not_found_tb_not_found(self) -> None:
+        assert TableNotFoundError.is_table_not_found("tb not found")
+
+    def test_is_table_not_found_case_insensitive(self) -> None:
+        assert TableNotFoundError.is_table_not_found("The Table 'Users' Does Not Exist")
+
+    def test_is_table_not_found_unrelated(self) -> None:
+        assert not TableNotFoundError.is_table_not_found("syntax error near SELECT")
+
+    def test_is_table_not_found_empty(self) -> None:
+        assert not TableNotFoundError.is_table_not_found("")
 
 
 class TestTimeoutError:

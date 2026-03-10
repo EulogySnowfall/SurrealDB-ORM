@@ -264,8 +264,11 @@ class TestMigrationRollback:
         assert "0001_rollback_test" in rolled_back
 
         # Verify table is gone
+        # SurrealDB 3.0: table may not exist — result.is_ok is False
         result = await client.query("SELECT * FROM RollbackTable;")
-        assert result.is_empty
+        if result.is_ok:
+            assert result.is_empty
+        # else: ERR status means table doesn't exist — rollback succeeded
 
     async def test_rollback_to_target(self, temp_migrations_dir: Path, clean_database: None) -> None:
         """Test rolling back to a specific migration."""

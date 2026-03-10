@@ -48,6 +48,25 @@ class TestParseDefineField:
         result = parse_define_field("DEFINE FIELD status ON users TYPE string | null")
         assert result.nullable is True
 
+    def test_none_union_simple(self) -> None:
+        """SurrealDB 3.0: nullable reported as 'none | T'."""
+        result = parse_define_field("DEFINE FIELD bio ON users TYPE none | string")
+        assert result.name == "bio"
+        assert result.field_type == "string"
+        assert result.nullable is True
+
+    def test_none_union_array(self) -> None:
+        """SurrealDB 3.0: 'none | array<string>' unwraps correctly."""
+        result = parse_define_field("DEFINE FIELD tags ON users TYPE none | array<string>")
+        assert result.field_type == "array<string>"
+        assert result.nullable is True
+
+    def test_none_union_record(self) -> None:
+        """SurrealDB 3.0: 'none | record<users>' unwraps correctly."""
+        result = parse_define_field("DEFINE FIELD author ON posts TYPE none | record<users>")
+        assert result.field_type == "record<users>"
+        assert result.nullable is True
+
     def test_field_with_default_string(self) -> None:
         result = parse_define_field("DEFINE FIELD role ON users TYPE string DEFAULT 'player'")
         assert result.name == "role"

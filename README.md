@@ -5,13 +5,43 @@
 [![codecov](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM/graph/badge.svg?token=XUONTG2M6Z)](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM)
 ![GitHub License](https://img.shields.io/github/license/EulogySnowfall/SurrealDB-ORM)
 
-> **Beta Software** - Core APIs are stabilizing. Feedback welcome!
+> **Beta Software** - SurrealDB 3.0 compatible. Core APIs are stabilizing. Feedback welcome!
 
 **SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, and JWT authentication.
 
 **Includes a custom SDK (`surreal_sdk`)** - Zero dependency on the official `surrealdb` package!
 
 ---
+
+## What's New in 0.30.0-alpha
+
+### SurrealDB 3.0 Compatibility
+
+This release upgrades the ORM and SDK to target **SurrealDB >= 3.0**. A `v2` branch is maintained for SurrealDB 2.x compatibility.
+
+**Breaking changes from SurrealDB 3.0:**
+
+- **Auth token format** — `signin()`/`signup()` now return `{token, refresh}` dict. New `AuthResponse.refresh_token` field added.
+- **KNN vector search** — `similar_to()` now always includes the EF parameter: `<|K,EF|>` (default ef=100). The `<|K|>` syntax no longer works.
+- **`SEARCH ANALYZER` → `FULLTEXT ANALYZER`** — Migration SQL generation and parsers updated.
+- **`MTREE` index removed** — Only `HNSW` vector indexes supported.
+- **Time function renames** — `time::from::*` → `time::from_*`, `time::is::leap_year` → `time::is_leap_year`
+- **`type::thing()` → `type::record()`** — Auth module updated.
+- **Non-existent tables return errors** — Namespace/database are now auto-created via `DEFINE ... IF NOT EXISTS` after signin.
+- **Nullable type format** — Schema introspection handles `none | T` (SurrealDB 3.0) alongside `option<T>` (v2.x).
+
+```python
+# No code changes needed for most users — the ORM handles the differences.
+# Just upgrade SurrealDB to v3.0+ and update to surrealdb-orm 0.30.0.
+
+# Auth now returns refresh token (optional)
+from surreal_sdk.types import AuthResponse
+# response.token, response.refresh_token
+
+# KNN search — ef parameter now always included (default 100)
+docs = await Document.objects().similar_to("embedding", vec, limit=10).exec()
+# Generates: WHERE embedding <|10,100|> $_knn_vec
+```
 
 ## What's New in 0.14.4
 
@@ -776,9 +806,19 @@ pip install surrealdb-orm
 pip install surrealdb-orm[cli]
 ```
 
-**Requirements:** Python 3.12+ | SurrealDB 2.6.0+
+**Requirements:** Python 3.12+ | SurrealDB 3.0+
 
 **Included:** `pydantic`, `httpx`, `aiohttp`, `cbor2` (CBOR is the default protocol for WebSocket)
+
+### SurrealDB Compatibility
+
+| ORM Version | SurrealDB | Branch | Status              |
+| ----------- | --------- | ------ | ------------------- |
+| **0.30.x+** | >= 3.0    | `main` | Active development  |
+| **0.20.x**  | 2.6.x     | `v2`   | Security fixes only |
+
+- **SurrealDB 3.0+** — Use `surrealdb-orm >= 0.30.0` (this branch).
+- **SurrealDB 2.6.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.20.x`). This branch receives security patches but no new features.
 
 ---
 

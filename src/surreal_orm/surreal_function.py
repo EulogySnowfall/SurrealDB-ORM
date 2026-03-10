@@ -87,14 +87,15 @@ class SurrealTimeFunction(SurrealFunction):
     WEEK = "time::week"
     YDAY = "time::yday"
     YEAR = "time::year"
-    IS_LEAP_YEAR = "time::is::leap_year"
-    FROM_MICROS = "time::from::micros"
-    FROM_MILLIS = "time::from::millis"
-    FROM_NANOS = "time::from::nanos"
-    FROM_SECONDS = "time::from::seconds"
-    FROM_UNIX = "time::from::unix"
-    FROM_ULID = "time::from::ulid"
-    FROM_UUID = "time::from::uuid"
+    # SurrealDB 3.0: time::is::* → time::is_*, time::from::* → time::from_*
+    IS_LEAP_YEAR = "time::is_leap_year"
+    FROM_MICROS = "time::from_micros"
+    FROM_MILLIS = "time::from_millis"
+    FROM_NANOS = "time::from_nanos"
+    FROM_SECONDS = "time::from_seconds"
+    FROM_UNIX = "time::from_unix"
+    FROM_ULID = "time::from_ulid"
+    FROM_UUID = "time::from_uuid"
 
 
 # https://surrealdb.com/docs/surrealql/functions/database/math

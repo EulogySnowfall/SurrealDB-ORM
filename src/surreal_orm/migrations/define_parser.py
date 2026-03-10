@@ -178,11 +178,14 @@ def parse_define_field(statement: str) -> FieldState:
 
     field_type = clauses.get("TYPE", "any")
     field_type_lower = field_type.lower()
-    nullable = field_type_lower.startswith("option<") or "| null" in field_type_lower
+    nullable = field_type_lower.startswith("option<") or "| null" in field_type_lower or field_type_lower.startswith("none |")
 
     # Normalize: unwrap option<T> to T (the nullable flag carries the info)
     if field_type_lower.startswith("option<") and field_type.endswith(">"):
         field_type = field_type[7:-1].strip()
+    # SurrealDB 3.0: nullable fields reported as "none | T" instead of "option<T>"
+    elif field_type_lower.startswith("none |"):
+        field_type = field_type[6:].strip()
     flexible = "FLEXIBLE" in clauses
     readonly = "READONLY" in clauses
     encrypted = False
@@ -388,7 +391,7 @@ def _parse_permissions(raw: str | None) -> dict[str, str]:
 def parse_define_index(statement: str) -> IndexState:
     """Parse a DEFINE INDEX statement into an IndexState.
 
-    Handles standard, UNIQUE, SEARCH ANALYZER (with optional BM25 / HIGHLIGHTS),
+    Handles standard, UNIQUE, FULLTEXT ANALYZER (with optional BM25 / HIGHLIGHTS),
     and HNSW vector index definitions.
 
     Args:
@@ -413,7 +416,8 @@ def parse_define_index(statement: str) -> IndexState:
     # Keywords that delimit the fields list from index-type flags
     _INDEX_KEYWORDS = [
         "UNIQUE",
-        "SEARCH",
+        "FULLTEXT",
+        "SEARCH",  # backward compat with v2.x definitions
         "HNSW",
         "DIMENSION",
         "DIST",
@@ -423,7 +427,6 @@ def parse_define_index(statement: str) -> IndexState:
         "HIGHLIGHTS",
         "CONCURRENTLY",
         "COMMENT",
-        "MTREE",
     ]
 
     # Find where the fields list ends by looking for the first keyword
@@ -463,7 +466,8 @@ def parse_define_index(statement: str) -> IndexState:
 
     # ── Full-text search ────────────────────────────────────────────
     search_analyzer: str | None = None
-    search_match = re.search(r"SEARCH\s+ANALYZER\s+(\S+)", flags_str, re.IGNORECASE)
+    # SurrealDB 3.0 uses FULLTEXT ANALYZER; accept SEARCH ANALYZER for v2.x compat
+    search_match = re.search(r"(?:FULLTEXT|SEARCH)\s+ANALYZER\s+(\S+)", flags_str, re.IGNORECASE)
     if search_match:
         search_analyzer = search_match.group(1)
 
@@ -480,8 +484,6 @@ def parse_define_index(statement: str) -> IndexState:
     hnsw = "HNSW" in upper_flags
 
     # Vector-specific parameters are only meaningful for HNSW indexes.
-    # Parsing them for other index types (e.g. MTREE) would populate
-    # IndexState fields that later generate invalid CreateIndex SQL.
     dimension: int | None = None
     dist: str | None = None
     vector_type: str | None = None

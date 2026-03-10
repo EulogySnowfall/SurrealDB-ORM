@@ -34,6 +34,33 @@ class QueryError(SurrealDBError):
         super().__init__(message, code)
 
 
+class TableNotFoundError(QueryError):
+    """Raised when a query references a table that does not exist.
+
+    SurrealDB 3.0 returns errors instead of empty arrays when querying
+    non-existent tables.  This subclass of ``QueryError`` allows callers
+    to handle this case specifically::
+
+        try:
+            results = await User.objects().all()
+        except TableNotFoundError:
+            # Table hasn't been created yet
+            ...
+    """
+
+    _PATTERNS = [
+        "table not found",
+        "does not exist",
+        "tb not found",
+    ]
+
+    @staticmethod
+    def is_table_not_found(message: str) -> bool:
+        """Check if an error message indicates a missing table."""
+        msg = message.lower()
+        return any(p in msg for p in TableNotFoundError._PATTERNS)
+
+
 class TimeoutError(SurrealDBError):
     """Raised when an operation times out."""
 

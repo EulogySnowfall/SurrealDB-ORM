@@ -186,11 +186,15 @@ class TestSearchIntegration:
         # Clean up — use REMOVE IF EXISTS for idempotent re-runs
         await client.query("REMOVE INDEX IF EXISTS ft_title ON posts;")
         await client.query("REMOVE ANALYZER IF EXISTS post_analyzer;")
-        await client.query("DELETE FROM posts;")
+        # SurrealDB 3.0: DELETE on non-existent table raises error
+        try:
+            await client.query("DELETE FROM posts;")
+        except Exception:
+            pass
 
         # Define analyzer and search index
         await client.query("DEFINE ANALYZER post_analyzer TOKENIZERS blank, class FILTERS lowercase, snowball(english);")
-        await client.query("DEFINE INDEX ft_title ON posts FIELDS title SEARCH ANALYZER post_analyzer BM25 HIGHLIGHTS;")
+        await client.query("DEFINE INDEX ft_title ON posts FIELDS title FULLTEXT ANALYZER post_analyzer BM25 HIGHLIGHTS;")
 
         # Create posts
         await client.query(

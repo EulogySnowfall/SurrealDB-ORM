@@ -17,6 +17,7 @@ on:
       - 'pyproject.toml'
       - 'Makefile'
       - '.github/workflows/**'
+      - '.surrealdb-version'
 
 env:
   SURREALDB_URL: http://localhost:8000
