@@ -5,9 +5,10 @@
 #   1. Compare .surrealdb-version against latest v3.x GitHub release
 #   2. If same version → skip (no wasted CI minutes)
 #   3. If new version → run unit + integration tests against it
-#   4. If tests pass → commit .surrealdb-version + docker-compose.yml directly to main
-#   5. If security patch → also bump ORM version, tag, and create GitHub release
-#   6. If tests fail → create GitHub issue for investigation
+#   4. If tests pass → create PR with .surrealdb-version + docker-compose.yml update
+#   5. PR triggers normal CI pipeline → auto-merged via gh pr merge --auto
+#   6. If security patch → also bump ORM version in the same PR
+#   7. If tests fail → create GitHub issue for investigation
 
 name: SurrealDB Version Monitor
 
@@ -30,6 +31,7 @@ on:
 permissions:
   contents: write
   issues: write
+  pull-requests: write
 
 env:
   SURREALDB_URL: http://localhost:8000
@@ -219,7 +221,7 @@ jobs:
           path: junit-*.xml
 
   # =============================================================================
-  # Step 3: Tests passed → commit version update directly to main
+  # Step 3: Tests passed → create PR with version update (respects branch protection)
   # =============================================================================
   auto-update:
     name: Update SurrealDB Version
@@ -228,6 +230,9 @@ jobs:
       needs.check-release.outputs.has-update == 'true' &&
       needs.test-new-version.outputs.tests-passed == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout main
@@ -248,6 +253,12 @@ jobs:
           NEW_VERSION: ${{ needs.check-release.outputs.latest-version }}
           DOCKER_TAG: ${{ needs.check-release.outputs.docker-tag }}
         run: |
+          BRANCH="chore/surrealdb-${NEW_VERSION}"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+          git checkout -b "$BRANCH"
+
           echo "$NEW_VERSION" > .surrealdb-version
 
           # Update docker-compose image tags (v3, v3.0.0, v3.0.0-beta.1, etc.)
@@ -265,12 +276,8 @@ jobs:
           Tests passed against SurrealDB v${NEW_VERSION}.
           Previous version: v${{ needs.check-release.outputs.current-version }}"
 
-          git push origin main
-
-          echo "Committed SurrealDB v${NEW_VERSION} to main"
-
-      # --- Security patches also bump the ORM version and create a release ---
-      - name: Bump ORM version and tag (security patches only)
+      # --- Security patches also bump the ORM version ---
+      - name: Bump ORM version (security patches only)
         if: needs.check-release.outputs.is-security-patch == 'true'
         run: |
           # Calculate next patch version
@@ -285,9 +292,9 @@ jobs:
 
           NEXT_PATCH=$((PATCH + 1))
           NEW_ORM_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}${PRE_RELEASE}"
-          NEW_TAG="v${NEW_ORM_VERSION}"
 
           echo "Bumping ORM version: $CURRENT_VERSION → $NEW_ORM_VERSION"
+          echo "NEW_ORM_VERSION=$NEW_ORM_VERSION" >> $GITHUB_ENV
 
           # Update version files
           sed -i "s/^version = \".*\"/version = \"$NEW_ORM_VERSION\"/" pyproject.toml
@@ -296,40 +303,55 @@ jobs:
           sed -i "s/^version = \".*\"/version = \"$NEW_ORM_VERSION\"/" src/surreal_sdk/pyproject.toml
 
           git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml
-          git commit -m "chore(release): bump version to $NEW_ORM_VERSION (SurrealDB security update) [skip ci]"
-          git push origin main
+          git commit -m "chore(release): bump version to $NEW_ORM_VERSION (SurrealDB security update)"
 
-          # Create tag and release
-          git tag -a "$NEW_TAG" -m "SurrealDB security update: v${{ needs.check-release.outputs.latest-version }}"
-          git push origin "$NEW_TAG"
-
-          echo "NEW_TAG=$NEW_TAG" >> $GITHUB_ENV
-          echo "NEW_ORM_VERSION=$NEW_ORM_VERSION" >> $GITHUB_ENV
-
-      - name: Create GitHub Release (security patches only)
-        if: needs.check-release.outputs.is-security-patch == 'true'
+      - name: Push branch and create PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IS_SECURITY: ${{ needs.check-release.outputs.is-security-patch }}
         run: |
-          gh release create "$NEW_TAG" \
-            --title "Security Patch $NEW_TAG" \
-            --notes "$(cat <<EOF
-          ## SurrealDB Security Update
+          git push -u origin "$BRANCH"
 
-          - Updated SurrealDB from v${{ needs.check-release.outputs.current-version }} to v${{ needs.check-release.outputs.latest-version }}
-          - ORM version bumped to $NEW_ORM_VERSION
+          TITLE="chore(deps): update SurrealDB to v${NEW_VERSION}"
+          if [[ "$IS_SECURITY" == "true" ]]; then
+            TITLE="security(deps): update SurrealDB to v${NEW_VERSION}"
+          fi
 
-          <details>
-          <summary>SurrealDB release notes</summary>
+          PR_URL=$(gh pr create \
+            --title "$TITLE" \
+            --body "$(cat <<EOF
+          ## SurrealDB Version Update
 
-          ${{ needs.check-release.outputs.release-notes }}
+          - **Previous:** v${{ needs.check-release.outputs.current-version }}
+          - **New:** v${NEW_VERSION}
+          - **Security patch:** ${IS_SECURITY}
 
-          </details>
+          Tests already passed against this version in the [monitor workflow](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}).
 
           ---
           *Automatically created by the SurrealDB version monitor.*
           EOF
-          )"
+          )" \
+            --base main \
+            --head "$BRANCH")
+
+          echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+          echo "Created PR: $PR_URL"
+
+          # Enable auto-merge so it merges once CI passes
+          gh pr merge "$PR_URL" --auto --squash
+
+      # --- Tag and release after merge (security patches only) ---
+      - name: Wait for PR merge and tag (security patches only)
+        if: needs.check-release.outputs.is-security-patch == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "PR will be auto-merged after CI passes."
+          echo "Tag v${NEW_ORM_VERSION} will be created by the Dependabot workflow on merge."
+          echo "To manually tag after merge:"
+          echo "  git tag -a v${NEW_ORM_VERSION} -m 'SurrealDB security update: v${NEW_VERSION}'"
+          echo "  git push origin v${NEW_ORM_VERSION}"
 
   # =============================================================================
   # Step 4: Tests failed → create GitHub issue
