@@ -1,0 +1,418 @@
+# SurrealDB 2.X Version Monitor (runs from main, targets v2 branch)
+#
+# WHY THIS FILE LIVES ON MAIN:
+#   GitHub Actions only runs scheduled (cron) workflows from the default branch.
+#   Since `main` is the default branch, this workflow must live here to fire daily.
+#   It checks out the `v2` branch for testing and creates PRs targeting `v2`.
+#
+# Flow:
+#   1. Compare v2 branch's .surrealdb-version against latest v2.x GitHub release
+#   2. If same version -> skip (no wasted CI minutes)
+#   3. If new version -> run unit + integration tests against it (using v2 code)
+#   4. If tests pass -> create PR targeting v2 branch
+#   5. PR triggers normal CI pipeline -> auto-merged via gh pr merge --auto
+#   6. If security patch -> also bump ORM version in the same PR
+#   7. If tests fail -> create GitHub issue for investigation
+
+name: "SurrealDB 2.X Version Monitor"
+
+on:
+  schedule:
+    # Run daily at 7:30 AM Montreal time (UTC-5 -> 12:30 UTC)
+    # Offset by 30 min from main's v3.x monitor to avoid resource contention
+    - cron: '30 12 * * *'
+  workflow_dispatch:
+    inputs:
+      surrealdb_version:
+        description: 'SurrealDB 2.X version to test (e.g. 2.6.1, leave empty for latest v2.x)'
+        required: false
+        type: string
+      force_update:
+        description: 'Force update even if version matches'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+env:
+  SURREALDB_URL: http://localhost:8000
+  SURREALDB_USER: root
+  SURREALDB_PASS: root
+  SURREALDB_NAMESPACE: test
+  SURREALDB_DATABASE: test
+
+jobs:
+  # =============================================================================
+  # Step 1: Check if there is a new SurrealDB 2.x release
+  # =============================================================================
+  check-release:
+    name: Check SurrealDB 2.X Release
+    runs-on: ubuntu-latest
+    outputs:
+      latest-version: ${{ steps.check.outputs.latest-version }}
+      current-version: ${{ steps.check.outputs.current-version }}
+      has-update: ${{ steps.check.outputs.has-update }}
+      is-security-patch: ${{ steps.check.outputs.is-security-patch }}
+      release-notes: ${{ steps.check.outputs.release-notes }}
+      docker-tag: ${{ steps.check.outputs.docker-tag }}
+
+    steps:
+      - name: Checkout V2 branch
+        uses: actions/checkout@v6
+        with:
+          ref: v2
+
+      - name: Compare versions
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # --- Determine latest v2.x version ---
+          if [[ -n "${{ inputs.surrealdb_version }}" ]]; then
+            LATEST_VERSION="${{ inputs.surrealdb_version }}"
+
+            # Validate that the manual version is 2.X
+            MAJOR=$(echo "$LATEST_VERSION" | cut -d. -f1)
+            if [[ "$MAJOR" -ge 3 ]]; then
+              echo "ERROR: Version $LATEST_VERSION is not a 2.X release."
+              echo "This workflow only supports SurrealDB 2.X. Use the main monitor for 3.X."
+              exit 1
+            fi
+          else
+            # Get latest v2.x release (stable only, no pre-releases)
+            LATEST_VERSION=$(gh api repos/surrealdb/surrealdb/releases \
+              --jq '[.[] | select(.tag_name | startswith("v2.")) | select(.prerelease == false) | select(.draft == false) | .tag_name][0]' \
+              | sed 's/^v//')
+
+            if [[ -z "$LATEST_VERSION" || "$LATEST_VERSION" == "null" ]]; then
+              echo "No SurrealDB 2.X release found — nothing to do."
+              echo "has-update=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          # --- Read current pinned version (from v2 branch) ---
+          if [[ -f ".surrealdb-version" ]]; then
+            CURRENT_VERSION=$(cat .surrealdb-version | tr -d '[:space:]')
+          else
+            CURRENT_VERSION="unknown"
+          fi
+
+          DOCKER_TAG="v${LATEST_VERSION}"
+
+          echo "Current: $CURRENT_VERSION"
+          echo "Latest:  $LATEST_VERSION"
+          echo "Docker:  $DOCKER_TAG"
+
+          # --- Compare: skip if already up to date ---
+          HAS_UPDATE="false"
+          if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+            HAS_UPDATE="true"
+          fi
+
+          # Force update overrides the check
+          if [[ "${{ inputs.force_update }}" == "true" ]]; then
+            HAS_UPDATE="true"
+          fi
+
+          if [[ "$HAS_UPDATE" == "false" ]]; then
+            echo "Already on latest 2.X version ($CURRENT_VERSION) — nothing to do."
+          fi
+
+          # --- Check if security patch ---
+          IS_SECURITY_PATCH="false"
+          if [[ "$HAS_UPDATE" == "true" ]]; then
+            RELEASE_NOTES=$(gh api repos/surrealdb/surrealdb/releases \
+              --jq "[.[] | select(.tag_name == \"v${LATEST_VERSION}\")][0].body" \
+              2>/dev/null | head -c 5000)
+
+            if echo "$RELEASE_NOTES" | grep -iE "(security|vulnerability|CVE-[0-9]|critical.*(fix|patch)|exploit|injection|xss|csrf)" > /dev/null 2>&1; then
+              IS_SECURITY_PATCH="true"
+            fi
+
+            RELEASE_TITLE=$(gh api repos/surrealdb/surrealdb/releases \
+              --jq "[.[] | select(.tag_name == \"v${LATEST_VERSION}\")][0].name" 2>/dev/null)
+            if echo "$RELEASE_TITLE" | grep -iE "(security|hotfix|CVE)" > /dev/null 2>&1; then
+              IS_SECURITY_PATCH="true"
+            fi
+          else
+            RELEASE_NOTES=""
+          fi
+
+          echo "Has update: $HAS_UPDATE"
+          echo "Is security patch: $IS_SECURITY_PATCH"
+
+          # --- Set outputs ---
+          echo "latest-version=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          echo "current-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "has-update=$HAS_UPDATE" >> $GITHUB_OUTPUT
+          echo "is-security-patch=$IS_SECURITY_PATCH" >> $GITHUB_OUTPUT
+          echo "docker-tag=$DOCKER_TAG" >> $GITHUB_OUTPUT
+
+          {
+            echo 'release-notes<<EOF'
+            echo "$RELEASE_NOTES"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+  # =============================================================================
+  # Step 2: Run tests against the new SurrealDB 2.x version (using v2 code)
+  # =============================================================================
+  test-new-version:
+    name: Test SurrealDB ${{ needs.check-release.outputs.latest-version }}
+    needs: check-release
+    if: needs.check-release.outputs.has-update == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      tests-passed: ${{ steps.test-result.outputs.passed }}
+
+    steps:
+      - name: Checkout V2 branch
+        uses: actions/checkout@v6
+        with:
+          ref: v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Start SurrealDB ${{ needs.check-release.outputs.docker-tag }}
+        env:
+          DOCKER_TAG: ${{ needs.check-release.outputs.docker-tag }}
+        run: |
+          echo "Testing with SurrealDB Docker tag: $DOCKER_TAG"
+
+          docker run -d \
+            --name surrealdb-test \
+            -p 8000:8000 \
+            "surrealdb/surrealdb:${DOCKER_TAG}" \
+            start --log error --user root --pass root memory
+
+          ./devops/wait-for-healthy.sh localhost 8000 60
+
+          RUNNING_VERSION=$(curl -s http://localhost:8000/version || echo "unknown")
+          echo "Running SurrealDB version: $RUNNING_VERSION"
+
+      - name: Run unit tests
+        run: |
+          uv run pytest tests/ -m "not integration" \
+            --junitxml=junit-unit.xml \
+            --cov=src \
+            --cov-branch
+
+      - name: Run integration tests
+        env:
+          SURREALDB_SKIP_CONTAINER: "true"
+        run: |
+          uv run pytest tests/ -m integration \
+            --junitxml=junit-integration.xml \
+            --cov=src \
+            --cov-branch \
+            -v
+
+      - name: Stop SurrealDB
+        if: always()
+        run: docker stop surrealdb-test && docker rm surrealdb-test || true
+
+      - name: Set test result
+        id: test-result
+        if: success()
+        run: echo "passed=true" >> $GITHUB_OUTPUT
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: surrealdb-v2-test-results
+          path: junit-*.xml
+
+  # =============================================================================
+  # Step 3: Tests passed -> create PR targeting v2 branch
+  # =============================================================================
+  auto-update:
+    name: Update SurrealDB 2.X Version
+    needs: [check-release, test-new-version]
+    if: |
+      needs.check-release.outputs.has-update == 'true' &&
+      needs.test-new-version.outputs.tests-passed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout V2 branch
+        uses: actions/checkout@v6
+        with:
+          ref: v2
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update .surrealdb-version and docker-compose.yml
+        env:
+          NEW_VERSION: ${{ needs.check-release.outputs.latest-version }}
+          DOCKER_TAG: ${{ needs.check-release.outputs.docker-tag }}
+        run: |
+          BRANCH="chore/surrealdb-2x-${NEW_VERSION}"
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+          git checkout -b "$BRANCH"
+
+          echo "$NEW_VERSION" > .surrealdb-version
+
+          # Update docker-compose image tags (v2.x only)
+          sed -i "s|surrealdb/surrealdb:v[0-9][0-9a-zA-Z._-]*|surrealdb/surrealdb:${DOCKER_TAG}|g" devops/docker-compose.yml
+
+          git add .surrealdb-version devops/docker-compose.yml
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit (shouldn't happen at this point)"
+            exit 0
+          fi
+
+          git commit -m "chore(deps): update SurrealDB to v${NEW_VERSION}
+
+          Tests passed against SurrealDB v${NEW_VERSION}.
+          Previous version: v${{ needs.check-release.outputs.current-version }}"
+
+      # --- Security patches also bump the ORM version ---
+      - name: Bump ORM version (security patches only)
+        if: needs.check-release.outputs.is-security-patch == 'true'
+        run: |
+          # Calculate next patch version
+          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+
+          BASE_VERSION=$(echo "$CURRENT_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+          MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$BASE_VERSION" | cut -d. -f3)
+
+          NEXT_PATCH=$((PATCH + 1))
+          NEW_ORM_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+
+          echo "Bumping ORM version: $CURRENT_VERSION -> $NEW_ORM_VERSION"
+          echo "NEW_ORM_VERSION=$NEW_ORM_VERSION" >> $GITHUB_ENV
+
+          # Update version files
+          sed -i "s/^version = \".*\"/version = \"$NEW_ORM_VERSION\"/" pyproject.toml
+          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_ORM_VERSION\"/" src/surreal_orm/__init__.py
+          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_ORM_VERSION\"/" src/surreal_sdk/__init__.py
+          sed -i "s/^version = \".*\"/version = \"$NEW_ORM_VERSION\"/" src/surreal_sdk/pyproject.toml
+
+          git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml
+          git commit -m "chore(release): bump version to $NEW_ORM_VERSION (SurrealDB 2.X security update)"
+
+      - name: Push branch and create PR
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          IS_SECURITY: ${{ needs.check-release.outputs.is-security-patch }}
+        run: |
+          git push -u origin "$BRANCH"
+
+          TITLE="[V2] chore(deps): update SurrealDB to v${NEW_VERSION}"
+          if [[ "$IS_SECURITY" == "true" ]]; then
+            TITLE="[V2] security(deps): update SurrealDB to v${NEW_VERSION}"
+          fi
+
+          PR_BODY="## SurrealDB 2.X Version Update (V2 LTS Branch)
+
+          | Field | Value |
+          |---|---|
+          | Previous | v${{ needs.check-release.outputs.current-version }} |
+          | New | v${NEW_VERSION} |
+          | Security patch | ${IS_SECURITY} |
+          | Branch | v2 (SurrealDB 2.X LTS maintenance) |
+
+          Tests already passed against this version in the [monitor workflow](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+          ---
+          _Automatically created by the SurrealDB 2.X version monitor (running from main branch)._"
+
+          PR_URL=$(gh pr create \
+            --title "$TITLE" \
+            --body "$PR_BODY" \
+            --base v2 \
+            --head "$BRANCH")
+
+          echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+          echo "Created PR: $PR_URL"
+
+          # Enable auto-merge so it merges once CI passes
+          gh pr merge "$PR_URL" --auto --squash
+
+      # --- Tag and release after merge (security patches only) ---
+      - name: Wait for PR merge and tag (security patches only)
+        if: needs.check-release.outputs.is-security-patch == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          echo "PR will be auto-merged after CI passes."
+          echo "Tag v${NEW_ORM_VERSION} will be created by the Dependabot workflow on merge."
+          echo "To manually tag after merge:"
+          echo "  git tag -a v${NEW_ORM_VERSION} -m 'SurrealDB 2.X security update: v${NEW_VERSION}'"
+          echo "  git push origin v${NEW_ORM_VERSION}"
+
+  # =============================================================================
+  # Step 4: Tests failed -> create GitHub issue
+  # =============================================================================
+  create-failure-issue:
+    name: Create Failure Issue
+    needs: [check-release, test-new-version]
+    if: |
+      needs.check-release.outputs.has-update == 'true' &&
+      needs.test-new-version.result == 'failure'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_TITLE="[V2] SurrealDB v${{ needs.check-release.outputs.latest-version }} — integration tests failed"
+
+          # Skip if an open issue already exists
+          EXISTING=$(gh issue list --state open --search "$ISSUE_TITLE" --json number -q '.[0].number')
+          if [[ -n "$EXISTING" ]]; then
+            echo "Issue #$EXISTING already exists — skipping"
+            exit 0
+          fi
+
+          ISSUE_BODY="## SurrealDB 2.X Compatibility Issue (V2 LTS Branch)
+
+          Integration tests failed with SurrealDB v${{ needs.check-release.outputs.latest-version }}.
+
+          | Field | Value |
+          |---|---|
+          | Current version | v${{ needs.check-release.outputs.current-version }} |
+          | New version | v${{ needs.check-release.outputs.latest-version }} |
+          | Security patch | ${{ needs.check-release.outputs.is-security-patch }} |
+          | Branch | v2 (SurrealDB 2.X LTS maintenance) |
+
+          ### Workflow Run
+          [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          ---
+          _Automatically created by the SurrealDB 2.X version monitor (running from main branch)._"
+
+          gh issue create \
+            --title "$ISSUE_TITLE" \
+            --label "bug,surrealdb,v2-lts,needs-investigation" \
+            --body "$ISSUE_BODY"
