@@ -31,6 +31,10 @@ async def http(request: pytest.FixtureRequest) -> AsyncGenerator[HTTPConnection,
     conn = HTTPConnection(SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE)
     await conn.connect()
     await conn.signin(SURREALDB_USER, SURREALDB_PASS)
+    # SurrealDB 3.0: non-existent databases raise errors; ensure ns/db exist
+    await conn.query(
+        f"DEFINE NAMESPACE IF NOT EXISTS `{SURREALDB_NAMESPACE}`; DEFINE DATABASE IF NOT EXISTS `{SURREALDB_DATABASE}`;"
+    )
     yield conn
     await conn.close()
 
@@ -46,6 +50,10 @@ async def ws(request: pytest.FixtureRequest) -> AsyncGenerator[WebSocketConnecti
     )
     await conn.connect()
     await conn.signin(SURREALDB_USER, SURREALDB_PASS)
+    # SurrealDB 3.0: non-existent databases raise errors; ensure ns/db exist
+    await conn.query(
+        f"DEFINE NAMESPACE IF NOT EXISTS `{SURREALDB_NAMESPACE}`; DEFINE DATABASE IF NOT EXISTS `{SURREALDB_DATABASE}`;"
+    )
     yield conn
     await conn.close()
 
@@ -227,8 +235,16 @@ class TestHTTPSelect:
 
     @pytest.mark.integration
     async def test_select_empty_table(self, http: HTTPConnection) -> None:
-        """Select from a table with no records."""
+        """Select from a table with no records.
+
+        SurrealDB 3.0: non-existent tables raise an error instead of
+        returning an empty array.  We create a record and delete it to
+        ensure the table exists but is empty.
+        """
         await cleanup(http, "sdk_select_empty")
+        # Create and immediately delete a record so the table exists
+        await http.create("sdk_select_empty", {"_setup": True})
+        await http.query("DELETE sdk_select_empty")
 
         resp = await http.select("sdk_select_empty")
         assert resp.is_empty
@@ -523,8 +539,12 @@ class TestHTTPTransactions:
         except ValueError:
             pass
 
-        result = await http.query("SELECT * FROM sdk_tx_test")
-        assert len(result.all_records) == 0
+        # SurrealDB 3.0: table may not exist after rollback; handle both cases
+        try:
+            result = await http.query("SELECT * FROM sdk_tx_test")
+            assert len(result.all_records) == 0
+        except QueryError:
+            pass  # Table doesn't exist — rollback succeeded
 
     @pytest.mark.integration
     async def test_transaction_mixed_ops(self, http: HTTPConnection) -> None:
@@ -646,6 +666,8 @@ class TestHTTPUseNamespace:
         original_ns = http.namespace
         original_db = http.database
 
+        # SurrealDB 3.0: ensure target db exists before USE
+        await http.query("DEFINE DATABASE IF NOT EXISTS `test_sdk_other_db`;")
         await http.use("test", "test_sdk_other_db")
         assert http.namespace == "test"
         assert http.database == "test_sdk_other_db"
@@ -1005,6 +1027,9 @@ class TestWSLiveQueries:
         async def callback(data: Any) -> None:
             notifications.append(data)
 
+        # SurrealDB 3.0: table must exist for LIVE SELECT
+        await ws.query("DEFINE TABLE IF NOT EXISTS sdk_ws_live_test;")
+
         live_id = await ws.live("sdk_ws_live_test", callback)
         assert live_id is not None
         assert live_id in ws.live_queries
@@ -1040,6 +1065,8 @@ class TestWSUseNamespace:
         original_ns = ws.namespace
         original_db = ws.database
 
+        # SurrealDB 3.0: ensure target db exists before USE
+        await ws.query("DEFINE DATABASE IF NOT EXISTS `test_sdk_ws_other_db`;")
         await ws.use("test", "test_sdk_ws_other_db")
         assert ws.namespace == "test"
         assert ws.database == "test_sdk_ws_other_db"
@@ -1103,9 +1130,9 @@ class TestHTTPErrors:
 
     @pytest.mark.integration
     async def test_select_nonexistent_record(self, http: HTTPConnection) -> None:
-        """Selecting a nonexistent record returns empty."""
-        resp = await http.select("nonexistent_table_12345:nonexistent_id")
-        assert resp.is_empty
+        """Selecting from a nonexistent table raises QueryError in SurrealDB 3.0."""
+        with pytest.raises(QueryError):
+            await http.select("nonexistent_table_12345:nonexistent_id")
 
 
 class TestWSErrors:
@@ -1125,6 +1152,6 @@ class TestWSErrors:
 
     @pytest.mark.integration
     async def test_select_nonexistent_record(self, ws: WebSocketConnection) -> None:
-        """Selecting a nonexistent record via WebSocket."""
-        resp = await ws.select("nonexistent_table_12345:nonexistent_id")
-        assert resp.is_empty
+        """Selecting from a nonexistent table raises QueryError in SurrealDB 3.0."""
+        with pytest.raises(QueryError):
+            await ws.select("nonexistent_table_12345:nonexistent_id")

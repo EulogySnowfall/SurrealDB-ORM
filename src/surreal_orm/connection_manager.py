@@ -322,6 +322,19 @@ class SurrealDBConnectionManager:
                 await _client.connect()
                 await _client.signin(config.user, config.password)
 
+                # SurrealDB 3.0: namespaces/databases must exist before use.
+                # Ensure they are created after root signin.
+                try:
+                    await _client.query(
+                        f"DEFINE NAMESPACE IF NOT EXISTS `{config.namespace}`; "
+                        f"DEFINE DATABASE IF NOT EXISTS `{config.database}`;"
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not auto-create namespace/database for '%s' (may lack root privileges).",
+                        name,
+                    )
+
                 cls._clients[name] = _client
 
                 # Keep legacy alias in sync
@@ -393,6 +406,17 @@ class SurrealDBConnectionManager:
             )
             await _ws_client.connect()
             await _ws_client.signin(config.user, config.password)
+
+            # SurrealDB 3.0: ensure namespace/database exist.
+            try:
+                await _ws_client.query(
+                    f"DEFINE NAMESPACE IF NOT EXISTS `{config.namespace}`; DEFINE DATABASE IF NOT EXISTS `{config.database}`;"
+                )
+            except Exception:
+                logger.debug(
+                    "Could not auto-create namespace/database (WS) for '%s'.",
+                    name,
+                )
 
             cls._ws_clients[name] = _ws_client
 

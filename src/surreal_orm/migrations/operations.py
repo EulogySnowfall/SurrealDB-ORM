@@ -437,7 +437,7 @@ class CreateIndex(Operation):
 
     Generates:
         DEFINE INDEX email_idx ON users FIELDS email UNIQUE;
-        DEFINE INDEX ft_title ON posts FIELDS title SEARCH ANALYZER my_analyzer BM25 HIGHLIGHTS;
+        DEFINE INDEX ft_title ON posts FIELDS title FULLTEXT ANALYZER my_analyzer BM25 HIGHLIGHTS;
         DEFINE INDEX vec_idx ON documents FIELDS embedding HNSW DIMENSION 1536 DIST COSINE TYPE F32;
     """
 
@@ -465,7 +465,7 @@ class CreateIndex(Operation):
             parts.append("UNIQUE")
 
         if self.search_analyzer:
-            parts.append(f"SEARCH ANALYZER {self.search_analyzer}")
+            parts.append(f"FULLTEXT ANALYZER {self.search_analyzer}")
 
             if self.bm25 is True:
                 parts.append("BM25")

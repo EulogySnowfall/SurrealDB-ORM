@@ -145,6 +145,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if is_surrealdb_healthy():
         print(f"\n[conftest] SurrealDB already healthy on port {TEST_PORT}")
         _container_started_by_tests = False
+        ensure_namespace_and_database()
         return
 
     # Start the container
@@ -152,6 +153,7 @@ def pytest_configure(config: pytest.Config) -> None:
     if start_container():
         print("[conftest] SurrealDB container started successfully")
         _container_started_by_tests = True
+        ensure_namespace_and_database()
     else:
         print("[conftest] WARNING: Could not start SurrealDB container. Integration tests may fail.")
         _container_started_by_tests = False
@@ -173,6 +175,33 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     else:
         # Container was already running before tests, leave it running
         pass
+
+
+def ensure_namespace_and_database() -> None:
+    """Create the test namespace and database if they don't exist.
+
+    SurrealDB 3.0 no longer auto-creates namespaces/databases on USE.
+    This must be called after the container is healthy.
+    """
+    import json
+    import urllib.request
+
+    url = f"http://localhost:{TEST_PORT}/sql"
+    sql = f"DEFINE NAMESPACE IF NOT EXISTS {SURREALDB_NAMESPACE}; DEFINE DATABASE IF NOT EXISTS test;"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "text/plain",
+        "Surreal-NS": SURREALDB_NAMESPACE,
+        "Surreal-DB": "test",
+        "Authorization": f"Basic {__import__('base64').b64encode(f'{SURREALDB_USER}:{SURREALDB_PASS}'.encode()).decode()}",
+    }
+    req = urllib.request.Request(url, data=sql.encode(), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode())
+            print(f"[conftest] Namespace/database setup: {body}")
+    except Exception as e:
+        print(f"[conftest] WARNING: Failed to setup namespace/database: {e}")
 
 
 @pytest.fixture(scope="session")

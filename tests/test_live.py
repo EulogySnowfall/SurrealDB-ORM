@@ -536,16 +536,16 @@ class TestVersion:
     """Verify version was bumped."""
 
     def test_orm_version(self) -> None:
-        """ORM version is 0.14.4."""
+        """ORM version is 0.30.0a1."""
         from src.surreal_orm import __version__
 
-        assert __version__ == "0.14.4"
+        assert __version__ == "0.30.0a1"
 
     def test_sdk_version(self) -> None:
-        """SDK version is 0.14.4."""
+        """SDK version is 0.30.0a1."""
         from src.surreal_sdk import __version__
 
-        assert __version__ == "0.14.4"
+        assert __version__ == "0.30.0a1"
 
 
 # ==================== LiveModelStream Edge Cases ====================

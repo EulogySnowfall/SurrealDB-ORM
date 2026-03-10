@@ -143,6 +143,8 @@ class TestWebSocketConnectionIntegration:
         async def callback(data: Any) -> None:
             notifications.append(data)
 
+        # SurrealDB 3.0: table must exist for LIVE SELECT
+        await connection.query("DEFINE TABLE IF NOT EXISTS test_live;")
         # Subscribe
         live_id = await connection.live("test_live", callback)
         assert live_id is not None

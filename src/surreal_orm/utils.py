@@ -179,22 +179,22 @@ def _is_complex_value(value: Any) -> bool:
 class _SurrealJSONEncoder(json.JSONEncoder):
     """JSON encoder that handles datetime, Decimal, UUID for SurrealQL inlining."""
 
-    def default(self, obj: Any) -> Any:
+    def default(self, o: Any) -> Any:
         from datetime import date, datetime, time
         from decimal import Decimal
         from uuid import UUID
 
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        if isinstance(obj, date):
-            return obj.isoformat()
-        if isinstance(obj, time):
-            return obj.isoformat()
-        if isinstance(obj, Decimal):
-            return float(obj)
-        if isinstance(obj, UUID):
-            return str(obj)
-        return super().default(obj)
+        if isinstance(o, datetime):
+            return o.isoformat()
+        if isinstance(o, date):
+            return o.isoformat()
+        if isinstance(o, time):
+            return o.isoformat()
+        if isinstance(o, Decimal):
+            return float(o)
+        if isinstance(o, UUID):
+            return str(o)
+        return super().default(o)
 
 
 def _extract_datetime_values(
@@ -220,7 +220,9 @@ def _extract_datetime_values(
         markers[marker] = f'd"{value.isoformat()}"'
         return marker
     if isinstance(value, dict):
-        return {k: _extract_datetime_values(v, markers, counter) for k, v in value.items()}
+        return {
+            k: _extract_datetime_values(v, markers, counter) for k, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
         converted = [_extract_datetime_values(item, markers, counter) for item in value]
         return type(value)(converted)
@@ -263,7 +265,9 @@ def inline_dict_variables(
             try:
                 json_str = json.dumps(processed, cls=_SurrealJSONEncoder)
             except (TypeError, ValueError) as e:
-                raise ValueError(f"Failed to serialize variable '{key}' to JSON for inlining: {e}") from e
+                raise ValueError(
+                    f"Failed to serialize variable '{key}' to JSON for inlining: {e}"
+                ) from e
 
             # Replace datetime marker strings (with JSON quotes) with
             # unwrapped SurrealQL d"..." literals.

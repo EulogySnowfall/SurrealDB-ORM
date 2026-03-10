@@ -227,7 +227,11 @@ async def test_multi_select() -> None:
         age: int = Field(..., ge=0, le=125)
 
     # Clean up from any previous test runs
-    await MultiSelectTest.objects().delete_table()
+    # SurrealDB 3.0: table may not exist yet, so delete_table() can raise
+    try:
+        await MultiSelectTest.objects().delete_table()
+    except Exception:
+        pass
 
     await MultiSelectTest(name="Ian", age=23).save()
     await MultiSelectTest(name="Yan", age=32).save()

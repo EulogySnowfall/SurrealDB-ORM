@@ -71,7 +71,8 @@ class TestSimilarTo:
         vec = [1.0] * 10
         qs = Document.objects().similar_to("embedding", vec, limit=5)
         query = qs._compile_query()
-        assert "embedding <|5|> $_knn_vec" in query
+        # SurrealDB 3.0: ef parameter is always included (default 100)
+        assert "embedding <|5,100|> $_knn_vec" in query
         assert "vector::distance::knn() AS _knn_distance" in query
         assert "ORDER BY _knn_distance" in query
         assert qs._variables["_knn_vec"] == vec
@@ -87,7 +88,7 @@ class TestSimilarTo:
         qs = Document.objects().filter(category="science").similar_to("embedding", vec, limit=5)
         query = qs._compile_query()
         assert "category = $_f0" in query
-        assert "embedding <|5|> $_knn_vec" in query
+        assert "embedding <|5,100|> $_knn_vec" in query
         assert " AND " in query
         assert qs._variables["_f0"] == "science"
         assert qs._variables["_knn_vec"] == vec
@@ -163,12 +164,15 @@ class TestVectorIntegration:
 
         client = await SurrealDBConnectionManager.get_client()
 
-        # Clean up
-        await client.query("DELETE FROM documents;")
+        # Clean up — SurrealDB 3.0: DELETE on non-existent table raises error
+        try:
+            await client.query("DELETE FROM documents;")
+        except Exception:
+            pass
 
-        # Define MTREE index (HNSW not reliable on SurrealDB <=2.6.0 for KNN queries)
+        # SurrealDB 3.0: MTREE removed, use HNSW
         await client.query("REMOVE INDEX IF EXISTS vec_idx ON documents;")
-        await client.query("DEFINE INDEX vec_idx ON documents FIELDS embedding MTREE DIMENSION 3 DIST COSINE TYPE F32;")
+        await client.query("DEFINE INDEX vec_idx ON documents FIELDS embedding HNSW DIMENSION 3 DIST COSINE TYPE F32;")
 
         # Create documents with 3-dim vectors
         await client.query("CREATE documents:d1 SET title = 'Physics', category = 'science', embedding = [1.0, 0.0, 0.0];")

@@ -523,7 +523,7 @@ class QuerySet(Generic[T]):
         """
         Find records by vector similarity using SurrealDB's KNN operator.
 
-        Requires a vector index (HNSW or MTREE) on the target field.  The
+        Requires an HNSW vector index on the target field.  The
         query uses the ``<|N|>`` (or ``<|N, EF|>``) operator to perform
         nearest-neighbour search.
 
@@ -561,7 +561,7 @@ class QuerySet(Generic[T]):
         Perform full-text search on indexed fields.
 
         Each keyword argument maps a field name to a search query string.
-        The field must have a ``SEARCH ANALYZER`` index with BM25 scoring
+        The field must have a ``FULLTEXT ANALYZER`` index with BM25 scoring
         in SurrealDB.
 
         Each field gets a unique match-reference index (``@0@``, ``@1@``,
@@ -694,7 +694,7 @@ class QuerySet(Generic[T]):
 
         query = (
             f"LET $vec_results = (SELECT id, vector::distance::knn() AS _d "
-            f"FROM {table} WHERE {vector_field} <|{vector_limit}|> $_hybrid_vec "
+            f"FROM {table} WHERE {vector_field} <|{vector_limit},100|> $_hybrid_vec "
             f"ORDER BY _d);\n"
             f"LET $fts_results = (SELECT id, search::score(0) AS _s "
             f"FROM {table} WHERE {text_field} @0@ $_hybrid_text "
@@ -1173,13 +1173,12 @@ class QuerySet(Generic[T]):
         if filter_vars:
             self._variables.update(filter_vars)
 
-        # KNN: append <|K|> or <|K, EF|> condition
+        # KNN: append <|K, EF|> condition
+        # SurrealDB 3.0 requires the EF (search effort) parameter; default to 100
         if self._knn_field and self._knn_vector is not None and self._knn_limit is not None:
             self._variables["_knn_vec"] = self._knn_vector
-            if self._knn_ef is not None:
-                knn_op = f"{self._knn_field} <|{self._knn_limit},{self._knn_ef}|> $_knn_vec"
-            else:
-                knn_op = f"{self._knn_field} <|{self._knn_limit}|> $_knn_vec"
+            ef = self._knn_ef if self._knn_ef is not None else 100
+            knn_op = f"{self._knn_field} <|{self._knn_limit},{ef}|> $_knn_vec"
             where_parts.append(knn_op)
 
         # FTS: append @N@ conditions

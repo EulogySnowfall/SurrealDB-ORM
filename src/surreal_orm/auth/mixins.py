@@ -423,7 +423,7 @@ class AuthenticatedUserMixin:
 
         root_client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
         result = await root_client.query(
-            f"SELECT * FROM {table_name} WHERE id = type::thing($record_id)",
+            f"SELECT * FROM {table_name} WHERE id = type::record($record_id)",
             {"record_id": record_id},
         )
 

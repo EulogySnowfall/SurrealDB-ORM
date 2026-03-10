@@ -224,26 +224,41 @@ class RecordsResponse:
 class AuthResponse:
     """
     Response from authentication operations.
+
+    SurrealDB 3.0 returns ``{"token": "...", "refresh": "..."}`` from
+    signin/signup instead of a plain token string.
     """
 
     token: str | None = None
+    refresh_token: str | None = None
     success: bool = False
     raw: Any = None
 
     @classmethod
     def from_rpc_result(cls, data: Any) -> "AuthResponse":
-        """Parse auth response from RPC result."""
+        """Parse auth response from RPC result.
+
+        Handles both SurrealDB 2.x (plain string token) and 3.x
+        (``{"token": ..., "refresh": ...}`` dict) formats.
+        """
         token: str | None = None
+        refresh_token: str | None = None
         success = False
 
         if isinstance(data, str):
+            # SurrealDB 2.x: plain token string
             token = data
+            success = True
+        elif isinstance(data, dict):
+            # SurrealDB 3.x: {"token": "...", "refresh": "..."}
+            token = data.get("token")
+            refresh_token = data.get("refresh")
             success = True
         elif data is None:
             # signin/signup with no token return = success
             success = True
 
-        return cls(token=token, success=success, raw=data)
+        return cls(token=token, refresh_token=refresh_token, success=success, raw=data)
 
 
 @dataclass
