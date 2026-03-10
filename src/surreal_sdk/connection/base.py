@@ -120,16 +120,17 @@ class BaseSurrealConnection(ABC):
         Raises:
             QueryError: If the RPC call fails
         """
-        from ..exceptions import QueryError
+        from ..exceptions import QueryError, TableNotFoundError
 
         request = RPCRequest(method=method, params=params or [])
         response = await self._send_rpc(request)
 
         if response.is_error:
-            raise QueryError(
-                message=response.error.message if response.error else "Unknown error",
-                code=response.error.code if response.error else None,
-            )
+            message = response.error.message if response.error else "Unknown error"
+            code = response.error.code if response.error else None
+            if TableNotFoundError.is_table_not_found(message):
+                raise TableNotFoundError(message=message, code=code)
+            raise QueryError(message=message, code=code)
 
         return response.result
 
@@ -281,9 +282,22 @@ class BaseSurrealConnection(ABC):
 
         Returns:
             QueryResponse containing results for each statement
+
+        Raises:
+            TableNotFoundError: If a statement references a non-existent table
+                (SurrealDB 3.0 returns ERR status instead of empty arrays).
         """
+        from ..exceptions import TableNotFoundError
+
         result = await self.rpc("query", [sql, vars or {}])
-        return QueryResponse.from_rpc_result(result)
+        response = QueryResponse.from_rpc_result(result)
+
+        # SurrealDB 3.0: check for table-not-found errors in query results
+        for qr in response.results:
+            if qr.is_error and isinstance(qr.result, str) and TableNotFoundError.is_table_not_found(qr.result):
+                raise TableNotFoundError(message=qr.result, query=sql)
+
+        return response
 
     async def select(self, thing: str) -> RecordsResponse:
         """

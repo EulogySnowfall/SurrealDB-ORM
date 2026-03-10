@@ -9,7 +9,8 @@ This package provides:
 - CLI tools for schema management
 """
 
-# Re-export LiveAction from SDK for convenience
+# Re-export LiveAction and TableNotFoundError from SDK for convenience
+from surreal_sdk.exceptions import TableNotFoundError
 from surreal_sdk.streaming.live_select import LiveAction
 
 from .aggregations import Aggregation, Avg, Count, Max, Min, Sum
@@ -85,6 +86,7 @@ __all__ = [
     "BaseSurrealModel",
     "SurrealConfigDict",
     "SurrealDbError",
+    "TableNotFoundError",
     "get_registered_models",
     # Query
     "QuerySet",

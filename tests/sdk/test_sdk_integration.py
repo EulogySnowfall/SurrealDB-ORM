@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from src.surreal_sdk.connection.http import HTTPConnection
 from src.surreal_sdk.connection.websocket import WebSocketConnection
-from src.surreal_sdk.exceptions import QueryError
+from src.surreal_sdk.exceptions import QueryError, TableNotFoundError
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER, SURREALDB_WS_URL
 
 SURREALDB_DATABASE = "test_sdk_integration"
@@ -543,7 +543,7 @@ class TestHTTPTransactions:
         try:
             result = await http.query("SELECT * FROM sdk_tx_test")
             assert len(result.all_records) == 0
-        except QueryError:
+        except TableNotFoundError:
             pass  # Table doesn't exist — rollback succeeded
 
     @pytest.mark.integration
