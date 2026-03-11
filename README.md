@@ -6,19 +6,90 @@
 ![GitHub License](https://img.shields.io/github/license/EulogySnowfall/SurrealDB-ORM)
 
 > **Beta Software** - SurrealDB 3.0 compatible. Core APIs are stabilizing. Feedback welcome!
+>
+> **Looking for SurrealDB 2.X compatibility?** Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) with `surrealdb-orm 0.20.x`. The `v2` branch receives security patches and critical bug fixes but no new features.
 
 **SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, and JWT authentication.
 
 **Includes a custom SDK (`surreal_sdk`)** - Zero dependency on the official `surrealdb` package!
 
-### Branch Strategy
+## Branch Strategy
 
-| Branch | SurrealDB | ORM Version | Status |
-|--------|-----------|-------------|--------|
-| `main` | 3.X | 0.30.x | Active development |
-| `v2` | 2.X | 0.20.x | LTS (security & bug fixes only) |
+| Branch | SurrealDB | ORM Version | Status                          |
+| ------ | --------- | ----------- | ------------------------------- |
+| `main` | 3.X       | 0.30.x      | Active development              |
+| `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
+
+---
+
+## What's New in 0.30.0b1
+
+### Refresh Token Flow (SurrealDB 3.0)
+
+`signup()` and `signin()` now return `AuthResult` — a backward-compatible result type that carries the refresh token alongside the access token.
+
+Refresh tokens require the `WITH REFRESH` clause on your `DEFINE ACCESS` statement (placed after `SIGNIN(...)`, before `DURATION`):
+
+```sql
+DEFINE ACCESS user_auth ON DATABASE TYPE RECORD
+    SIGNUP (CREATE users SET email = $email, password = crypto::argon2::generate($password))
+    SIGNIN (SELECT * FROM users WHERE email = $email AND crypto::argon2::compare(password, $password))
+    WITH REFRESH
+    DURATION FOR TOKEN 15m, FOR SESSION 12h, FOR GRANT 30d;
+```
+
+```python
+# New (recommended)
+result = await User.signup(email="alice@b.com", password="secret", name="Alice")
+result.token          # JWT access token
+result.refresh_token  # Refresh token (prefixed "surreal-refresh-...")
+
+# Backward-compatible (still works)
+user, token = await User.signup(email="alice@b.com", password="secret", name="Alice")
+
+# Exchange refresh token for new access token (token rotation)
+result = await User.refresh_access_token(stored_refresh_token)
+result.token          # New JWT access token
+result.refresh_token  # New refresh token (old one is revoked)
+```
+
+### DEFINE API Migration Support (SurrealDB 3.0)
+
+New `DefineApi` and `RemoveApi` migration operations for SurrealDB 3.0's REST API endpoints:
+
+```python
+from surreal_orm import DefineApi
+
+DefineApi(
+    name="/users/list",
+    method="GET",
+    handler="SELECT * FROM users",
+)
+# Generates: DEFINE API /users/list METHOD GET THEN (SELECT * FROM users);
+```
+
+### Record References Field (SurrealDB 3.0)
+
+New `ReferencesField` for SurrealDB 3.0's `REFERENCE` clause on `DEFINE FIELD`, with `ON DELETE` strategies:
+
+```python
+from surreal_orm import ReferencesField
+
+class Author(BaseSurrealModel):
+    name: str
+    books: ReferencesField["books"]
+    # → DEFINE FIELD books ON author TYPE option<array<record<books>>> REFERENCE;
+
+class License(BaseSurrealModel):
+    owner: ReferencesField["person", "CASCADE"]
+    # → DEFINE FIELD owner ON license TYPE option<record<person>> REFERENCE ON DELETE CASCADE;
+```
+
+### Branch Guard Protection
+
+CI now blocks PRs from v2-related branches (`v2`, `0.20.*`, `chore/surrealdb-2x-*`) into `main`.
 
 ---
 
@@ -43,7 +114,7 @@ This release upgrades the ORM and SDK to target **SurrealDB >= 3.0**. A `v2` bra
 
 **Breaking changes from SurrealDB 3.0:**
 
-- **Auth token format** — `signin()`/`signup()` now return `{token, refresh}` dict. New `AuthResponse.refresh_token` field added.
+- **Auth token format** — `signin()`/`signup()` now return `{access, refresh}` dict (with `WITH REFRESH`) or `{token}` dict (without). New `AuthResponse.refresh_token` field added.
 - **KNN vector search** — `similar_to()` now always includes the EF parameter: `<|K,EF|>` (default ef=100). The `<|K|>` syntax no longer works.
 - **`SEARCH ANALYZER` → `FULLTEXT ANALYZER`** — Migration SQL generation and parsers updated.
 - **`MTREE` index removed** — Only `HNSW` vector indexes supported.

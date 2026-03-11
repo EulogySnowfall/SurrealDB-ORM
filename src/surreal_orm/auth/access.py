@@ -43,6 +43,8 @@ class AccessDefinition:
     duration_token: str = "15m"
     duration_session: str = "12h"
     algorithm: EncryptionAlgorithm = EncryptionAlgorithm.ARGON2
+    with_refresh: bool = False
+    duration_grant: str = "30d"
 
     def __post_init__(self) -> None:
         """Build default signin_where if not provided."""
@@ -62,10 +64,21 @@ class AccessDefinition:
         # Build signup SET clause
         signup_sets = ", ".join(f"{field_name} = {expr}" for field_name, expr in self.signup_fields.items())
 
-        return f"""DEFINE ACCESS {self.name} ON DATABASE TYPE RECORD
-    SIGNUP (CREATE {self.table} SET {signup_sets})
-    SIGNIN (SELECT * FROM {self.table} WHERE {self.signin_where})
-    DURATION FOR TOKEN {self.duration_token}, FOR SESSION {self.duration_session};"""
+        parts = [
+            f"DEFINE ACCESS {self.name} ON DATABASE TYPE RECORD",
+            f"    SIGNUP (CREATE {self.table} SET {signup_sets})",
+            f"    SIGNIN (SELECT * FROM {self.table} WHERE {self.signin_where})",
+        ]
+
+        if self.with_refresh:
+            parts.append("    WITH REFRESH")
+
+        duration = f"DURATION FOR TOKEN {self.duration_token}, FOR SESSION {self.duration_session}"
+        if self.with_refresh:
+            duration += f", FOR GRANT {self.duration_grant}"
+        parts.append(f"    {duration};")
+
+        return "\n".join(parts)
 
     def to_remove_ql(self) -> str:
         """
@@ -129,13 +142,16 @@ class AccessGenerator:
                 # Regular fields are passed through
                 signup_fields[field_name] = f"${field_name}"
 
-        # Add created_at if not in model
-        if "created_at" not in signup_fields:
+        # If the model has a created_at field, use server-side time::now()
+        # instead of expecting the client to provide it.
+        if "created_at" in signup_fields:
             signup_fields["created_at"] = "time::now()"
 
         # Get durations from config
         token_duration = config.get("token_duration", "15m")
         session_duration = config.get("session_duration", "12h")
+        with_refresh = config.get("with_refresh", False) or False
+        grant_duration = config.get("grant_duration", "30d")
 
         access_name = config.get("access_name") or f"{table_name.lower()}_auth"
 
@@ -148,6 +164,8 @@ class AccessGenerator:
             duration_token=token_duration,
             duration_session=session_duration,
             algorithm=algorithm,
+            with_refresh=with_refresh,
+            duration_grant=grant_duration,
         )
 
     @staticmethod

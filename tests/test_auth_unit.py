@@ -253,8 +253,25 @@ class TestAccessGenerator:
         assert access.duration_token == "5m"
         assert access.duration_session == "1h"
 
-    def test_adds_created_at(self) -> None:
-        """Test that created_at is added to signup fields."""
+    def test_adds_created_at_when_field_exists(self) -> None:
+        """Test that created_at is added to signup when the model has the field."""
+        from datetime import datetime
+
+        class SimpleUser(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER)
+            id: str | None = None
+            email: str
+            password: Encrypted
+            created_at: datetime | None = None
+
+        access = AccessGenerator.from_model(SimpleUser)
+
+        assert access is not None
+        assert "created_at" in access.signup_fields
+        assert access.signup_fields["created_at"] == "time::now()"
+
+    def test_no_created_at_when_field_missing(self) -> None:
+        """Test that created_at is NOT added when the model lacks the field."""
 
         class SimpleUser(BaseSurrealModel):
             model_config = SurrealConfigDict(table_type=TableType.USER)
@@ -265,8 +282,7 @@ class TestAccessGenerator:
         access = AccessGenerator.from_model(SimpleUser)
 
         assert access is not None
-        assert "created_at" in access.signup_fields
-        assert access.signup_fields["created_at"] == "time::now()"
+        assert "created_at" not in access.signup_fields
 
     def test_generate_all(self) -> None:
         """Test generating access for all USER models."""
@@ -623,6 +639,125 @@ class TestAccessDefinitionSQLGeneration:
 
         assert "crypto::scrypt::compare(password, $password)" in sql
 
+    def test_sql_with_refresh(self) -> None:
+        """Test SQL generation with WITH REFRESH enabled."""
+        access = AccessDefinition(
+            name="account",
+            table="users",
+            signup_fields={"email": "$email", "password": "crypto::argon2::generate($password)"},
+            with_refresh=True,
+            duration_grant="30d",
+        )
+        sql = access.to_surreal_ql()
+
+        assert "WITH REFRESH" in sql
+        assert "FOR GRANT 30d" in sql
+        # WITH REFRESH must appear before DURATION
+        assert sql.index("WITH REFRESH") < sql.index("DURATION")
+
+    def test_sql_without_refresh(self) -> None:
+        """Test SQL generation without WITH REFRESH (default)."""
+        access = AccessDefinition(
+            name="account",
+            table="users",
+            signup_fields={"email": "$email"},
+        )
+        sql = access.to_surreal_ql()
+
+        assert "WITH REFRESH" not in sql
+        assert "FOR GRANT" not in sql
+
+    def test_sql_with_refresh_custom_grant_duration(self) -> None:
+        """Test SQL generation with custom grant duration."""
+        access = AccessDefinition(
+            name="account",
+            table="users",
+            signup_fields={"email": "$email"},
+            with_refresh=True,
+            duration_grant="7d",
+            duration_token="1h",
+            duration_session="24h",
+        )
+        sql = access.to_surreal_ql()
+
+        assert "FOR TOKEN 1h" in sql
+        assert "FOR SESSION 24h" in sql
+        assert "FOR GRANT 7d" in sql
+
+
+class TestAccessGeneratorWithRefresh:
+    """Tests for AccessGenerator with_refresh config support."""
+
+    def test_generator_reads_with_refresh_from_config(self) -> None:
+        """AccessGenerator reads with_refresh from model config."""
+
+        class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(
+                table_type=TableType.USER,
+                access_name="account",
+                with_refresh=True,
+                grant_duration="14d",
+            )
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        access = AccessGenerator.from_model(TestUser)
+        assert access is not None
+        assert access.with_refresh is True
+        assert access.duration_grant == "14d"
+
+        sql = access.to_surreal_ql()
+        assert "WITH REFRESH" in sql
+        assert "FOR GRANT 14d" in sql
+
+    def test_generator_defaults_no_refresh(self) -> None:
+        """AccessGenerator defaults to with_refresh=False."""
+
+        class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER)
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        access = AccessGenerator.from_model(TestUser)
+        assert access is not None
+        assert access.with_refresh is False
+
+        sql = access.to_surreal_ql()
+        assert "WITH REFRESH" not in sql
+
+
+class TestDefineAccessMethod:
+    """Tests for AuthenticatedUserMixin.define_access() classmethod."""
+
+    def test_define_access_exists_on_user_mixin(self) -> None:
+        """define_access() is an async classmethod on AuthenticatedUserMixin."""
+
+        class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER)
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        assert hasattr(TestUser, "define_access")
+        import inspect
+
+        assert inspect.iscoroutinefunction(TestUser.define_access)
+
+    def test_define_access_not_available_on_non_user(self) -> None:
+        """define_access() raises TypeError on non-USER models."""
+        import asyncio
+
+        class RegularModel(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.NORMAL)
+            id: str | None = None
+            name: str
+            password: Encrypted
+
+        with pytest.raises(TypeError, match="not a USER type table"):
+            asyncio.get_event_loop().run_until_complete(RegularModel.define_access())
+
 
 # =============================================================================
 # v0.8.0 — Bug Fix Tests
@@ -842,17 +977,17 @@ class TestBug2ConfigurableAccessName:
 
 
 class TestBug3SignupReturnsToken:
-    """Bug 3: signup() must return tuple[Self, str] including the JWT token."""
+    """Bug 3: signup() must return AuthResult (backward-compatible with tuple unpacking)."""
 
     def test_signup_return_annotation(self) -> None:
-        """signup() return annotation must be tuple[Self, str]."""
+        """signup() return annotation must be AuthResult[Self]."""
         hints = AuthenticatedUserMixin.signup.__annotations__
         assert "return" in hints
-        assert "tuple" in str(hints["return"]).lower()
+        assert "AuthResult" in str(hints["return"])
 
     @pytest.mark.asyncio
     async def test_signup_returns_user_and_token(self) -> None:
-        """signup() must return (user, token) tuple."""
+        """signup() must return AuthResult (unpackable as 2-tuple)."""
 
         class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(table_type=TableType.USER)
@@ -862,7 +997,9 @@ class TestBug3SignupReturnsToken:
             name: str
 
         mock_ephemeral = AsyncMock()
-        mock_ephemeral.signup = AsyncMock(return_value=MagicMock(success=True, token="my_jwt_token", raw={}))
+        mock_ephemeral.signup = AsyncMock(
+            return_value=MagicMock(success=True, token="my_jwt_token", refresh_token="my_refresh", raw={})
+        )
         mock_ephemeral.close = AsyncMock()
 
         mock_root = AsyncMock()
@@ -884,11 +1021,13 @@ class TestBug3SignupReturnsToken:
             ),
         ):
             result = await TestUser.signup(email="a@b.com", password="secret", name="A")
-            assert isinstance(result, tuple)
+            # AuthResult is backward-compatible with tuple unpacking
             assert len(result) == 2
             user, token = result
             assert isinstance(user, TestUser)
             assert token == "my_jwt_token"
+            # New: refresh_token accessible via attribute
+            assert result.refresh_token == "my_refresh"
 
 
 class TestBug4AuthenticateAndValidateToken:

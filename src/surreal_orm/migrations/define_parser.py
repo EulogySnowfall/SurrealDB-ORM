@@ -11,12 +11,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .state import EventState, FieldState, IndexState
+from .state import ApiState, EventState, FieldState, IndexState
 
 # Keywords that delimit clauses in a DEFINE FIELD statement.
 # Order matters: longer keywords first to avoid partial matches.
 _FIELD_KEYWORDS = [
     "PERMISSIONS",
+    "REFERENCE",
     "FLEXIBLE",
     "READONLY",
     "COMMENT",
@@ -202,6 +203,16 @@ def parse_define_field(statement: str) -> FieldState:
     # Parse ASSERT clause
     assertion = clauses.get("ASSERT") or None
 
+    # Parse REFERENCE clause (SurrealDB 3.0)
+    reference = "REFERENCE" in clauses
+    on_delete: str | None = None
+    if reference:
+        ref_body = clauses.get("REFERENCE", "").strip()
+        # Extract ON DELETE strategy: ON DELETE CASCADE|REJECT|UNSET|IGNORE|THEN ...
+        od_match = re.search(r"\bON\s+DELETE\s+(\w+)", ref_body, re.IGNORECASE)
+        if od_match:
+            on_delete = od_match.group(1).upper()
+
     return FieldState(
         name=field_name,
         field_type=field_type,
@@ -212,6 +223,8 @@ def parse_define_field(statement: str) -> FieldState:
         flexible=flexible,
         readonly=readonly,
         value=value_expr,
+        reference=reference,
+        on_delete=on_delete,
     )
 
 
@@ -772,9 +785,118 @@ def parse_define_event(statement: str) -> EventState:
     )
 
 
+def parse_define_api(statement: str) -> ApiState:
+    """Parse a DEFINE API statement into an ApiState (SurrealDB 3.0+).
+
+    Handles both the current SurrealDB 3.0 syntax (quoted path, ``FOR method``,
+    ``THEN { ... }``) and the legacy syntax used in earlier betas (unquoted path,
+    ``METHOD``, ``THEN (...)``).
+
+    Examples::
+
+        parse_define_api(
+            'DEFINE API "/users/list" FOR get '
+            'THEN { SELECT * FROM users; }'
+        )
+
+    Args:
+        statement: Full DEFINE API statement string.
+
+    Returns:
+        Populated ApiState instance.
+    """
+    stmt = statement.strip().rstrip(";").strip()
+
+    # Match both quoted and unquoted API names
+    match = re.match(
+        r'DEFINE\s+API\s+(?:IF\s+NOT\s+EXISTS\s+|OVERWRITE\s+)?(?:"([^"]+)"|(\S+))\s*(.*)',
+        stmt,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError(f"Cannot parse DEFINE API statement: {statement!r}")
+
+    api_name = match.group(1) or match.group(2)
+    body = match.group(3).strip()
+
+    # Extract FOR clause — SurrealDB 3.0 uses FOR for HTTP methods
+    method: str | None = None
+    for_match = re.search(r"\bFOR\s+(get|post|put|patch|delete)\b", body, re.IGNORECASE)
+    if for_match:
+        method = for_match.group(1).lower()
+
+    # Legacy: Extract METHOD clause (older beta syntax)
+    if method is None:
+        method_match = re.search(r"\bMETHOD\s+(GET|POST|PUT|PATCH|DELETE)\b", body, re.IGNORECASE)
+        if method_match:
+            method = method_match.group(1).lower()
+
+    # Extract THEN clause — try curly braces first (SurrealDB 3.0), then parens (legacy)
+    handler = ""
+    then_brace = re.search(r"\bTHEN\s*\{", body, re.IGNORECASE)
+    if then_brace:
+        handler = _extract_balanced_braces(body, then_brace.end() - 1)
+    else:
+        then_paren = re.search(r"\bTHEN\s*\(", body, re.IGNORECASE)
+        if then_paren:
+            handler = _extract_balanced_parens(body, then_paren.end() - 1)
+        else:
+            then_alt = re.search(
+                r"\bTHEN\s+(.+?)(?:\s+COMMENT\b|\s+PERMISSIONS\b|$)",
+                body,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if then_alt:
+                handler = then_alt.group(1).strip()
+
+    # Extract MIDDLEWARE clause
+    middleware: list[str] = []
+    mw_match = re.search(
+        r"\bMIDDLEWARE\s+(.+?)(?:\s+THEN\b|\s+PERMISSIONS\b|\s+COMMENT\b|$)",
+        body,
+        re.IGNORECASE,
+    )
+    if mw_match:
+        middleware = [m.strip() for m in mw_match.group(1).split(",") if m.strip()]
+
+    # Extract PERMISSIONS clause
+    permissions: str | None = None
+    perm_match = re.search(
+        r"\bPERMISSIONS\s+(.+?)(?:\s+COMMENT\b|$)",
+        body,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if perm_match:
+        permissions = perm_match.group(1).strip()
+
+    return ApiState(
+        name=api_name,
+        method=method,
+        handler=handler,
+        middleware=middleware,
+        permissions=permissions,
+    )
+
+
+def _extract_balanced_braces(text: str, start: int) -> str:
+    """Extract content between balanced curly braces starting at *start*."""
+    depth = 0
+    i = start
+    while i < len(text):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1 : i].strip().rstrip(";").strip()
+        i += 1
+    return text[start + 1 :].strip().rstrip(";").strip()
+
+
 __all__ = [
     "parse_define_access",
     "parse_define_analyzer",
+    "parse_define_api",
     "parse_define_event",
     "parse_define_field",
     "parse_define_index",

@@ -107,6 +107,7 @@ class FieldType(StrEnum):
     RECORD = "record"
     GEOMETRY = "geometry"
     REGEX = "regex"
+    REFERENCES = "references"
 
     def generic(self, inner_type: str) -> str:
         """

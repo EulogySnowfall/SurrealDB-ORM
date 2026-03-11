@@ -27,6 +27,32 @@ env:
   SURREALDB_DATABASE: test
 
 jobs:
+  # =============================================================================
+  # Branch Guard: Block v2 branches from merging into main
+  # =============================================================================
+  branch-guard:
+    name: Branch Guard
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Block v2 branches from merging into main
+        if: >-
+          github.base_ref == 'main' && (
+            github.head_ref == 'v2' ||
+            startsWith(github.head_ref, 'v2/') ||
+            startsWith(github.head_ref, '0.20.') ||
+            startsWith(github.head_ref, 'chore/surrealdb-2x-')
+          )
+        run: |
+          echo "::error::Cannot merge v2-related branches into main."
+          echo ""
+          echo "Blocked branch: ${{ github.head_ref }}"
+          echo "Target: ${{ github.base_ref }}"
+          echo ""
+          echo "The v2 branch is for SurrealDB 2.X LTS maintenance only."
+          echo "V2 branches must target the 'v2' base branch, not 'main'."
+          exit 1
+
   lint:
     name: Lint & Type Check
     runs-on: ubuntu-latest
@@ -179,12 +205,17 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, test-unit, test-integration, coverage]
+    needs: [branch-guard, lint, test-unit, test-integration, coverage]
     if: always()
     permissions: {}
     steps:
       - name: Check all jobs passed
         run: |
+          # Branch guard: fail if it failed (skip check if it was skipped on push events)
+          if [[ "${{ needs.branch-guard.result }}" == "failure" ]]; then
+            echo "Branch guard failed — v2 branch cannot be merged into main"
+            exit 1
+          fi
           if [[ "${{ needs.lint.result }}" != "success" ]]; then
             echo "Lint job failed"
             exit 1

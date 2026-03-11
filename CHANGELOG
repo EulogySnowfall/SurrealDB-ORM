@@ -6,6 +6,24 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.30.0b1] - 2026-03-10
+
+### Added
+
+- **Refresh token flow** — `signup()` and `signin()` now return `AuthResult` with `user`, `token`, and `refresh_token` (SurrealDB 3.0+). Backward-compatible with existing `user, token = await User.signup(...)` unpacking. New `refresh_access_token()` classmethod exchanges a refresh token for a new access token. Requires `WITH REFRESH` clause on `DEFINE ACCESS` (after `SIGNIN`, before `DURATION`).
+- **DEFINE API migration support** — New `DefineApi` and `RemoveApi` migration operations for SurrealDB 3.0 REST API endpoint definitions. `ApiState` dataclass for schema tracking and `parse_define_api()` parser for introspection.
+- **Record references field** — New `ReferencesField["table"]` type annotation for SurrealDB 3.0's `REFERENCE` clause on `DEFINE FIELD`. Supports `ON DELETE` strategies (CASCADE, REJECT, UNSET, IGNORE). Includes `is_references_field()`, `get_references_info()`, and `get_references_on_delete()` detection helpers.
+- **Branch Guard CI check** — New `branch-guard` job in CI blocks PRs from v2-related branches (`v2`, `0.20.*`, `chore/surrealdb-2x-*`) into `main`. Prevents accidental cross-branch merges between the SurrealDB 3.X and 2.X codebases.
+
+### Fixed
+
+- **SDK: `AuthResponse.from_rpc_result()` — `"access"` key support** — SurrealDB 3.0 WITH REFRESH returns the JWT under the `"access"` key (not `"token"`). The RPC-level parser now checks `data.get("access") or data.get("token")` for both formats.
+- **SDK: HTTP `signin()` — nested token dict** — The HTTP `/signin` endpoint returns `{"code": 200, "token": {"access": "JWT...", "refresh": "..."}}` (nested dict) when WITH REFRESH is enabled. The HTTP connection handler now correctly unpacks this nested structure.
+- **`DefineApi` PERMISSIONS ordering** — SurrealDB 3.0 requires `PERMISSIONS` before `THEN` in `DEFINE API` statements. Fixed clause ordering in `DefineApi.forwards()`.
+- **Refresh token prefix in docstrings** — Fixed `surreal-refresh_` (underscores) to `surreal-refresh-` (hyphens) to match SurrealDB 3.0.2 actual output.
+
+---
+
 ## [0.30.0a2] - 2026-03-10
 
 ### Added
@@ -26,7 +44,7 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 - **SurrealDB 3.0 Support** — All code and tests now target SurrealDB >= 3.0. The `v2` branch preserves SurrealDB 2.x compatibility.
 - **Docker Compose upgraded to SurrealDB v3** — All 4 services in `devops/docker-compose.yml` now use `surrealdb/surrealdb:v3` image.
-- **Auth token format** — `signin`/`signup` RPC now returns `{token, refresh}` dict instead of plain string token. New `AuthResponse` dataclass in `surreal_sdk/types.py` handles both formats with `refresh_token` field.
+- **Auth token format** — `signin`/`signup` now returns `{access, refresh}` dict (with `WITH REFRESH`) or `{token}` dict (without) instead of plain string token. New `AuthResponse` dataclass in `surreal_sdk/types.py` handles all formats with `refresh_token` field.
 - **KNN vector search requires EF parameter** — SurrealDB 3.0 requires the search effort (EF) parameter for KNN queries. `similar_to()` now always generates `<|K,EF|>` syntax (default ef=100 when not specified). The old `<|K|>` syntax is no longer supported.
 - **`SEARCH ANALYZER` renamed to `FULLTEXT ANALYZER`** — Migration operations and parsers updated. Both keywords are accepted during parsing for backward compatibility.
 - **`MTREE` vector index type removed** — SurrealDB 3.0 only supports `HNSW` for vector indexes. Parser and migration code updated.

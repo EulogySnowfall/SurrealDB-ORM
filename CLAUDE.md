@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: February 2026
+> Context document for Claude AI - Last updated: March 2026
 
 ## Project Vision
 
@@ -10,7 +10,27 @@
 
 ---
 
-## Current Version: 0.14.4 (Beta)
+## Current Version: 0.30.0b1 (Beta) — SurrealDB 3.0
+
+### Branch Strategy
+
+| Branch | SurrealDB | ORM Version | Status                          |
+| ------ | --------- | ----------- | ------------------------------- |
+| `main` | 3.X       | 0.30.x      | Active development              |
+| `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.30.0b1
+
+- **Refresh token flow** — `signup()` and `signin()` return `AuthResult` with `user`, `token`, and `refresh_token`. Requires `WITH REFRESH` on `DEFINE ACCESS` (after `SIGNIN(...)`, before `DURATION`). `refresh_access_token()` exchanges a refresh token for new tokens with rotation.
+- **DEFINE API migration support** — `DefineApi` and `RemoveApi` migration operations for SurrealDB 3.0 REST endpoints. `PERMISSIONS` must come before `THEN` in SurrealDB 3.0.
+- **Record references field** — `ReferencesField["table"]` maps to `REFERENCE` clause on `DEFINE FIELD`. Supports `ON DELETE CASCADE/REJECT/UNSET/IGNORE`. Not a type — it's a modifier on `record<T>` fields.
+- **SDK auth response fixes** — SurrealDB 3.0 WITH REFRESH returns `{"access": "JWT...", "refresh": "..."}` via RPC and `{"token": {"access": "...", "refresh": "..."}}` via HTTP. Both formats now handled correctly.
+
+### What's New in 0.30.0-alpha
+
+- **SurrealDB 3.0 compatibility** — Docker Compose upgraded to v3, auth token format `{access, refresh}` or `{token}`, KNN EF parameter required, `SEARCH ANALYZER` → `FULLTEXT ANALYZER`, `MTREE` removed, time function renames, `type::thing()` → `type::record()`, `none | T` nullable format, NS/DB auto-creation.
+- **Branch guard CI** — Blocks PRs from v2-related branches into main.
+- **Dual-branch security monitoring** — Both SurrealDB 3.X and 2.X monitors run from main.
 
 ### What's New in 0.14.4
 
@@ -1664,6 +1684,29 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `parse_define_table()` extracts AS, RELATION IN/OUT/ENFORCED clauses
 - [x] `DatabaseIntrospector` parses events, relations; `ModelCodeGenerator` generates GeoField
 
+### Completed (0.30.0b1) - SurrealDB 3.0 Phase 2
+
+- [x] Refresh token flow: `AuthResult` with `token` + `refresh_token`, `refresh_access_token()` classmethod
+- [x] `WITH REFRESH` clause support (after `SIGNIN(...)`, before `DURATION`)
+- [x] `DefineApi` / `RemoveApi` migration operations for SurrealDB 3.0 REST endpoints
+- [x] `ReferencesField["table"]` with `ON DELETE` strategies (CASCADE, REJECT, UNSET, IGNORE)
+- [x] SDK: `AuthResponse.from_rpc_result()` handles `"access"` key (SurrealDB 3.0 WITH REFRESH)
+- [x] SDK: HTTP `signin()` handles nested `{"token": {"access": ..., "refresh": ...}}` response
+- [x] `DefineApi.forwards()` PERMISSIONS before THEN ordering fix
+- [x] Branch guard CI check blocks v2 → main PRs
+
+### Completed (0.30.0-alpha) - SurrealDB 3.0 Phase 1
+
+- [x] Docker Compose upgraded to SurrealDB v3.0.2
+- [x] Auth token format: `{access, refresh}` dict with `AuthResponse` dataclass
+- [x] KNN EF parameter required: `similar_to()` generates `<|K,EF|>` (default ef=100)
+- [x] `SEARCH ANALYZER` → `FULLTEXT ANALYZER` (backward-compatible parsing)
+- [x] `MTREE` vector index removed — only `HNSW` supported
+- [x] Time function renames: `time::from::*` → `time::from_*`
+- [x] `type::thing()` → `type::record()` in auth module
+- [x] NS/DB auto-creation via `DEFINE ... IF NOT EXISTS`
+- [x] Schema introspection handles `none | T` nullable format (SurrealDB 3.0)
+
 ### Completed (0.14.4) - Datetime Fix, Typed QuerySet & get_related
 
 - [x] Datetime serialization fix: `_restore_datetime_fields()` in `model_base.py`
@@ -1673,7 +1716,6 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `objects()` returns `QuerySet[Self]`
 - [x] `get_related()` `@overload` stubs: `model_class: type[_M] → list[_M]`, `None → list[dict]`
 - [x] mypy strict mode (`strict = true` in `pyproject.toml`) — 64 files, 0 errors
-- [x] Docker Compose pinned to SurrealDB v2.6
 - [x] 24 new unit tests + 10 new integration tests
 
 ### Completed (0.14.2) - Production Fixes
