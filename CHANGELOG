@@ -6,6 +6,18 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.30.0a2] - 2026-03-10
+
+### Added
+
+- **SurrealDB 2.X Version Monitor on main** — New workflow `surrealdb-v2-security.yml` runs daily from `main` (the default branch) to monitor SurrealDB 2.X releases for the `v2` LTS branch. GitHub Actions only executes scheduled (cron) workflows from the default branch, so this workflow lives on `main` but checks out `v2` code for testing and creates PRs targeting `v2`.
+
+### Changed
+
+- **Dual-branch security monitoring** — `main` now manages security monitoring for both SurrealDB 3.X (`surrealdb-security.yml`) and SurrealDB 2.X (`surrealdb-v2-security.yml`). The V2 monitor runs at 12:30 UTC (offset by 30 min from the V3 monitor) to avoid resource contention.
+
+---
+
 ## [0.30.0-alpha] - 2026-03-09
 
 ### Breaking Changes (SurrealDB 3.0 Migration)

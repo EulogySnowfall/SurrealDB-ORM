@@ -11,6 +11,28 @@
 
 **Includes a custom SDK (`surreal_sdk`)** - Zero dependency on the official `surrealdb` package!
 
+### Branch Strategy
+
+| Branch | SurrealDB | ORM Version | Status |
+|--------|-----------|-------------|--------|
+| `main` | 3.X | 0.30.x | Active development |
+| `v2` | 2.X | 0.20.x | LTS (security & bug fixes only) |
+
+Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
+
+---
+
+## What's New in 0.30.0a2
+
+### Dual-Branch Security Monitoring
+
+`main` now manages SurrealDB security monitoring for **both** branches:
+
+- **`surrealdb-security.yml`** — Monitors SurrealDB 3.X releases, creates PRs targeting `main`
+- **`surrealdb-v2-security.yml`** — Monitors SurrealDB 2.X releases, checks out `v2` code, creates PRs targeting `v2`
+
+GitHub Actions only executes scheduled (cron) workflows from the default branch. Since `main` is the default branch, the V2 monitor must live here. The two workflows run 30 minutes apart to avoid resource contention.
+
 ---
 
 ## What's New in 0.30.0-alpha
