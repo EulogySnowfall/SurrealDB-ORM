@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from surreal_sdk.exceptions import AuthenticationError, QueryError, SurrealDBError
 
+from .result import AuthResult
+
 if TYPE_CHECKING:
     from surreal_sdk import HTTPConnection
 
@@ -188,17 +190,114 @@ class AuthenticatedUserMixin:
         return client
 
     @classmethod
+    async def define_access(
+        cls,
+        *,
+        access_name: str | None = None,
+        token_duration: str | None = None,
+        session_duration: str | None = None,
+        grant_duration: str | None = None,
+        with_refresh: bool | None = None,
+        identifier_field: str | None = None,
+        password_field: str | None = None,
+    ) -> str:
+        """
+        Generate and apply the DEFINE ACCESS statement for this model.
+
+        Inspects the model's config and executes the corresponding
+        ``DEFINE ACCESS`` statement against the database.  Any keyword
+        argument overrides the value from ``SurrealConfigDict``.
+
+        Only available on ``TableType.USER`` models that use
+        :class:`AuthenticatedUserMixin`.
+
+        Args:
+            access_name: Override the access definition name.
+            token_duration: Override JWT token lifetime (e.g., ``"1h"``).
+            session_duration: Override session lifetime (e.g., ``"24h"``).
+            grant_duration: Override refresh token lifetime (e.g., ``"30d"``).
+                Only relevant when *with_refresh* is ``True``.
+            with_refresh: Override whether to enable refresh tokens.
+            identifier_field: Override the field used for signin
+                (e.g., ``"username"`` instead of ``"email"``).
+            password_field: Override the password field name.
+
+        Returns:
+            The SurrealQL statement that was executed.
+
+        Raises:
+            TypeError: If the model is not a USER type table.
+
+        Example::
+
+            # Using model config defaults
+            await User.define_access()
+
+            # Overriding at call site
+            await User.define_access(
+                token_duration="1h",
+                session_duration="24h",
+                with_refresh=True,
+                grant_duration="14d",
+            )
+        """
+        from .access import AccessGenerator
+
+        access_def = AccessGenerator.from_model(cls)  # type: ignore[arg-type]
+        if access_def is None:
+            raise TypeError(
+                f"{cls.__name__} is not a USER type table. define_access() is only available on TableType.USER models."
+            )
+
+        # Apply overrides
+        if access_name is not None:
+            access_def.name = access_name
+        if token_duration is not None:
+            access_def.duration_token = token_duration
+        if session_duration is not None:
+            access_def.duration_session = session_duration
+        if grant_duration is not None:
+            access_def.duration_grant = grant_duration
+        if with_refresh is not None:
+            access_def.with_refresh = with_refresh
+        if identifier_field is not None:
+            access_def.identifier_field = identifier_field
+            # Rebuild signin_where with the new identifier field
+            access_def.signin_where = (
+                f"{identifier_field} = ${identifier_field} AND "
+                f"crypto::{access_def.algorithm}::compare("
+                f"{access_def.password_field}, ${access_def.password_field})"
+            )
+        if password_field is not None:
+            access_def.password_field = password_field
+            # Rebuild signin_where with the new password field
+            id_field = identifier_field or access_def.identifier_field
+            access_def.signin_where = (
+                f"{id_field} = ${id_field} AND crypto::{access_def.algorithm}::compare({password_field}, ${password_field})"
+            )
+
+        sql = access_def.to_surreal_ql()
+
+        from ..connection_manager import SurrealDBConnectionManager
+
+        conn_name = cls.get_connection_name()
+        client = await SurrealDBConnectionManager.get_client(conn_name)
+        await client.query(sql)
+
+        return sql
+
+    @classmethod
     async def signup(
         cls,
         **credentials: Any,
-    ) -> tuple[Self, str]:
+    ) -> AuthResult[Self]:
         """
         Create a new user via DEFINE ACCESS signup.
 
         This method uses SurrealDB's native signup functionality, which:
         1. Validates the credentials against the ACCESS definition
         2. Creates the user record with encrypted password
-        3. Returns a JWT token
+        3. Returns JWT access and refresh tokens (SurrealDB 3.0+)
 
         An ephemeral connection is used so the root singleton is not affected.
 
@@ -207,17 +306,23 @@ class AuthenticatedUserMixin:
                           (e.g., email, password, name, language)
 
         Returns:
-            Tuple of (created user instance, JWT token)
+            :class:`AuthResult` containing user instance, access token, and
+            refresh token.  Backward-compatible with tuple unpacking::
+
+                user, token = await User.signup(...)          # still works
+                result = await User.signup(...)
+                result.refresh_token                          # new in 0.30
 
         Raises:
             SurrealDbError: If signup fails (e.g., duplicate identifier)
 
         Example:
-            user, token = await User.signup(
+            result = await User.signup(
                 email="user@example.com",
                 password="secure_password",
                 name="John Doe",
             )
+            print(result.token, result.refresh_token)
         """
         from ..connection_manager import SurrealDBConnectionManager
         from ..model_base import SurrealDbError
@@ -255,6 +360,8 @@ class AuthenticatedUserMixin:
             token = response.token
             if not token:
                 raise SurrealDbError("Signup succeeded but no JWT token was returned by the server.")
+
+            refresh_token = response.refresh_token
         except (SurrealDBError, AuthenticationError, QueryError) as e:
             raise SurrealDbError(f"Signup failed: {e}") from e
         finally:
@@ -278,20 +385,20 @@ class AuthenticatedUserMixin:
             raise cls.DoesNotExist("User not found after signup")  # type: ignore[attr-defined]
 
         user = cls.from_db(result.first)  # type: ignore[attr-defined]
-        return user, token
+        return AuthResult(user=user, token=token, refresh_token=refresh_token)
 
     @classmethod
     async def signin(
         cls,
         **credentials: Any,
-    ) -> tuple[Self, str]:
+    ) -> AuthResult[Self]:
         """
         Authenticate a user via DEFINE ACCESS signin.
 
         This method uses SurrealDB's native signin functionality, which:
         1. Validates credentials against the ACCESS definition
         2. Compares the password using the configured algorithm
-        3. Returns a JWT token for subsequent authenticated requests
+        3. Returns JWT access and refresh tokens (SurrealDB 3.0+)
 
         An ephemeral connection is used so the root singleton is not affected.
 
@@ -299,16 +406,22 @@ class AuthenticatedUserMixin:
             **credentials: User credentials (identifier and password)
 
         Returns:
-            Tuple of (user instance, JWT token)
+            :class:`AuthResult` containing user instance, access token, and
+            refresh token.  Backward-compatible with tuple unpacking::
+
+                user, token = await User.signin(...)          # still works
+                result = await User.signin(...)
+                result.refresh_token                          # new in 0.30
 
         Raises:
             SurrealDbError: If signin fails (invalid credentials)
 
         Example:
-            user, token = await User.signin(
+            result = await User.signin(
                 email="user@example.com",
                 password="secure_password",
             )
+            print(result.token, result.refresh_token)
         """
         from ..connection_manager import SurrealDBConnectionManager
         from ..model_base import SurrealDbError
@@ -344,6 +457,7 @@ class AuthenticatedUserMixin:
                 raise SurrealDbError(f"Signin failed: {response.raw}")
 
             token = response.token
+            refresh_token = response.refresh_token
         except (SurrealDBError, AuthenticationError, QueryError) as e:
             raise SurrealDbError(f"Signin failed: {e}") from e
         finally:
@@ -367,7 +481,7 @@ class AuthenticatedUserMixin:
             raise cls.DoesNotExist("User not found after signin")  # type: ignore[attr-defined]
 
         user = cls.from_db(result.first)  # type: ignore[attr-defined]
-        return user, token
+        return AuthResult(user=user, token=token, refresh_token=refresh_token)
 
     @classmethod
     async def authenticate_token(
@@ -504,6 +618,106 @@ class AuthenticatedUserMixin:
             return None
         finally:
             await client.close()
+
+    @classmethod
+    async def refresh_access_token(
+        cls,
+        refresh_token: str,
+    ) -> AuthResult[Self]:
+        """
+        Exchange a refresh token for a new access token.
+
+        SurrealDB 3.0 issues refresh tokens alongside access tokens during
+        signup/signin (when ``WITH REFRESH`` is enabled on the access
+        definition).  When the short-lived access token expires, call this
+        method with the refresh token to obtain a fresh access token and a
+        rotated refresh token without requiring the user to re-enter
+        credentials.
+
+        Internally this calls the ``signin`` RPC/endpoint with the
+        ``refresh`` parameter — the same mechanism used by the SurrealDB
+        HTTP ``/signin`` endpoint.  The old refresh token is revoked
+        automatically by the server (token rotation).
+
+        An ephemeral connection is used so the root singleton is not affected.
+
+        Args:
+            refresh_token: The refresh token obtained from a previous
+                signup/signin or refresh call (prefixed ``surreal-refresh-``).
+
+        Returns:
+            :class:`AuthResult` with the user instance, new access token,
+            and rotated refresh token.
+
+        Raises:
+            SurrealDbError: If the refresh token is invalid or expired.
+
+        Example:
+            result = await User.refresh_access_token(stored_refresh_token)
+            new_access_token = result.token
+            new_refresh_token = result.refresh_token  # rotated — must store
+        """
+        from ..connection_manager import SurrealDBConnectionManager
+        from ..model_base import SurrealDbError
+
+        # Get access configuration from model
+        config = getattr(cls, "model_config", {})
+        table_name = config.get("table_name") or cls.__name__
+        access_name = config.get("access_name") or f"{table_name.lower()}_auth"
+
+        # Get connection info from named connection config
+        conn_name = cls.get_connection_name()
+        conn_config = SurrealDBConnectionManager.get_config(conn_name)
+        if conn_config is None:
+            raise SurrealDbError(f"Connection '{conn_name}' not configured.")
+
+        namespace = conn_config.namespace
+        database = conn_config.database
+
+        if not namespace or not database:
+            raise SurrealDbError("Namespace and database must be set for token refresh")
+
+        # Use an ephemeral connection — never the root singleton.
+        # SurrealDB 3.0 refresh flow: POST /signin with {"refresh": "..."}
+        # Via RPC: signin({ns, db, ac, refresh: "..."})
+        client = await cls._create_auth_client()
+        try:
+            response = await client.signin(
+                namespace=namespace,
+                database=database,
+                access=access_name,
+                refresh=refresh_token,
+            )
+
+            if not response.success or not response.token:
+                raise SurrealDbError(f"Token refresh failed: {response.raw}")
+
+            new_token = response.token
+            new_refresh = response.refresh_token
+        except (SurrealDBError, AuthenticationError, QueryError) as e:
+            raise SurrealDbError(f"Token refresh failed: {e}") from e
+        finally:
+            await client.close()
+
+        # Authenticate on the ephemeral connection to get $auth record ID,
+        # then fetch the full user record via root singleton.
+        # Instead, we decode the JWT locally to extract the record ID —
+        # the token was just issued by the server so it's trustworthy.
+        record_id = cls.validate_token_local(new_token)
+        if not record_id:
+            raise SurrealDbError("Token refresh succeeded but could not extract record ID from JWT.")
+
+        root_client = await SurrealDBConnectionManager.get_client(conn_name)
+        result = await root_client.query(
+            f"SELECT * FROM {table_name} WHERE id = type::record($record_id)",
+            {"record_id": record_id},
+        )
+
+        if result.is_empty:
+            raise cls.DoesNotExist("User not found after token refresh")  # type: ignore[attr-defined]
+
+        user = cls.from_db(result.first)  # type: ignore[attr-defined]
+        return AuthResult(user=user, token=new_token, refresh_token=new_refresh)
 
     @classmethod
     async def change_password(

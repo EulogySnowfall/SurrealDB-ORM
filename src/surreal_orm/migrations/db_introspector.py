@@ -17,6 +17,7 @@ from surreal_sdk.connection.http import HTTPConnection
 from .define_parser import (
     parse_define_access,
     parse_define_analyzer,
+    parse_define_api,
     parse_define_event,
     parse_define_field,
     parse_define_index,
@@ -130,6 +131,20 @@ class DatabaseIntrospector:
                 except Exception:
                     logger.debug(
                         "Failed to parse access definition, skipping.",
+                        exc_info=True,
+                    )
+
+        # Extract API endpoint definitions (SurrealDB 3.0+)
+        apis_info = db_info.get("apis", db_info.get("ap", {}))
+        if isinstance(apis_info, dict):
+            for _api_name, api_define_stmt in apis_info.items():
+                try:
+                    api_state = parse_define_api(api_define_stmt)
+                    api_key = f"{api_state.name}:{api_state.method}" if api_state.method else api_state.name
+                    state.apis[api_key] = api_state
+                except Exception:
+                    logger.debug(
+                        "Failed to parse API definition, skipping.",
                         exc_info=True,
                     )
 

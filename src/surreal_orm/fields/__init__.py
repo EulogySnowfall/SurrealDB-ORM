@@ -16,6 +16,7 @@ from .geometry import (
     get_geo_info,
     is_geo_field,
 )
+from .references import ReferencesField, get_references_info, get_references_on_delete, is_references_field
 from .relation import (
     ForeignKey,
     ManyToMany,
@@ -50,6 +51,11 @@ __all__ = [
     "MultiPointField",
     "is_geo_field",
     "get_geo_info",
+    # References fields (SurrealDB 3.0+)
+    "ReferencesField",
+    "is_references_field",
+    "get_references_info",
+    "get_references_on_delete",
     # Relation fields
     "ForeignKey",
     "ManyToMany",

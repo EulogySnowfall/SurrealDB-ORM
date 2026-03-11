@@ -195,6 +195,19 @@ class ModelCodeGenerator:
             (field_line, extra_imports)
         """
         extra_imports: set[str] = set()
+
+        # Handle REFERENCE fields → ReferencesField["table"] or ReferencesField["table", "CASCADE"]
+        if field.reference:
+            table_name = self._extract_record_table(field.field_type)
+            if table_name:
+                extra_imports.add("from surreal_orm.fields import ReferencesField")
+                if field.on_delete:
+                    return (
+                        f'{field.name}: ReferencesField["{table_name}", "{field.on_delete}"]',
+                        extra_imports,
+                    )
+                return f'{field.name}: ReferencesField["{table_name}"]', extra_imports
+
         python_type = self._surreal_type_to_python(field.field_type)
 
         # Collect any needed imports from the type
@@ -236,6 +249,12 @@ class ModelCodeGenerator:
             return f"{field.name}: {python_type} = None", extra_imports
 
         return f"{field.name}: {python_type}", extra_imports
+
+    @staticmethod
+    def _extract_record_table(field_type: str) -> str | None:
+        """Extract the table name from a record<T> or array<record<T>> type."""
+        m = re.search(r"record<(\w+)>", field_type, re.IGNORECASE)
+        return m.group(1) if m else None
 
     def _surreal_type_to_python(self, surreal_type: str) -> str:
         """
@@ -285,6 +304,8 @@ class ModelCodeGenerator:
                 imports.add(import_line)
         if "GeoField" in python_type:
             imports.add("from surreal_orm.fields import GeoField")
+        if "ReferencesField" in python_type:
+            imports.add("from surreal_orm.fields import ReferencesField")
 
     def _format_default(self, default: object) -> str:
         """Format a default value for Python source code."""

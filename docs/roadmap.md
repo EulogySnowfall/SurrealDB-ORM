@@ -31,7 +31,7 @@
 | 0.13.0  | Released | Events, Geospatial & Materialized Views                    |
 | 0.14.0  | Released | Testing & Developer Experience (Alpha → Beta)              |
 | 0.14.4  | Released | Datetime Fix, Typed QuerySet[T] & get_related, mypy strict |
-| 0.30.0  | Alpha    | SurrealDB 3.0 Compatibility                                |
+| 0.30.0  | Beta     | SurrealDB 3.0 Compatibility                                |
 
 ---
 
@@ -1261,11 +1261,11 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 
 ---
 
-## v0.30.0 - SurrealDB 3.0 Compatibility (Alpha)
+## v0.30.0 - SurrealDB 3.0 Compatibility (Beta)
 
 **Goal:** Full compatibility with SurrealDB >= 3.0. The `v2` branch preserves SurrealDB 2.x support.
 
-**Status:** Alpha — Core compatibility done, tests passing.
+**Status:** Beta — Core compatibility and Phase 2 features done, all tests passing.
 
 ### Phase 1: Core Compatibility (Done)
 
@@ -1283,13 +1283,17 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 - [x] All 362 integration tests passing against SurrealDB 3.0.2
 - [x] mypy strict: 0 errors, ruff: clean
 
-### Phase 2: New SurrealDB 3.0 Features (Planned)
+### Phase 2: New SurrealDB 3.0 Features (Done — 0.30.0b1)
 
-- [ ] `DEFINE API` — REST API endpoint definitions in migrations
+- [x] `DEFINE API` — REST API endpoint definitions in migrations (`DefineApi`, `RemoveApi`)
+- [x] Refresh token support — `WITH REFRESH` clause, `AuthResult.refresh_token`, `refresh_access_token()`
+- [x] Record references — `ReferencesField["table"]` with `ON DELETE` strategies (CASCADE, REJECT, UNSET)
+- [x] SDK auth response fix — Handle `"access"` key (RPC) and nested `{"token": {"access": ...}}` (HTTP)
+
+### Phase 2b: Additional SurrealDB 3.0 Features (Planned)
+
 - [ ] `DEFINE CONFIG GRAPHQL` — GraphQL schema configuration
-- [ ] Refresh token support — `AuthResponse.refresh_token` flow in auth mixin
 - [ ] Bearer access method — `DEFINE ACCESS ... TYPE BEARER` support
-- [ ] Record references — `references<record<T>>` field type
 - [ ] `REBUILD INDEX` migration operation
 - [ ] `DEFINE BUCKET` — Object/file storage integration (see details below)
 - [ ] Enhanced `DEFINE TABLE ... AS` — Materialized view improvements
@@ -1409,8 +1413,8 @@ from surreal_orm import generate_models_from_db
 
 | Version     | Focus            | Key Features                                                                  |
 | ----------- | ---------------- | ----------------------------------------------------------------------------- |
-| 0.30.0-beta | SurrealDB 3.0    | Refresh tokens, Bearer access, Record references, DEFINE API                  |
-| 0.30.0      | SurrealDB 3.0    | GraphQL config, REBUILD INDEX, Bucket/file storage (DEFINE BUCKET, FileField) |
+| 0.30.0-beta | SurrealDB 3.0    | Refresh tokens, Record references, DEFINE API (Done)                          |
+| 0.30.0      | SurrealDB 3.0    | Bearer access, GraphQL config, REBUILD INDEX, Bucket/file storage             |
 | 0.31.0      | Graph Power      | Recursive traversal, shortest path, path collection                           |
 | 0.32.0      | ML & Data        | SurrealML inference, JSONL import/export, DB dump/restore                     |
 | 0.33.0      | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring                      |
@@ -1494,9 +1498,10 @@ from surreal_orm import generate_models_from_db
 | type::thing → type::record    | 0.30.0  | Medium   | Done    | Auth                 |
 | NS/DB auto-creation           | 0.30.0  | High     | Done    | ConnectionManager    |
 | none \| T nullable format     | 0.30.0  | Medium   | Done    | Introspection        |
-| Refresh token flow            | 0.30.0β | High     | Planned | Auth                 |
-| DEFINE API support            | 0.30.0β | Medium   | Planned | Migrations           |
-| Record references field       | 0.30.0β | Medium   | Planned | Fields               |
+| Refresh token flow            | 0.30.0β | High     | Done    | Auth                 |
+| DEFINE API support            | 0.30.0β | Medium   | Done    | Migrations           |
+| Record references field       | 0.30.0β | Medium   | Done    | Fields               |
+| SDK auth "access" key fix     | 0.30.0β | Critical | Done    | SDK                  |
 | DEFINE BUCKET (migrations)    | 0.30.0  | High     | Planned | Migrations           |
 | BucketBackend enum + parser   | 0.30.0  | High     | Planned | DEFINE BUCKET        |
 | FileField / ImageField        | 0.30.0  | High     | Planned | DEFINE BUCKET        |

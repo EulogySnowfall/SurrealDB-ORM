@@ -287,8 +287,8 @@ class ModelIntrospector:
                 # Regular fields are passed through
                 signup_fields[field_name] = f"${field_name}"
 
-        # Add default timestamp if not in fields
-        if "created_at" not in signup_fields and "created_at" not in model.model_fields:
+        # Add default timestamp only if the model defines a created_at field
+        if "created_at" in model.model_fields and "created_at" not in signup_fields:
             signup_fields["created_at"] = "time::now()"
 
         # Build signin WHERE clause

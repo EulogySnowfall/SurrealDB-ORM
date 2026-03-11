@@ -38,6 +38,8 @@ class FieldState:
     flexible: bool = False
     readonly: bool = False
     value: str | None = None
+    reference: bool = False
+    on_delete: str | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, FieldState):
@@ -52,6 +54,8 @@ class FieldState:
             and self.flexible == other.flexible
             and self.readonly == other.readonly
             and self.value == other.value
+            and self.reference == other.reference
+            and self.on_delete == other.on_delete
         )
 
     def has_changed(self, other: "FieldState") -> bool:
@@ -193,6 +197,35 @@ class EventState:
 
 
 @dataclass
+class ApiState:
+    """
+    Represents the state of a REST API endpoint (SurrealDB 3.0+).
+
+    Attributes:
+        name: API path (e.g., ``"/users/list"``)
+        method: HTTP method (get, post, put, patch, delete), or None for all
+        handler: SurrealQL query or code block (the THEN body)
+    """
+
+    name: str
+    method: str | None = None
+    handler: str = ""
+    middleware: list[str] = field(default_factory=list)
+    permissions: str | None = None
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ApiState):
+            return False
+        return (
+            self.name == other.name
+            and self.method == other.method
+            and self.handler == other.handler
+            and self.middleware == other.middleware
+            and self.permissions == other.permissions
+        )
+
+
+@dataclass
 class TableState:
     """
     Represents the complete state of a table.
@@ -263,6 +296,7 @@ class SchemaState:
     tables: dict[str, TableState] = field(default_factory=dict)
     applied_migrations: list[str] = field(default_factory=list)
     analyzers: dict[str, "AnalyzerState"] = field(default_factory=dict)
+    apis: dict[str, "ApiState"] = field(default_factory=dict)
 
     def diff(self, target: "SchemaState") -> list["Operation"]:
         """
@@ -280,12 +314,14 @@ class SchemaState:
             CreateTable,
             DefineAccess,
             DefineAnalyzer,
+            DefineApi,
             DefineEvent,
             DropField,
             DropIndex,
             DropTable,
             RemoveAccess,
             RemoveAnalyzer,
+            RemoveApi,
             RemoveEvent,
         )
 
@@ -340,6 +376,8 @@ class SchemaState:
                             flexible=field_state.flexible,
                             readonly=field_state.readonly,
                             value=field_state.value,
+                            reference=field_state.reference,
+                            on_delete=field_state.on_delete,
                         )
                     )
                 # Add all indexes
@@ -433,6 +471,8 @@ class SchemaState:
                                 flexible=field_state.flexible,
                                 readonly=field_state.readonly,
                                 value=field_state.value,
+                                reference=field_state.reference,
+                                on_delete=field_state.on_delete,
                                 previous_type=current_field.field_type,
                                 previous_default=current_field.default,
                                 previous_assertion=current_field.assertion,
@@ -519,6 +559,22 @@ class SchemaState:
 
         # ── Deferred analyzer removals (after all index ops) ────────
         operations.extend(deferred_remove_analyzers)
+
+        # ── API endpoints (SurrealDB 3.0+) ──────────────────────
+        for api_key, target_api in target.apis.items():
+            if api_key not in self.apis or self.apis[api_key] != target_api:
+                operations.append(
+                    DefineApi(
+                        name=target_api.name,
+                        method=target_api.method,
+                        handler=target_api.handler,
+                    )
+                )
+
+        for api_key in self.apis:
+            if api_key not in target.apis:
+                current_api = self.apis[api_key]
+                operations.append(RemoveApi(name=current_api.name, method=current_api.method))
 
         return operations
 

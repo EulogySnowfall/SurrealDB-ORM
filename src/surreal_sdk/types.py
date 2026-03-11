@@ -239,7 +239,7 @@ class AuthResponse:
         """Parse auth response from RPC result.
 
         Handles both SurrealDB 2.x (plain string token) and 3.x
-        (``{"token": ..., "refresh": ...}`` dict) formats.
+        (``{"access": ..., "refresh": ...}`` dict) formats.
         """
         token: str | None = None
         refresh_token: str | None = None
@@ -250,8 +250,9 @@ class AuthResponse:
             token = data
             success = True
         elif isinstance(data, dict):
-            # SurrealDB 3.x: {"token": "...", "refresh": "..."}
-            token = data.get("token")
+            # SurrealDB 3.x WITH REFRESH: {"access": "...", "refresh": "..."}
+            # SurrealDB 3.x without refresh: {"token": "..."}
+            token = data.get("access") or data.get("token")
             refresh_token = data.get("refresh")
             success = token is not None
         elif data is None:

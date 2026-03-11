@@ -221,6 +221,8 @@ class AddField(Operation):
     readonly: bool = False
     value: str | None = None
     comment: str | None = None
+    reference: bool = False
+    on_delete: str | None = None
 
     def __post_init__(self) -> None:
         """Validate field_type on initialization."""
@@ -260,6 +262,12 @@ class AddField(Operation):
 
         if self.readonly:
             parts.append("READONLY")
+
+        # SurrealDB 3.0 REFERENCE clause (for record/array<record> fields)
+        if self.reference:
+            parts.append("REFERENCE")
+            if self.on_delete:
+                parts.append(f"ON DELETE {self.on_delete.upper()}")
 
         if self.comment:
             escaped_comment = self.comment.replace("'", "''")
@@ -329,6 +337,8 @@ class AlterField(Operation):
     flexible: bool = False
     readonly: bool = False
     value: str | None = None
+    reference: bool = False
+    on_delete: str | None = None
     # Store previous definition for rollback
     previous_type: FieldType | str | None = None
     previous_default: Any = None
@@ -379,6 +389,12 @@ class AlterField(Operation):
 
         if self.readonly:
             parts.append("READONLY")
+
+        # SurrealDB 3.0 REFERENCE clause
+        if self.reference:
+            parts.append("REFERENCE")
+            if self.on_delete:
+                parts.append(f"ON DELETE {self.on_delete.upper()}")
 
         return " ".join(parts) + ";"
 
@@ -823,3 +839,88 @@ class RemoveEvent(Operation):
 
     def describe(self) -> str:
         return f"Remove event {self.name} from {self.table}"
+
+
+@dataclass
+class DefineApi(Operation):
+    """
+    Define a REST API endpoint (SurrealDB 3.0+).
+
+    Example:
+        DefineApi(
+            name="/users/list",
+            method="get",
+            handler="SELECT * FROM users",
+        )
+
+    Generates:
+        DEFINE API "/users/list" FOR get THEN { SELECT * FROM users; };
+    """
+
+    name: str
+    method: str | None = None
+    handler: str = ""
+    middleware: list[str] | None = None
+    permissions: str | None = None
+    comment: str | None = None
+
+    def forwards(self) -> str:
+        # Ensure the endpoint path is quoted
+        quoted_name = f'"{self.name}"' if not self.name.startswith('"') else self.name
+        parts = [f"DEFINE API {quoted_name}"]
+
+        if self.method:
+            parts.append(f"FOR {self.method.lower()}")
+
+        if self.middleware:
+            parts.append(f"MIDDLEWARE {', '.join(self.middleware)}")
+
+        if self.permissions:
+            parts.append(f"PERMISSIONS {self.permissions}")
+
+        if self.handler:
+            parts.append(f"THEN {{ {self.handler}; }}")
+
+        if self.comment:
+            escaped_comment = self.comment.replace("'", "''")
+            parts.append(f"COMMENT '{escaped_comment}'")
+
+        return " ".join(parts) + ";"
+
+    def backwards(self) -> str:
+        quoted_name = f'"{self.name}"' if not self.name.startswith('"') else self.name
+        return f"REMOVE API {quoted_name};"
+
+    def describe(self) -> str:
+        method = f" {self.method.upper()}" if self.method else ""
+        return f"Define API{method} {self.name}"
+
+
+@dataclass
+class RemoveApi(Operation):
+    """
+    Remove a REST API endpoint (SurrealDB 3.0+).
+
+    Example:
+        RemoveApi(name="/users/list")
+
+    Generates:
+        REMOVE API "/users/list";
+    """
+
+    name: str
+    method: str | None = None
+
+    def __post_init__(self) -> None:
+        self.reversible = False
+
+    def forwards(self) -> str:
+        quoted_name = f'"{self.name}"' if not self.name.startswith('"') else self.name
+        return f"REMOVE API {quoted_name};"
+
+    def backwards(self) -> str:
+        return ""
+
+    def describe(self) -> str:
+        method = f" {self.method.upper()}" if self.method else ""
+        return f"Remove API{method} {self.name}"

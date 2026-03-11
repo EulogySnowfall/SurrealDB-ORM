@@ -191,6 +191,13 @@ class SurrealConfigDict(ConfigDict):
         flexible_fields: List of field names that should use ``FLEXIBLE TYPE``
             in migrations.  FLEXIBLE allows nested structures (arrays inside
             objects, etc.) that would otherwise be stripped by SCHEMAFULL tables.
+        with_refresh: Enable refresh tokens on the access definition
+            (SurrealDB 3.0+).  When True, ``WITH REFRESH`` is added to the
+            ``DEFINE ACCESS`` statement and signup/signin return a refresh
+            token alongside the access token.
+        grant_duration: Lifetime of refresh tokens (SurrealDB 3.0+, e.g.,
+            ``"30d"``).  Only relevant when ``with_refresh=True``.  Maps to
+            ``DURATION FOR GRANT`` in the access definition.
     """
 
     primary_key: str | None
@@ -211,6 +218,8 @@ class SurrealConfigDict(ConfigDict):
     relation_out: str | list[str] | None
     enforced: bool | None
     flexible_fields: list[str] | None
+    with_refresh: bool | None
+    grant_duration: str | None
 
 
 class BaseSurrealModel(BaseModel):
@@ -423,6 +432,106 @@ class BaseSurrealModel(BaseModel):
             if isinstance(field, str):
                 return field
         return "password"
+
+    @classmethod
+    async def define_table(cls) -> str:
+        """
+        Generate and apply DEFINE TABLE + DEFINE FIELD statements for this model.
+
+        Introspects the model's fields and config to produce the complete
+        schema definition, then executes it against the database.
+
+        Returns:
+            The combined SurrealQL statements that were executed.
+
+        Example::
+
+            class User(BaseSurrealModel):
+                model_config = SurrealConfigDict(
+                    table_name="users",
+                    table_type=TableType.USER,
+                )
+                email: str
+                name: str
+                password: Encrypted
+
+            await User.define_table()
+            # Executes:
+            #   DEFINE TABLE users SCHEMAFULL;
+            #   DEFINE FIELD email ON users TYPE string;
+            #   DEFINE FIELD name ON users TYPE string;
+            #   DEFINE FIELD password ON users TYPE string VALUE crypto::argon2::generate($value);
+        """
+        from .migrations.introspector import ModelIntrospector
+        from .migrations.operations import AddField, CreateTable
+
+        introspector = ModelIntrospector([cls])
+        table_state = introspector._introspect_model(cls)
+
+        # Build operations
+        config = getattr(cls, "model_config", {})
+        view_query = config.get("view_query")
+        relation_in = config.get("relation_in")
+        relation_out = config.get("relation_out")
+        enforced = config.get("enforced", False) or False
+
+        # Only RELATION and ANY are valid SurrealDB table types.
+        # NORMAL, USER, STREAM, HASH are ORM-only concepts.
+        table_type_str: str | None = table_state.table_type
+        if table_type_str and table_type_str.lower() not in ("relation", "any"):
+            table_type_str = None
+
+        create_table = CreateTable(
+            name=table_state.name,
+            schema_mode=table_state.schema_mode,
+            table_type=table_type_str,
+            changefeed=table_state.changefeed,
+            permissions=table_state.permissions or None,
+            view_query=view_query,
+            relation_in=relation_in,
+            relation_out=relation_out,
+            enforced=enforced,
+        )
+
+        statements = [create_table.forwards()]
+
+        # For USER tables, skip the VALUE clause on encrypted fields
+        # because define_access() SIGNUP already handles password hashing.
+        # Having both causes double-hashing (argon2(argon2(plaintext))).
+        is_user_table = table_state.table_type == TableType.USER.value
+
+        for _field_name, field_state in table_state.fields.items():
+            # Build the full type string with nullable wrapper
+            field_type = field_state.field_type
+            if field_state.nullable:
+                field_type = f"option<{field_type}>"
+
+            encrypted = field_state.encrypted
+            if is_user_table and encrypted:
+                encrypted = False
+
+            add_field = AddField(
+                table=table_state.name,
+                name=field_state.name,
+                field_type=field_type,
+                default=field_state.default,
+                assertion=field_state.assertion,
+                encrypted=encrypted,
+                flexible=field_state.flexible,
+                readonly=field_state.readonly,
+                value=field_state.value,
+                reference=field_state.reference,
+                on_delete=field_state.on_delete,
+            )
+            statements.append(add_field.forwards())
+
+        combined_sql = "\n".join(statements)
+
+        conn_name = cls.get_connection_name()
+        client = await SurrealDBConnectionManager.get_client(conn_name)
+        await client.query(combined_sql)
+
+        return combined_sql
 
     @classmethod
     def get_index_primary_key(cls) -> str | None:
