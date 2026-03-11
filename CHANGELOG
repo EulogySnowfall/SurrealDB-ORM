@@ -6,6 +6,17 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.30.0b1] - 2026-03-10
+
+### Added
+
+- **Refresh token flow** — `signup()` and `signin()` now return `AuthResult` with `user`, `token`, and `refresh_token` (SurrealDB 3.0+). Backward-compatible with existing `user, token = await User.signup(...)` unpacking. New `refresh_access_token()` classmethod exchanges a refresh token for a new access token.
+- **DEFINE API migration support** — New `DefineApi` and `RemoveApi` migration operations for SurrealDB 3.0 REST API endpoint definitions. `ApiState` dataclass for schema tracking and `parse_define_api()` parser for introspection.
+- **Record references field** — New `ReferencesField["table"]` type annotation for SurrealDB 3.0's `references<record<T>>` back-reference field type. Includes `is_references_field()` and `get_references_info()` detection helpers. Added `FieldType.REFERENCES` to the type enum.
+- **Branch Guard CI check** — New `branch-guard` job in CI blocks PRs from v2-related branches (`v2`, `0.20.*`, `chore/surrealdb-2x-*`) into `main`. Prevents accidental cross-branch merges between the SurrealDB 3.X and 2.X codebases.
+
+---
+
 ## [0.30.0a2] - 2026-03-10
 
 ### Added

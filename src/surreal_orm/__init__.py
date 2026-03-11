@@ -14,7 +14,7 @@ from surreal_sdk.exceptions import TableNotFoundError
 from surreal_sdk.streaming.live_select import LiveAction
 
 from .aggregations import Aggregation, Avg, Count, Max, Min, Sum
-from .auth import AuthenticatedUserMixin
+from .auth import AuthenticatedUserMixin, AuthResult
 from .cache import QueryCache
 from .connection_config import ConnectionConfig
 from .connection_manager import SurrealDBConnectionManager
@@ -30,6 +30,7 @@ from .fields import (
     MultiPointField,
     PointField,
     PolygonField,
+    ReferencesField,
     Relation,
     RelationInfo,
     VectorField,
@@ -42,7 +43,7 @@ from .fields import (
 from .geo import GeoDistance
 from .introspection import generate_models_from_db, schema_diff
 from .live import ChangeModelStream, LiveModelStream, ModelChangeEvent
-from .migrations.operations import DefineAnalyzer, DefineEvent, RemoveEvent
+from .migrations.operations import DefineAnalyzer, DefineApi, DefineEvent, RemoveApi, RemoveEvent
 from .model_base import (
     BaseSurrealModel,
     SurrealConfigDict,
@@ -108,6 +109,7 @@ __all__ = [
     "Computed",
     "Encrypted",
     "VectorField",
+    "ReferencesField",
     # Geometry
     "GeoField",
     "PointField",
@@ -127,6 +129,7 @@ __all__ = [
     "is_relation_field",
     # Auth
     "AuthenticatedUserMixin",
+    "AuthResult",
     # Signals
     "Signal",
     "pre_save",
@@ -162,7 +165,9 @@ __all__ = [
     "schema_diff",
     # Migrations
     "DefineAnalyzer",
+    "DefineApi",
     "DefineEvent",
+    "RemoveApi",
     "RemoveEvent",
     # Debug
     "QueryLogger",
@@ -170,4 +175,4 @@ __all__ = [
     "retry_on_conflict",
 ]
 
-__version__ = "0.30.0a2"
+__version__ = "0.30.0b1"

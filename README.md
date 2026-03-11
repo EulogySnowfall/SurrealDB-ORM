@@ -11,14 +11,66 @@
 
 **Includes a custom SDK (`surreal_sdk`)** - Zero dependency on the official `surrealdb` package!
 
-### Branch Strategy
+## Branch Strategy
 
-| Branch | SurrealDB | ORM Version | Status |
-|--------|-----------|-------------|--------|
-| `main` | 3.X | 0.30.x | Active development |
-| `v2` | 2.X | 0.20.x | LTS (security & bug fixes only) |
+| Branch | SurrealDB | ORM Version | Status                          |
+| ------ | --------- | ----------- | ------------------------------- |
+| `main` | 3.X       | 0.30.x      | Active development              |
+| `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
+
+---
+
+## What's New in 0.30.0b1
+
+### Refresh Token Flow (SurrealDB 3.0)
+
+`signup()` and `signin()` now return `AuthResult` — a backward-compatible result type that carries the refresh token alongside the access token:
+
+```python
+# New (recommended)
+result = await User.signup(email="alice@b.com", password="secret", name="Alice")
+result.token          # JWT access token
+result.refresh_token  # Refresh token (SurrealDB 3.0+)
+
+# Backward-compatible (still works)
+user, token = await User.signup(email="alice@b.com", password="secret", name="Alice")
+
+# Exchange refresh token for new access token
+result = await User.refresh_access_token(stored_refresh_token)
+```
+
+### DEFINE API Migration Support (SurrealDB 3.0)
+
+New `DefineApi` and `RemoveApi` migration operations for SurrealDB 3.0's REST API endpoints:
+
+```python
+from surreal_orm import DefineApi
+
+DefineApi(
+    name="/users/list",
+    method="GET",
+    handler="SELECT * FROM users",
+)
+# Generates: DEFINE API /users/list METHOD GET THEN (SELECT * FROM users);
+```
+
+### Record References Field (SurrealDB 3.0)
+
+New `ReferencesField` for SurrealDB 3.0's `references<record<T>>` back-reference type:
+
+```python
+from surreal_orm import ReferencesField
+
+class Author(BaseSurrealModel):
+    name: str
+    books: ReferencesField["books"]  # Auto-populated by SurrealDB
+```
+
+### Branch Guard Protection
+
+CI now blocks PRs from v2-related branches (`v2`, `0.20.*`, `chore/surrealdb-2x-*`) into `main`.
 
 ---
 

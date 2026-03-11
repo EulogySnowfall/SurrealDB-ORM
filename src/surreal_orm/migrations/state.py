@@ -193,6 +193,34 @@ class EventState:
 
 
 @dataclass
+class ApiState:
+    """
+    Represents the state of a REST API endpoint (SurrealDB 3.0+).
+
+    Attributes:
+        name: API path (e.g., ``"/users/list"``)
+        method: HTTP method (GET, POST, PUT, PATCH, DELETE), or None for all
+        handler: SurrealQL query or code block (the THEN body)
+        access: Access definition name for authentication, if any
+    """
+
+    name: str
+    method: str | None = None
+    handler: str = ""
+    access: str | None = None
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ApiState):
+            return False
+        return (
+            self.name == other.name
+            and self.method == other.method
+            and self.handler == other.handler
+            and self.access == other.access
+        )
+
+
+@dataclass
 class TableState:
     """
     Represents the complete state of a table.
@@ -263,6 +291,7 @@ class SchemaState:
     tables: dict[str, TableState] = field(default_factory=dict)
     applied_migrations: list[str] = field(default_factory=list)
     analyzers: dict[str, "AnalyzerState"] = field(default_factory=dict)
+    apis: dict[str, "ApiState"] = field(default_factory=dict)
 
     def diff(self, target: "SchemaState") -> list["Operation"]:
         """
@@ -280,12 +309,14 @@ class SchemaState:
             CreateTable,
             DefineAccess,
             DefineAnalyzer,
+            DefineApi,
             DefineEvent,
             DropField,
             DropIndex,
             DropTable,
             RemoveAccess,
             RemoveAnalyzer,
+            RemoveApi,
             RemoveEvent,
         )
 
@@ -519,6 +550,23 @@ class SchemaState:
 
         # ── Deferred analyzer removals (after all index ops) ────────
         operations.extend(deferred_remove_analyzers)
+
+        # ── API endpoints (SurrealDB 3.0+) ──────────────────────
+        for api_key, target_api in target.apis.items():
+            if api_key not in self.apis or self.apis[api_key] != target_api:
+                operations.append(
+                    DefineApi(
+                        name=target_api.name,
+                        method=target_api.method,
+                        handler=target_api.handler,
+                        access=target_api.access,
+                    )
+                )
+
+        for api_key in self.apis:
+            if api_key not in target.apis:
+                current_api = self.apis[api_key]
+                operations.append(RemoveApi(name=current_api.name, method=current_api.method))
 
         return operations
 

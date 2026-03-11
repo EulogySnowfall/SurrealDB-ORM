@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .state import EventState, FieldState, IndexState
+from .state import ApiState, EventState, FieldState, IndexState
 
 # Keywords that delimit clauses in a DEFINE FIELD statement.
 # Order matters: longer keywords first to avoid partial matches.
@@ -772,9 +772,70 @@ def parse_define_event(statement: str) -> EventState:
     )
 
 
+def parse_define_api(statement: str) -> ApiState:
+    """Parse a DEFINE API statement into an ApiState (SurrealDB 3.0+).
+
+    Examples::
+
+        parse_define_api(
+            "DEFINE API /users/list METHOD GET "
+            "THEN (SELECT * FROM users)"
+        )
+
+    Args:
+        statement: Full DEFINE API statement string.
+
+    Returns:
+        Populated ApiState instance.
+    """
+    stmt = statement.strip().rstrip(";").strip()
+
+    match = re.match(
+        r"DEFINE\s+API\s+(?:IF\s+NOT\s+EXISTS\s+|OVERWRITE\s+)?(\S+)\s*(.*)",
+        stmt,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        raise ValueError(f"Cannot parse DEFINE API statement: {statement!r}")
+
+    api_name = match.group(1)
+    body = match.group(2).strip()
+
+    # Extract METHOD clause
+    method: str | None = None
+    method_match = re.search(r"\bMETHOD\s+(GET|POST|PUT|PATCH|DELETE)\b", body, re.IGNORECASE)
+    if method_match:
+        method = method_match.group(1).upper()
+
+    # Extract FOR clause (access name)
+    access: str | None = None
+    for_match = re.search(r"\bFOR\s+(\S+)", body, re.IGNORECASE)
+    if for_match:
+        access = for_match.group(1)
+
+    # Extract THEN clause — content inside parentheses after THEN
+    handler = ""
+    then_match = re.search(r"\bTHEN\s*\(", body, re.IGNORECASE)
+    if then_match:
+        handler = _extract_balanced_parens(body, then_match.end() - 1)
+    else:
+        # THEN without parens
+        then_alt = re.search(r"\bTHEN\s+(.+?)(?:\s+COMMENT\b|$)", body, re.IGNORECASE | re.DOTALL)
+        if then_alt:
+            handler = then_alt.group(1).strip()
+
+    return ApiState(
+        name=api_name,
+        method=method,
+        handler=handler,
+        access=access,
+    )
+
+
 __all__ = [
     "parse_define_access",
     "parse_define_analyzer",
+    "parse_define_api",
     "parse_define_event",
     "parse_define_field",
     "parse_define_index",

@@ -823,3 +823,84 @@ class RemoveEvent(Operation):
 
     def describe(self) -> str:
         return f"Remove event {self.name} from {self.table}"
+
+
+@dataclass
+class DefineApi(Operation):
+    """
+    Define a REST API endpoint (SurrealDB 3.0+).
+
+    Example:
+        DefineApi(
+            name="/users/list",
+            method="GET",
+            handler="SELECT * FROM users",
+        )
+
+    Generates:
+        DEFINE API /users/list METHOD GET THEN (SELECT * FROM users);
+    """
+
+    name: str
+    method: str | None = None
+    handler: str = ""
+    access: str | None = None
+    comment: str | None = None
+
+    def forwards(self) -> str:
+        parts = [f"DEFINE API {self.name}"]
+
+        if self.method:
+            parts.append(f"METHOD {self.method.upper()}")
+
+        if self.access:
+            parts.append(f"FOR {self.access}")
+
+        if self.handler:
+            parts.append(f"THEN ({self.handler})")
+
+        if self.comment:
+            escaped_comment = self.comment.replace("'", "''")
+            parts.append(f"COMMENT '{escaped_comment}'")
+
+        return " ".join(parts) + ";"
+
+    def backwards(self) -> str:
+        if self.method:
+            return f"REMOVE API {self.name} METHOD {self.method.upper()};"
+        return f"REMOVE API {self.name};"
+
+    def describe(self) -> str:
+        method = f" {self.method.upper()}" if self.method else ""
+        return f"Define API{method} {self.name}"
+
+
+@dataclass
+class RemoveApi(Operation):
+    """
+    Remove a REST API endpoint (SurrealDB 3.0+).
+
+    Example:
+        RemoveApi(name="/users/list", method="GET")
+
+    Generates:
+        REMOVE API /users/list METHOD GET;
+    """
+
+    name: str
+    method: str | None = None
+
+    def __post_init__(self) -> None:
+        self.reversible = False
+
+    def forwards(self) -> str:
+        if self.method:
+            return f"REMOVE API {self.name} METHOD {self.method.upper()};"
+        return f"REMOVE API {self.name};"
+
+    def backwards(self) -> str:
+        return ""
+
+    def describe(self) -> str:
+        method = f" {self.method.upper()}" if self.method else ""
+        return f"Remove API{method} {self.name}"

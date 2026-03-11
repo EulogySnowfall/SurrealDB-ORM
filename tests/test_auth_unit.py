@@ -842,17 +842,17 @@ class TestBug2ConfigurableAccessName:
 
 
 class TestBug3SignupReturnsToken:
-    """Bug 3: signup() must return tuple[Self, str] including the JWT token."""
+    """Bug 3: signup() must return AuthResult (backward-compatible with tuple unpacking)."""
 
     def test_signup_return_annotation(self) -> None:
-        """signup() return annotation must be tuple[Self, str]."""
+        """signup() return annotation must be AuthResult[Self]."""
         hints = AuthenticatedUserMixin.signup.__annotations__
         assert "return" in hints
-        assert "tuple" in str(hints["return"]).lower()
+        assert "AuthResult" in str(hints["return"])
 
     @pytest.mark.asyncio
     async def test_signup_returns_user_and_token(self) -> None:
-        """signup() must return (user, token) tuple."""
+        """signup() must return AuthResult (unpackable as 2-tuple)."""
 
         class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(table_type=TableType.USER)
@@ -862,7 +862,9 @@ class TestBug3SignupReturnsToken:
             name: str
 
         mock_ephemeral = AsyncMock()
-        mock_ephemeral.signup = AsyncMock(return_value=MagicMock(success=True, token="my_jwt_token", raw={}))
+        mock_ephemeral.signup = AsyncMock(
+            return_value=MagicMock(success=True, token="my_jwt_token", refresh_token="my_refresh", raw={})
+        )
         mock_ephemeral.close = AsyncMock()
 
         mock_root = AsyncMock()
@@ -884,11 +886,13 @@ class TestBug3SignupReturnsToken:
             ),
         ):
             result = await TestUser.signup(email="a@b.com", password="secret", name="A")
-            assert isinstance(result, tuple)
+            # AuthResult is backward-compatible with tuple unpacking
             assert len(result) == 2
             user, token = result
             assert isinstance(user, TestUser)
             assert token == "my_jwt_token"
+            # New: refresh_token accessible via attribute
+            assert result.refresh_token == "my_refresh"
 
 
 class TestBug4AuthenticateAndValidateToken:
