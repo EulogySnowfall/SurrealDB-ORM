@@ -742,6 +742,7 @@ class TestDefineAccessMethod:
 
         assert hasattr(TestUser, "define_access")
         import inspect
+
         assert inspect.iscoroutinefunction(TestUser.define_access)
 
     def test_define_access_not_available_on_non_user(self) -> None:

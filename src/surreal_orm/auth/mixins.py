@@ -246,8 +246,7 @@ class AuthenticatedUserMixin:
         access_def = AccessGenerator.from_model(cls)  # type: ignore[arg-type]
         if access_def is None:
             raise TypeError(
-                f"{cls.__name__} is not a USER type table. "
-                "define_access() is only available on TableType.USER models."
+                f"{cls.__name__} is not a USER type table. define_access() is only available on TableType.USER models."
             )
 
         # Apply overrides
@@ -274,9 +273,7 @@ class AuthenticatedUserMixin:
             # Rebuild signin_where with the new password field
             id_field = identifier_field or access_def.identifier_field
             access_def.signin_where = (
-                f"{id_field} = ${id_field} AND "
-                f"crypto::{access_def.algorithm}::compare("
-                f"{password_field}, ${password_field})"
+                f"{id_field} = ${id_field} AND crypto::{access_def.algorithm}::compare({password_field}, ${password_field})"
             )
 
         sql = access_def.to_surreal_ql()

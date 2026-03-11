@@ -495,11 +495,20 @@ class BaseSurrealModel(BaseModel):
 
         statements = [create_table.forwards()]
 
+        # For USER tables, skip the VALUE clause on encrypted fields
+        # because define_access() SIGNUP already handles password hashing.
+        # Having both causes double-hashing (argon2(argon2(plaintext))).
+        is_user_table = table_state.table_type == TableType.USER.value
+
         for _field_name, field_state in table_state.fields.items():
             # Build the full type string with nullable wrapper
             field_type = field_state.field_type
             if field_state.nullable:
                 field_type = f"option<{field_type}>"
+
+            encrypted = field_state.encrypted
+            if is_user_table and encrypted:
+                encrypted = False
 
             add_field = AddField(
                 table=table_state.name,
@@ -507,7 +516,7 @@ class BaseSurrealModel(BaseModel):
                 field_type=field_type,
                 default=field_state.default,
                 assertion=field_state.assertion,
-                encrypted=field_state.encrypted,
+                encrypted=encrypted,
                 flexible=field_state.flexible,
                 readonly=field_state.readonly,
                 value=field_state.value,

@@ -571,16 +571,19 @@ class TestDefineTableMethod:
             password: Encrypted
             name: str
 
-        # ORM creates the table schema
+        # ORM creates the table schema — for USER tables, the encrypted
+        # field should NOT have a VALUE clause because define_access() SIGNUP
+        # already handles password hashing.  Having both causes double-hashing.
         table_sql = await DefAccessUser.define_table()
         assert "SCHEMAFULL" in table_sql
-        assert "crypto::argon2::generate" in table_sql
+        assert "crypto::argon2::generate" not in table_sql
 
         # ORM creates the access definition
         access_sql = await DefAccessUser.define_access()
         assert "WITH REFRESH" in access_sql
+        assert "crypto::argon2::generate" in access_sql
 
-        # Full auth flow works
+        # Full auth flow works: signup then signin
         result = await DefAccessUser.signup(
             email="e2e@example.com",
             password="secure123",
@@ -589,6 +592,14 @@ class TestDefineTableMethod:
         assert result.user.email == "e2e@example.com"
         assert result.token is not None
         assert result.refresh_token is not None
+
+        # Signin must work (this was broken by double-hashing before the fix)
+        signin_result = await DefAccessUser.signin(
+            email="e2e@example.com",
+            password="secure123",
+        )
+        assert signin_result.user.email == "e2e@example.com"
+        assert signin_result.token is not None
 
 
 # =============================================================================
