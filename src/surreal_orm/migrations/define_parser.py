@@ -17,6 +17,7 @@ from .state import ApiState, EventState, FieldState, IndexState
 # Order matters: longer keywords first to avoid partial matches.
 _FIELD_KEYWORDS = [
     "PERMISSIONS",
+    "REFERENCE",
     "FLEXIBLE",
     "READONLY",
     "COMMENT",
@@ -202,6 +203,16 @@ def parse_define_field(statement: str) -> FieldState:
     # Parse ASSERT clause
     assertion = clauses.get("ASSERT") or None
 
+    # Parse REFERENCE clause (SurrealDB 3.0)
+    reference = "REFERENCE" in clauses
+    on_delete: str | None = None
+    if reference:
+        ref_body = clauses.get("REFERENCE", "").strip()
+        # Extract ON DELETE strategy: ON DELETE CASCADE|REJECT|UNSET|IGNORE|THEN ...
+        od_match = re.search(r"\bON\s+DELETE\s+(\w+)", ref_body, re.IGNORECASE)
+        if od_match:
+            on_delete = od_match.group(1).upper()
+
     return FieldState(
         name=field_name,
         field_type=field_type,
@@ -212,6 +223,8 @@ def parse_define_field(statement: str) -> FieldState:
         flexible=flexible,
         readonly=readonly,
         value=value_expr,
+        reference=reference,
+        on_delete=on_delete,
     )
 
 
@@ -836,10 +849,32 @@ def parse_define_api(statement: str) -> ApiState:
             if then_alt:
                 handler = then_alt.group(1).strip()
 
+    # Extract MIDDLEWARE clause
+    middleware: list[str] = []
+    mw_match = re.search(
+        r"\bMIDDLEWARE\s+(.+?)(?:\s+THEN\b|\s+PERMISSIONS\b|\s+COMMENT\b|$)",
+        body,
+        re.IGNORECASE,
+    )
+    if mw_match:
+        middleware = [m.strip() for m in mw_match.group(1).split(",") if m.strip()]
+
+    # Extract PERMISSIONS clause
+    permissions: str | None = None
+    perm_match = re.search(
+        r"\bPERMISSIONS\s+(.+?)(?:\s+COMMENT\b|$)",
+        body,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if perm_match:
+        permissions = perm_match.group(1).strip()
+
     return ApiState(
         name=api_name,
         method=method,
         handler=handler,
+        middleware=middleware,
+        permissions=permissions,
     )
 
 

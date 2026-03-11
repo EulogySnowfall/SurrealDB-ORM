@@ -1,9 +1,12 @@
 """
 Record references field type for SurrealDB ORM (SurrealDB 3.0+).
 
-Provides ``ReferencesField`` that maps to SurrealDB's ``references<record<T>>``
-type — a back-reference that automatically tracks which records of type *T*
-point to the current record.
+Maps to SurrealDB's ``REFERENCE`` clause on ``DEFINE FIELD``.  In SurrealDB 3.0
+``REFERENCE`` is **not** a type — it is a modifier applied to fields of type
+``record<T>`` or ``array<record<T>>``.  The generated migration output is::
+
+    DEFINE FIELD books ON author TYPE option<array<record<books>>> REFERENCE;
+    DEFINE FIELD owner ON license TYPE record<person> REFERENCE ON DELETE CASCADE;
 
 Usage::
 
@@ -11,8 +14,12 @@ Usage::
 
     class Author(BaseSurrealModel):
         name: str
-        # Automatically populated with record IDs from books.author
         books: ReferencesField["books"]
+        # → DEFINE FIELD books ON author TYPE option<array<record<books>>> REFERENCE;
+
+    class License(BaseSurrealModel):
+        owner: ReferencesField["person", "CASCADE"]
+        # → DEFINE FIELD owner ON license TYPE option<record<person>> REFERENCE ON DELETE CASCADE;
 """
 
 from __future__ import annotations
@@ -26,16 +33,18 @@ from pydantic_core import CoreSchema, core_schema
 
 class _ReferencesMarker:
     """
-    Pydantic-compatible marker for ``references<record<T>>`` fields.
+    Pydantic-compatible marker for fields with the ``REFERENCE`` clause.
 
-    Stored inside ``Annotated[list[str] | None, _ReferencesMarker(table)]``
-    to carry the referenced table name.
+    Stored inside ``Annotated[list[str] | None, _ReferencesMarker(table, on_delete)]``
+    to carry the referenced table name and optional ON DELETE strategy.
     """
 
     table: str
+    on_delete: str | None
 
-    def __init__(self, table: str = "") -> None:
+    def __init__(self, table: str = "", on_delete: str | None = None) -> None:
         self.table = table.lower()
+        self.on_delete = on_delete.upper() if on_delete else None
 
     def __get_pydantic_core_schema__(
         self,
@@ -63,24 +72,41 @@ class _ReferencesMarker:
 
 class ReferencesField:
     """
-    Back-reference field for SurrealDB 3.0's ``references<record<T>>`` type.
+    Reference-tracking field for SurrealDB 3.0's ``REFERENCE`` clause.
 
     ``ReferencesField["books"]`` resolves to
     ``Annotated[list[str] | None, _ReferencesMarker("books")]``.
 
-    The field is read-only at the ORM level — SurrealDB automatically
-    populates it with record IDs that reference the current record.
+    Optionally specify an ON DELETE strategy as a second parameter::
+
+        ReferencesField["books", "CASCADE"]   # ON DELETE CASCADE
+        ReferencesField["books", "REJECT"]    # ON DELETE REJECT
+        ReferencesField["books", "UNSET"]     # ON DELETE UNSET
+        ReferencesField["books"]              # ON DELETE IGNORE (default)
+
+    The generated migration uses the ``REFERENCE`` clause (not a separate type)::
+
+        DEFINE FIELD books ON author TYPE option<array<record<books>>> REFERENCE;
+        DEFINE FIELD books ON author TYPE option<array<record<books>>> REFERENCE ON DELETE CASCADE;
 
     Example::
 
         class Author(BaseSurrealModel):
             name: str
             books: ReferencesField["books"]
+
+        class Post(BaseSurrealModel):
+            author: ReferencesField["users", "CASCADE"]
     """
 
-    def __class_getitem__(cls, table: str) -> type:
-        """``ReferencesField["books"]`` → ``Annotated[...]``."""
-        return Annotated[list[str] | None, _ReferencesMarker(table)]  # type: ignore[return-value]
+    def __class_getitem__(cls, params: str | tuple[str, str]) -> type:
+        """``ReferencesField["books"]`` or ``ReferencesField["books", "CASCADE"]``."""
+        if isinstance(params, tuple):
+            table, on_delete = params
+        else:
+            table = params
+            on_delete = None
+        return Annotated[list[str] | None, _ReferencesMarker(table, on_delete)]  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -116,8 +142,22 @@ def get_references_info(field_type: Any) -> str | None:
     return None
 
 
+def get_references_on_delete(field_type: Any) -> str | None:
+    """
+    Extract the ON DELETE strategy from a references field type.
+
+    Returns:
+        Strategy string (e.g., ``"CASCADE"``, ``"REJECT"``) or None.
+    """
+    marker = _get_references_marker(field_type)
+    if marker is not None:
+        return marker.on_delete
+    return None
+
+
 __all__ = [
     "ReferencesField",
     "get_references_info",
+    "get_references_on_delete",
     "is_references_field",
 ]

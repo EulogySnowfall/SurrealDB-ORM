@@ -222,15 +222,28 @@ class TestAuthResponse:
         assert resp.success is True
         assert resp.token is None
 
-    def test_from_rpc_result_v3_dict(self) -> None:
-        """SurrealDB 3.0: signin returns {token, refresh} dict."""
-        resp = AuthResponse.from_rpc_result({"token": "jwt_token", "refresh": "refresh_token"})
+    def test_from_rpc_result_v3_dict_token_key(self) -> None:
+        """SurrealDB 3.0 without WITH REFRESH: returns {token} dict."""
+        resp = AuthResponse.from_rpc_result({"token": "jwt_token"})
         assert resp.success is True
         assert resp.token == "jwt_token"
-        assert resp.refresh_token == "refresh_token"
+        assert resp.refresh_token is None
+
+    def test_from_rpc_result_v3_dict_access_key(self) -> None:
+        """SurrealDB 3.0 WITH REFRESH: returns {access, refresh} dict."""
+        resp = AuthResponse.from_rpc_result({"access": "jwt_token", "refresh": "surreal-refresh-abc"})
+        assert resp.success is True
+        assert resp.token == "jwt_token"
+        assert resp.refresh_token == "surreal-refresh-abc"
+
+    def test_from_rpc_result_v3_dict_access_preferred_over_token(self) -> None:
+        """If both 'access' and 'token' keys exist, 'access' takes precedence."""
+        resp = AuthResponse.from_rpc_result({"access": "access_jwt", "token": "token_jwt", "refresh": "r"})
+        assert resp.success is True
+        assert resp.token == "access_jwt"
 
     def test_from_rpc_result_v3_dict_missing_token(self) -> None:
-        """Malformed dict without token key should not report success."""
+        """Malformed dict without token/access key should not report success."""
         resp = AuthResponse.from_rpc_result({"foo": "bar"})
         assert resp.success is False
         assert resp.token is None

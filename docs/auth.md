@@ -198,17 +198,25 @@ admin, token = await Admin.signin(username="admin", password="secret")
 
 ### signup()
 
-Create a new user with hashed password. Returns a tuple of `(user, token)`:
+Create a new user with hashed password. Returns `AuthResult` (backward-compatible with tuple unpacking):
 
 ```python
-user, token = await User.signup(
+# New (recommended) — access refresh token
+result = await User.signup(
     email="user@example.com",
     password="plain_text_password",  # Will be hashed
     name="New User",
 )
+print(f"Created user: {result.user.id}")
+print(f"Token: {result.token}")
+print(f"Refresh: {result.refresh_token}")  # None unless WITH REFRESH is enabled
 
-print(f"Created user: {user.id}")
-print(f"Token: {token}")  # JWT token for immediate authentication
+# Backward-compatible — still works
+user, token = await User.signup(
+    email="user@example.com",
+    password="plain_text_password",
+    name="New User",
+)
 ```
 
 ### signin()
@@ -216,14 +224,45 @@ print(f"Token: {token}")  # JWT token for immediate authentication
 Authenticate and get JWT token:
 
 ```python
+# New (recommended)
+result = await User.signin(
+    email="user@example.com",
+    password="plain_text_password",
+)
+print(f"User: {result.user.name}")
+print(f"Token: {result.token}")
+print(f"Refresh: {result.refresh_token}")  # None unless WITH REFRESH is enabled
+
+# Backward-compatible — still works
 user, token = await User.signin(
     email="user@example.com",
     password="plain_text_password",
 )
+```
 
-print(f"User: {user.name}")
-print(f"Token: {token}")
-# Token format: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+### refresh_access_token() (SurrealDB 3.0+)
+
+Exchange a refresh token for a new access token without re-entering credentials.
+Requires `WITH REFRESH` on the `DEFINE ACCESS` statement:
+
+```sql
+DEFINE ACCESS user_auth ON DATABASE TYPE RECORD
+    SIGNUP (...)
+    SIGNIN (...)
+    WITH REFRESH
+    DURATION FOR TOKEN 15m, FOR SESSION 12h, FOR GRANT 30d;
+```
+
+```python
+# After signup/signin with WITH REFRESH enabled
+result = await User.signup(email="alice@example.com", password="secret", name="Alice")
+refresh_token = result.refresh_token  # "surreal-refresh-..."
+
+# Later, when the access token expires
+new_result = await User.refresh_access_token(refresh_token)
+new_result.token          # New JWT access token
+new_result.refresh_token  # New refresh token (old one is revoked — token rotation)
+new_result.user           # User instance
 ```
 
 ### authenticate_token()
@@ -432,14 +471,16 @@ async def main():
     # === SIGNUP ===
     print("=== Creating new user ===")
     try:
-        user, signup_token = await User.signup(
+        result = await User.signup(
             email="alice@example.com",
             password="super_secure_123",
             name="Alice Smith",
         )
-        print(f"Created user: {user.name} ({user.email})")
-        print(f"User ID: {user.id}")
-        print(f"Signup token: {signup_token[:50]}...")
+        print(f"Created user: {result.user.name} ({result.user.email})")
+        print(f"User ID: {result.user.id}")
+        print(f"Signup token: {result.token[:50]}...")
+        if result.refresh_token:
+            print(f"Refresh token: {result.refresh_token[:30]}...")
     except Exception as e:
         print(f"Signup failed: {e}")
         # User might already exist
@@ -447,10 +488,12 @@ async def main():
     # === SIGNIN ===
     print("\n=== Signing in ===")
     try:
-        user, token = await User.signin(
+        result = await User.signin(
             email="alice@example.com",
             password="super_secure_123",
         )
+        user = result.user
+        token = result.token
         print(f"Signed in as: {user.name}")
         print(f"JWT Token: {token[:50]}...")
     except Exception as e:
@@ -548,8 +591,13 @@ Check that:
 
 ### Token expired
 
-Tokens have a limited lifetime. Get a new token via signin:
+Tokens have a limited lifetime. Either re-signin or use a refresh token:
 
 ```python
+# Option 1: Re-signin
 user, new_token = await User.signin(email=email, password=password)
+
+# Option 2: Use refresh token (SurrealDB 3.0+ with WITH REFRESH)
+result = await User.refresh_access_token(stored_refresh_token)
+new_token = result.token
 ```

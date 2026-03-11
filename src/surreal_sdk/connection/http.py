@@ -240,10 +240,22 @@ class HTTPConnection(BaseSurrealConnection):
                 raise AuthenticationError(f"Authentication failed: {response.text}")
 
             data = response.json()
-            token = data.get("token")
+            token_data = data.get("token")
+            refresh_token: str | None = None
+
+            if isinstance(token_data, dict):
+                # SurrealDB 3.0 WITH REFRESH: {"token": {"access": "JWT", "refresh": "..."}}
+                token = token_data.get("access") or token_data.get("token")
+                refresh_token = token_data.get("refresh")
+            elif isinstance(token_data, str):
+                # SurrealDB 2.x / 3.x without refresh: {"token": "JWT"}
+                token = token_data
+            else:
+                token = None
+
             self._token = token
             self._authenticated = True
-            return AuthResponse(token=token, success=True, raw=data)
+            return AuthResponse(token=token, refresh_token=refresh_token, success=True, raw=data)
 
         except httpx.RequestError as e:
             raise AuthenticationError(f"Authentication request failed: {e}")

@@ -38,6 +38,8 @@ class FieldState:
     flexible: bool = False
     readonly: bool = False
     value: str | None = None
+    reference: bool = False
+    on_delete: str | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, FieldState):
@@ -52,6 +54,8 @@ class FieldState:
             and self.flexible == other.flexible
             and self.readonly == other.readonly
             and self.value == other.value
+            and self.reference == other.reference
+            and self.on_delete == other.on_delete
         )
 
     def has_changed(self, other: "FieldState") -> bool:
@@ -206,11 +210,19 @@ class ApiState:
     name: str
     method: str | None = None
     handler: str = ""
+    middleware: list[str] = field(default_factory=list)
+    permissions: str | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ApiState):
             return False
-        return self.name == other.name and self.method == other.method and self.handler == other.handler
+        return (
+            self.name == other.name
+            and self.method == other.method
+            and self.handler == other.handler
+            and self.middleware == other.middleware
+            and self.permissions == other.permissions
+        )
 
 
 @dataclass
@@ -364,6 +376,8 @@ class SchemaState:
                             flexible=field_state.flexible,
                             readonly=field_state.readonly,
                             value=field_state.value,
+                            reference=field_state.reference,
+                            on_delete=field_state.on_delete,
                         )
                     )
                 # Add all indexes
@@ -457,6 +471,8 @@ class SchemaState:
                                 flexible=field_state.flexible,
                                 readonly=field_state.readonly,
                                 value=field_state.value,
+                                reference=field_state.reference,
+                                on_delete=field_state.on_delete,
                                 previous_type=current_field.field_type,
                                 previous_default=current_field.default,
                                 previous_assertion=current_field.assertion,

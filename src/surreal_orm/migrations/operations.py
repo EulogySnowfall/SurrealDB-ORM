@@ -221,6 +221,8 @@ class AddField(Operation):
     readonly: bool = False
     value: str | None = None
     comment: str | None = None
+    reference: bool = False
+    on_delete: str | None = None
 
     def __post_init__(self) -> None:
         """Validate field_type on initialization."""
@@ -260,6 +262,12 @@ class AddField(Operation):
 
         if self.readonly:
             parts.append("READONLY")
+
+        # SurrealDB 3.0 REFERENCE clause (for record/array<record> fields)
+        if self.reference:
+            parts.append("REFERENCE")
+            if self.on_delete:
+                parts.append(f"ON DELETE {self.on_delete.upper()}")
 
         if self.comment:
             escaped_comment = self.comment.replace("'", "''")
@@ -329,6 +337,8 @@ class AlterField(Operation):
     flexible: bool = False
     readonly: bool = False
     value: str | None = None
+    reference: bool = False
+    on_delete: str | None = None
     # Store previous definition for rollback
     previous_type: FieldType | str | None = None
     previous_default: Any = None
@@ -379,6 +389,12 @@ class AlterField(Operation):
 
         if self.readonly:
             parts.append("READONLY")
+
+        # SurrealDB 3.0 REFERENCE clause
+        if self.reference:
+            parts.append("REFERENCE")
+            if self.on_delete:
+                parts.append(f"ON DELETE {self.on_delete.upper()}")
 
         return " ".join(parts) + ";"
 
@@ -845,6 +861,7 @@ class DefineApi(Operation):
     method: str | None = None
     handler: str = ""
     middleware: list[str] | None = None
+    permissions: str | None = None
     comment: str | None = None
 
     def forwards(self) -> str:
@@ -857,6 +874,9 @@ class DefineApi(Operation):
 
         if self.middleware:
             parts.append(f"MIDDLEWARE {', '.join(self.middleware)}")
+
+        if self.permissions:
+            parts.append(f"PERMISSIONS {self.permissions}")
 
         if self.handler:
             parts.append(f"THEN {{ {self.handler}; }}")
