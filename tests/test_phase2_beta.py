@@ -81,35 +81,40 @@ class TestDefineApi:
 
     def test_basic_forwards(self) -> None:
         """Basic DEFINE API generates correct SurrealQL."""
-        op = DefineApi(name="/users/list", method="GET", handler="SELECT * FROM users")
-        assert op.forwards() == "DEFINE API /users/list METHOD GET THEN (SELECT * FROM users);"
+        op = DefineApi(name="/users/list", method="get", handler="SELECT * FROM users")
+        assert op.forwards() == 'DEFINE API "/users/list" FOR get THEN { SELECT * FROM users; };'
 
     def test_no_method(self) -> None:
-        """DEFINE API without METHOD clause."""
+        """DEFINE API without FOR clause."""
         op = DefineApi(name="/health", handler="RETURN 'ok'")
-        assert op.forwards() == "DEFINE API /health THEN (RETURN 'ok');"
+        assert op.forwards() == """DEFINE API "/health" THEN { RETURN 'ok'; };"""
 
-    def test_with_access(self) -> None:
-        """DEFINE API with FOR access clause."""
-        op = DefineApi(name="/me", method="GET", access="account", handler="RETURN $auth")
+    def test_with_middleware(self) -> None:
+        """DEFINE API with MIDDLEWARE clause."""
+        op = DefineApi(
+            name="/me",
+            method="get",
+            middleware=["api::timeout(1s)"],
+            handler="RETURN $auth",
+        )
         sql = op.forwards()
-        assert "METHOD GET" in sql
-        assert "FOR account" in sql
-        assert "THEN (RETURN $auth)" in sql
+        assert "FOR get" in sql
+        assert "MIDDLEWARE api::timeout(1s)" in sql
+        assert "THEN { RETURN $auth; }" in sql
 
-    def test_backwards_with_method(self) -> None:
-        """Backwards generates REMOVE API with METHOD."""
-        op = DefineApi(name="/users", method="POST", handler="CREATE users SET name = $name")
-        assert op.backwards() == "REMOVE API /users METHOD POST;"
+    def test_backwards(self) -> None:
+        """Backwards generates REMOVE API."""
+        op = DefineApi(name="/users", method="post", handler="CREATE users SET name = $name")
+        assert op.backwards() == 'REMOVE API "/users";'
 
     def test_backwards_without_method(self) -> None:
         """Backwards generates REMOVE API without METHOD."""
         op = DefineApi(name="/health", handler="RETURN 'ok'")
-        assert op.backwards() == "REMOVE API /health;"
+        assert op.backwards() == 'REMOVE API "/health";'
 
     def test_describe(self) -> None:
         """describe() returns readable summary."""
-        op = DefineApi(name="/users", method="GET", handler="SELECT * FROM users")
+        op = DefineApi(name="/users", method="get", handler="SELECT * FROM users")
         assert op.describe() == "Define API GET /users"
 
     def test_describe_no_method(self) -> None:
@@ -118,21 +123,22 @@ class TestDefineApi:
         assert op.describe() == "Define API /health"
 
     def test_method_case_normalization(self) -> None:
-        """Method is uppercased in SQL output."""
-        op = DefineApi(name="/users", method="post", handler="CREATE users")
-        assert "METHOD POST" in op.forwards()
+        """Method is lowercased in SQL output."""
+        op = DefineApi(name="/users", method="POST", handler="CREATE users")
+        assert "FOR post" in op.forwards()
+
+    def test_already_quoted_name(self) -> None:
+        """Name already quoted is not double-quoted."""
+        op = DefineApi(name='"/users"', handler="SELECT * FROM users")
+        assert op.forwards().startswith('DEFINE API "/users"')
 
 
 class TestRemoveApi:
     """Tests for the RemoveApi migration operation."""
 
-    def test_forwards_with_method(self) -> None:
-        op = RemoveApi(name="/users", method="GET")
-        assert op.forwards() == "REMOVE API /users METHOD GET;"
-
-    def test_forwards_without_method(self) -> None:
-        op = RemoveApi(name="/health")
-        assert op.forwards() == "REMOVE API /health;"
+    def test_forwards(self) -> None:
+        op = RemoveApi(name="/users")
+        assert op.forwards() == 'REMOVE API "/users";'
 
     def test_not_reversible(self) -> None:
         op = RemoveApi(name="/users")
@@ -142,6 +148,10 @@ class TestRemoveApi:
         op = RemoveApi(name="/users", method="DELETE")
         assert op.describe() == "Remove API DELETE /users"
 
+    def test_describe_no_method(self) -> None:
+        op = RemoveApi(name="/health")
+        assert op.describe() == "Remove API /health"
+
 
 # ==================== ApiState ====================
 
@@ -150,18 +160,18 @@ class TestApiState:
     """Tests for the ApiState dataclass."""
 
     def test_equality(self) -> None:
-        a = ApiState(name="/users", method="GET", handler="SELECT * FROM users")
-        b = ApiState(name="/users", method="GET", handler="SELECT * FROM users")
+        a = ApiState(name="/users", method="get", handler="SELECT * FROM users")
+        b = ApiState(name="/users", method="get", handler="SELECT * FROM users")
         assert a == b
 
     def test_inequality_handler(self) -> None:
-        a = ApiState(name="/users", method="GET", handler="SELECT * FROM users")
-        b = ApiState(name="/users", method="GET", handler="SELECT id FROM users")
+        a = ApiState(name="/users", method="get", handler="SELECT * FROM users")
+        b = ApiState(name="/users", method="get", handler="SELECT id FROM users")
         assert a != b
 
     def test_inequality_method(self) -> None:
-        a = ApiState(name="/users", method="GET", handler="x")
-        b = ApiState(name="/users", method="POST", handler="x")
+        a = ApiState(name="/users", method="get", handler="x")
+        b = ApiState(name="/users", method="post", handler="x")
         assert a != b
 
 
@@ -171,35 +181,35 @@ class TestApiState:
 class TestParseDefineApi:
     """Tests for the DEFINE API parser."""
 
-    def test_basic_parse(self) -> None:
+    def test_basic_parse_quoted(self) -> None:
+        """Parse DEFINE API with quoted path and FOR method (SurrealDB 3.0 syntax)."""
+        result = parse_define_api('DEFINE API "/users/list" FOR get THEN { SELECT * FROM users; };')
+        assert result.name == "/users/list"
+        assert result.method == "get"
+        assert result.handler == "SELECT * FROM users"
+
+    def test_parse_unquoted_legacy(self) -> None:
+        """Parse DEFINE API with unquoted path (legacy syntax)."""
         result = parse_define_api("DEFINE API /users/list METHOD GET THEN (SELECT * FROM users);")
         assert result.name == "/users/list"
-        assert result.method == "GET"
+        assert result.method == "get"
         assert result.handler == "SELECT * FROM users"
-        assert result.access is None
-
-    def test_parse_with_access(self) -> None:
-        result = parse_define_api("DEFINE API /me METHOD GET FOR account THEN (RETURN $auth)")
-        assert result.name == "/me"
-        assert result.method == "GET"
-        assert result.access == "account"
-        assert result.handler == "RETURN $auth"
 
     def test_parse_no_method(self) -> None:
-        result = parse_define_api("DEFINE API /health THEN (RETURN 'ok')")
+        result = parse_define_api("""DEFINE API "/health" THEN { RETURN 'ok' }""")
         assert result.name == "/health"
         assert result.method is None
         assert result.handler == "RETURN 'ok'"
 
     def test_parse_if_not_exists(self) -> None:
-        result = parse_define_api("DEFINE API IF NOT EXISTS /users METHOD POST THEN (CREATE users SET name = $name)")
+        result = parse_define_api('DEFINE API IF NOT EXISTS "/users" FOR post THEN { CREATE users SET name = $name; }')
         assert result.name == "/users"
-        assert result.method == "POST"
+        assert result.method == "post"
 
     def test_parse_overwrite(self) -> None:
-        result = parse_define_api("DEFINE API OVERWRITE /users METHOD PUT THEN (UPDATE users)")
+        result = parse_define_api('DEFINE API OVERWRITE "/users" FOR put THEN { UPDATE users; }')
         assert result.name == "/users"
-        assert result.method == "PUT"
+        assert result.method == "put"
 
     def test_invalid_raises(self) -> None:
         with pytest.raises(ValueError, match="Cannot parse DEFINE API"):
@@ -215,16 +225,16 @@ class TestSchemaStateDiffApis:
     def test_add_api(self) -> None:
         """Diffing detects new API endpoints."""
         current = SchemaState()
-        target = SchemaState(apis={"/users:GET": ApiState(name="/users", method="GET", handler="SELECT * FROM users")})
+        target = SchemaState(apis={"/users:get": ApiState(name="/users", method="get", handler="SELECT * FROM users")})
         ops = current.diff(target)
         define_ops = [o for o in ops if isinstance(o, DefineApi)]
         assert len(define_ops) == 1
         assert define_ops[0].name == "/users"
-        assert define_ops[0].method == "GET"
+        assert define_ops[0].method == "get"
 
     def test_remove_api(self) -> None:
         """Diffing detects removed API endpoints."""
-        current = SchemaState(apis={"/users:GET": ApiState(name="/users", method="GET", handler="SELECT * FROM users")})
+        current = SchemaState(apis={"/users:get": ApiState(name="/users", method="get", handler="SELECT * FROM users")})
         target = SchemaState()
         ops = current.diff(target)
         remove_ops = [o for o in ops if isinstance(o, RemoveApi)]
@@ -233,8 +243,16 @@ class TestSchemaStateDiffApis:
 
     def test_update_api(self) -> None:
         """Diffing detects changed API handler."""
-        current = SchemaState(apis={"/users:GET": ApiState(name="/users", method="GET", handler="SELECT * FROM users")})
-        target = SchemaState(apis={"/users:GET": ApiState(name="/users", method="GET", handler="SELECT id, name FROM users")})
+        current = SchemaState(apis={"/users:get": ApiState(name="/users", method="get", handler="SELECT * FROM users")})
+        target = SchemaState(
+            apis={
+                "/users:get": ApiState(
+                    name="/users",
+                    method="get",
+                    handler="SELECT id, name FROM users",
+                )
+            }
+        )
         ops = current.diff(target)
         define_ops = [o for o in ops if isinstance(o, DefineApi)]
         assert len(define_ops) == 1
@@ -242,7 +260,7 @@ class TestSchemaStateDiffApis:
 
     def test_no_change(self) -> None:
         """No ops generated when APIs are identical."""
-        state = SchemaState(apis={"/users:GET": ApiState(name="/users", method="GET", handler="SELECT * FROM users")})
+        state = SchemaState(apis={"/users:get": ApiState(name="/users", method="get", handler="SELECT * FROM users")})
         ops = state.diff(state)
         api_ops = [o for o in ops if isinstance(o, (DefineApi, RemoveApi))]
         assert len(api_ops) == 0

@@ -199,25 +199,18 @@ class ApiState:
 
     Attributes:
         name: API path (e.g., ``"/users/list"``)
-        method: HTTP method (GET, POST, PUT, PATCH, DELETE), or None for all
+        method: HTTP method (get, post, put, patch, delete), or None for all
         handler: SurrealQL query or code block (the THEN body)
-        access: Access definition name for authentication, if any
     """
 
     name: str
     method: str | None = None
     handler: str = ""
-    access: str | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ApiState):
             return False
-        return (
-            self.name == other.name
-            and self.method == other.method
-            and self.handler == other.handler
-            and self.access == other.access
-        )
+        return self.name == other.name and self.method == other.method and self.handler == other.handler
 
 
 @dataclass
@@ -559,7 +552,6 @@ class SchemaState:
                         name=target_api.name,
                         method=target_api.method,
                         handler=target_api.handler,
-                        access=target_api.access,
                     )
                 )
 

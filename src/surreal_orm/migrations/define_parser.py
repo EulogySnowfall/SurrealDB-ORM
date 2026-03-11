@@ -775,11 +775,15 @@ def parse_define_event(statement: str) -> EventState:
 def parse_define_api(statement: str) -> ApiState:
     """Parse a DEFINE API statement into an ApiState (SurrealDB 3.0+).
 
+    Handles both the current SurrealDB 3.0 syntax (quoted path, ``FOR method``,
+    ``THEN { ... }``) and the legacy syntax used in earlier betas (unquoted path,
+    ``METHOD``, ``THEN (...)``).
+
     Examples::
 
         parse_define_api(
-            "DEFINE API /users/list METHOD GET "
-            "THEN (SELECT * FROM users)"
+            'DEFINE API "/users/list" FOR get '
+            'THEN { SELECT * FROM users; }'
         )
 
     Args:
@@ -790,46 +794,68 @@ def parse_define_api(statement: str) -> ApiState:
     """
     stmt = statement.strip().rstrip(";").strip()
 
+    # Match both quoted and unquoted API names
     match = re.match(
-        r"DEFINE\s+API\s+(?:IF\s+NOT\s+EXISTS\s+|OVERWRITE\s+)?(\S+)\s*(.*)",
+        r'DEFINE\s+API\s+(?:IF\s+NOT\s+EXISTS\s+|OVERWRITE\s+)?(?:"([^"]+)"|(\S+))\s*(.*)',
         stmt,
         re.IGNORECASE | re.DOTALL,
     )
     if not match:
         raise ValueError(f"Cannot parse DEFINE API statement: {statement!r}")
 
-    api_name = match.group(1)
-    body = match.group(2).strip()
+    api_name = match.group(1) or match.group(2)
+    body = match.group(3).strip()
 
-    # Extract METHOD clause
+    # Extract FOR clause — SurrealDB 3.0 uses FOR for HTTP methods
     method: str | None = None
-    method_match = re.search(r"\bMETHOD\s+(GET|POST|PUT|PATCH|DELETE)\b", body, re.IGNORECASE)
-    if method_match:
-        method = method_match.group(1).upper()
-
-    # Extract FOR clause (access name)
-    access: str | None = None
-    for_match = re.search(r"\bFOR\s+(\S+)", body, re.IGNORECASE)
+    for_match = re.search(r"\bFOR\s+(get|post|put|patch|delete)\b", body, re.IGNORECASE)
     if for_match:
-        access = for_match.group(1)
+        method = for_match.group(1).lower()
 
-    # Extract THEN clause — content inside parentheses after THEN
+    # Legacy: Extract METHOD clause (older beta syntax)
+    if method is None:
+        method_match = re.search(r"\bMETHOD\s+(GET|POST|PUT|PATCH|DELETE)\b", body, re.IGNORECASE)
+        if method_match:
+            method = method_match.group(1).lower()
+
+    # Extract THEN clause — try curly braces first (SurrealDB 3.0), then parens (legacy)
     handler = ""
-    then_match = re.search(r"\bTHEN\s*\(", body, re.IGNORECASE)
-    if then_match:
-        handler = _extract_balanced_parens(body, then_match.end() - 1)
+    then_brace = re.search(r"\bTHEN\s*\{", body, re.IGNORECASE)
+    if then_brace:
+        handler = _extract_balanced_braces(body, then_brace.end() - 1)
     else:
-        # THEN without parens
-        then_alt = re.search(r"\bTHEN\s+(.+?)(?:\s+COMMENT\b|$)", body, re.IGNORECASE | re.DOTALL)
-        if then_alt:
-            handler = then_alt.group(1).strip()
+        then_paren = re.search(r"\bTHEN\s*\(", body, re.IGNORECASE)
+        if then_paren:
+            handler = _extract_balanced_parens(body, then_paren.end() - 1)
+        else:
+            then_alt = re.search(
+                r"\bTHEN\s+(.+?)(?:\s+COMMENT\b|\s+PERMISSIONS\b|$)",
+                body,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if then_alt:
+                handler = then_alt.group(1).strip()
 
     return ApiState(
         name=api_name,
         method=method,
         handler=handler,
-        access=access,
     )
+
+
+def _extract_balanced_braces(text: str, start: int) -> str:
+    """Extract content between balanced curly braces starting at *start*."""
+    depth = 0
+    i = start
+    while i < len(text):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1 : i].strip().rstrip(";").strip()
+        i += 1
+    return text[start + 1 :].strip().rstrip(";").strip()
 
 
 __all__ = [

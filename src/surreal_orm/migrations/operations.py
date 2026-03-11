@@ -833,31 +833,33 @@ class DefineApi(Operation):
     Example:
         DefineApi(
             name="/users/list",
-            method="GET",
+            method="get",
             handler="SELECT * FROM users",
         )
 
     Generates:
-        DEFINE API /users/list METHOD GET THEN (SELECT * FROM users);
+        DEFINE API "/users/list" FOR get THEN { SELECT * FROM users; };
     """
 
     name: str
     method: str | None = None
     handler: str = ""
-    access: str | None = None
+    middleware: list[str] | None = None
     comment: str | None = None
 
     def forwards(self) -> str:
-        parts = [f"DEFINE API {self.name}"]
+        # Ensure the endpoint path is quoted
+        quoted_name = f'"{self.name}"' if not self.name.startswith('"') else self.name
+        parts = [f"DEFINE API {quoted_name}"]
 
         if self.method:
-            parts.append(f"METHOD {self.method.upper()}")
+            parts.append(f"FOR {self.method.lower()}")
 
-        if self.access:
-            parts.append(f"FOR {self.access}")
+        if self.middleware:
+            parts.append(f"MIDDLEWARE {', '.join(self.middleware)}")
 
         if self.handler:
-            parts.append(f"THEN ({self.handler})")
+            parts.append(f"THEN {{ {self.handler}; }}")
 
         if self.comment:
             escaped_comment = self.comment.replace("'", "''")
@@ -866,9 +868,8 @@ class DefineApi(Operation):
         return " ".join(parts) + ";"
 
     def backwards(self) -> str:
-        if self.method:
-            return f"REMOVE API {self.name} METHOD {self.method.upper()};"
-        return f"REMOVE API {self.name};"
+        quoted_name = f'"{self.name}"' if not self.name.startswith('"') else self.name
+        return f"REMOVE API {quoted_name};"
 
     def describe(self) -> str:
         method = f" {self.method.upper()}" if self.method else ""
@@ -881,10 +882,10 @@ class RemoveApi(Operation):
     Remove a REST API endpoint (SurrealDB 3.0+).
 
     Example:
-        RemoveApi(name="/users/list", method="GET")
+        RemoveApi(name="/users/list")
 
     Generates:
-        REMOVE API /users/list METHOD GET;
+        REMOVE API "/users/list";
     """
 
     name: str
@@ -894,9 +895,8 @@ class RemoveApi(Operation):
         self.reversible = False
 
     def forwards(self) -> str:
-        if self.method:
-            return f"REMOVE API {self.name} METHOD {self.method.upper()};"
-        return f"REMOVE API {self.name};"
+        quoted_name = f'"{self.name}"' if not self.name.startswith('"') else self.name
+        return f"REMOVE API {quoted_name};"
 
     def backwards(self) -> str:
         return ""
