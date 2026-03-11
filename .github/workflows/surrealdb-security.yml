@@ -1,6 +1,8 @@
 # SurrealDB 2.X Version Monitor (V2 LTS Branch)
-# Checks daily for new SurrealDB 2.x releases, runs tests, and auto-updates.
-# This workflow only tracks versions < 3.0 (ignores SurrealDB 3.X releases).
+#
+# NOTE: The daily cron schedule runs from the `main` branch via
+# surrealdb-v2-security.yml (GitHub only runs cron from the default branch).
+# This workflow is kept for manual triggers only (workflow_dispatch).
 #
 # Flow:
 #   1. Compare .surrealdb-version against latest v2.x GitHub release
@@ -14,9 +16,6 @@
 name: "SurrealDB 2.X Version Monitor"
 
 on:
-  schedule:
-    # Run daily at 7:00 AM Montreal time (UTC-5 -> 12:00 UTC)
-    - cron: '0 12 * * *'
   workflow_dispatch:
     inputs:
       surrealdb_version:
