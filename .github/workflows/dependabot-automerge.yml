@@ -272,6 +272,8 @@ jobs:
       - name: Create GitHub Release
         if: steps.wait-merge.outputs.merged == 'true'
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         with:
           tag_name: ${{ steps.version.outputs.new-tag }}
           name: "Security Patch ${{ steps.version.outputs.new-tag }}"
