@@ -65,6 +65,9 @@ jobs:
     needs: check-dependabot
     if: needs.check-dependabot.outputs.is-dependabot == 'true'
     runs-on: ubuntu-latest
+    # Restrict permissions — this job checks out untrusted PR code
+    permissions:
+      contents: read
     outputs:
       tests-passed: ${{ steps.test-result.outputs.passed }}
 
