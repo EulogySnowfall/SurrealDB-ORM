@@ -355,7 +355,8 @@ jobs:
           echo "PR_URL=$PR_URL" >> $GITHUB_ENV
           echo "Created PR: $PR_URL"
 
-          # Enable auto-merge so it merges once CI passes
+          # Approve and enable auto-merge so it merges once CI passes
+          gh pr review "$PR_URL" --approve
           gh pr merge "$PR_URL" --auto --squash
 
       # --- Tag and release after merge (security patches only) ---
