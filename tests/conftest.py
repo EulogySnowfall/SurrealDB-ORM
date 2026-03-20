@@ -217,3 +217,4 @@ def surrealdb_available() -> Generator[bool, None, None]:
                 pytest.skip("SurrealDB not available")
     """
     yield is_surrealdb_healthy()
+# test
