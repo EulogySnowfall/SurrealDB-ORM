@@ -140,13 +140,13 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get Dependabot metadata
         id: dependabot-metadata
         uses: dependabot/fetch-metadata@v2
         with:
-          github-token: ${{ secrets.PAT_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Calculate next security patch version
         id: version
@@ -186,15 +186,14 @@ jobs:
           echo "new-tag=$NEW_TAG" >> $GITHUB_OUTPUT
           echo "new-version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Approve PR
-        run: gh pr review --approve "${{ github.event.pull_request.number }}"
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-
       - name: Enable auto-merge
         run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}"
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Note: GITHUB_TOKEN cannot approve PRs (security restriction)
+      # Configure branch protection to allow Dependabot PRs to merge without approval,
+      # or manually approve the PR to trigger auto-merge
 
       - name: Wait for merge
         id: wait-merge
@@ -220,7 +219,7 @@ jobs:
           echo "merged=false" >> $GITHUB_OUTPUT
           exit 1
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Checkout main after merge
         if: steps.wait-merge.outputs.merged == 'true'
@@ -267,13 +266,11 @@ jobs:
 
           echo "Created tag: $NEW_TAG"
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
         if: steps.wait-merge.outputs.merged == 'true'
         uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
         with:
           tag_name: ${{ steps.version.outputs.new-tag }}
           name: "Security Patch ${{ steps.version.outputs.new-tag }}"
