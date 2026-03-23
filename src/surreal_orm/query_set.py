@@ -1989,7 +1989,11 @@ class QuerySet(Generic[T]):
             query = f"INSERT INTO {table} {{{', '.join(obj_parts)}}} ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)};"
         else:
             # Plain UPSERT SET (overwrites on conflict)
-            thing = format_thing(table, id) if id else table
+            if id:
+                _, record_id = parse_record_id(id)
+                thing = format_thing(table, record_id)
+            else:
+                thing = table
             set_parts: list[str] = []
             for field_name, value in defaults.items():
                 validate_identifier(field_name, "field name")
