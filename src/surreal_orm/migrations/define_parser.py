@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .state import ApiState, EventState, FieldState, IndexState
+from .state import ApiState, EventState, FieldState, GraphQLConfigState, IndexState
 
 # Keywords that delimit clauses in a DEFINE FIELD statement.
 # Order matters: longer keywords first to avoid partial matches.
@@ -548,7 +548,11 @@ def parse_define_access(statement: str) -> dict[str, Any]:
 
     Returns a dict with keys compatible with AccessState:
     ``name``, ``table``, ``signup_fields``, ``signin_where``,
-    ``duration_token``, ``duration_session``.
+    ``duration_token``, ``duration_session``, ``access_type``,
+    ``duration_grant``.
+
+    Supports both ``TYPE RECORD`` (user auth) and ``TYPE BEARER``
+    (machine-to-machine API keys, SurrealDB 3.0+).
 
     Args:
         statement: Full DEFINE ACCESS statement string.
@@ -558,7 +562,40 @@ def parse_define_access(statement: str) -> dict[str, Any]:
     """
     stmt = statement.strip().rstrip(";").strip()
 
-    # Extract access name
+    # Try TYPE BEARER first (simpler, no SIGNUP/SIGNIN)
+    bearer_match = re.match(
+        r"DEFINE\s+ACCESS\s+(?:IF\s+NOT\s+EXISTS\s+|OVERWRITE\s+)?(\S+)\s+ON\s+DATABASE\s+TYPE\s+BEARER\s*(.*)",
+        stmt,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if bearer_match:
+        access_name = bearer_match.group(1)
+        body = bearer_match.group(2).strip()
+
+        duration_grant = "30d"
+        duration_session = "1h"
+
+        grant_match = re.search(
+            r"DURATION\s+FOR\s+GRANT\s+(\S+)\s*,\s*FOR\s+SESSION\s+(\S+)",
+            body,
+            re.IGNORECASE,
+        )
+        if grant_match:
+            duration_grant = grant_match.group(1).rstrip(",")
+            duration_session = grant_match.group(2)
+
+        return {
+            "name": access_name,
+            "table": "",
+            "signup_fields": {},
+            "signin_where": "",
+            "duration_token": "",
+            "duration_session": duration_session,
+            "access_type": "BEARER",
+            "duration_grant": duration_grant,
+        }
+
+    # Try TYPE RECORD
     match = re.match(
         r"DEFINE\s+ACCESS\s+(?:IF\s+NOT\s+EXISTS\s+|OVERWRITE\s+)?(\S+)\s+ON\s+DATABASE\s+TYPE\s+RECORD\s*(.*)",
         stmt,
@@ -618,6 +655,8 @@ def parse_define_access(statement: str) -> dict[str, Any]:
         "signin_where": signin_where,
         "duration_token": duration_token,
         "duration_session": duration_session,
+        "access_type": "RECORD",
+        "duration_grant": None,
     }
 
 
@@ -893,10 +932,60 @@ def _extract_balanced_braces(text: str, start: int) -> str:
     return text[start + 1 :].strip().rstrip(";").strip()
 
 
+def parse_define_config_graphql(statement: str) -> GraphQLConfigState:
+    """
+    Parse a ``DEFINE CONFIG GRAPHQL`` statement (SurrealDB 3.0+).
+
+    Examples::
+
+        DEFINE CONFIG GRAPHQL TABLES AUTO FUNCTIONS AUTO;
+        DEFINE CONFIG GRAPHQL TABLES INCLUDE users, orders FUNCTIONS NONE;
+        DEFINE CONFIG GRAPHQL TABLES EXCLUDE audit_log FUNCTIONS AUTO;
+
+    Returns:
+        A :class:`GraphQLConfigState` with parsed modes and table/function lists.
+    """
+    stmt = statement.strip().rstrip(";").strip()
+
+    # Extract TABLES clause
+    tables_mode = "AUTO"
+    tables_list: list[str] = []
+    tables_match = re.search(
+        r"\bTABLES\s+(AUTO|NONE|INCLUDE|EXCLUDE)(?:\s+(.+?))?(?:\s+FUNCTIONS\b|$)",
+        stmt,
+        re.IGNORECASE,
+    )
+    if tables_match:
+        tables_mode = tables_match.group(1).upper()
+        if tables_match.group(2) and tables_mode in ("INCLUDE", "EXCLUDE"):
+            tables_list = [t.strip() for t in tables_match.group(2).split(",") if t.strip()]
+
+    # Extract FUNCTIONS clause
+    functions_mode = "AUTO"
+    functions_list: list[str] = []
+    functions_match = re.search(
+        r"\bFUNCTIONS\s+(AUTO|NONE|INCLUDE|EXCLUDE)(?:\s+(.+?))?(?:\s+COMMENT\b|$)",
+        stmt,
+        re.IGNORECASE,
+    )
+    if functions_match:
+        functions_mode = functions_match.group(1).upper()
+        if functions_match.group(2) and functions_mode in ("INCLUDE", "EXCLUDE"):
+            functions_list = [f.strip() for f in functions_match.group(2).split(",") if f.strip()]
+
+    return GraphQLConfigState(
+        tables_mode=tables_mode,
+        tables_list=tables_list,
+        functions_mode=functions_mode,
+        functions_list=functions_list,
+    )
+
+
 __all__ = [
     "parse_define_access",
     "parse_define_analyzer",
     "parse_define_api",
+    "parse_define_config_graphql",
     "parse_define_event",
     "parse_define_field",
     "parse_define_index",

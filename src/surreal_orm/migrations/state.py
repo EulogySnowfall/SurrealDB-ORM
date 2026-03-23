@@ -125,19 +125,23 @@ class AccessState:
 
     Attributes:
         name: Access name
-        table: Associated table
-        signup_fields: Fields set during signup
-        signin_where: WHERE clause for signin
+        table: Associated table (empty for BEARER access)
+        signup_fields: Fields set during signup (RECORD only)
+        signin_where: WHERE clause for signin (RECORD only)
         duration_token: Token duration
         duration_session: Session duration
+        access_type: "RECORD" or "BEARER"
+        duration_grant: Grant duration (BEARER only)
     """
 
     name: str
-    table: str
-    signup_fields: dict[str, str]
-    signin_where: str
+    table: str = ""
+    signup_fields: dict[str, str] = field(default_factory=dict)
+    signin_where: str = ""
     duration_token: str = "15m"
     duration_session: str = "12h"
+    access_type: str = "RECORD"
+    duration_grant: str | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, AccessState):
@@ -149,6 +153,8 @@ class AccessState:
             and self.signin_where == other.signin_where
             and self.duration_token == other.duration_token
             and self.duration_session == other.duration_session
+            and self.access_type == other.access_type
+            and self.duration_grant == other.duration_grant
         )
 
 
@@ -226,6 +232,36 @@ class ApiState:
 
 
 @dataclass
+class GraphQLConfigState:
+    """
+    Represents the state of a GraphQL configuration (SurrealDB 3.0+).
+
+    Attributes:
+        tables: Table inclusion mode — "AUTO", "NONE", or list of table names
+        tables_mode: "AUTO", "NONE", "INCLUDE", or "EXCLUDE"
+        tables_list: List of table names when mode is INCLUDE/EXCLUDE
+        functions: Function inclusion mode — "AUTO", "NONE", or list of function names
+        functions_mode: "AUTO", "NONE", "INCLUDE", or "EXCLUDE"
+        functions_list: List of function names when mode is INCLUDE/EXCLUDE
+    """
+
+    tables_mode: str = "AUTO"
+    tables_list: list[str] = field(default_factory=list)
+    functions_mode: str = "AUTO"
+    functions_list: list[str] = field(default_factory=list)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, GraphQLConfigState):
+            return False
+        return (
+            self.tables_mode == other.tables_mode
+            and self.tables_list == other.tables_list
+            and self.functions_mode == other.functions_mode
+            and self.functions_list == other.functions_list
+        )
+
+
+@dataclass
 class TableState:
     """
     Represents the complete state of a table.
@@ -297,6 +333,7 @@ class SchemaState:
     applied_migrations: list[str] = field(default_factory=list)
     analyzers: dict[str, "AnalyzerState"] = field(default_factory=dict)
     apis: dict[str, "ApiState"] = field(default_factory=dict)
+    graphql_config: "GraphQLConfigState | None" = None
 
     def diff(self, target: "SchemaState") -> list["Operation"]:
         """
@@ -316,6 +353,7 @@ class SchemaState:
             DefineAnalyzer,
             DefineApi,
             DefineEvent,
+            DefineGraphQLConfig,
             DropField,
             DropIndex,
             DropTable,
@@ -323,6 +361,7 @@ class SchemaState:
             RemoveAnalyzer,
             RemoveApi,
             RemoveEvent,
+            RemoveGraphQLConfig,
         )
 
         operations: list[Operation] = []
@@ -575,6 +614,19 @@ class SchemaState:
             if api_key not in target.apis:
                 current_api = self.apis[api_key]
                 operations.append(RemoveApi(name=current_api.name, method=current_api.method))
+
+        # ── GraphQL configuration (SurrealDB 3.0+) ───────────────
+        if target.graphql_config and target.graphql_config != self.graphql_config:
+            operations.append(
+                DefineGraphQLConfig(
+                    tables_mode=target.graphql_config.tables_mode,
+                    tables_list=target.graphql_config.tables_list,
+                    functions_mode=target.graphql_config.functions_mode,
+                    functions_list=target.graphql_config.functions_list,
+                )
+            )
+        elif self.graphql_config and not target.graphql_config:
+            operations.append(RemoveGraphQLConfig())
 
         return operations
 

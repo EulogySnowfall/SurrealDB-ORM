@@ -43,7 +43,17 @@ from .fields import (
 from .geo import GeoDistance
 from .introspection import generate_models_from_db, schema_diff
 from .live import ChangeModelStream, LiveModelStream, ModelChangeEvent
-from .migrations.operations import DefineAnalyzer, DefineApi, DefineEvent, RemoveApi, RemoveEvent
+from .migrations.operations import (
+    DefineAnalyzer,
+    DefineApi,
+    DefineBearerAccess,
+    DefineEvent,
+    DefineGraphQLConfig,
+    RebuildIndex,
+    RemoveApi,
+    RemoveEvent,
+    RemoveGraphQLConfig,
+)
 from .model_base import (
     BaseSurrealModel,
     SurrealConfigDict,
@@ -72,6 +82,7 @@ from .signals import (
 from .subquery import Subquery
 from .surreal_function import SurrealFunc
 from .types import (
+    AccessType,
     EncryptionAlgorithm,
     FieldType,
     SchemaMode,
@@ -101,6 +112,7 @@ __all__ = [
     "Min",
     "Max",
     # Types
+    "AccessType",
     "TableType",
     "SchemaMode",
     "FieldType",
@@ -166,13 +178,17 @@ __all__ = [
     # Migrations
     "DefineAnalyzer",
     "DefineApi",
+    "DefineBearerAccess",
     "DefineEvent",
+    "DefineGraphQLConfig",
+    "RebuildIndex",
     "RemoveApi",
     "RemoveEvent",
+    "RemoveGraphQLConfig",
     # Debug
     "QueryLogger",
     # Utilities
     "retry_on_conflict",
 ]
 
-__version__ = "0.30.1"
+__version__ = "0.31.0"

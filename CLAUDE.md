@@ -10,14 +10,22 @@
 
 ---
 
-## Current Version: 0.30.0b1 (Beta) — SurrealDB 3.0
+## Current Version: 0.31.0 (Beta) — First PyPI release for SurrealDB 3.0
 
 ### Branch Strategy
 
 | Branch | SurrealDB | ORM Version | Status                          |
 | ------ | --------- | ----------- | ------------------------------- |
-| `main` | 3.X       | 0.30.x      | Active development              |
+| `main` | 3.X       | 0.31.x      | Active development              |
 | `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.31.0
+
+- **`RebuildIndex` migration operation** — `REBUILD INDEX name ON table;` for reindexing after bulk imports. Supports `IF EXISTS`. Irreversible.
+- **`DefineGraphQLConfig` / `RemoveGraphQLConfig`** — Configure SurrealDB 3.0's GraphQL endpoint via migrations. `TABLES AUTO|NONE|INCLUDE|EXCLUDE`, `FUNCTIONS AUTO|NONE|INCLUDE|EXCLUDE`. `GraphQLConfigState` for schema diffing. `parse_define_config_graphql()` parser. `DatabaseIntrospector` parses `configs` from `INFO FOR DB`.
+- **Bearer access (SurrealDB 3.0)** — `DefineBearerAccess` migration operation for `DEFINE ACCESS ... TYPE BEARER`. `AccessType` enum (`RECORD`, `BEARER`). `AccessState` extended with `access_type` and `duration_grant`. `parse_define_access()` parses both types. Auth mixin: `grant_bearer_key()` and `revoke_bearer_key()`.
+- **`QuerySet.upsert()` with `ON DUPLICATE KEY UPDATE`** — Insert or update on conflict. `defaults` + `on_conflict` dict with `SurrealFunc` support. Parameterized variables (`$_up_*`, `$_oc_*`).
+- **`QuerySet.bulk_upsert()`** — Batch upsert with shared `on_conflict`, `atomic=True` for transactions.
 
 ### What's New in 0.30.0b1
 
@@ -1683,6 +1691,21 @@ See full roadmap: [docs/roadmap.md](docs/roadmap.md)
 - [x] `TableType.RELATION` and `TableType.ANY` enum values
 - [x] `parse_define_table()` extracts AS, RELATION IN/OUT/ENFORCED clauses
 - [x] `DatabaseIntrospector` parses events, relations; `ModelCodeGenerator` generates GeoField
+
+### Completed (0.31.0) - SurrealDB 3.0 Phase 2b
+
+- [x] `RebuildIndex` migration operation (irreversible, supports `IF EXISTS`)
+- [x] `DefineGraphQLConfig` / `RemoveGraphQLConfig` migration operations
+- [x] `GraphQLConfigState` dataclass + `parse_define_config_graphql()` parser
+- [x] `SchemaState.diff()` supports GraphQL config add/update/remove
+- [x] `DatabaseIntrospector` parses GraphQL config from `INFO FOR DB`
+- [x] `DefineBearerAccess` migration operation for `DEFINE ACCESS ... TYPE BEARER`
+- [x] `AccessType` enum (`RECORD`, `BEARER`) in `types.py`
+- [x] `AccessState` extended with `access_type` and `duration_grant`
+- [x] `parse_define_access()` updated to handle both RECORD and BEARER types
+- [x] `grant_bearer_key()` and `revoke_bearer_key()` on `AuthenticatedUserMixin`
+- [x] `QuerySet.upsert()` with `ON DUPLICATE KEY UPDATE` + `SurrealFunc` support
+- [x] `QuerySet.bulk_upsert()` with shared `on_conflict` and `atomic` mode
 
 ### Completed (0.30.0b1) - SurrealDB 3.0 Phase 2
 

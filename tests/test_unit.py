@@ -1231,3 +1231,38 @@ class TestIsDatetimeField:
 
         # list[datetime] should NOT match — it's a list, not a datetime
         assert _is_datetime_field(list[datetime]) is False
+
+
+# =============================================================================
+# v0.30.0 Phase 2b FR4: UPSERT ON DUPLICATE KEY UPDATE
+# =============================================================================
+
+
+class TestUpsertMethod:
+    """Tests for QuerySet.upsert() method."""
+
+    def test_upsert_method_exists(self) -> None:
+        """QuerySet must have an upsert() method."""
+        assert hasattr(QuerySet, "upsert")
+        assert inspect.iscoroutinefunction(QuerySet.upsert)
+
+    def test_upsert_signature(self) -> None:
+        """upsert() must accept defaults, id, and on_conflict."""
+        sig = inspect.signature(QuerySet.upsert)
+        params = list(sig.parameters.keys())
+        assert "defaults" in params
+        assert "id" in params
+        assert "on_conflict" in params
+
+    def test_bulk_upsert_method_exists(self) -> None:
+        """QuerySet must have a bulk_upsert() method."""
+        assert hasattr(QuerySet, "bulk_upsert")
+        assert inspect.iscoroutinefunction(QuerySet.bulk_upsert)
+
+    def test_bulk_upsert_signature(self) -> None:
+        """bulk_upsert() must accept instances, on_conflict, and atomic."""
+        sig = inspect.signature(QuerySet.bulk_upsert)
+        params = list(sig.parameters.keys())
+        assert "instances" in params
+        assert "on_conflict" in params
+        assert "atomic" in params
