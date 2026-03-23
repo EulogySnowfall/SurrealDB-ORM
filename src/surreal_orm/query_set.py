@@ -1935,12 +1935,25 @@ class QuerySet(Generic[T]):
         Returns:
             The created or updated model instance.
 
+        Note:
+            ``on_conflict`` expressions run in the context of the **existing**
+            record.  On the first insert there is no existing record, so
+            expressions like ``login_count + 1`` will fail (``NONE + 1``).
+            Create the record first with a plain ``upsert()`` (no
+            ``on_conflict``), then use ``on_conflict`` for subsequent calls.
+
         Example::
 
+            # First call — create the record
+            await User.objects().upsert(
+                defaults={"name": "Alice", "login_count": 1},
+                id="user:alice",
+            )
+            # Second call — increment on conflict
             user = await User.objects().upsert(
                 defaults={"name": "Alice", "login_count": 1},
                 id="user:alice",
-                on_conflict={"login_count": SurrealFunc("login_count + 1")},
+                on_conflict={"login_count": SurrealFunc("login_count += 1")},
             )
         """
         from .surreal_function import SurrealFunc
@@ -2021,12 +2034,21 @@ class QuerySet(Generic[T]):
         Returns:
             The upserted model instances.
 
+        Note:
+            ``on_conflict`` expressions run against the **existing** record.
+            The records must already exist for conflict expressions to work.
+            See :meth:`upsert` for details.
+
         Example::
 
+            # First call — create the records
             users = [User(id="user:alice", name="Alice", login_count=1), ...]
+            await User.objects().bulk_upsert(users)
+
+            # Second call — increment on conflict
             results = await User.objects().bulk_upsert(
                 users,
-                on_conflict={"login_count": SurrealFunc("login_count + 1")},
+                on_conflict={"login_count": SurrealFunc("login_count += 1")},
             )
         """
         from .surreal_function import SurrealFunc
