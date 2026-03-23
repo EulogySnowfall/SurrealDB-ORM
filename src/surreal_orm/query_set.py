@@ -2054,6 +2054,7 @@ class QuerySet(Generic[T]):
                     _, rid = parse_record_id(str(record_id))
                     obj_parts.append(f"id: {format_thing(table, rid)}")
                 for field_name, value in data.items():
+                    validate_identifier(field_name, "field name")
                     if isinstance(value, SurrealFunc):
                         obj_parts.append(f"{field_name}: {value.expression}")
                     else:
@@ -2063,6 +2064,7 @@ class QuerySet(Generic[T]):
 
                 conflict_parts: list[str] = []
                 for field_name, value in on_conflict.items():
+                    validate_identifier(field_name, "field name")
                     if isinstance(value, SurrealFunc):
                         conflict_parts.append(self._format_conflict_expr(field_name, value))
                     else:
@@ -2080,6 +2082,7 @@ class QuerySet(Generic[T]):
                     thing = table
                 set_parts: list[str] = []
                 for field_name, value in data.items():
+                    validate_identifier(field_name, "field name")
                     if isinstance(value, SurrealFunc):
                         set_parts.append(f"{field_name} = {value.expression}")
                     else:

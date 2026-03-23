@@ -1369,11 +1369,11 @@ REMOVE BUCKET temp_uploads;
 
 **Implementation:**
 
-| File | Component | Description |
-|------|-----------|-------------|
-| `src/surreal_orm/storage.py` | `BucketBackend` enum | `MEMORY`, `FILE`, `S3`, `GCS` |
-| `src/surreal_orm/migrations/operations.py` | `DefineBucket` | `forwards()` → `DEFINE BUCKET ...;` |
-| `src/surreal_orm/migrations/operations.py` | `RemoveBucket` | `forwards()` → `REMOVE BUCKET ...;` |
+| File                                       | Component            | Description                         |
+| ------------------------------------------ | -------------------- | ----------------------------------- |
+| `src/surreal_orm/storage.py`               | `BucketBackend` enum | `MEMORY`, `FILE`, `S3`, `GCS`       |
+| `src/surreal_orm/migrations/operations.py` | `DefineBucket`       | `forwards()` → `DEFINE BUCKET ...;` |
+| `src/surreal_orm/migrations/operations.py` | `RemoveBucket`       | `forwards()` → `REMOVE BUCKET ...;` |
 
 **1b. Schema State — `BucketState`**
 
@@ -1454,13 +1454,13 @@ class Product(BaseSurrealModel):
 
 **Implementation:**
 
-| File | Component | Description |
-|------|-----------|-------------|
-| `src/surreal_orm/fields/file.py` | `_FileMarker` | Pydantic marker with bucket name |
-| `src/surreal_orm/fields/file.py` | `FileField` | `FileField["bucket"]` via `__class_getitem__` |
-| `src/surreal_orm/fields/file.py` | `ImageField` | Subclass with content-type validation |
-| `src/surreal_orm/fields/file.py` | `is_file_field()` | Detection helper |
-| `src/surreal_orm/fields/file.py` | `get_file_bucket()` | Extract bucket name |
+| File                             | Component           | Description                                   |
+| -------------------------------- | ------------------- | --------------------------------------------- |
+| `src/surreal_orm/fields/file.py` | `_FileMarker`       | Pydantic marker with bucket name              |
+| `src/surreal_orm/fields/file.py` | `FileField`         | `FileField["bucket"]` via `__class_getitem__` |
+| `src/surreal_orm/fields/file.py` | `ImageField`        | Subclass with content-type validation         |
+| `src/surreal_orm/fields/file.py` | `is_file_field()`   | Detection helper                              |
+| `src/surreal_orm/fields/file.py` | `get_file_bucket()` | Extract bucket name                           |
 
 **1f. SDK Bucket Methods**
 
@@ -1483,14 +1483,14 @@ async with SurrealDB.http("http://localhost:8000", "ns", "db") as db:
 
 **Implementation:**
 
-| File | Method | SurrealQL |
-|------|--------|-----------|
-| `src/surreal_sdk/connection/base.py` | `bucket_list(bucket)` | `SELECT * FROM file:{bucket}` |
-| `src/surreal_sdk/connection/base.py` | `bucket_put(bucket, name, data)` | `CREATE file:{bucket}/{name} CONTENT ...` |
-| `src/surreal_sdk/connection/base.py` | `bucket_get(bucket, name)` | `SELECT * FROM file:{bucket}/{name}` |
-| `src/surreal_sdk/connection/base.py` | `bucket_delete(bucket, name)` | `DELETE file:{bucket}/{name}` |
-| `src/surreal_sdk/connection/http.py` | Override with multipart/binary | HTTP-specific binary upload |
-| `src/surreal_sdk/connection/websocket.py` | Override with CBOR binary | WS-specific binary encoding |
+| File                                      | Method                           | SurrealQL                                 |
+| ----------------------------------------- | -------------------------------- | ----------------------------------------- |
+| `src/surreal_sdk/connection/base.py`      | `bucket_list(bucket)`            | `SELECT * FROM file:{bucket}`             |
+| `src/surreal_sdk/connection/base.py`      | `bucket_put(bucket, name, data)` | `CREATE file:{bucket}/{name} CONTENT ...` |
+| `src/surreal_sdk/connection/base.py`      | `bucket_get(bucket, name)`       | `SELECT * FROM file:{bucket}/{name}`      |
+| `src/surreal_sdk/connection/base.py`      | `bucket_delete(bucket, name)`    | `DELETE file:{bucket}/{name}`             |
+| `src/surreal_sdk/connection/http.py`      | Override with multipart/binary   | HTTP-specific binary upload               |
+| `src/surreal_sdk/connection/websocket.py` | Override with CBOR binary        | WS-specific binary encoding               |
 
 **1g. ORM File Helpers on `BaseSurrealModel`**
 
@@ -1609,16 +1609,16 @@ DefineAccess(
 
 **Implementation:**
 
-| File | Component | Description |
-|------|-----------|-------------|
-| `src/surreal_orm/types.py` | `AccessType` enum | `JWT`, `BEARER` |
-| `src/surreal_orm/auth.py` | `grant_bearer_key()` | `ACCESS name GRANT ...` |
-| `src/surreal_orm/auth.py` | `revoke_bearer_key()` | `ACCESS name REVOKE ...` |
-| `src/surreal_sdk/connection/base.py` | `access_grant()` | New RPC/query method |
-| `src/surreal_sdk/connection/base.py` | `access_revoke()` | New RPC/query method |
-| `src/surreal_orm/migrations/operations.py` | `DefineAccess` update | Support `TYPE BEARER` |
-| `src/surreal_orm/migrations/define_parser.py` | `parse_define_access()` update | Parse BEARER clauses |
-| `src/surreal_orm/migrations/state.py` | `AccessState` update | Add `access_type` field |
+| File                                          | Component                      | Description              |
+| --------------------------------------------- | ------------------------------ | ------------------------ |
+| `src/surreal_orm/types.py`                    | `AccessType` enum              | `JWT`, `BEARER`          |
+| `src/surreal_orm/auth.py`                     | `grant_bearer_key()`           | `ACCESS name GRANT ...`  |
+| `src/surreal_orm/auth.py`                     | `revoke_bearer_key()`          | `ACCESS name REVOKE ...` |
+| `src/surreal_sdk/connection/base.py`          | `access_grant()`               | New RPC/query method     |
+| `src/surreal_sdk/connection/base.py`          | `access_revoke()`              | New RPC/query method     |
+| `src/surreal_orm/migrations/operations.py`    | `DefineAccess` update          | Support `TYPE BEARER`    |
+| `src/surreal_orm/migrations/define_parser.py` | `parse_define_access()` update | Parse BEARER clauses     |
+| `src/surreal_orm/migrations/state.py`         | `AccessState` update           | Add `access_type` field  |
 
 ---
 
@@ -1667,8 +1667,8 @@ class RebuildIndex(Operation):
         return f"Rebuild index {self.name} on {self.table}"
 ```
 
-| File | Component | Description |
-|------|-----------|-------------|
+| File                                       | Component      | Description            |
+| ------------------------------------------ | -------------- | ---------------------- |
 | `src/surreal_orm/migrations/operations.py` | `RebuildIndex` | Irreversible operation |
 
 ---
@@ -1765,13 +1765,13 @@ class SchemaState:
     graphql_config: GraphQLConfigState | None = None  # NEW
 ```
 
-| File | Component | Description |
-|------|-----------|-------------|
-| `src/surreal_orm/migrations/operations.py` | `DefineGraphQLConfig` | `DEFINE CONFIG GRAPHQL ...` |
-| `src/surreal_orm/migrations/operations.py` | `RemoveGraphQLConfig` | `REMOVE CONFIG GRAPHQL;` |
-| `src/surreal_orm/migrations/state.py` | `GraphQLConfigState` | Schema state for diffing |
-| `src/surreal_orm/migrations/define_parser.py` | `parse_define_config_graphql()` | Parser |
-| `src/surreal_orm/migrations/db_introspector.py` | Parse `configs` from `INFO FOR DB` | Introspection |
+| File                                            | Component                          | Description                 |
+| ----------------------------------------------- | ---------------------------------- | --------------------------- |
+| `src/surreal_orm/migrations/operations.py`      | `DefineGraphQLConfig`              | `DEFINE CONFIG GRAPHQL ...` |
+| `src/surreal_orm/migrations/operations.py`      | `RemoveGraphQLConfig`              | `REMOVE CONFIG GRAPHQL;`    |
+| `src/surreal_orm/migrations/state.py`           | `GraphQLConfigState`               | Schema state for diffing    |
+| `src/surreal_orm/migrations/define_parser.py`   | `parse_define_config_graphql()`    | Parser                      |
+| `src/surreal_orm/migrations/db_introspector.py` | Parse `configs` from `INFO FOR DB` | Introspection               |
 
 ---
 
@@ -1803,22 +1803,22 @@ await User.objects().bulk_upsert(
 )
 ```
 
-| File | Component | Description |
-|------|-----------|-------------|
-| `src/surreal_orm/query_set.py` | `upsert()` | `UPSERT ... ON DUPLICATE KEY UPDATE` |
-| `src/surreal_orm/query_set.py` | `bulk_upsert()` | Batch upsert with conflict handling |
+| File                           | Component       | Description                          |
+| ------------------------------ | --------------- | ------------------------------------ |
+| `src/surreal_orm/query_set.py` | `upsert()`      | `UPSERT ... ON DUPLICATE KEY UPDATE` |
+| `src/surreal_orm/query_set.py` | `bulk_upsert()` | Batch upsert with conflict handling  |
 
 ---
 
 #### Phase 2b Implementation Order
 
-| # | Feature | Priority | Effort | Dependencies |
-|---|---------|----------|--------|-------------|
-| 1 | `RebuildIndex` | Medium | S | None — standalone operation |
-| 2 | `DefineGraphQLConfig` | Medium | M | None — standalone operation |
-| 3 | Bearer Access | High | L | Auth module, SDK methods |
-| 4 | Bucket/File Storage | High | XL | SDK methods, fields, migrations, introspection |
-| 5 | UPSERT ON DUPLICATE | Medium | M | QuerySet |
+| #   | Feature               | Priority | Effort | Dependencies                                   |
+| --- | --------------------- | -------- | ------ | ---------------------------------------------- |
+| 1   | `RebuildIndex`        | Medium   | S      | None — standalone operation                    |
+| 2   | `DefineGraphQLConfig` | Medium   | M      | None — standalone operation                    |
+| 3   | Bearer Access         | High     | L      | Auth module, SDK methods                       |
+| 4   | Bucket/File Storage   | High     | XL     | SDK methods, fields, migrations, introspection |
+| 5   | UPSERT ON DUPLICATE   | Medium   | M      | QuerySet                                       |
 
 **Recommended order:** 1 → 2 → 3 → 5 → 4 (start small, build up to the flagship)
 
@@ -1826,13 +1826,13 @@ await User.objects().bulk_upsert(
 
 #### Phase 2b Test Plan
 
-| Feature | Unit Tests | Integration Tests |
-|---------|-----------|-------------------|
-| `RebuildIndex` | `forwards()` / `backwards()` SQL generation | Execute against SurrealDB 3.0 |
-| `DefineGraphQLConfig` | SQL generation, parser, state diff | `INFO FOR DB` introspection |
-| Bearer Access | `grant_bearer_key()` / `revoke_bearer_key()` | Full auth flow with bearer tokens |
-| Bucket/File Storage | `DefineBucket` SQL, `FileField` detection, parser | Upload/download/delete round-trip |
-| UPSERT ON DUPLICATE | SQL generation with `SurrealFunc` | Conflict resolution behavior |
+| Feature               | Unit Tests                                        | Integration Tests                 |
+| --------------------- | ------------------------------------------------- | --------------------------------- |
+| `RebuildIndex`        | `forwards()` / `backwards()` SQL generation       | Execute against SurrealDB 3.0     |
+| `DefineGraphQLConfig` | SQL generation, parser, state diff                | `INFO FOR DB` introspection       |
+| Bearer Access         | `grant_bearer_key()` / `revoke_bearer_key()`      | Full auth flow with bearer tokens |
+| Bucket/File Storage   | `DefineBucket` SQL, `FileField` detection, parser | Upload/download/delete round-trip |
+| UPSERT ON DUPLICATE   | SQL generation with `SurrealFunc`                 | Conflict resolution behavior      |
 
 ### Phase 3: SDK Enhancements (Planned)
 
@@ -1845,14 +1845,14 @@ await User.objects().bulk_upsert(
 
 ## Future Versions (Planned)
 
-| Version     | Focus            | Key Features                                                                  |
-| ----------- | ---------------- | ----------------------------------------------------------------------------- |
-| 0.30.0      | SurrealDB 3.0    | Refresh tokens, Record references, DEFINE API (Done)                          |
-| 0.31.0      | SurrealDB 3.0    | Bearer access, GraphQL config, REBUILD INDEX, UPSERT ON DUPLICATE (Done)      |
-| 0.32.0      | Graph Power      | Recursive traversal, shortest path, path collection                           |
-| 0.33.0      | ML & Data        | SurrealML inference, JSONL import/export, DB dump/restore                     |
-| 0.34.0      | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring                      |
-| 0.35.0      | File Storage     | DEFINE BUCKET, FileField/ImageField, SDK bucket CRUD, upload/download helpers |
+| Version | Focus            | Key Features                                                                  |
+| ------- | ---------------- | ----------------------------------------------------------------------------- |
+| 0.30.0  | SurrealDB 3.0    | Refresh tokens, Record references, DEFINE API (Done)                          |
+| 0.31.0  | SurrealDB 3.0    | Bearer access, GraphQL config, REBUILD INDEX, UPSERT ON DUPLICATE (Done)      |
+| 0.32.0  | Graph Power      | Recursive traversal, shortest path, path collection                           |
+| 0.33.0  | ML & Data        | SurrealML inference, JSONL import/export, DB dump/restore                     |
+| 0.34.0  | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring                      |
+| 0.35.0  | File Storage     | DEFINE BUCKET, FileField/ImageField, SDK bucket CRUD, upload/download helpers |
 
 ---
 
@@ -1937,16 +1937,16 @@ await User.objects().bulk_upsert(
 | DEFINE API support            | 0.30.0β | Medium   | Done    | Migrations           |
 | Record references field       | 0.30.0β | Medium   | Done    | Fields               |
 | SDK auth "access" key fix     | 0.30.0β | Critical | Done    | SDK                  |
-| REBUILD INDEX operation        | 0.31.0  | Medium   | Done    | Migrations           |
-| DEFINE CONFIG GRAPHQL          | 0.31.0  | Medium   | Done    | Migrations           |
-| Bearer access (TYPE BEARER)    | 0.31.0  | High     | Done    | Auth + SDK           |
-| UPSERT ON DUPLICATE KEY        | 0.31.0  | Medium   | Done    | QuerySet             |
-| DEFINE BUCKET (migrations)     | 0.35.0  | High     | Planned | Migrations           |
-| BucketBackend enum + parser    | 0.35.0  | High     | Planned | DEFINE BUCKET        |
-| FileField / ImageField         | 0.35.0  | High     | Planned | DEFINE BUCKET        |
-| SDK bucket CRUD methods        | 0.35.0  | High     | Planned | SDK                  |
-| ORM upload/download helpers    | 0.35.0  | Medium   | Planned | FileField + SDK      |
-| Bucket introspection           | 0.35.0  | Medium   | Planned | DatabaseIntrospector |
+| REBUILD INDEX operation       | 0.31.0  | Medium   | Done    | Migrations           |
+| DEFINE CONFIG GRAPHQL         | 0.31.0  | Medium   | Done    | Migrations           |
+| Bearer access (TYPE BEARER)   | 0.31.0  | High     | Done    | Auth + SDK           |
+| UPSERT ON DUPLICATE KEY       | 0.31.0  | Medium   | Done    | QuerySet             |
+| DEFINE BUCKET (migrations)    | 0.35.0  | High     | Planned | Migrations           |
+| BucketBackend enum + parser   | 0.35.0  | High     | Planned | DEFINE BUCKET        |
+| FileField / ImageField        | 0.35.0  | High     | Planned | DEFINE BUCKET        |
+| SDK bucket CRUD methods       | 0.35.0  | High     | Planned | SDK                  |
+| ORM upload/download helpers   | 0.35.0  | Medium   | Planned | FileField + SDK      |
+| Bucket introspection          | 0.35.0  | Medium   | Planned | DatabaseIntrospector |
 
 ---
 
