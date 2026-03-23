@@ -630,6 +630,50 @@ class RemoveAccess(Operation):
 
 
 @dataclass
+class DefineBearerAccess(Operation):
+    """
+    Define a bearer access method for machine-to-machine authentication (SurrealDB 3.0+).
+
+    Bearer access issues opaque API keys via GRANT/REVOKE instead of
+    SIGNUP/SIGNIN used by RECORD access.
+
+    Example:
+        DefineBearerAccess(
+            name="api_key",
+            duration_grant="30d",
+            duration_session="1h",
+        )
+
+    Generates:
+        DEFINE ACCESS api_key ON DATABASE TYPE BEARER
+            DURATION FOR GRANT 30d, FOR SESSION 1h;
+    """
+
+    name: str
+    bearer_for: str = "USER"
+    duration_grant: str = "30d"
+    duration_session: str = "1h"
+    comment: str | None = None
+
+    def forwards(self) -> str:
+        sql = f"DEFINE ACCESS {self.name} ON DATABASE TYPE BEARER FOR {self.bearer_for.upper()}"
+        if self.duration_grant or self.duration_session:
+            sql += f"\n    DURATION FOR GRANT {self.duration_grant}, FOR SESSION {self.duration_session}"
+
+        if self.comment:
+            escaped_comment = self.comment.replace("'", "''")
+            sql += f"\n    COMMENT '{escaped_comment}'"
+
+        return sql + ";"
+
+    def backwards(self) -> str:
+        return f"REMOVE ACCESS {self.name} ON DATABASE;"
+
+    def describe(self) -> str:
+        return f"Define bearer access {self.name}"
+
+
+@dataclass
 class DataMigration(Operation):
     """
     Execute data transformations (UPDATE, DELETE operations on records).
@@ -924,3 +968,108 @@ class RemoveApi(Operation):
     def describe(self) -> str:
         method = f" {self.method.upper()}" if self.method else ""
         return f"Remove API{method} {self.name}"
+
+
+@dataclass
+class RebuildIndex(Operation):
+    """
+    Rebuild an index on a table (SurrealDB 3.0+).
+
+    Useful after bulk data imports or index definition changes
+    to force a full reindex.
+
+    Example:
+        RebuildIndex(table="documents", name="idx_embedding")
+        RebuildIndex(table="articles", name="idx_fts", if_exists=True)
+
+    Generates:
+        REBUILD INDEX idx_embedding ON documents;
+        REBUILD INDEX IF EXISTS idx_fts ON articles;
+    """
+
+    table: str
+    name: str
+    if_exists: bool = False
+
+    def __post_init__(self) -> None:
+        self.reversible = False
+
+    def forwards(self) -> str:
+        ie = "IF EXISTS " if self.if_exists else ""
+        return f"REBUILD INDEX {ie}{self.name} ON {self.table};"
+
+    def backwards(self) -> str:
+        return ""
+
+    def describe(self) -> str:
+        return f"Rebuild index {self.name} on {self.table}"
+
+
+@dataclass
+class DefineGraphQLConfig(Operation):
+    """
+    Define or update GraphQL configuration (SurrealDB 3.0+).
+
+    Example:
+        DefineGraphQLConfig(tables_mode="AUTO", functions_mode="AUTO")
+        DefineGraphQLConfig(tables_mode="INCLUDE", tables_list=["users", "orders"])
+        DefineGraphQLConfig(tables_mode="EXCLUDE", tables_list=["audit_log"])
+
+    Generates:
+        DEFINE CONFIG GRAPHQL TABLES AUTO FUNCTIONS AUTO;
+        DEFINE CONFIG GRAPHQL TABLES INCLUDE users, orders FUNCTIONS AUTO;
+        DEFINE CONFIG GRAPHQL TABLES EXCLUDE audit_log FUNCTIONS AUTO;
+    """
+
+    tables_mode: str = "AUTO"
+    tables_list: list[str] = field(default_factory=list)
+    functions_mode: str = "AUTO"
+    functions_list: list[str] = field(default_factory=list)
+
+    def forwards(self) -> str:
+        parts = ["DEFINE CONFIG GRAPHQL"]
+
+        # Tables clause
+        if self.tables_list:
+            parts.append(f"TABLES {self.tables_mode} {', '.join(self.tables_list)}")
+        else:
+            parts.append(f"TABLES {self.tables_mode}")
+
+        # Functions clause
+        if self.functions_list:
+            parts.append(f"FUNCTIONS {self.functions_mode} {', '.join(self.functions_list)}")
+        else:
+            parts.append(f"FUNCTIONS {self.functions_mode}")
+
+        return " ".join(parts) + ";"
+
+    def backwards(self) -> str:
+        return "DEFINE CONFIG GRAPHQL TABLES NONE FUNCTIONS NONE;"
+
+    def describe(self) -> str:
+        return f"Define GraphQL config (tables={self.tables_mode}, functions={self.functions_mode})"
+
+
+@dataclass
+class RemoveGraphQLConfig(Operation):
+    """
+    Disable GraphQL configuration by setting TABLES NONE FUNCTIONS NONE (SurrealDB 3.0+).
+
+    SurrealDB 3.0 does not support ``REMOVE CONFIG GRAPHQL``.
+    Instead, we overwrite the configuration with NONE modes to effectively disable it.
+
+    Generates:
+        DEFINE CONFIG GRAPHQL TABLES NONE FUNCTIONS NONE;
+    """
+
+    def __post_init__(self) -> None:
+        self.reversible = False
+
+    def forwards(self) -> str:
+        return "DEFINE CONFIG GRAPHQL TABLES NONE FUNCTIONS NONE;"
+
+    def backwards(self) -> str:
+        return ""
+
+    def describe(self) -> str:
+        return "Remove GraphQL config"

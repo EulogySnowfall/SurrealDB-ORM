@@ -1457,6 +1457,21 @@ class QuerySet(Generic[T]):
 
     # ==================== Aggregation Methods ====================
 
+    @staticmethod
+    def _format_conflict_expr(field_name: str, func: Any) -> str:
+        """Format a SurrealFunc for ON DUPLICATE KEY UPDATE clause.
+
+        If the expression already contains an assignment operator (``+=``,
+        ``-=``, ``=``, etc.), it is output as-is (the expression itself
+        contains ``field_name += value``).  Otherwise, it is wrapped as
+        ``field_name = expression``.
+        """
+        expr: str = func.expression
+        # If expression already includes a compound assignment, output as-is
+        if any(op in expr for op in ("+=", "-=", "*=", "/=")):
+            return expr
+        return f"{field_name} = {expr}"
+
     def _compile_where_clause(self) -> str:
         """
         Compile the WHERE clause from filters and Q objects (parameterized).
@@ -1892,6 +1907,236 @@ class QuerySet(Generic[T]):
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
         return len(result.all_records)
+
+    # ==================== Upsert Methods ====================
+
+    async def upsert(
+        self,
+        defaults: dict[str, Any],
+        *,
+        id: str | None = None,
+        on_conflict: dict[str, Any] | None = None,
+    ) -> T:
+        """
+        Insert a record or update it on conflict (SurrealDB 3.0+).
+
+        When ``on_conflict`` is provided, generates an ``INSERT INTO table
+        ... ON DUPLICATE KEY UPDATE ...`` statement (SurrealDB's conflict
+        handling syntax).  Without ``on_conflict``, generates a plain
+        ``UPSERT thing SET ...`` which overwrites on conflict.
+
+        Args:
+            defaults: Field values for the new record.
+            id: Optional record ID (e.g., ``"user:alice"``).
+                If omitted, SurrealDB auto-generates the ID.
+            on_conflict: Dict of field -> value/SurrealFunc to apply when
+                the record already exists.
+
+        Returns:
+            The created or updated model instance.
+
+        Note:
+            ``on_conflict`` expressions run in the context of the **existing**
+            record.  On the first insert there is no existing record, so
+            expressions like ``login_count + 1`` will fail (``NONE + 1``).
+            Create the record first with a plain ``upsert()`` (no
+            ``on_conflict``), then use ``on_conflict`` for subsequent calls.
+
+        Example::
+
+            # First call — create the record
+            await User.objects().upsert(
+                defaults={"name": "Alice", "login_count": 1},
+                id="user:alice",
+            )
+            # Second call — increment on conflict
+            user = await User.objects().upsert(
+                defaults={"name": "Alice", "login_count": 1},
+                id="user:alice",
+                on_conflict={"login_count": SurrealFunc("login_count += 1")},
+            )
+        """
+        from .surreal_function import SurrealFunc
+
+        table = self._model_table
+        variables: dict[str, Any] = {}
+
+        if on_conflict:
+            # Use INSERT INTO ... ON DUPLICATE KEY UPDATE syntax
+            obj_parts: list[str] = []
+            if id:
+                _, record_id = parse_record_id(id)
+                obj_parts.append(f"id: {format_thing(table, record_id)}")
+            for field_name, value in defaults.items():
+                validate_identifier(field_name, "field name")
+                if isinstance(value, SurrealFunc):
+                    obj_parts.append(f"{field_name}: {value.expression}")
+                else:
+                    var_name = f"_up_{field_name}"
+                    obj_parts.append(f"{field_name}: ${var_name}")
+                    variables[var_name] = value
+
+            conflict_parts: list[str] = []
+            for field_name, value in on_conflict.items():
+                validate_identifier(field_name, "field name")
+                if isinstance(value, SurrealFunc):
+                    conflict_parts.append(self._format_conflict_expr(field_name, value))
+                else:
+                    var_name = f"_oc_{field_name}"
+                    conflict_parts.append(f"{field_name} = ${var_name}")
+                    variables[var_name] = value
+
+            query = f"INSERT INTO {table} {{{', '.join(obj_parts)}}} ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)};"
+        else:
+            # Plain UPSERT SET (overwrites on conflict)
+            if id:
+                _, record_id = parse_record_id(id)
+                thing = format_thing(table, record_id)
+            else:
+                thing = table
+            set_parts: list[str] = []
+            for field_name, value in defaults.items():
+                validate_identifier(field_name, "field name")
+                if isinstance(value, SurrealFunc):
+                    set_parts.append(f"{field_name} = {value.expression}")
+                else:
+                    var_name = f"_up_{field_name}"
+                    set_parts.append(f"{field_name} = ${var_name}")
+                    variables[var_name] = value
+            query = f"UPSERT {thing} SET {', '.join(set_parts)};"
+
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+        result = await client.query(remove_quotes_for_variables(query), variables)
+
+        records = result.all_records
+        if records:
+            parsed = self.model.from_db(cast("dict[str, Any] | list[Any] | None", records[0]))
+            if isinstance(parsed, self.model):
+                return parsed
+
+        raise SurrealDbError(f"Upsert returned no record for {table}")
+
+    async def bulk_upsert(
+        self,
+        instances: Sequence[T],
+        *,
+        on_conflict: dict[str, Any] | None = None,
+        atomic: bool = False,
+    ) -> list[T]:
+        """
+        Upsert multiple records with optional conflict handling (SurrealDB 3.0+).
+
+        For each instance, generates an ``UPSERT ... SET ... ON DUPLICATE KEY
+        UPDATE ...`` statement.
+
+        Args:
+            instances: Model instances to upsert.  Each must have an ``id`` set.
+            on_conflict: Dict of field -> value/SurrealFunc applied when the
+                record already exists.  Applies to **all** instances.
+            atomic: Wrap all upserts in a single transaction.
+
+        Returns:
+            The upserted model instances.
+
+        Note:
+            ``on_conflict`` expressions run against the **existing** record.
+            The records must already exist for conflict expressions to work.
+            See :meth:`upsert` for details.
+
+        Example::
+
+            # First call — create the records
+            users = [User(id="user:alice", name="Alice", login_count=1), ...]
+            await User.objects().bulk_upsert(users)
+
+            # Second call — increment on conflict
+            results = await User.objects().bulk_upsert(
+                users,
+                on_conflict={"login_count": SurrealFunc("login_count += 1")},
+            )
+        """
+        from .surreal_function import SurrealFunc
+
+        if not instances:
+            return []
+
+        table = self._model_table
+        results: list[T] = []
+
+        # Build a single batch query with semicolons
+        queries: list[str] = []
+        all_variables: dict[str, Any] = {}
+
+        for idx, instance in enumerate(instances):
+            record_id = instance.get_id() if hasattr(instance, "get_id") else getattr(instance, "id", None)
+
+            data = instance.model_dump(exclude_unset=True, by_alias=True)
+            data.pop("id", None)
+
+            if on_conflict:
+                # Use INSERT INTO ... ON DUPLICATE KEY UPDATE
+                obj_parts: list[str] = []
+                if record_id:
+                    _, rid = parse_record_id(str(record_id))
+                    obj_parts.append(f"id: {format_thing(table, rid)}")
+                for field_name, value in data.items():
+                    validate_identifier(field_name, "field name")
+                    if isinstance(value, SurrealFunc):
+                        obj_parts.append(f"{field_name}: {value.expression}")
+                    else:
+                        var_name = f"_bu{idx}_{field_name}"
+                        obj_parts.append(f"{field_name}: ${var_name}")
+                        all_variables[var_name] = value
+
+                conflict_parts: list[str] = []
+                for field_name, value in on_conflict.items():
+                    validate_identifier(field_name, "field name")
+                    if isinstance(value, SurrealFunc):
+                        conflict_parts.append(self._format_conflict_expr(field_name, value))
+                    else:
+                        var_name = f"_oc{idx}_{field_name}"
+                        conflict_parts.append(f"{field_name} = ${var_name}")
+                        all_variables[var_name] = value
+
+                query = f"INSERT INTO {table} {{{', '.join(obj_parts)}}} ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)}"
+            else:
+                # Plain UPSERT SET
+                if record_id:
+                    _, rid = parse_record_id(str(record_id))
+                    thing = format_thing(table, rid)
+                else:
+                    thing = table
+                set_parts: list[str] = []
+                for field_name, value in data.items():
+                    validate_identifier(field_name, "field name")
+                    if isinstance(value, SurrealFunc):
+                        set_parts.append(f"{field_name} = {value.expression}")
+                    else:
+                        var_name = f"_bu{idx}_{field_name}"
+                        set_parts.append(f"{field_name} = ${var_name}")
+                        all_variables[var_name] = value
+                query = f"UPSERT {thing} SET {', '.join(set_parts)}"
+
+            queries.append(query + ";")
+
+        full_query = " ".join(queries)
+
+        if atomic:
+            async with await SurrealDBConnectionManager.transaction() as tx:
+                tx_result = await tx.query(remove_quotes_for_variables(full_query), all_variables)
+                for record in tx_result.all_records:
+                    parsed = self.model.from_db(cast("dict[str, Any] | list[Any] | None", record))
+                    if isinstance(parsed, self.model):
+                        results.append(parsed)
+        else:
+            client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+            q_result = await client.query(remove_quotes_for_variables(full_query), all_variables)
+            for record in q_result.all_records:
+                parsed = self.model.from_db(cast("dict[str, Any] | list[Any] | None", record))
+                if isinstance(parsed, self.model):
+                    results.append(parsed)
+
+        return results
 
     # ==================== Real-time Methods ====================
 

@@ -157,6 +157,18 @@ class FieldType(StrEnum):
         raise ValueError(f"Cannot map Python type {python_type} to SurrealDB FieldType")
 
 
+class AccessType(StrEnum):
+    """
+    Access definition type for SurrealDB authentication.
+
+    - RECORD: User-facing auth with SIGNUP/SIGNIN (JWT tokens)
+    - BEARER: Machine-to-machine auth with GRANT/REVOKE (API keys)
+    """
+
+    RECORD = "RECORD"
+    BEARER = "BEARER"
+
+
 class EncryptionAlgorithm(StrEnum):
     """
     Supported encryption algorithms for password hashing.

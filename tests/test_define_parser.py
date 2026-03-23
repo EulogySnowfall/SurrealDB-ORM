@@ -12,11 +12,12 @@ import pytest
 
 from src.surreal_orm.migrations.define_parser import (
     parse_define_access,
+    parse_define_config_graphql,
     parse_define_field,
     parse_define_index,
     parse_define_table,
 )
-from src.surreal_orm.migrations.state import FieldState, IndexState
+from src.surreal_orm.migrations.state import FieldState, GraphQLConfigState, IndexState
 
 # ==================== parse_define_field ====================
 
@@ -500,3 +501,82 @@ class TestEdgeCases:
         result = parse_define_field("DEFINE FIELD email ON users TYPE string COMMENT 'User email address'")
         assert result.name == "email"
         assert result.field_type == "string"
+
+
+# ==================== parse_define_config_graphql ====================
+
+
+class TestParseDefineConfigGraphQL:
+    """Tests for parsing DEFINE CONFIG GRAPHQL statements."""
+
+    def test_auto_auto(self) -> None:
+        result = parse_define_config_graphql("DEFINE CONFIG GRAPHQL TABLES AUTO FUNCTIONS AUTO;")
+        assert result.tables_mode == "AUTO"
+        assert result.tables_list == []
+        assert result.functions_mode == "AUTO"
+        assert result.functions_list == []
+
+    def test_none_none(self) -> None:
+        result = parse_define_config_graphql("DEFINE CONFIG GRAPHQL TABLES NONE FUNCTIONS NONE;")
+        assert result.tables_mode == "NONE"
+        assert result.functions_mode == "NONE"
+
+    def test_include_tables(self) -> None:
+        result = parse_define_config_graphql("DEFINE CONFIG GRAPHQL TABLES INCLUDE users, orders FUNCTIONS AUTO;")
+        assert result.tables_mode == "INCLUDE"
+        assert result.tables_list == ["users", "orders"]
+        assert result.functions_mode == "AUTO"
+
+    def test_exclude_tables(self) -> None:
+        result = parse_define_config_graphql("DEFINE CONFIG GRAPHQL TABLES EXCLUDE audit_log, migrations FUNCTIONS NONE;")
+        assert result.tables_mode == "EXCLUDE"
+        assert result.tables_list == ["audit_log", "migrations"]
+        assert result.functions_mode == "NONE"
+
+    def test_include_functions(self) -> None:
+        result = parse_define_config_graphql("DEFINE CONFIG GRAPHQL TABLES AUTO FUNCTIONS INCLUDE fn::get_stats, fn::search;")
+        assert result.functions_mode == "INCLUDE"
+        assert result.functions_list == ["fn::get_stats", "fn::search"]
+
+    def test_returns_graphql_config_state(self) -> None:
+        result = parse_define_config_graphql("DEFINE CONFIG GRAPHQL TABLES AUTO FUNCTIONS AUTO;")
+        assert isinstance(result, GraphQLConfigState)
+
+
+# ==================== parse_define_access (BEARER) ====================
+
+
+class TestParseDefineAccessBearer:
+    """Tests for parsing DEFINE ACCESS TYPE BEARER statements."""
+
+    def test_bearer_basic(self) -> None:
+        result = parse_define_access("DEFINE ACCESS api_key ON DATABASE TYPE BEARER DURATION FOR GRANT 30d, FOR SESSION 1h;")
+        assert result["name"] == "api_key"
+        assert result["access_type"] == "BEARER"
+        assert result["duration_grant"] == "30d"
+        assert result["duration_session"] == "1h"
+        assert result["table"] == ""
+        assert result["signup_fields"] == {}
+
+    def test_bearer_custom_durations(self) -> None:
+        result = parse_define_access(
+            "DEFINE ACCESS service_token ON DATABASE TYPE BEARER DURATION FOR GRANT 90d, FOR SESSION 4h;"
+        )
+        assert result["name"] == "service_token"
+        assert result["access_type"] == "BEARER"
+        assert result["duration_grant"] == "90d"
+        assert result["duration_session"] == "4h"
+
+    def test_record_still_works(self) -> None:
+        """Ensure RECORD parsing still works after adding BEARER support."""
+        result = parse_define_access(
+            "DEFINE ACCESS user_auth ON DATABASE TYPE RECORD "
+            "SIGNUP (CREATE users SET email = $email, password = crypto::argon2::generate($password)) "
+            "SIGNIN (SELECT * FROM users WHERE email = $email AND crypto::argon2::compare(password, $password)) "
+            "DURATION FOR TOKEN 15m, FOR SESSION 12h;"
+        )
+        assert result["name"] == "user_auth"
+        assert result["access_type"] == "RECORD"
+        assert result["table"] == "users"
+        assert result["signup_fields"]["email"] == "$email"
+        assert result["duration_grant"] is None

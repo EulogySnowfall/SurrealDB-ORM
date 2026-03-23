@@ -7,13 +7,16 @@ from src.surreal_orm.migrations.operations import (
     CreateIndex,
     CreateTable,
     DefineAccess,
+    DefineGraphQLConfig,
     DropField,
     DropIndex,
     DropTable,
+    RemoveGraphQLConfig,
 )
 from src.surreal_orm.migrations.state import (
     AccessState,
     FieldState,
+    GraphQLConfigState,
     IndexState,
     SchemaState,
     TableState,
@@ -384,3 +387,53 @@ class TestSchemaStateDiff:
 
         # Should have no operations
         assert len(operations) == 0
+
+
+class TestGraphQLConfigDiff:
+    """Tests for GraphQL config diffing."""
+
+    def test_add_graphql_config(self) -> None:
+        """Test adding GraphQL config to empty state."""
+        state1 = SchemaState()
+        state2 = SchemaState(graphql_config=GraphQLConfigState())
+
+        operations = state1.diff(state2)
+        graphql_ops = [op for op in operations if isinstance(op, DefineGraphQLConfig)]
+        assert len(graphql_ops) == 1
+        assert graphql_ops[0].tables_mode == "AUTO"
+        assert graphql_ops[0].functions_mode == "AUTO"
+
+    def test_remove_graphql_config(self) -> None:
+        """Test removing GraphQL config."""
+        state1 = SchemaState(graphql_config=GraphQLConfigState())
+        state2 = SchemaState()
+
+        operations = state1.diff(state2)
+        remove_ops = [op for op in operations if isinstance(op, RemoveGraphQLConfig)]
+        assert len(remove_ops) == 1
+
+    def test_update_graphql_config(self) -> None:
+        """Test changing GraphQL config triggers redefine."""
+        state1 = SchemaState(graphql_config=GraphQLConfigState(tables_mode="AUTO"))
+        state2 = SchemaState(
+            graphql_config=GraphQLConfigState(
+                tables_mode="INCLUDE",
+                tables_list=["users", "orders"],
+            )
+        )
+
+        operations = state1.diff(state2)
+        graphql_ops = [op for op in operations if isinstance(op, DefineGraphQLConfig)]
+        assert len(graphql_ops) == 1
+        assert graphql_ops[0].tables_mode == "INCLUDE"
+        assert graphql_ops[0].tables_list == ["users", "orders"]
+
+    def test_no_change_graphql_config(self) -> None:
+        """Test identical GraphQL config produces no operations."""
+        config = GraphQLConfigState(tables_mode="AUTO", functions_mode="NONE")
+        state1 = SchemaState(graphql_config=config)
+        state2 = SchemaState(graphql_config=GraphQLConfigState(tables_mode="AUTO", functions_mode="NONE"))
+
+        operations = state1.diff(state2)
+        graphql_ops = [op for op in operations if isinstance(op, (DefineGraphQLConfig, RemoveGraphQLConfig))]
+        assert len(graphql_ops) == 0

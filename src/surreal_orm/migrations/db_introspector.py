@@ -18,6 +18,7 @@ from .define_parser import (
     parse_define_access,
     parse_define_analyzer,
     parse_define_api,
+    parse_define_config_graphql,
     parse_define_event,
     parse_define_field,
     parse_define_index,
@@ -148,6 +149,19 @@ class DatabaseIntrospector:
                         exc_info=True,
                     )
 
+        # Extract GraphQL configuration (SurrealDB 3.0+)
+        configs_info = db_info.get("configs", db_info.get("cg", {}))
+        if isinstance(configs_info, dict):
+            graphql_stmt = configs_info.get("graphql", configs_info.get("GRAPHQL"))
+            if graphql_stmt and isinstance(graphql_stmt, str):
+                try:
+                    state.graphql_config = parse_define_config_graphql(graphql_stmt)
+                except Exception:
+                    logger.debug(
+                        "Failed to parse GraphQL config, skipping.",
+                        exc_info=True,
+                    )
+
         return state
 
     async def _introspect_table(
@@ -242,17 +256,26 @@ class DatabaseIntrospector:
             access_define_stmt: DEFINE ACCESS statement string.
         """
         access_props = parse_define_access(access_define_stmt)
+        access_type = access_props.get("access_type", "RECORD")
         table_name = access_props["table"]
 
-        if table_name and table_name in state.tables:
-            state.tables[table_name].access = AccessState(
-                name=access_props["name"],
-                table=table_name,
-                signup_fields=access_props["signup_fields"],
-                signin_where=access_props["signin_where"],
-                duration_token=access_props["duration_token"],
-                duration_session=access_props["duration_session"],
-            )
+        access_state = AccessState(
+            name=access_props["name"],
+            table=table_name,
+            signup_fields=access_props["signup_fields"],
+            signin_where=access_props["signin_where"],
+            duration_token=access_props["duration_token"],
+            duration_session=access_props["duration_session"],
+            access_type=access_type,
+            duration_grant=access_props.get("duration_grant"),
+        )
+
+        if access_type == "BEARER":
+            # Bearer access is database-level, not tied to a specific table.
+            # Store as a standalone access on an empty-table sentinel if needed.
+            pass
+        elif table_name and table_name in state.tables:
+            state.tables[table_name].access = access_state
 
     async def _query_info(self, conn: HTTPConnection, query: str) -> dict[str, Any] | None:
         """

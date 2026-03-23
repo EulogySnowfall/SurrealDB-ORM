@@ -6,6 +6,96 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.31.0] - 2026-03-22
+
+**First PyPI release for SurrealDB 3.0.** Previous 0.30.x versions were
+internal alpha/beta iterations. This is the first version published to PyPI
+that targets SurrealDB >= 3.0. For SurrealDB 2.X, use `surrealdb-orm<0.30`
+(the `v2` branch).
+
+Adds migration operations for GraphQL configuration, bearer access, index
+rebuilding, and upsert conflict handling. The `DEFINE BUCKET` file storage
+feature has been deferred to v0.35.0 to keep this release focused.
+
+The project remains in **Beta** status (`Development Status :: 4 - Beta`).
+
+### Added
+
+- **`RebuildIndex` migration operation** — Rebuild indexes after bulk data imports or index definition changes. Supports `IF EXISTS` guard. Irreversible (idempotent no-op on rollback). Generates `REBUILD INDEX name ON table;`.
+
+  ```python
+  from surreal_orm import RebuildIndex
+
+  RebuildIndex(table="documents", name="idx_embedding")
+  RebuildIndex(table="articles", name="idx_fts", if_exists=True)
+  ```
+
+- **`DefineGraphQLConfig` / `RemoveGraphQLConfig` migration operations** — Enable and configure SurrealDB 3.0's built-in GraphQL endpoint via migrations. Supports four modes per clause: `TABLES AUTO|NONE|INCLUDE|EXCLUDE` and `FUNCTIONS AUTO|NONE|INCLUDE|EXCLUDE`. New `GraphQLConfigState` dataclass for schema tracking and diffing. New `parse_define_config_graphql()` parser for database introspection via `INFO FOR DB`.
+
+  ```python
+  from surreal_orm import DefineGraphQLConfig
+
+  # Enable for all tables
+  DefineGraphQLConfig(tables_mode="AUTO", functions_mode="AUTO")
+  # Generates: DEFINE CONFIG GRAPHQL TABLES AUTO FUNCTIONS AUTO;
+
+  # Include specific tables only
+  DefineGraphQLConfig(tables_mode="INCLUDE", tables_list=["users", "orders"])
+  ```
+
+- **Bearer access support (SurrealDB 3.0)** — Machine-to-machine authentication via API keys. New `DefineBearerAccess` migration operation generates `DEFINE ACCESS ... TYPE BEARER DURATION FOR GRANT ..., FOR SESSION ...;`. New `AccessType` enum (`RECORD`, `BEARER`) in `types.py`. `parse_define_access()` parser updated to handle both TYPE RECORD and TYPE BEARER access definitions. New auth mixin methods on `AuthenticatedUserMixin`:
+  - `grant_bearer_key(user_id=, access_name=)` — Issues bearer keys via `ACCESS ... GRANT`
+  - `revoke_bearer_key(key_id, access_name=)` — Revokes keys via `ACCESS ... REVOKE`
+
+  ```python
+  from surreal_orm import DefineBearerAccess
+
+  # Migration
+  DefineBearerAccess(name="api_key", duration_grant="30d", duration_session="1h")
+
+  # Runtime
+  key_info = await ServiceAccount.grant_bearer_key(user_id="service_accounts:worker1")
+  await ServiceAccount.revoke_bearer_key("key:abc123")
+  ```
+
+- **`QuerySet.upsert()` with `ON DUPLICATE KEY UPDATE`** — Insert a record or update it on conflict. Accepts `defaults` (field values for the new record), `id` (optional record ID), and `on_conflict` (dict of field -> value/SurrealFunc for the update clause on existing records). `SurrealFunc` expressions are supported in both `defaults` and `on_conflict`. All values are parameterized (`$_up_*` for defaults, `$_oc_*` for conflict) to prevent injection.
+
+  ```python
+  user = await User.objects().upsert(
+      defaults={"name": "Alice", "login_count": 1},
+      id="user:alice",
+      on_conflict={"login_count": SurrealFunc("login_count + 1")},
+  )
+  ```
+
+- **`QuerySet.bulk_upsert()`** — Batch upsert multiple instances with shared `on_conflict` handling. Supports `atomic=True` for transaction wrapping. Variables are namespaced by index (`$_bu{idx}_*`, `$_oc{idx}_*`) to avoid collisions across batch items.
+
+  ```python
+  results = await User.objects().bulk_upsert(
+      users,
+      on_conflict={"login_count": SurrealFunc("login_count + 1")},
+      atomic=True,
+  )
+  ```
+
+### Changed
+
+- **`AccessState` schema** — Added `access_type` (default `"RECORD"`) and `duration_grant` fields. The `table`, `signup_fields`, and `signin_where` fields now have default values (empty string/dict) for BEARER access compatibility. Existing RECORD access definitions are fully backward-compatible.
+- **`SchemaState` schema** — Added `graphql_config: GraphQLConfigState | None` field. `SchemaState.diff()` generates `DefineGraphQLConfig` when config is added or changed, and `RemoveGraphQLConfig` when config is removed. No operations when config is identical.
+- **`DatabaseIntrospector`** — Now parses GraphQL configuration from `INFO FOR DB` (`configs` or `cg` key) and bearer access definitions. Bearer access states are recognized but not attached to a specific table (they are database-level).
+
+### Fixed (validated against SurrealDB v3.0.4)
+
+- **`DefineBearerAccess` SQL syntax** — SurrealDB 3.0 requires `FOR USER` or `FOR RECORD` after `TYPE BEARER`. Added `bearer_for` parameter (default `"USER"`). Generates `DEFINE ACCESS name ON DATABASE TYPE BEARER FOR USER DURATION FOR GRANT ..., FOR SESSION ...;`.
+- **`RemoveGraphQLConfig` SQL syntax** — SurrealDB 3.0.4 does not support `REMOVE CONFIG GRAPHQL`. Changed to overwrite with `DEFINE CONFIG GRAPHQL TABLES NONE FUNCTIONS NONE;` to effectively disable it. `DefineGraphQLConfig.backwards()` updated to match.
+- **`QuerySet.upsert()` SQL syntax** — SurrealDB uses `INSERT INTO ... ON DUPLICATE KEY UPDATE` (not `UPSERT ... ON DUPLICATE KEY UPDATE`). The `upsert()` method now generates `INSERT INTO` when `on_conflict` is provided, and plain `UPSERT SET` when not. `SurrealFunc` expressions with compound assignment operators (`+=`, `-=`) are output directly without `field =` wrapping.
+
+### Deferred
+
+- **`DEFINE BUCKET` / File Storage** — Moved to v0.35.0 to keep this release focused on query and auth features.
+
+---
+
 ## [0.30.0b1] - 2026-03-10
 
 ### Added

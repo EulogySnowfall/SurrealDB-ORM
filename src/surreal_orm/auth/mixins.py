@@ -788,3 +788,87 @@ class AuthenticatedUserMixin:
         config = getattr(cls, "model_config", {})
         table_name = config.get("table_name") or cls.__name__
         return config.get("access_name") or f"{table_name.lower()}_auth"
+
+    @classmethod
+    async def grant_bearer_key(
+        cls,
+        *,
+        user_id: str | None = None,
+        access_name: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Issue a bearer key via SurrealDB 3.0's ``ACCESS ... GRANT`` command.
+
+        Bearer access must be defined with ``DEFINE ACCESS ... TYPE BEARER``
+        before calling this method.
+
+        Args:
+            user_id: Optional record ID to associate the key with
+                     (e.g., ``"service_accounts:worker1"``).
+            access_name: Override the access name.  Defaults to the
+                         model's configured ``access_name``.
+
+        Returns:
+            Dict with ``"id"`` (key ID), ``"key"`` (bearer token), and
+            other metadata from SurrealDB.
+
+        Example::
+
+            key_info = await ServiceAccount.grant_bearer_key(
+                user_id="service_accounts:worker1",
+            )
+            # {"id": "access_grant:...", "key": "surreal-bearer-...", ...}
+        """
+        from ..connection_manager import SurrealDBConnectionManager
+        from ..utils import validate_identifier
+
+        name = access_name or cls.get_access_name()
+        validate_identifier(name, "access name")
+        conn_name = cls.get_connection_name()
+        client = await SurrealDBConnectionManager.get_client(conn_name)
+
+        if user_id:
+            validate_identifier(user_id.split(":")[-1], "user ID")
+            sql = f"ACCESS {name} GRANT FOR USER {user_id}"
+        else:
+            sql = f"ACCESS {name} GRANT"
+
+        result = await client.query(sql)
+        records = result.all_records
+        if records:
+            return records[0]
+        return {}
+
+    @classmethod
+    async def revoke_bearer_key(
+        cls,
+        key_id: str,
+        *,
+        access_name: str | None = None,
+    ) -> None:
+        """
+        Revoke a previously issued bearer key.
+
+        Args:
+            key_id: The key ID to revoke (e.g., ``"key:xxx"``).
+            access_name: Override the access name.
+
+        Example::
+
+            await ServiceAccount.revoke_bearer_key("key:abc123")
+        """
+        from ..connection_manager import SurrealDBConnectionManager
+        from ..utils import validate_identifier
+
+        name = access_name or cls.get_access_name()
+        validate_identifier(name, "access name")
+        # key_id format: "access_grant:xxxx" — validate the ID part
+        if ":" in key_id:
+            validate_identifier(key_id.split(":")[0], "key ID table")
+        else:
+            validate_identifier(key_id, "key ID")
+        conn_name = cls.get_connection_name()
+        client = await SurrealDBConnectionManager.get_client(conn_name)
+
+        sql = f"ACCESS {name} REVOKE {key_id}"
+        await client.query(sql)

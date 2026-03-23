@@ -34,12 +34,16 @@ from .operations import (
     CreateTable,
     DataMigration,
     DefineAccess,
+    DefineBearerAccess,
+    DefineGraphQLConfig,
     DropField,
     DropIndex,
     DropTable,
     Operation,
     RawSQL,
+    RebuildIndex,
     RemoveAccess,
+    RemoveGraphQLConfig,
 )
 
 __all__ = [
@@ -61,7 +65,11 @@ __all__ = [
     "CreateIndex",
     "DropIndex",
     "DefineAccess",
+    "DefineBearerAccess",
     "RemoveAccess",
     "DataMigration",
     "RawSQL",
+    "RebuildIndex",
+    "DefineGraphQLConfig",
+    "RemoveGraphQLConfig",
 ]

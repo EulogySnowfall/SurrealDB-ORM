@@ -5,9 +5,9 @@
 [![codecov](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM/graph/badge.svg?token=XUONTG2M6Z)](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM)
 ![GitHub License](https://img.shields.io/github/license/EulogySnowfall/SurrealDB-ORM)
 
-> **Beta Software** - SurrealDB 3.0 compatible. Core APIs are stabilizing. Feedback welcome!
+> **First PyPI release for SurrealDB 3.0!** This is a Beta — core APIs are stabilizing. Feedback welcome!
 >
-> **Looking for SurrealDB 2.X compatibility?** Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) with `surrealdb-orm 0.20.x`. The `v2` branch receives security patches and critical bug fixes but no new features.
+> **Looking for SurrealDB 2.X compatibility?** Install `surrealdb-orm<0.30` or use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`0.20.x`). The `v2` branch receives security patches and critical bug fixes but no new features.
 
 **SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, and JWT authentication.
 
@@ -17,10 +17,75 @@
 
 | Branch | SurrealDB | ORM Version | Status                          |
 | ------ | --------- | ----------- | ------------------------------- |
-| `main` | 3.X       | 0.30.x      | Active development              |
+| `main` | 3.X       | 0.31.x      | Active development              |
 | `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
+
+---
+
+## What's New in 0.31.0
+
+### REBUILD INDEX Migration Operation
+
+```python
+from surreal_orm import RebuildIndex
+
+# Rebuild after bulk import or index change
+RebuildIndex(table="documents", name="idx_embedding")
+RebuildIndex(table="articles", name="idx_fts", if_exists=True)
+# Generates: REBUILD INDEX idx_embedding ON documents;
+```
+
+### GraphQL Configuration (SurrealDB 3.0)
+
+```python
+from surreal_orm import DefineGraphQLConfig, RemoveGraphQLConfig
+
+# Enable GraphQL for all tables and functions
+DefineGraphQLConfig(tables_mode="AUTO", functions_mode="AUTO")
+
+# Include specific tables only
+DefineGraphQLConfig(tables_mode="INCLUDE", tables_list=["users", "orders"])
+
+# Exclude certain tables
+DefineGraphQLConfig(tables_mode="EXCLUDE", tables_list=["audit_log"])
+```
+
+### Bearer Access (SurrealDB 3.0)
+
+Machine-to-machine authentication with API keys via `DEFINE ACCESS ... TYPE BEARER`:
+
+```python
+from surreal_orm import DefineBearerAccess, AccessType
+
+# Migration: define bearer access
+DefineBearerAccess(name="api_key", duration_grant="30d", duration_session="1h")
+
+# Issue and revoke bearer keys
+key_info = await ServiceAccount.grant_bearer_key(user_id="service_accounts:worker1")
+await ServiceAccount.revoke_bearer_key("key:abc123")
+```
+
+### UPSERT ON DUPLICATE KEY UPDATE
+
+```python
+from surreal_orm import SurrealFunc
+
+# Insert or update on conflict
+user = await User.objects().upsert(
+    defaults={"name": "Alice", "login_count": 1},
+    id="user:alice",
+    on_conflict={"login_count": SurrealFunc("login_count + 1")},
+)
+
+# Bulk upsert with conflict handling
+results = await User.objects().bulk_upsert(
+    users,
+    on_conflict={"login_count": SurrealFunc("login_count + 1")},
+    atomic=True,
+)
+```
 
 ---
 

@@ -1231,3 +1231,103 @@ class TestIsDatetimeField:
 
         # list[datetime] should NOT match — it's a list, not a datetime
         assert _is_datetime_field(list[datetime]) is False
+
+
+# =============================================================================
+# v0.30.0 Phase 2b FR4: UPSERT ON DUPLICATE KEY UPDATE
+# =============================================================================
+
+
+class TestUpsertMethod:
+    """Tests for QuerySet.upsert() method."""
+
+    def test_upsert_method_exists(self) -> None:
+        """QuerySet must have an upsert() method."""
+        assert hasattr(QuerySet, "upsert")
+        assert inspect.iscoroutinefunction(QuerySet.upsert)
+
+    def test_upsert_signature(self) -> None:
+        """upsert() must accept defaults, id, and on_conflict."""
+        sig = inspect.signature(QuerySet.upsert)
+        params = list(sig.parameters.keys())
+        assert "defaults" in params
+        assert "id" in params
+        assert "on_conflict" in params
+
+    def test_bulk_upsert_method_exists(self) -> None:
+        """QuerySet must have a bulk_upsert() method."""
+        assert hasattr(QuerySet, "bulk_upsert")
+        assert inspect.iscoroutinefunction(QuerySet.bulk_upsert)
+
+    def test_bulk_upsert_signature(self) -> None:
+        """bulk_upsert() must accept instances, on_conflict, and atomic."""
+        sig = inspect.signature(QuerySet.bulk_upsert)
+        params = list(sig.parameters.keys())
+        assert "instances" in params
+        assert "on_conflict" in params
+        assert "atomic" in params
+
+
+# =============================================================================
+# v0.31.0 Fix: _format_conflict_expr edge cases
+# =============================================================================
+
+
+class TestFormatConflictExpr:
+    """Tests for QuerySet._format_conflict_expr static method."""
+
+    def test_simple_expression_gets_wrapped(self) -> None:
+        """A plain expression should be wrapped with field_name = ..."""
+        from src.surreal_orm.surreal_function import SurrealFunc
+
+        func = SurrealFunc("login_count + 1")
+        result = QuerySet._format_conflict_expr("login_count", func)
+        assert result == "login_count = login_count + 1"
+
+    def test_compound_assignment_not_wrapped(self) -> None:
+        """An expression with += should be output as-is."""
+        from src.surreal_orm.surreal_function import SurrealFunc
+
+        func = SurrealFunc("login_count += 1")
+        result = QuerySet._format_conflict_expr("login_count", func)
+        assert result == "login_count += 1"
+
+    def test_subtract_assignment_not_wrapped(self) -> None:
+        """An expression with -= should be output as-is."""
+        from src.surreal_orm.surreal_function import SurrealFunc
+
+        func = SurrealFunc("credits -= 10")
+        result = QuerySet._format_conflict_expr("credits", func)
+        assert result == "credits -= 10"
+
+
+# =============================================================================
+# v0.31.0 Fix: grant_bearer_key / revoke_bearer_key input validation
+# =============================================================================
+
+
+class TestBearerKeyValidation:
+    """Tests for bearer key input validation (via validate_identifier)."""
+
+    def test_validate_identifier_rejects_sql_injection(self) -> None:
+        """validate_identifier must reject strings with semicolons/spaces."""
+        from src.surreal_orm.utils import validate_identifier
+
+        with pytest.raises(ValueError, match="Invalid"):
+            validate_identifier("root; DELETE users;", "user ID")
+
+    def test_validate_identifier_rejects_spaces(self) -> None:
+        """validate_identifier must reject strings with spaces."""
+        from src.surreal_orm.utils import validate_identifier
+
+        with pytest.raises(ValueError, match="Invalid"):
+            validate_identifier("evil DROP TABLE", "key ID")
+
+    def test_validate_identifier_accepts_valid_names(self) -> None:
+        """validate_identifier must accept valid SurrealQL identifiers."""
+        from src.surreal_orm.utils import validate_identifier
+
+        # Should not raise
+        validate_identifier("test_access", "access name")
+        validate_identifier("worker1", "user ID")
+        validate_identifier("my_key_123", "key ID")

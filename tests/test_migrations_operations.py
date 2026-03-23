@@ -11,11 +11,15 @@ from src.surreal_orm.migrations.operations import (
     CreateTable,
     DataMigration,
     DefineAccess,
+    DefineBearerAccess,
+    DefineGraphQLConfig,
     DropField,
     DropIndex,
     DropTable,
     RawSQL,
+    RebuildIndex,
     RemoveAccess,
+    RemoveGraphQLConfig,
 )
 
 
@@ -353,3 +357,158 @@ class TestRawSQL:
         """Test custom description."""
         op = RawSQL(sql="...", description="Create custom event")
         assert op.describe() == "Create custom event"
+
+
+class TestRebuildIndex:
+    """Tests for RebuildIndex operation."""
+
+    def test_forwards_basic(self) -> None:
+        """Test basic REBUILD INDEX generation."""
+        op = RebuildIndex(table="documents", name="idx_embedding")
+        assert op.forwards() == "REBUILD INDEX idx_embedding ON documents;"
+
+    def test_forwards_if_exists(self) -> None:
+        """Test REBUILD INDEX with IF EXISTS."""
+        op = RebuildIndex(table="articles", name="idx_fts", if_exists=True)
+        assert op.forwards() == "REBUILD INDEX IF EXISTS idx_fts ON articles;"
+
+    def test_backwards_empty(self) -> None:
+        """Test that backwards is a no-op."""
+        op = RebuildIndex(table="documents", name="idx_embedding")
+        assert op.backwards() == ""
+
+    def test_not_reversible(self) -> None:
+        """Test that RebuildIndex is not reversible."""
+        op = RebuildIndex(table="documents", name="idx_embedding")
+        assert op.reversible is False
+
+    def test_describe(self) -> None:
+        """Test human-readable description."""
+        op = RebuildIndex(table="documents", name="idx_embedding")
+        assert op.describe() == "Rebuild index idx_embedding on documents"
+
+
+class TestDefineGraphQLConfig:
+    """Tests for DefineGraphQLConfig operation."""
+
+    def test_forwards_auto(self) -> None:
+        """Test default AUTO mode."""
+        op = DefineGraphQLConfig()
+        assert op.forwards() == "DEFINE CONFIG GRAPHQL TABLES AUTO FUNCTIONS AUTO;"
+
+    def test_forwards_include_tables(self) -> None:
+        """Test INCLUDE mode with table list."""
+        op = DefineGraphQLConfig(
+            tables_mode="INCLUDE",
+            tables_list=["users", "orders"],
+            functions_mode="NONE",
+        )
+        assert op.forwards() == "DEFINE CONFIG GRAPHQL TABLES INCLUDE users, orders FUNCTIONS NONE;"
+
+    def test_forwards_exclude_tables(self) -> None:
+        """Test EXCLUDE mode with table list."""
+        op = DefineGraphQLConfig(
+            tables_mode="EXCLUDE",
+            tables_list=["audit_log"],
+        )
+        assert op.forwards() == "DEFINE CONFIG GRAPHQL TABLES EXCLUDE audit_log FUNCTIONS AUTO;"
+
+    def test_forwards_include_functions(self) -> None:
+        """Test INCLUDE mode with function list."""
+        op = DefineGraphQLConfig(
+            functions_mode="INCLUDE",
+            functions_list=["fn::get_stats", "fn::search"],
+        )
+        assert op.forwards() == "DEFINE CONFIG GRAPHQL TABLES AUTO FUNCTIONS INCLUDE fn::get_stats, fn::search;"
+
+    def test_backwards(self) -> None:
+        """Test backwards disables GraphQL by setting NONE modes."""
+        op = DefineGraphQLConfig()
+        assert op.backwards() == "DEFINE CONFIG GRAPHQL TABLES NONE FUNCTIONS NONE;"
+
+    def test_reversible(self) -> None:
+        """Test that DefineGraphQLConfig is reversible."""
+        op = DefineGraphQLConfig()
+        assert op.reversible is True
+
+    def test_describe(self) -> None:
+        """Test human-readable description."""
+        op = DefineGraphQLConfig(tables_mode="INCLUDE", functions_mode="NONE")
+        assert op.describe() == "Define GraphQL config (tables=INCLUDE, functions=NONE)"
+
+
+class TestRemoveGraphQLConfig:
+    """Tests for RemoveGraphQLConfig operation."""
+
+    def test_forwards(self) -> None:
+        """Test disable GraphQL config by overwriting with NONE."""
+        op = RemoveGraphQLConfig()
+        assert op.forwards() == "DEFINE CONFIG GRAPHQL TABLES NONE FUNCTIONS NONE;"
+
+    def test_backwards_empty(self) -> None:
+        """Test that backwards is empty."""
+        op = RemoveGraphQLConfig()
+        assert op.backwards() == ""
+
+    def test_not_reversible(self) -> None:
+        """Test that RemoveGraphQLConfig is not reversible."""
+        op = RemoveGraphQLConfig()
+        assert op.reversible is False
+
+    def test_describe(self) -> None:
+        """Test human-readable description."""
+        op = RemoveGraphQLConfig()
+        assert op.describe() == "Remove GraphQL config"
+
+
+class TestDefineBearerAccess:
+    """Tests for DefineBearerAccess operation."""
+
+    def test_forwards_basic(self) -> None:
+        """Test basic DEFINE ACCESS TYPE BEARER generation."""
+        op = DefineBearerAccess(name="api_key")
+        result = op.forwards()
+        assert "TYPE BEARER FOR USER" in result
+        assert "FOR GRANT 30d" in result
+        assert "FOR SESSION 1h" in result
+
+    def test_forwards_custom_durations(self) -> None:
+        """Test custom grant and session durations."""
+        op = DefineBearerAccess(
+            name="service_key",
+            duration_grant="90d",
+            duration_session="4h",
+        )
+        result = op.forwards()
+        assert "FOR GRANT 90d" in result
+        assert "FOR SESSION 4h" in result
+
+    def test_forwards_for_record(self) -> None:
+        """Test BEARER FOR RECORD variant."""
+        op = DefineBearerAccess(name="api_key", bearer_for="RECORD")
+        result = op.forwards()
+        assert "TYPE BEARER FOR RECORD" in result
+
+    def test_forwards_with_comment(self) -> None:
+        """Test DEFINE ACCESS TYPE BEARER with comment."""
+        op = DefineBearerAccess(
+            name="api_key",
+            comment="Machine-to-machine API key",
+        )
+        result = op.forwards()
+        assert "COMMENT 'Machine-to-machine API key'" in result
+
+    def test_backwards(self) -> None:
+        """Test backwards generates REMOVE ACCESS."""
+        op = DefineBearerAccess(name="api_key")
+        assert op.backwards() == "REMOVE ACCESS api_key ON DATABASE;"
+
+    def test_reversible(self) -> None:
+        """Test that DefineBearerAccess is reversible."""
+        op = DefineBearerAccess(name="api_key")
+        assert op.reversible is True
+
+    def test_describe(self) -> None:
+        """Test human-readable description."""
+        op = DefineBearerAccess(name="api_key")
+        assert op.describe() == "Define bearer access api_key"
