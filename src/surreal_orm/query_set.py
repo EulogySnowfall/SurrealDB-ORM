@@ -1953,7 +1953,7 @@ class QuerySet(Generic[T]):
             obj_parts: list[str] = []
             if id:
                 _, record_id = parse_record_id(id)
-                obj_parts.append(f"id: {table}:{record_id}")
+                obj_parts.append(f"id: {format_thing(table, record_id)}")
             for field_name, value in defaults.items():
                 validate_identifier(field_name, "field name")
                 if isinstance(value, SurrealFunc):
@@ -1973,10 +1973,7 @@ class QuerySet(Generic[T]):
                     conflict_parts.append(f"{field_name} = ${var_name}")
                     variables[var_name] = value
 
-            query = (
-                f"INSERT INTO {table} {{{', '.join(obj_parts)}}}"
-                f" ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)};"
-            )
+            query = f"INSERT INTO {table} {{{', '.join(obj_parts)}}} ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)};"
         else:
             # Plain UPSERT SET (overwrites on conflict)
             thing = format_thing(table, id) if id else table
@@ -2054,7 +2051,8 @@ class QuerySet(Generic[T]):
                 # Use INSERT INTO ... ON DUPLICATE KEY UPDATE
                 obj_parts: list[str] = []
                 if record_id:
-                    obj_parts.append(f"id: {table}:{record_id}")
+                    _, rid = parse_record_id(str(record_id))
+                    obj_parts.append(f"id: {format_thing(table, rid)}")
                 for field_name, value in data.items():
                     if isinstance(value, SurrealFunc):
                         obj_parts.append(f"{field_name}: {value.expression}")
@@ -2072,13 +2070,14 @@ class QuerySet(Generic[T]):
                         conflict_parts.append(f"{field_name} = ${var_name}")
                         all_variables[var_name] = value
 
-                query = (
-                    f"INSERT INTO {table} {{{', '.join(obj_parts)}}}"
-                    f" ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)}"
-                )
+                query = f"INSERT INTO {table} {{{', '.join(obj_parts)}}} ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)}"
             else:
                 # Plain UPSERT SET
-                thing = format_thing(table, record_id) if record_id else table
+                if record_id:
+                    _, rid = parse_record_id(str(record_id))
+                    thing = format_thing(table, rid)
+                else:
+                    thing = table
                 set_parts: list[str] = []
                 for field_name, value in data.items():
                     if isinstance(value, SurrealFunc):

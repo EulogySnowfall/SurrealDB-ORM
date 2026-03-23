@@ -820,23 +820,24 @@ class AuthenticatedUserMixin:
             # {"id": "access_grant:...", "key": "surreal-bearer-...", ...}
         """
         from ..connection_manager import SurrealDBConnectionManager
+        from ..utils import validate_identifier
 
         name = access_name or cls.get_access_name()
+        validate_identifier(name, "access name")
         conn_name = cls.get_connection_name()
         client = await SurrealDBConnectionManager.get_client(conn_name)
 
         if user_id:
+            validate_identifier(user_id.split(":")[-1], "user ID")
             sql = f"ACCESS {name} GRANT FOR USER {user_id}"
         else:
             sql = f"ACCESS {name} GRANT"
 
         result = await client.query(sql)
-        if isinstance(result, list) and result:
-            first = result[0]
-            if isinstance(first, dict) and "result" in first:
-                return first["result"]  # type: ignore[no-any-return]
-            return first  # type: ignore[no-any-return]
-        return result  # type: ignore[return-value]
+        records = result.all_records
+        if records:
+            return records[0]
+        return {}
 
     @classmethod
     async def revoke_bearer_key(
@@ -857,8 +858,15 @@ class AuthenticatedUserMixin:
             await ServiceAccount.revoke_bearer_key("key:abc123")
         """
         from ..connection_manager import SurrealDBConnectionManager
+        from ..utils import validate_identifier
 
         name = access_name or cls.get_access_name()
+        validate_identifier(name, "access name")
+        # key_id format: "access_grant:xxxx" — validate the ID part
+        if ":" in key_id:
+            validate_identifier(key_id.split(":")[0], "key ID table")
+        else:
+            validate_identifier(key_id, "key ID")
         conn_name = cls.get_connection_name()
         client = await SurrealDBConnectionManager.get_client(conn_name)
 
