@@ -522,25 +522,19 @@ class TestParseDefineConfigGraphQL:
         assert result.functions_mode == "NONE"
 
     def test_include_tables(self) -> None:
-        result = parse_define_config_graphql(
-            "DEFINE CONFIG GRAPHQL TABLES INCLUDE users, orders FUNCTIONS AUTO;"
-        )
+        result = parse_define_config_graphql("DEFINE CONFIG GRAPHQL TABLES INCLUDE users, orders FUNCTIONS AUTO;")
         assert result.tables_mode == "INCLUDE"
         assert result.tables_list == ["users", "orders"]
         assert result.functions_mode == "AUTO"
 
     def test_exclude_tables(self) -> None:
-        result = parse_define_config_graphql(
-            "DEFINE CONFIG GRAPHQL TABLES EXCLUDE audit_log, migrations FUNCTIONS NONE;"
-        )
+        result = parse_define_config_graphql("DEFINE CONFIG GRAPHQL TABLES EXCLUDE audit_log, migrations FUNCTIONS NONE;")
         assert result.tables_mode == "EXCLUDE"
         assert result.tables_list == ["audit_log", "migrations"]
         assert result.functions_mode == "NONE"
 
     def test_include_functions(self) -> None:
-        result = parse_define_config_graphql(
-            "DEFINE CONFIG GRAPHQL TABLES AUTO FUNCTIONS INCLUDE fn::get_stats, fn::search;"
-        )
+        result = parse_define_config_graphql("DEFINE CONFIG GRAPHQL TABLES AUTO FUNCTIONS INCLUDE fn::get_stats, fn::search;")
         assert result.functions_mode == "INCLUDE"
         assert result.functions_list == ["fn::get_stats", "fn::search"]
 
@@ -556,10 +550,7 @@ class TestParseDefineAccessBearer:
     """Tests for parsing DEFINE ACCESS TYPE BEARER statements."""
 
     def test_bearer_basic(self) -> None:
-        result = parse_define_access(
-            "DEFINE ACCESS api_key ON DATABASE TYPE BEARER "
-            "DURATION FOR GRANT 30d, FOR SESSION 1h;"
-        )
+        result = parse_define_access("DEFINE ACCESS api_key ON DATABASE TYPE BEARER DURATION FOR GRANT 30d, FOR SESSION 1h;")
         assert result["name"] == "api_key"
         assert result["access_type"] == "BEARER"
         assert result["duration_grant"] == "30d"
@@ -569,8 +560,7 @@ class TestParseDefineAccessBearer:
 
     def test_bearer_custom_durations(self) -> None:
         result = parse_define_access(
-            "DEFINE ACCESS service_token ON DATABASE TYPE BEARER "
-            "DURATION FOR GRANT 90d, FOR SESSION 4h;"
+            "DEFINE ACCESS service_token ON DATABASE TYPE BEARER DURATION FOR GRANT 90d, FOR SESSION 4h;"
         )
         assert result["name"] == "service_token"
         assert result["access_type"] == "BEARER"

@@ -435,7 +435,5 @@ class TestGraphQLConfigDiff:
         state2 = SchemaState(graphql_config=GraphQLConfigState(tables_mode="AUTO", functions_mode="NONE"))
 
         operations = state1.diff(state2)
-        graphql_ops = [
-            op for op in operations if isinstance(op, (DefineGraphQLConfig, RemoveGraphQLConfig))
-        ]
+        graphql_ops = [op for op in operations if isinstance(op, (DefineGraphQLConfig, RemoveGraphQLConfig))]
         assert len(graphql_ops) == 0

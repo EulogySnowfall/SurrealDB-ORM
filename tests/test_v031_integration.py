@@ -38,8 +38,7 @@ async def setup_surrealdb() -> None:
     )
     client = await surreal_orm.SurrealDBConnectionManager.get_client()
     await client.query(
-        f"DEFINE NAMESPACE IF NOT EXISTS {SURREALDB_NAMESPACE}; "
-        f"DEFINE DATABASE IF NOT EXISTS {SURREALDB_DATABASE};"
+        f"DEFINE NAMESPACE IF NOT EXISTS {SURREALDB_NAMESPACE}; DEFINE DATABASE IF NOT EXISTS {SURREALDB_DATABASE};"
     )
 
 
@@ -123,9 +122,7 @@ class TestRebuildIndexIntegration:
         client = await surreal_orm.SurrealDBConnectionManager.get_client()
         # Insert some data
         for i in range(10):
-            await client.query(
-                f"CREATE rebuild_docs SET title = 'doc_{i}';"
-            )
+            await client.query(f"CREATE rebuild_docs SET title = 'doc_{i}';")
         # Rebuild the index
         op = RebuildIndex(table="rebuild_docs", name="idx_title")
         await client.query(op.forwards())
@@ -267,9 +264,7 @@ class TestUpsertIntegration:
     @pytest.fixture(autouse=True)
     async def _setup(self, clean_database: None) -> None:
         client = await surreal_orm.SurrealDBConnectionManager.get_client()
-        await client.query(
-            "DEFINE TABLE upsert_users SCHEMALESS;"
-        )
+        await client.query("DEFINE TABLE upsert_users SCHEMALESS;")
 
     async def test_upsert_creates_new_record(self) -> None:
         """upsert() should create a new record when it doesn't exist."""
@@ -299,9 +294,7 @@ class TestUpsertIntegration:
         """INSERT ON DUPLICATE KEY UPDATE via raw query works correctly."""
         client = await surreal_orm.SurrealDBConnectionManager.get_client()
         # Create first
-        await client.query(
-            "UPSERT upsert_users:charlie SET name = 'Charlie', login_count = 1;"
-        )
+        await client.query("UPSERT upsert_users:charlie SET name = 'Charlie', login_count = 1;")
         # INSERT ON DUPLICATE KEY UPDATE — raw query to isolate from ORM
         result = await client.query(
             "INSERT INTO upsert_users {id: upsert_users:charlie, name: 'Charlie', login_count: 1} "
@@ -352,9 +345,7 @@ class TestBulkUpsertIntegration:
     @pytest.fixture(autouse=True)
     async def _setup(self, clean_database: None) -> None:
         client = await surreal_orm.SurrealDBConnectionManager.get_client()
-        await client.query(
-            "DEFINE TABLE bulk_upsert_items SCHEMALESS;"
-        )
+        await client.query("DEFINE TABLE bulk_upsert_items SCHEMALESS;")
 
     async def test_bulk_upsert_creates_multiple(self) -> None:
         """bulk_upsert() should create multiple new records."""

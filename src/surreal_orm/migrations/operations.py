@@ -656,15 +656,9 @@ class DefineBearerAccess(Operation):
     comment: str | None = None
 
     def forwards(self) -> str:
-        sql = (
-            f"DEFINE ACCESS {self.name} ON DATABASE TYPE BEARER"
-            f" FOR {self.bearer_for.upper()}"
-        )
+        sql = f"DEFINE ACCESS {self.name} ON DATABASE TYPE BEARER FOR {self.bearer_for.upper()}"
         if self.duration_grant or self.duration_session:
-            sql += (
-                f"\n    DURATION FOR GRANT {self.duration_grant},"
-                f" FOR SESSION {self.duration_session}"
-            )
+            sql += f"\n    DURATION FOR GRANT {self.duration_grant}, FOR SESSION {self.duration_session}"
 
         if self.comment:
             escaped_comment = self.comment.replace("'", "''")
