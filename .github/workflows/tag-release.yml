@@ -1,0 +1,88 @@
+# Create a git tag and GitHub Release when a version bump PR is merged.
+# Triggered by push events matching "chore(release): bump version to X.Y.Z".
+# Works for both main and v2 branches.
+# PyPI publishing is handled by publish.yml (main tags only).
+
+name: Tag & Release
+
+on:
+  push:
+    branches: [main, v2]
+
+permissions:
+  contents: write
+
+jobs:
+  tag-release:
+    name: Create Tag & Release
+    # Only run on version bump commits from the automerge workflow
+    if: startsWith(github.event.head_commit.message, 'chore(release): bump version to')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Extract version from commit message
+        id: version
+        run: |
+          MSG="${{ github.event.head_commit.message }}"
+          # Extract version: "chore(release): bump version to 0.31.2" → "0.31.2"
+          VERSION=$(echo "$MSG" | sed -n 's/.*bump version to \([0-9.]*\).*/\1/p')
+
+          if [[ -z "$VERSION" ]]; then
+            echo "Could not extract version from commit message: $MSG"
+            exit 1
+          fi
+
+          TAG="v${VERSION}"
+          BRANCH="${{ github.ref_name }}"
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION, Tag: $TAG, Branch: $BRANCH"
+
+      - name: Check if tag already exists
+        id: check-tag
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag $TAG already exists — skipping"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create and push tag
+        if: steps.check-tag.outputs.exists == 'false'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$TAG" -m "Release $VERSION"
+          git push origin "$TAG"
+
+          echo "Created and pushed tag: $TAG"
+
+      - name: Create GitHub Release
+        if: steps.check-tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Release ${{ steps.version.outputs.tag }}"
+          body: |
+            ## Security Patch Release
+
+            Automated release from the `${{ steps.version.outputs.branch }}` branch.
+
+            ---
+            *This release was automatically created after a version bump PR was merged.*
+          prerelease: false
+          generate_release_notes: true
