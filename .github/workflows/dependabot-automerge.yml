@@ -186,44 +186,6 @@ jobs:
             echo "new-ver=${{ steps.sync-metadata.outputs.new-version }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Calculate next security patch version
-        id: version
-        run: |
-          # Versioning scheme: X.Y.Z
-          #   X = LTS / breaking changes
-          #   Y = feature updates
-          #   Z = security patches (bumped here)
-          #
-          # Example: 0.7.0 → 0.7.1 → 0.7.2, etc.
-
-          # Get current version from pyproject.toml
-          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-          echo "Current version: $CURRENT_VERSION"
-
-          # Extract major.minor.patch
-          MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
-          MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
-          PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
-
-          if [[ -z "$MAJOR" || -z "$MINOR" || -z "$PATCH" ]]; then
-            echo "Error: Could not parse version from $CURRENT_VERSION"
-            exit 1
-          fi
-
-          # Bump the patch (3rd) digit for security update
-          NEXT_PATCH=$((PATCH + 1))
-          NEW_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
-          NEW_TAG="v${NEW_VERSION}"
-
-          echo "Major: $MAJOR, Minor: $MINOR, Patch: $PATCH"
-          echo "Next patch: $NEXT_PATCH"
-          echo "New version: $NEW_VERSION"
-          echo "New tag: $NEW_TAG"
-
-          echo "current-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-          echo "new-tag=$NEW_TAG" >> $GITHUB_OUTPUT
-          echo "new-version=$NEW_VERSION" >> $GITHUB_OUTPUT
-
       - name: Enable auto-merge
         run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}"
         env:
@@ -276,14 +238,20 @@ jobs:
       - name: Create version bump PR
         if: steps.wait-merge.outputs.merged == 'true'
         run: |
-          NEW_VERSION="${{ steps.version.outputs.new-version }}"
-          NEW_TAG="${{ steps.version.outputs.new-tag }}"
           BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
-          BRANCH="chore/release-${NEW_TAG}"
           DEP_NAMES="${{ steps.dep-info.outputs.dep-names }}"
           UPDATE_TYPE="${{ steps.dep-info.outputs.update-type }}"
 
-          echo "Creating version bump PR: $NEW_VERSION on $BASE_BRANCH"
+          # Calculate version from the BASE BRANCH's pyproject.toml (not main's)
+          # This ensures v2 (0.20.x) and main (0.31.x) bump independently
+          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
+          NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          NEW_TAG="v${NEW_VERSION}"
+
+          echo "Base branch: $BASE_BRANCH, Current: $CURRENT_VERSION, New: $NEW_VERSION"
 
           git checkout -b "$BRANCH"
 
