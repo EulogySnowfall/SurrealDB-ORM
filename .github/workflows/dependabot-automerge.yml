@@ -126,10 +126,10 @@ jobs:
         run: echo "passed=true" >> $GITHUB_OUTPUT
 
   # =============================================================================
-  # Auto-merge and create patch version tag
+  # Auto-merge and create version bump PR
   # =============================================================================
   automerge:
-    name: Auto-merge & Tag
+    name: Auto-merge & Version Bump PR
     needs: [check-pr-type, test]
     if: |
       needs.check-pr-type.outputs.should-process == 'true' &&
@@ -156,7 +156,6 @@ jobs:
         id: sync-metadata
         run: |
           TITLE="${{ github.event.pull_request.title }}"
-          # Title: "chore(deps): bump <dep> from <old> to <new> (security sync from main)"
           DEP_NAME=$(echo "$TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
           NEW_VER=$(echo "$TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
           PREV_VER=$(echo "$TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
@@ -171,13 +170,9 @@ jobs:
           if [[ "${{ needs.check-pr-type.outputs.is-dependabot }}" == "true" ]]; then
             echo "dep-names=${{ steps.dependabot-metadata.outputs.dependency-names }}" >> $GITHUB_OUTPUT
             echo "update-type=${{ steps.dependabot-metadata.outputs.update-type }}" >> $GITHUB_OUTPUT
-            echo "prev-ver=${{ steps.dependabot-metadata.outputs.previous-version }}" >> $GITHUB_OUTPUT
-            echo "new-ver=${{ steps.dependabot-metadata.outputs.new-version }}" >> $GITHUB_OUTPUT
           else
             echo "dep-names=${{ steps.sync-metadata.outputs.dependency-names }}" >> $GITHUB_OUTPUT
             echo "update-type=${{ steps.sync-metadata.outputs.update-type }}" >> $GITHUB_OUTPUT
-            echo "prev-ver=${{ steps.sync-metadata.outputs.previous-version }}" >> $GITHUB_OUTPUT
-            echo "new-ver=${{ steps.sync-metadata.outputs.new-version }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Calculate next security patch version
@@ -244,68 +239,57 @@ jobs:
           git checkout v2
           git pull origin v2
 
+      - name: Install uv
+        if: steps.wait-merge.outputs.merged == 'true'
+        uses: astral-sh/setup-uv@v7
+
       - name: Configure Git
         if: steps.wait-merge.outputs.merged == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Update version files and create tag
+      - name: Create version bump PR
         if: steps.wait-merge.outputs.merged == 'true'
         run: |
-          NEW_TAG="${{ steps.version.outputs.new-tag }}"
           NEW_VERSION="${{ steps.version.outputs.new-version }}"
+          NEW_TAG="${{ steps.version.outputs.new-tag }}"
+          BRANCH="chore/release-${NEW_TAG}"
+          DEP_NAMES="${{ steps.dep-info.outputs.dep-names }}"
+          UPDATE_TYPE="${{ steps.dep-info.outputs.update-type }}"
 
-          echo "Updating version to: $NEW_VERSION"
-          echo "Creating tag: $NEW_TAG"
+          echo "Creating version bump PR: $NEW_VERSION on v2"
 
-          # Update pyproject.toml
+          git checkout -b "$BRANCH"
+
+          # Update version files
           sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
-
-          # Update src/surreal_orm/__init__.py
           sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" src/surreal_orm/__init__.py
-
-          # Update src/surreal_sdk/__init__.py
           sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" src/surreal_sdk/__init__.py
-
-          # Update src/surreal_sdk/pyproject.toml
           sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" src/surreal_sdk/pyproject.toml
 
-          # Commit version bump
-          git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml
-          git commit -m "chore(release): bump version to $NEW_VERSION [skip ci]"
-          git push origin v2
+          # Regenerate lockfile
+          uv lock
 
-          # Create and push tag
-          DEP_NAMES="${{ steps.dep-info.outputs.dep-names }}"
-          git tag -a "$NEW_TAG" -m "Security patch: $DEP_NAMES"
-          git push origin "$NEW_TAG"
+          git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml uv.lock
+          git commit -m "chore(release): bump version to $NEW_VERSION"
+          git push origin "$BRANCH"
 
-          echo "Created tag: $NEW_TAG"
+          gh pr create \
+            --title "chore(release): bump version to $NEW_VERSION" \
+            --body "## Version Bump (V2 LTS)
+
+          Automated version bump after merging PR #${{ github.event.pull_request.number }}.
+
+          ### Updated Dependencies
+          - **Package:** $DEP_NAMES
+          - **Update type:** $UPDATE_TYPE
+
+          ---
+          *This PR was automatically created by the Dependabot auto-merge workflow.*" \
+            --base v2 \
+            --head "$BRANCH"
+
+          gh pr merge --auto --squash "$BRANCH"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release
-        if: steps.wait-merge.outputs.merged == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.new-tag }}
-          name: "Security Patch ${{ steps.version.outputs.new-tag }}"
-          body: |
-            ## Security Patch Release (V2 LTS)
-
-            This is an automated security patch release for the V2 LTS branch.
-
-            ### Updated Dependencies
-            - **Package:** ${{ steps.dep-info.outputs.dep-names }}
-            - **Update type:** ${{ steps.dep-info.outputs.update-type }}
-            - **From:** ${{ steps.dep-info.outputs.prev-ver }}
-            - **To:** ${{ steps.dep-info.outputs.new-ver }}
-
-            ### What's Changed
-            ${{ github.event.pull_request.title }}
-
-            ---
-            *This release was automatically created by the Dependabot auto-merge workflow.*
-          prerelease: false
-          generate_release_notes: false
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
