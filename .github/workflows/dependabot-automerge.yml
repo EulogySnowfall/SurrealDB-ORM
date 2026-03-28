@@ -38,6 +38,8 @@ jobs:
     steps:
       - name: Detect PR type
         id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           IS_DEPENDABOT="false"
           IS_SECURITY_SYNC="false"
@@ -46,7 +48,10 @@ jobs:
             IS_DEPENDABOT="true"
           fi
 
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'security-sync') }}" == "true" ]]; then
+          # Read labels via API to avoid race condition with event context
+          # (labels set during PR creation may not be in github.event.pull_request.labels)
+          LABELS=$(gh pr view "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+          if echo "$LABELS" | grep -q "security-sync"; then
             IS_SECURITY_SYNC="true"
           fi
 
