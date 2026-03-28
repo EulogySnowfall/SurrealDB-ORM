@@ -25,6 +25,9 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+          # PAT_TOKEN is required so the tag push triggers publish.yml.
+          # Tags pushed with GITHUB_TOKEN do NOT trigger other workflows.
+          token: ${{ secrets.PAT_TOKEN }}
 
       - name: Extract version from commit message
         id: version
