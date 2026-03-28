@@ -29,33 +29,36 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       is-dependabot: ${{ steps.check.outputs.is-dependabot }}
-      is-security: ${{ steps.check.outputs.is-security }}
-      is-surrealdb: ${{ steps.check.outputs.is-surrealdb }}
+      is-security-sync: ${{ steps.check.outputs.is-security-sync }}
+      should-process: ${{ steps.check.outputs.should-process }}
     steps:
-      - name: Check if Dependabot PR
+      - name: Check if Dependabot or security-sync PR
         id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           IS_DEPENDABOT="false"
-          IS_SECURITY="false"
-          IS_SURREALDB="false"
+          IS_SECURITY_SYNC="false"
 
           if [[ "${{ github.actor }}" == "dependabot[bot]" ]]; then
             IS_DEPENDABOT="true"
           fi
 
-          # Check PR labels for security
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'security') }}" == "true" ]]; then
-            IS_SECURITY="true"
+          # Read labels via API to avoid race condition with pull_request_target
+          # (labels set during PR creation may not be in github.event.pull_request.labels)
+          LABELS=$(gh pr view "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+          if echo "$LABELS" | grep -q "security-sync"; then
+            IS_SECURITY_SYNC="true"
           fi
 
-          # Check if it's a SurrealDB update
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'surrealdb') }}" == "true" ]]; then
-            IS_SURREALDB="true"
+          SHOULD_PROCESS="false"
+          if [[ "$IS_DEPENDABOT" == "true" || "$IS_SECURITY_SYNC" == "true" ]]; then
+            SHOULD_PROCESS="true"
           fi
 
           echo "is-dependabot=$IS_DEPENDABOT" >> $GITHUB_OUTPUT
-          echo "is-security=$IS_SECURITY" >> $GITHUB_OUTPUT
-          echo "is-surrealdb=$IS_SURREALDB" >> $GITHUB_OUTPUT
+          echo "is-security-sync=$IS_SECURITY_SYNC" >> $GITHUB_OUTPUT
+          echo "should-process=$SHOULD_PROCESS" >> $GITHUB_OUTPUT
 
   # =============================================================================
   # Run full test suite for Dependabot PRs
@@ -63,7 +66,7 @@ jobs:
   test-dependabot:
     name: Test Dependabot Changes
     needs: check-dependabot
-    if: needs.check-dependabot.outputs.is-dependabot == 'true'
+    if: needs.check-dependabot.outputs.should-process == 'true'
     runs-on: ubuntu-latest
     outputs:
       tests-passed: ${{ steps.test-result.outputs.passed }}
@@ -130,15 +133,15 @@ jobs:
     name: Auto-merge & Tag
     needs: [check-dependabot, test-dependabot]
     if: |
-      needs.check-dependabot.outputs.is-dependabot == 'true' &&
+      needs.check-dependabot.outputs.should-process == 'true' &&
       needs.test-dependabot.outputs.tests-passed == 'true'
     runs-on: ubuntu-latest
     outputs:
       merged: ${{ steps.wait-merge.outputs.merged }}
-      dependency-names: ${{ steps.dependabot-metadata.outputs.dependency-names }}
-      update-type: ${{ steps.dependabot-metadata.outputs.update-type }}
-      previous-version-dep: ${{ steps.dependabot-metadata.outputs.previous-version }}
-      new-version-dep: ${{ steps.dependabot-metadata.outputs.new-version }}
+      dependency-names: ${{ steps.dep-info.outputs.dep-names }}
+      update-type: ${{ steps.dep-info.outputs.update-type }}
+      previous-version-dep: ${{ steps.dep-info.outputs.prev-ver }}
+      new-version-dep: ${{ steps.dep-info.outputs.new-ver }}
 
     steps:
       - name: Checkout code
@@ -149,10 +152,39 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
 
       - name: Get Dependabot metadata
+        if: needs.check-dependabot.outputs.is-dependabot == 'true'
         id: dependabot-metadata
         uses: dependabot/fetch-metadata@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata from PR title (security sync)
+        if: needs.check-dependabot.outputs.is-security-sync == 'true'
+        id: sync-metadata
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          DEP_NAME=$(echo "$TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
+          NEW_VER=$(echo "$TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
+          PREV_VER=$(echo "$TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
+          echo "dependency-names=$DEP_NAME" >> $GITHUB_OUTPUT
+          echo "new-version=$NEW_VER" >> $GITHUB_OUTPUT
+          echo "previous-version=$PREV_VER" >> $GITHUB_OUTPUT
+          echo "update-type=version-update:semver-patch" >> $GITHUB_OUTPUT
+
+      - name: Resolve dependency info
+        id: dep-info
+        run: |
+          if [[ "${{ needs.check-dependabot.outputs.is-dependabot }}" == "true" ]]; then
+            echo "dep-names=${{ steps.dependabot-metadata.outputs.dependency-names }}" >> $GITHUB_OUTPUT
+            echo "update-type=${{ steps.dependabot-metadata.outputs.update-type }}" >> $GITHUB_OUTPUT
+            echo "prev-ver=${{ steps.dependabot-metadata.outputs.previous-version }}" >> $GITHUB_OUTPUT
+            echo "new-ver=${{ steps.dependabot-metadata.outputs.new-version }}" >> $GITHUB_OUTPUT
+          else
+            echo "dep-names=${{ steps.sync-metadata.outputs.dependency-names }}" >> $GITHUB_OUTPUT
+            echo "update-type=${{ steps.sync-metadata.outputs.update-type }}" >> $GITHUB_OUTPUT
+            echo "prev-ver=${{ steps.sync-metadata.outputs.previous-version }}" >> $GITHUB_OUTPUT
+            echo "new-ver=${{ steps.sync-metadata.outputs.new-version }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Calculate next security patch version
         id: version
@@ -248,8 +280,8 @@ jobs:
           NEW_TAG="${{ steps.version.outputs.new-tag }}"
           BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
           BRANCH="chore/release-${NEW_TAG}"
-          DEP_NAMES="${{ steps.dependabot-metadata.outputs.dependency-names }}"
-          UPDATE_TYPE="${{ steps.dependabot-metadata.outputs.update-type }}"
+          DEP_NAMES="${{ steps.dep-info.outputs.dep-names }}"
+          UPDATE_TYPE="${{ steps.dep-info.outputs.update-type }}"
 
           echo "Creating version bump PR: $NEW_VERSION on $BASE_BRANCH"
 
@@ -293,7 +325,10 @@ jobs:
   sync-v2:
     name: Sync to V2
     needs: [automerge]
-    if: needs.automerge.outputs.merged == 'true'
+    # Only sync to v2 when the PR targets main (not when it already targets v2)
+    if: |
+      needs.automerge.outputs.merged == 'true' &&
+      github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
 
     steps:
