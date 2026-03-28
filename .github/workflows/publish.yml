@@ -6,8 +6,35 @@ on:
       - 'v*'  # Trigger on version tags (v0.4.0, v1.0.0, etc.)
 
 jobs:
+  # Verify the tag is on main before publishing to PyPI.
+  # V2 tags create GitHub Releases but must NOT publish to PyPI.
+  check-main:
+    name: Verify tag is on main
+    runs-on: ubuntu-latest
+    outputs:
+      on-main: ${{ steps.check.outputs.on-main }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check if tagged commit is on main
+        id: check
+        run: |
+          git fetch origin main
+          if git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
+            echo "on-main=true" >> $GITHUB_OUTPUT
+            echo "Tag is on main — will publish to PyPI"
+          else
+            echo "on-main=false" >> $GITHUB_OUTPUT
+            echo "Tag is NOT on main — skipping PyPI publish"
+          fi
+
   build:
     name: Build Package
+    needs: check-main
+    if: needs.check-main.outputs.on-main == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -58,7 +85,8 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs: build
+    needs: [check-main, build]
+    if: needs.check-main.outputs.on-main == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

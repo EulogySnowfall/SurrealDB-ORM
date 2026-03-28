@@ -133,6 +133,12 @@ jobs:
       needs.check-dependabot.outputs.is-dependabot == 'true' &&
       needs.test-dependabot.outputs.tests-passed == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      merged: ${{ steps.wait-merge.outputs.merged }}
+      dependency-names: ${{ steps.dependabot-metadata.outputs.dependency-names }}
+      update-type: ${{ steps.dependabot-metadata.outputs.update-type }}
+      previous-version-dep: ${{ steps.dependabot-metadata.outputs.previous-version }}
+      new-version-dep: ${{ steps.dependabot-metadata.outputs.new-version }}
 
     steps:
       - name: Checkout code
@@ -290,3 +296,94 @@ jobs:
             *This release was automatically created by the Dependabot auto-merge workflow.*
           prerelease: false
           generate_release_notes: false
+
+  # =============================================================================
+  # Sync dependency update to V2 branch (if the same dep exists there)
+  # =============================================================================
+  sync-v2:
+    name: Sync to V2
+    needs: [automerge]
+    if: needs.automerge.outputs.merged == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout v2 branch
+        uses: actions/checkout@v6
+        with:
+          ref: v2
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Check if dependency exists in v2
+        id: check
+        run: |
+          DEP_NAME="${{ needs.automerge.outputs.dependency-names }}"
+          echo "Checking for '$DEP_NAME' in v2 uv.lock..."
+          if grep -qi "name = \"${DEP_NAME}\"" uv.lock 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Found '$DEP_NAME' in v2"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "'$DEP_NAME' not found in v2 — skipping sync"
+          fi
+
+      - name: Update dependency and create PR
+        if: steps.check.outputs.exists == 'true'
+        run: |
+          DEP_NAME="${{ needs.automerge.outputs.dependency-names }}"
+          NEW_VER="${{ needs.automerge.outputs.new-version-dep }}"
+          PREV_VER="${{ needs.automerge.outputs.previous-version-dep }}"
+          UPDATE_TYPE="${{ needs.automerge.outputs.update-type }}"
+          SAFE_DEP=$(echo "$DEP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
+          BRANCH="chore/sync-${SAFE_DEP}-${NEW_VER}-v2"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Skip if branch already exists (avoid duplicate PRs)
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            echo "Branch $BRANCH already exists — skipping"
+            exit 0
+          fi
+
+          git checkout -b "$BRANCH"
+
+          uv lock --upgrade-package "$DEP_NAME"
+
+          if git diff --quiet uv.lock; then
+            echo "No changes — v2 already up to date for $DEP_NAME"
+            exit 0
+          fi
+
+          git add uv.lock
+          git commit -m "chore(deps): bump $DEP_NAME from $PREV_VER to $NEW_VER in the uv group across 1 directory"
+          git push origin "$BRANCH"
+
+          PR_BODY="## Security Sync from Main
+
+          This PR syncs a dependency update that was already tested and merged on \`main\`.
+
+          ### Updated Dependencies
+          - **Package:** $DEP_NAME
+          - **Update type:** $UPDATE_TYPE
+          - **From:** $PREV_VER
+          - **To:** $NEW_VER
+
+          ---
+          *This PR was automatically created by the security sync workflow.*"
+
+          gh pr create \
+            --title "chore(deps): bump $DEP_NAME from $PREV_VER to $NEW_VER (security sync from main)" \
+            --body "$PR_BODY" \
+            --base v2 \
+            --head "$BRANCH" \
+            --label "security-sync,dependencies"
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
