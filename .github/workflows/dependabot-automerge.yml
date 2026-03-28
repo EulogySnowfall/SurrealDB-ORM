@@ -231,71 +231,61 @@ jobs:
           git checkout "$BASE_BRANCH"
           git pull origin "$BASE_BRANCH"
 
+      - name: Install uv
+        if: steps.wait-merge.outputs.merged == 'true'
+        uses: astral-sh/setup-uv@v7
+
       - name: Configure Git
         if: steps.wait-merge.outputs.merged == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Update version files and create tag
+      - name: Create version bump PR
         if: steps.wait-merge.outputs.merged == 'true'
         run: |
-          NEW_TAG="${{ steps.version.outputs.new-tag }}"
           NEW_VERSION="${{ steps.version.outputs.new-version }}"
+          NEW_TAG="${{ steps.version.outputs.new-tag }}"
+          BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
+          BRANCH="chore/release-${NEW_TAG}"
+          DEP_NAMES="${{ steps.dependabot-metadata.outputs.dependency-names }}"
+          UPDATE_TYPE="${{ steps.dependabot-metadata.outputs.update-type }}"
 
-          echo "Updating version to: $NEW_VERSION"
-          echo "Creating tag: $NEW_TAG"
+          echo "Creating version bump PR: $NEW_VERSION on $BASE_BRANCH"
 
-          # Update pyproject.toml
+          git checkout -b "$BRANCH"
+
+          # Update version files
           sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
-
-          # Update src/surreal_orm/__init__.py
           sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" src/surreal_orm/__init__.py
-
-          # Update src/surreal_sdk/__init__.py
           sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" src/surreal_sdk/__init__.py
-
-          # Update src/surreal_sdk/pyproject.toml
           sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" src/surreal_sdk/pyproject.toml
 
-          # Commit version bump
-          git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml
-          git commit -m "chore(release): bump version to $NEW_VERSION [skip ci]"
-          BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
-          git push origin "$BASE_BRANCH"
+          # Regenerate lockfile
+          uv lock
 
-          # Create and push tag
-          git tag -a "$NEW_TAG" -m "Security patch: ${{ steps.dependabot-metadata.outputs.dependency-names }}"
-          git push origin "$NEW_TAG"
+          git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml uv.lock
+          git commit -m "chore(release): bump version to $NEW_VERSION"
+          git push origin "$BRANCH"
 
-          echo "Created tag: $NEW_TAG"
+          gh pr create \
+            --title "chore(release): bump version to $NEW_VERSION" \
+            --body "## Version Bump
+
+          Automated version bump after merging Dependabot PR #${{ github.event.pull_request.number }}.
+
+          ### Updated Dependencies
+          - **Package:** $DEP_NAMES
+          - **Update type:** $UPDATE_TYPE
+
+          ---
+          *This PR was automatically created by the Dependabot auto-merge workflow.*" \
+            --base "$BASE_BRANCH" \
+            --head "$BRANCH"
+
+          gh pr merge --auto --squash "$BRANCH"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release
-        if: steps.wait-merge.outputs.merged == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.new-tag }}
-          name: "Security Patch ${{ steps.version.outputs.new-tag }}"
-          body: |
-            ## Security Patch Release
-
-            This is an automated security patch release.
-
-            ### Updated Dependencies
-            - **Package:** ${{ steps.dependabot-metadata.outputs.dependency-names }}
-            - **Update type:** ${{ steps.dependabot-metadata.outputs.update-type }}
-            - **From:** ${{ steps.dependabot-metadata.outputs.previous-version }}
-            - **To:** ${{ steps.dependabot-metadata.outputs.new-version }}
-
-            ### What's Changed
-            ${{ github.event.pull_request.title }}
-
-            ---
-            *This release was automatically created by the Dependabot auto-merge workflow.*
-          prerelease: false
-          generate_release_notes: false
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
 
   # =============================================================================
   # Sync dependency update to V2 branch (if the same dep exists there)
