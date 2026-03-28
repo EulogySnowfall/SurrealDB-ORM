@@ -276,36 +276,7 @@ jobs:
           Tests passed against SurrealDB v${NEW_VERSION}.
           Previous version: v${{ needs.check-release.outputs.current-version }}"
 
-      # --- Security patches also bump the ORM version ---
-      - name: Bump ORM version (security patches only)
-        if: needs.check-release.outputs.is-security-patch == 'true'
-        run: |
-          # Calculate next patch version
-          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-
-          # Handle pre-release versions like 0.30.0a1
-          BASE_VERSION=$(echo "$CURRENT_VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
-          MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
-          MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
-          PATCH=$(echo "$BASE_VERSION" | cut -d. -f3)
-          PRE_RELEASE=$(echo "$CURRENT_VERSION" | sed "s/^${BASE_VERSION}//")
-
-          NEXT_PATCH=$((PATCH + 1))
-          NEW_ORM_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}${PRE_RELEASE}"
-
-          echo "Bumping ORM version: $CURRENT_VERSION → $NEW_ORM_VERSION"
-          echo "NEW_ORM_VERSION=$NEW_ORM_VERSION" >> $GITHUB_ENV
-
-          # Update version files
-          sed -i "s/^version = \".*\"/version = \"$NEW_ORM_VERSION\"/" pyproject.toml
-          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_ORM_VERSION\"/" src/surreal_orm/__init__.py
-          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_ORM_VERSION\"/" src/surreal_sdk/__init__.py
-          sed -i "s/^version = \".*\"/version = \"$NEW_ORM_VERSION\"/" src/surreal_sdk/pyproject.toml
-
-          git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml
-          git commit -m "chore(release): bump version to $NEW_ORM_VERSION (SurrealDB security update)"
-
-      - name: Push branch and create PR
+      - name: Push branch and create update PR
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           IS_SECURITY: ${{ needs.check-release.outputs.is-security-patch }}
@@ -319,8 +290,7 @@ jobs:
 
           PR_URL=$(gh pr create \
             --title "$TITLE" \
-            --body "$(cat <<EOF
-          ## SurrealDB Version Update
+            --body "## SurrealDB Version Update
 
           - **Previous:** v${{ needs.check-release.outputs.current-version }}
           - **New:** v${NEW_VERSION}
@@ -329,30 +299,95 @@ jobs:
           Tests already passed against this version in the [monitor workflow](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}).
 
           ---
-          *Automatically created by the SurrealDB version monitor.*
-          EOF
-          )" \
+          *Automatically created by the SurrealDB version monitor.*" \
             --base main \
             --head "$BRANCH")
 
           echo "PR_URL=$PR_URL" >> $GITHUB_ENV
           echo "Created PR: $PR_URL"
 
-          # Approve and enable auto-merge so it merges once CI passes
-          gh pr review "$PR_URL" --approve
           gh pr merge "$PR_URL" --auto --squash
 
-      # --- Tag and release after merge (security patches only) ---
-      - name: Wait for PR merge and tag (security patches only)
-        if: needs.check-release.outputs.is-security-patch == 'true'
+      - name: Wait for update PR to merge
+        id: wait-merge
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          echo "PR will be auto-merged after CI passes."
-          echo "Tag v${NEW_ORM_VERSION} will be created by the Dependabot workflow on merge."
-          echo "To manually tag after merge:"
-          echo "  git tag -a v${NEW_ORM_VERSION} -m 'SurrealDB security update: v${NEW_VERSION}'"
-          echo "  git push origin v${NEW_ORM_VERSION}"
+          PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+          MAX_ATTEMPTS=30
+          ATTEMPT=0
+
+          while [[ $ATTEMPT -lt $MAX_ATTEMPTS ]]; do
+            STATE=$(gh pr view "$PR_NUMBER" --json state -q '.state')
+            if [[ "$STATE" == "MERGED" ]]; then
+              echo "Update PR merged successfully"
+              echo "merged=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "Waiting for PR to merge... (attempt $((ATTEMPT + 1))/$MAX_ATTEMPTS)"
+            sleep 10
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          echo "PR did not merge in time"
+          echo "merged=false" >> $GITHUB_OUTPUT
+          exit 1
+
+      # --- After merge: create version bump PR (triggers tag-release.yml → publish.yml) ---
+      - name: Checkout main after merge
+        if: steps.wait-merge.outputs.merged == 'true'
+        run: |
+          git fetch origin main
+          git checkout main
+          git pull origin main
+
+      - name: Install uv
+        if: steps.wait-merge.outputs.merged == 'true'
+        uses: astral-sh/setup-uv@v7
+
+      - name: Create version bump PR
+        if: steps.wait-merge.outputs.merged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          # Calculate version from main's pyproject.toml
+          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
+          NEW_ORM_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          NEW_TAG="v${NEW_ORM_VERSION}"
+          BUMP_BRANCH="chore/release-${NEW_TAG}"
+
+          echo "Version bump: $CURRENT_VERSION → $NEW_ORM_VERSION"
+
+          git checkout -b "$BUMP_BRANCH"
+
+          # Update version files
+          sed -i "s/^version = \".*\"/version = \"$NEW_ORM_VERSION\"/" pyproject.toml
+          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_ORM_VERSION\"/" src/surreal_orm/__init__.py
+          sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_ORM_VERSION\"/" src/surreal_sdk/__init__.py
+          sed -i "s/^version = \".*\"/version = \"$NEW_ORM_VERSION\"/" src/surreal_sdk/pyproject.toml
+
+          # Regenerate lockfile
+          uv lock
+
+          git add pyproject.toml src/surreal_orm/__init__.py src/surreal_sdk/__init__.py src/surreal_sdk/pyproject.toml uv.lock
+          git commit -m "chore(release): bump version to $NEW_ORM_VERSION"
+          git push origin "$BUMP_BRANCH"
+
+          gh pr create \
+            --title "chore(release): bump version to $NEW_ORM_VERSION" \
+            --body "## Version Bump
+
+          Automated version bump after SurrealDB update to v${NEW_VERSION}.
+
+          ---
+          *This PR was automatically created by the SurrealDB version monitor.*" \
+            --base main \
+            --head "$BUMP_BRANCH"
+
+          gh pr merge --auto --squash "$BUMP_BRANCH"
 
   # =============================================================================
   # Step 4: Tests failed → create GitHub issue
