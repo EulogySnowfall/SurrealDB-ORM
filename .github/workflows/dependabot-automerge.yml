@@ -1,6 +1,10 @@
-# Auto-merge Dependabot PRs after successful tests
+# Auto-merge Dependabot PRs and security-sync PRs after successful tests
 # Bumps the patch (3rd) digit for security updates: x.y.z → x.y.(z+1)
 # Versioning: X=LTS/breaking, Y=features, Z=security patches
+#
+# Handles two PR types:
+#   1. Dependabot PRs (actor = dependabot[bot])
+#   2. Security sync PRs from main (label = security-sync)
 
 name: Dependabot Auto-merge
 
@@ -22,48 +26,46 @@ env:
 
 jobs:
   # =============================================================================
-  # Check if this is a Dependabot PR
+  # Check if this is a Dependabot PR or security-sync PR
   # =============================================================================
-  check-dependabot:
-    name: Check Dependabot PR
+  check-pr-type:
+    name: Check PR Type
     runs-on: ubuntu-latest
     outputs:
+      should-process: ${{ steps.check.outputs.should-process }}
       is-dependabot: ${{ steps.check.outputs.is-dependabot }}
-      is-security: ${{ steps.check.outputs.is-security }}
-      is-surrealdb: ${{ steps.check.outputs.is-surrealdb }}
+      is-security-sync: ${{ steps.check.outputs.is-security-sync }}
     steps:
-      - name: Check if Dependabot PR
+      - name: Detect PR type
         id: check
         run: |
           IS_DEPENDABOT="false"
-          IS_SECURITY="false"
-          IS_SURREALDB="false"
+          IS_SECURITY_SYNC="false"
 
           if [[ "${{ github.actor }}" == "dependabot[bot]" ]]; then
             IS_DEPENDABOT="true"
           fi
 
-          # Check PR labels for security
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'security') }}" == "true" ]]; then
-            IS_SECURITY="true"
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'security-sync') }}" == "true" ]]; then
+            IS_SECURITY_SYNC="true"
           fi
 
-          # Check if it's a SurrealDB update
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'surrealdb') }}" == "true" ]]; then
-            IS_SURREALDB="true"
+          SHOULD_PROCESS="false"
+          if [[ "$IS_DEPENDABOT" == "true" || "$IS_SECURITY_SYNC" == "true" ]]; then
+            SHOULD_PROCESS="true"
           fi
 
           echo "is-dependabot=$IS_DEPENDABOT" >> $GITHUB_OUTPUT
-          echo "is-security=$IS_SECURITY" >> $GITHUB_OUTPUT
-          echo "is-surrealdb=$IS_SURREALDB" >> $GITHUB_OUTPUT
+          echo "is-security-sync=$IS_SECURITY_SYNC" >> $GITHUB_OUTPUT
+          echo "should-process=$SHOULD_PROCESS" >> $GITHUB_OUTPUT
 
   # =============================================================================
-  # Run full test suite for Dependabot PRs
+  # Run full test suite
   # =============================================================================
-  test-dependabot:
-    name: Test Dependabot Changes
-    needs: check-dependabot
-    if: needs.check-dependabot.outputs.is-dependabot == 'true'
+  test:
+    name: Test Changes
+    needs: check-pr-type
+    if: needs.check-pr-type.outputs.should-process == 'true'
     runs-on: ubuntu-latest
     outputs:
       tests-passed: ${{ steps.test-result.outputs.passed }}
@@ -128,10 +130,10 @@ jobs:
   # =============================================================================
   automerge:
     name: Auto-merge & Tag
-    needs: [check-dependabot, test-dependabot]
+    needs: [check-pr-type, test]
     if: |
-      needs.check-dependabot.outputs.is-dependabot == 'true' &&
-      needs.test-dependabot.outputs.tests-passed == 'true'
+      needs.check-pr-type.outputs.should-process == 'true' &&
+      needs.test.outputs.tests-passed == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -143,26 +145,47 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
 
       - name: Get Dependabot metadata
+        if: needs.check-pr-type.outputs.is-dependabot == 'true'
         id: dependabot-metadata
         uses: dependabot/fetch-metadata@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract metadata from PR title (security sync)
+        if: needs.check-pr-type.outputs.is-security-sync == 'true'
+        id: sync-metadata
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          # Title: "chore(deps): bump <dep> from <old> to <new> (security sync from main)"
+          DEP_NAME=$(echo "$TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
+          NEW_VER=$(echo "$TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
+          PREV_VER=$(echo "$TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
+          echo "dependency-names=$DEP_NAME" >> $GITHUB_OUTPUT
+          echo "new-version=$NEW_VER" >> $GITHUB_OUTPUT
+          echo "previous-version=$PREV_VER" >> $GITHUB_OUTPUT
+          echo "update-type=version-update:semver-patch" >> $GITHUB_OUTPUT
+
+      - name: Resolve dependency info
+        id: dep-info
+        run: |
+          if [[ "${{ needs.check-pr-type.outputs.is-dependabot }}" == "true" ]]; then
+            echo "dep-names=${{ steps.dependabot-metadata.outputs.dependency-names }}" >> $GITHUB_OUTPUT
+            echo "update-type=${{ steps.dependabot-metadata.outputs.update-type }}" >> $GITHUB_OUTPUT
+            echo "prev-ver=${{ steps.dependabot-metadata.outputs.previous-version }}" >> $GITHUB_OUTPUT
+            echo "new-ver=${{ steps.dependabot-metadata.outputs.new-version }}" >> $GITHUB_OUTPUT
+          else
+            echo "dep-names=${{ steps.sync-metadata.outputs.dependency-names }}" >> $GITHUB_OUTPUT
+            echo "update-type=${{ steps.sync-metadata.outputs.update-type }}" >> $GITHUB_OUTPUT
+            echo "prev-ver=${{ steps.sync-metadata.outputs.previous-version }}" >> $GITHUB_OUTPUT
+            echo "new-ver=${{ steps.sync-metadata.outputs.new-version }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Calculate next security patch version
         id: version
         run: |
-          # Versioning scheme: X.Y.Z
-          #   X = LTS / breaking changes
-          #   Y = feature updates
-          #   Z = security patches (bumped here)
-          #
-          # Example: 0.7.0 → 0.7.1 → 0.7.2, etc.
-
-          # Get current version from pyproject.toml
           CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
           echo "Current version: $CURRENT_VERSION"
 
-          # Extract major.minor.patch
           MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
           MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
           PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
@@ -172,13 +195,10 @@ jobs:
             exit 1
           fi
 
-          # Bump the patch (3rd) digit for security update
           NEXT_PATCH=$((PATCH + 1))
           NEW_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
           NEW_TAG="v${NEW_VERSION}"
 
-          echo "Major: $MAJOR, Minor: $MINOR, Patch: $PATCH"
-          echo "Next patch: $NEXT_PATCH"
           echo "New version: $NEW_VERSION"
           echo "New tag: $NEW_TAG"
 
@@ -257,7 +277,8 @@ jobs:
           git push origin v2
 
           # Create and push tag
-          git tag -a "$NEW_TAG" -m "Security patch: ${{ steps.dependabot-metadata.outputs.dependency-names }}"
+          DEP_NAMES="${{ steps.dep-info.outputs.dep-names }}"
+          git tag -a "$NEW_TAG" -m "Security patch: $DEP_NAMES"
           git push origin "$NEW_TAG"
 
           echo "Created tag: $NEW_TAG"
@@ -271,15 +292,15 @@ jobs:
           tag_name: ${{ steps.version.outputs.new-tag }}
           name: "Security Patch ${{ steps.version.outputs.new-tag }}"
           body: |
-            ## Security Patch Release
+            ## Security Patch Release (V2 LTS)
 
-            This is an automated security patch release.
+            This is an automated security patch release for the V2 LTS branch.
 
             ### Updated Dependencies
-            - **Package:** ${{ steps.dependabot-metadata.outputs.dependency-names }}
-            - **Update type:** ${{ steps.dependabot-metadata.outputs.update-type }}
-            - **From:** ${{ steps.dependabot-metadata.outputs.previous-version }}
-            - **To:** ${{ steps.dependabot-metadata.outputs.new-version }}
+            - **Package:** ${{ steps.dep-info.outputs.dep-names }}
+            - **Update type:** ${{ steps.dep-info.outputs.update-type }}
+            - **From:** ${{ steps.dep-info.outputs.prev-ver }}
+            - **To:** ${{ steps.dep-info.outputs.new-ver }}
 
             ### What's Changed
             ${{ github.event.pull_request.title }}
