@@ -533,19 +533,32 @@ class TestConnectionManagerWebSocket:
 
 
 class TestVersion:
-    """Verify version was bumped."""
+    """Verify __version__ matches pyproject.toml."""
+
+    @staticmethod
+    def _read_toml_version(path: str) -> str:
+        """Read version from a pyproject.toml file."""
+        from pathlib import Path
+
+        for line in Path(path).read_text().splitlines():
+            if line.startswith("version = "):
+                return line.split('"')[1]
+        msg = f"version not found in {path}"
+        raise ValueError(msg)
 
     def test_orm_version(self) -> None:
-        """ORM version is 0.20.0."""
+        """ORM __version__ matches pyproject.toml."""
         from src.surreal_orm import __version__
 
-        assert __version__ == "0.20.0"
+        expected = self._read_toml_version("pyproject.toml")
+        assert __version__ == expected
 
     def test_sdk_version(self) -> None:
-        """SDK version is 0.20.0."""
+        """SDK __version__ matches its pyproject.toml."""
         from src.surreal_sdk import __version__
 
-        assert __version__ == "0.20.0"
+        expected = self._read_toml_version("src/surreal_sdk/pyproject.toml")
+        assert __version__ == expected
 
 
 # ==================== LiveModelStream Edge Cases ====================
