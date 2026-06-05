@@ -1492,12 +1492,12 @@ lint = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.9.0" },
+    { name = "aiohttp", specifier = ">=3.12" },
     { name = "cbor2", specifier = ">=6.1.2" },
-    { name = "click", marker = "extra == 'all'", specifier = ">=8.1.0" },
-    { name = "click", marker = "extra == 'cli'", specifier = ">=8.1.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "pydantic", specifier = ">=2.10.5" },
+    { name = "click", marker = "extra == 'all'", specifier = ">=8.1.8" },
+    { name = "click", marker = "extra == 'cli'", specifier = ">=8.1.8" },
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "pydantic", specifier = ">=2.11" },
 ]
 provides-extras = ["cli", "all"]
 
@@ -1506,7 +1506,7 @@ dev = [
     { name = "docker", specifier = ">=7.1.0" },
     { name = "ipykernel", specifier = ">=7.2.0" },
     { name = "mypy", specifier = ">=1.14.0" },
-    { name = "pydantic", specifier = ">=2.10.4" },
+    { name = "pydantic", specifier = ">=2.11" },
     { name = "pytest", specifier = ">=8.3.4" },
     { name = "pytest-asyncio", specifier = ">=0.25.0" },
     { name = "pytest-cov", specifier = ">=6.0.0" },
