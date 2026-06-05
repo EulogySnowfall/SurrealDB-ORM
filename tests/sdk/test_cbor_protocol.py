@@ -177,6 +177,37 @@ class TestCBOREncodeDecode:
         assert isinstance(decoded, Duration)
         assert decoded.value == "1h30m"
 
+    def test_decode_nested_none_in_containers(self) -> None:
+        """None nested in dicts and lists round-trips to Python None."""
+        data = {"a": None, "items": [1, None, {"b": None}]}
+        encoded = encode(data)
+        decoded = decode(encoded)
+        assert decoded["a"] is None
+        assert decoded["items"][1] is None
+        assert decoded["items"][2]["b"] is None
+
+    def test_tag_hook_signature_accepts_immutable_flag(self) -> None:
+        """The cbor2 6.x tag_hook contract passes (tag, immutable)."""
+        from cbor2 import CBORTag
+
+        from src.surreal_sdk.protocol.cbor import TAG_TABLE, _cbor_tag_decoder
+
+        result = _cbor_tag_decoder(CBORTag(TAG_TABLE, "users"), immutable=False)
+        assert isinstance(result, Table)
+        assert result.name == "users"
+
+    def test_decode_record_id_from_tuple_value(self) -> None:
+        """cbor2 6.x decodes nested arrays as tuples; RecordId tag must still decode."""
+        from cbor2 import CBORTag
+
+        from src.surreal_sdk.protocol.cbor import TAG_RECORDID, _cbor_tag_decoder
+
+        # Simulate the 6.x decoder handing a tuple value to the tag hook
+        result = _cbor_tag_decoder(CBORTag(TAG_RECORDID, ("users", "abc123")), immutable=False)
+        assert isinstance(result, RecordId)
+        assert result.table == "users"
+        assert result.id == "abc123"
+
     def test_encode_unsupported_type_raises(self) -> None:
         """Encoding unsupported types should raise TypeError."""
 
