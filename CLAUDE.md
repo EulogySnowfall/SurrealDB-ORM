@@ -21,12 +21,17 @@
 
 ### What's New in 0.31.2
 
-- **cbor2 6+ migration** — SDK now requires `cbor2>=6.1.2` (Rust rewrite). The decoder's
-  `tag_hook` callback was updated from the cbor2 5.x signature `(decoder, tag)` to the 6.x
-  signature `(tag, immutable)` in `src/surreal_sdk/protocol/cbor.py`. cbor2 6.x also decodes
-  nested CBOR arrays as tuples, so the RecordId tag branch now accepts `list | tuple`. The
-  encoder `default` callback is unchanged. Floor pinned to `>=6.1.2` to avoid the
-  data-corruption bugs in 6.0.x/6.1.0 (fixed in 6.1.1/6.1.2).
+- **cbor2 6+ compatibility fix (CRITICAL — fixes 401 auth failures)** — Under cbor2 6.x the
+  decoder's `tag_hook` callback signature changed from `(decoder, tag)` to `(tag, immutable)`.
+  The old code, when run with cbor2 6.x, raised `CBORDecodeError: error decoding semantic tag 6`
+  on **every** SurrealDB response containing a `NONE` value (i.e. virtually all of them) — which
+  broke **all** CBOR RPC operations, including authentication, surfacing as **401 Unauthorized**
+  errors in applications. The workaround was pinning `cbor2<6`. This release fixes the callback
+  (`_cbor_tag_decoder(tag, immutable)` in `src/surreal_sdk/protocol/cbor.py`) so cbor2 6.x works.
+  cbor2 6.x also exposes a `CBORTag`'s array value as a `tuple` (was `list`), so the RecordId tag
+  branch now accepts `list | tuple` (e.g. `RETURN $auth` record IDs decode correctly again). The
+  encoder `default` callback is unchanged. Floor pinned to `>=6.1.2` to avoid the data-corruption
+  bugs in 6.0.x/6.1.0 (fixed in 6.1.1/6.1.2).
 - **Security dependency-floor bumps** — `aiohttp>=3.12` (CVE-affected 3.9.x dropped),
   `pydantic>=2.11`, `httpx>=0.28`, `click>=8.1.8`.
 
