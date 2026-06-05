@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.31.0 (Beta) — First PyPI release for SurrealDB 3.0
+## Current Version: 0.31.2 (Beta) — First PyPI release for SurrealDB 3.0
 
 ### Branch Strategy
 
@@ -18,6 +18,17 @@
 | ------ | --------- | ----------- | ------------------------------- |
 | `main` | 3.X       | 0.31.x      | Active development              |
 | `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.31.2
+
+- **cbor2 6+ migration** — SDK now requires `cbor2>=6.1.2` (Rust rewrite). The decoder's
+  `tag_hook` callback was updated from the cbor2 5.x signature `(decoder, tag)` to the 6.x
+  signature `(tag, immutable)` in `src/surreal_sdk/protocol/cbor.py`. cbor2 6.x also decodes
+  nested CBOR arrays as tuples, so the RecordId tag branch now accepts `list | tuple`. The
+  encoder `default` callback is unchanged. Floor pinned to `>=6.1.2` to avoid the
+  data-corruption bugs in 6.0.x/6.1.0 (fixed in 6.1.1/6.1.2).
+- **Security dependency-floor bumps** — `aiohttp>=3.12` (CVE-affected 3.9.x dropped),
+  `pydantic>=2.11`, `httpx>=0.28`, `click>=8.1.8`.
 
 ### What's New in 0.31.0
 
