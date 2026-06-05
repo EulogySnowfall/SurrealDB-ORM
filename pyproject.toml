@@ -27,7 +27,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     # CBOR is required for proper binary protocol support
     # (fixes data:xxx strings being interpreted as record links)
-    "cbor2>=5.6.0",
+    "cbor2>=6.1.2",
 ]
 
 [project.optional-dependencies]
