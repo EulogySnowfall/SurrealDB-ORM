@@ -269,24 +269,28 @@ jobs:
 
       - name: Check if dependency exists in v2
         id: check
+        env:
+          DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
         run: |
-          DEP_NAME="${{ needs.automerge.outputs.dependency-names }}"
           echo "Checking for '$DEP_NAME' in v2 uv.lock..."
           if grep -qi "name = \"${DEP_NAME}\"" uv.lock 2>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Found '$DEP_NAME' in v2"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "'$DEP_NAME' not found in v2 — skipping sync"
           fi
 
       - name: Update dependency and create PR
         if: steps.check.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          # Job outputs derive from the PR title — bind to env, never expand into the script.
+          DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
+          NEW_VER: ${{ needs.automerge.outputs.new-version-dep }}
+          PREV_VER: ${{ needs.automerge.outputs.previous-version-dep }}
+          UPDATE_TYPE: ${{ needs.automerge.outputs.update-type }}
         run: |
-          DEP_NAME="${{ needs.automerge.outputs.dependency-names }}"
-          NEW_VER="${{ needs.automerge.outputs.new-version-dep }}"
-          PREV_VER="${{ needs.automerge.outputs.previous-version-dep }}"
-          UPDATE_TYPE="${{ needs.automerge.outputs.update-type }}"
           SAFE_DEP=$(echo "$DEP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
           BRANCH="chore/sync-${SAFE_DEP}-${NEW_VER}-v2"
 
@@ -331,5 +335,3 @@ jobs:
             --base v2 \
             --head "$BRANCH" \
             --label "security-sync,dependencies"
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
