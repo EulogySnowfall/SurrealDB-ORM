@@ -79,3 +79,8 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          # V2 is the deprecated LTS line — never claim the repo's "Latest"
+          # release (that belongs to the active 3.x `main` line). Without this,
+          # softprops defaults to make_latest=true and a v2 release would
+          # outrank higher-versioned main releases on the GitHub releases page.
+          make_latest: false
