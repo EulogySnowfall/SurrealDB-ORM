@@ -652,6 +652,44 @@ class TestMixinAuthWorkflow:
         assert isinstance(record_id, str)
         assert "MixinUser:" in record_id
 
+    async def test_validate_token_decodes_record_id_under_cbor(self) -> None:
+        """Regression for the cbor2 6.x auth breakage.
+
+        ``validate_token()`` authenticates over the CBOR RPC protocol and runs
+        ``RETURN $auth``, whose result is a SurrealDB RecordId encoded as a CBOR
+        semantic tag. Two cbor2 6.x changes broke this path before v0.31.2:
+
+        1. The ``tag_hook`` signature changed to ``(tag, immutable)`` — the old
+           hook raised ``CBORDecodeError: error decoding semantic tag 6`` on the
+           ``NONE`` tag present in nearly every response, breaking ALL CBOR ops
+           (auth included) and surfacing as HTTP 401 in applications.
+        2. A ``CBORTag``'s array value now decodes as a ``tuple`` (was ``list``),
+           so the RecordId must be reconstructed from ``list | tuple`` — otherwise
+           ``$auth`` decodes to a raw tuple and ``str()`` yields ``"('tbl', 'id')"``
+           instead of ``"tbl:id"``.
+
+        This test pins the decoded record ID to the exact ``MixinUser:<id>``
+        shape, which fails if either regression returns.
+        """
+        MixinUser = self._make_model()
+
+        _, token = await MixinUser.signup(
+            email="cbor_authid@example.com",
+            password="secret",
+            name="Cbor AuthId",
+        )
+
+        record_id = await MixinUser.validate_token(token)
+
+        assert record_id is not None, "validate_token returned None — CBOR decode likely failed (401 in apps)"
+        # Exact table:id format — NOT a stringified tuple like "('MixinUser', 'abc')"
+        assert record_id.startswith("MixinUser:")
+        assert record_id.count(":") == 1
+        assert "(" not in record_id and "'" not in record_id and ", " not in record_id
+        table, _, ident = record_id.partition(":")
+        assert table == "MixinUser"
+        assert ident  # non-empty record id part
+
     async def test_validate_token_invalid_returns_none(self) -> None:
         """validate_token() must return None for an invalid token (Bug 4)."""
         MixinUser = self._make_model()
