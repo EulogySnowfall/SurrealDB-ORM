@@ -1,11 +1,15 @@
 """Tests for HTTP connection module."""
 
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
+from src.surreal_sdk.connection import http as http_module
 from src.surreal_sdk.connection.http import HTTPConnection
-from src.surreal_sdk.exceptions import ConnectionError
+from src.surreal_sdk.exceptions import ConnectionError, QueryError
+from src.surreal_sdk.protocol.rpc import RPCRequest
 
 
 class TestHTTPConnection:
@@ -203,3 +207,73 @@ class TestHTTPConnectionIntegration:
 
         # Delete table
         await connection.query("DELETE test_users")
+
+
+def _resp(status: int, json_body: dict[str, object] | None = None) -> httpx.Response:
+    """Build a real httpx.Response so ``raise_for_status()`` behaves correctly."""
+    request = httpx.Request("POST", "http://localhost:8000/rpc")
+    if json_body is not None:
+        return httpx.Response(status, request=request, json=json_body)
+    return httpx.Response(status, request=request, text="There was a problem with authentication")
+
+
+class TestTransientAuthRetry:
+    """Regression tests for issue #101 — transient 401s from JWT ``nbf`` clock skew.
+
+    A freshly-minted token can be rejected with a 401 when the server clock jumps
+    backwards (notably on WSL2). ``_send_rpc`` must transparently re-mint the
+    token and retry, rather than surfacing the transient failure.
+    """
+
+    def _signed_in_conn(self, monkeypatch: pytest.MonkeyPatch) -> HTTPConnection:
+        conn = HTTPConnection("http://localhost:8000", "ns", "db", protocol="json")
+        conn._connected = True
+        conn._token = "stale.jwt.token"
+        conn._signin_args = {"user": "root", "password": "root", "namespace": None, "database": None, "access": None}
+        # Avoid real backoff delays in the retry loop.
+        monkeypatch.setattr("src.surreal_sdk.connection.http.asyncio.sleep", AsyncMock())
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_transient_401_is_retried_after_remint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 401 followed by success should re-mint the token and return the result."""
+        conn = self._signed_in_conn(monkeypatch)
+        conn._client = AsyncMock()
+        conn._client.post = AsyncMock(side_effect=[_resp(401), _resp(200, {"id": 1, "result": [{"ok": True}]})])
+        signin_mock = AsyncMock()
+        monkeypatch.setattr(conn, "signin", signin_mock)
+
+        response = await conn._send_rpc(RPCRequest(method="query", params=["INFO FOR DB", {}]))
+
+        assert response.is_success
+        assert response.result == [{"ok": True}]
+        assert conn._client.post.await_count == 2  # original + one retry
+        signin_mock.assert_awaited_once()  # token was re-minted
+
+    @pytest.mark.asyncio
+    async def test_persistent_401_eventually_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If re-minting never helps, the retry budget is bounded and a 401 is raised."""
+        conn = self._signed_in_conn(monkeypatch)
+        conn._client = AsyncMock()
+        conn._client.post = AsyncMock(return_value=_resp(401))
+        monkeypatch.setattr(conn, "signin", AsyncMock())
+
+        with pytest.raises(QueryError, match="401"):
+            await conn._send_rpc(RPCRequest(method="query", params=["INFO FOR DB", {}]))
+
+        # Bounded: first attempt + one retry per configured backoff.
+        assert conn._client.post.await_count == len(http_module._AUTH_RETRY_BACKOFFS_S) + 1
+
+    @pytest.mark.asyncio
+    async def test_401_without_credentials_fails_fast(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 401 with no retained signin credentials is a genuine failure — no retry."""
+        conn = HTTPConnection("http://localhost:8000", "ns", "db", protocol="json")
+        conn._connected = True
+        conn._client = AsyncMock()
+        conn._client.post = AsyncMock(return_value=_resp(401))
+        monkeypatch.setattr("src.surreal_sdk.connection.http.asyncio.sleep", AsyncMock())
+
+        with pytest.raises(QueryError, match="401"):
+            await conn._send_rpc(RPCRequest(method="query", params=["INFO FOR DB", {}]))
+
+        assert conn._client.post.await_count == 1  # no retry attempted

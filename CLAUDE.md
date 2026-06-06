@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.31.2 (Beta) — First PyPI release for SurrealDB 3.0
+## Current Version: 0.31.4 (Beta) — First PyPI release for SurrealDB 3.0
 
 ### Branch Strategy
 
@@ -18,6 +18,32 @@
 | ------ | --------- | ----------- | ------------------------------- |
 | `main` | 3.X       | 0.31.x      | Active development              |
 | `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.31.4
+
+- **Transient `401` recovery for JWT `nbf` clock skew (fixes intermittent integration-test 401s — issue #101)** —
+  A freshly-minted SurrealDB JWT carries `iat == nbf == now`. On hosts with an unstable clock —
+  most notably WSL2, whose VM clock can jump *backwards* — the server clock can read an earlier
+  time when verifying a token than when it was minted, making the token's `nbf` claim momentarily
+  "in the future". SurrealDB then rejects the request with a transient **`401 Unauthorized`**
+  ("Token verification failed due to the 'nbf' claim containing a future time"). Under load (e.g.
+  the full integration suite) this surfaced as **non-deterministic 401 failures with a different,
+  disjoint set of tests failing on each run** — the symptom reported in issue #101. The earlier
+  hypothesis (shared `SurrealDBConnectionManager` singleton auth-leak) was disproven: every
+  rejected token was a *valid, unexpired root token*, never a leaked record token.
+
+  `HTTPConnection` now retains its last successful signin arguments (`_signin_args`) and
+  `HTTPConnection._send_rpc()` recovers from a transient `401` by **re-minting** the token (a fresh
+  signin produces an `nbf` aligned with the *current* clock, valid regardless of the jump
+  magnitude) and retrying with a short bounded backoff (`_AUTH_RETRY_BACKOFFS_S`). Re-minting only
+  occurs when signin credentials are retained, so genuine credential failures still fail fast.
+  `make test-integration` now passes deterministically (was 1-2 failures every run). File touched:
+  `src/surreal_sdk/connection/http.py`; regression tests in `tests/sdk/test_http_connection.py`.
+
+### What's New in 0.31.3
+
+- **SurrealDB 3.1.3 support** — Bumped the test/CI target and Docker Compose image to
+  `surrealdb/surrealdb:v3.1.3` (#104). No source changes — the SDK and ORM are compatible as-is.
 
 ### What's New in 0.31.2
 
