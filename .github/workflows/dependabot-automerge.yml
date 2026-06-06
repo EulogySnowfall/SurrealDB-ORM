@@ -61,80 +61,12 @@ jobs:
           echo "should-process=$SHOULD_PROCESS" >> $GITHUB_OUTPUT
 
   # =============================================================================
-  # Run full test suite for Dependabot PRs
-  # =============================================================================
-  test-dependabot:
-    name: Test Dependabot Changes
-    needs: check-dependabot
-    if: needs.check-dependabot.outputs.should-process == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      tests-passed: ${{ steps.test-result.outputs.passed }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install dependencies
-        run: uv sync --frozen --group lint --group dev
-
-      - name: Run linting
-        run: |
-          uv run ruff format --check
-          uv run ruff check
-
-      - name: Run type checking
-        run: uv run python -m mypy src/
-
-      - name: Run unit tests
-        run: |
-          uv run pytest tests/ -m "not integration" \
-            --junitxml=junit-unit.xml \
-            --cov=src \
-            --cov-branch \
-            --cov-report=xml:coverage-unit.xml
-
-      - name: Start SurrealDB
-        run: |
-          docker compose -f devops/docker-compose.yml up -d surrealdb
-          ./devops/wait-for-healthy.sh localhost 8000 60
-
-      - name: Run integration tests
-        run: |
-          uv run pytest tests/ -m integration \
-            --junitxml=junit-integration.xml \
-            --cov=src \
-            --cov-branch \
-            --cov-report=xml:coverage-integration.xml
-
-      - name: Stop SurrealDB
-        if: always()
-        run: docker compose -f devops/docker-compose.yml down
-
-      - name: Set test result
-        id: test-result
-        if: success()
-        run: echo "passed=true" >> $GITHUB_OUTPUT
-
-  # =============================================================================
   # Auto-merge and create patch version tag
   # =============================================================================
   automerge:
     name: Auto-merge & Tag
-    needs: [check-dependabot, test-dependabot]
-    if: |
-      needs.check-dependabot.outputs.should-process == 'true' &&
-      needs.test-dependabot.outputs.tests-passed == 'true'
+    needs: [check-dependabot]
+    if: needs.check-dependabot.outputs.should-process == 'true'
     runs-on: ubuntu-latest
     outputs:
       merged: ${{ steps.wait-merge.outputs.merged }}
@@ -144,6 +76,11 @@ jobs:
       new-version-dep: ${{ steps.dep-info.outputs.new-ver }}
 
     steps:
+      - name: Wait for CI checks to pass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr checks "${{ github.event.pull_request.number }}" --watch --fail-fast --repo "${{ github.repository }}"
+
       - name: Checkout code
         uses: actions/checkout@v6
         with:
