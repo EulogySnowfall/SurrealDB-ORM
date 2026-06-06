@@ -9,6 +9,8 @@ This package provides:
 - CLI tools for schema management
 """
 
+import warnings
+
 # Re-export LiveAction from SDK for convenience
 from surreal_sdk.streaming.live_select import LiveAction
 
@@ -168,4 +170,24 @@ __all__ = [
     "retry_on_conflict",
 ]
 
-__version__ = "0.20.0"
+__version__ = "0.21.0"
+
+# ---------------------------------------------------------------------------
+# Deprecation notice (V2 LTS branch)
+# ---------------------------------------------------------------------------
+# The V2 LTS branch is deprecated in favor of SurrealDB-ORM-lite, which
+# continues to support SurrealDB 2.x on top of the now-matured official
+# SurrealDB Python SDK (v2). This branch remains under security/bug-fix
+# maintenance until SurrealDB-ORM-lite reaches v0.20.0, after which it will
+# be retired.
+#
+#   https://github.com/EulogySnowfall/SurrealDB-ORM-lite
+warnings.warn(
+    "SurrealDB-ORM v2 (0.21.x, SurrealDB 2.x LTS) is deprecated in favor of "
+    "SurrealDB-ORM-lite (https://github.com/EulogySnowfall/SurrealDB-ORM-lite), "
+    "which supports SurrealDB 2.x via the official SurrealDB Python SDK v2. "
+    "This branch will only receive security and bug fixes until SurrealDB-ORM-lite "
+    "reaches v0.20.0, after which it will be retired.",
+    DeprecationWarning,
+    stacklevel=2,
+)

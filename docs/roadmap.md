@@ -1,6 +1,10 @@
 # SurrealDB-ORM Roadmap
 
-> Planning document for future ORM features - Last updated: February 2026
+> Planning document for future ORM features - Last updated: June 2026
+>
+> **Note:** This is the deprecated `v2` LTS branch (SurrealDB 2.x). New feature work happens on
+> [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite) and the `main` branch
+> (SurrealDB 3.x); this roadmap is retained for historical context.
 
 ---
 

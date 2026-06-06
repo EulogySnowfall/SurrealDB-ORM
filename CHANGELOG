@@ -6,6 +6,50 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.0] - 2026-06-06
+
+### Deprecated
+
+- **V2 LTS branch deprecated in favor of [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite).**
+  The official SurrealDB Python SDK v2 has matured, so the bundled custom SDK is no longer needed for the
+  SurrealDB 2.x line. SurrealDB-ORM-lite continues to support SurrealDB 2.x on top of that official SDK.
+  This branch will only receive **security and bug fixes** until SurrealDB-ORM-lite reaches **v0.20.0**,
+  after which it will be retired.
+  - Importing `surreal_orm` now emits a `DeprecationWarning` pointing to SurrealDB-ORM-lite.
+  - README carries a deprecation banner; the package stays `Development Status :: 4 - Beta` while still maintained.
+
+### Security
+
+- **Dependency upgrades — 21 known CVEs cleared across 7 packages** (`aiohttp`, `idna`, `urllib3`, `pytest`,
+  `python-dotenv`, `pygments`, `tornado`). `uv.lock` refreshed.
+  - **`aiohttp>=3.14.0`** — runtime floor raised so published clients also get the patched version
+    (CVE-2026-34513..34525, CVE-2026-22815, CVE-2026-34993, CVE-2026-47265, and others).
+  - **`cbor2>=5.9.0,<6`** — floor raised to avoid vulnerable 5.6–5.8 releases; capped below 6.0 since
+    cbor2 6.0 may break the SurrealDB 2.x custom-tag encoding this branch relies on.
+
+### Fixed
+
+- **Transient `401` under host clock skew (issue #101)** — Backported from `main`. The SDK HTTP layer
+  (`surreal_sdk/connection/http.py`) now re-mints the JWT and retries with a short backoff when a request
+  fails with a `401` caused by a freshly-minted token whose `nbf` claim is momentarily in the future
+  (e.g. WSL2 backward clock jumps). Signin credentials are retained on `HTTPConnection` to enable re-minting;
+  a `401` without retained credentials is still raised immediately as a genuine auth failure.
+- **Transaction rollback test on SurrealDB 2.6.x** — On 2.6.x, `SELECT` from a non-existent table returns an
+  `ERR` ("table does not exist") rather than an empty OK result. After a successful rollback the table is
+  never created, so `test_transaction_rollback_no_records` now treats that `ERR` as valid proof that no
+  records were persisted.
+
+### Changed
+
+- **Version bump to 0.21.0** — `pyproject.toml`, `surreal_orm/__init__.py`, `surreal_sdk/__init__.py`,
+  `surreal_sdk/pyproject.toml`.
+- **Validated against SurrealDB v2.6.5** — `.surrealdb-version` and Docker Compose pinned to v2.6.5;
+  README "Tested with" updated. Full unit suite plus 362 integration tests pass on v2.6.5.
+- **Docs synced with `main`** — `SECURITY.md` adopts the two-branch supported-versions policy; "last updated"
+  dates refreshed in `CLAUDE.md` and `docs/roadmap.md`.
+
+---
+
 ## [0.20.0] - 2026-03-10
 
 ### V2 LTS Branch — SurrealDB 2.X Maintenance

@@ -4,6 +4,7 @@ HTTP Connection Implementation for SurrealDB SDK.
 Provides stateless HTTP-based connection, ideal for microservices and serverless.
 """
 
+import asyncio
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 import httpx
@@ -15,6 +16,14 @@ if TYPE_CHECKING:
 from ..exceptions import ConnectionError, QueryError
 from ..protocol.rpc import RPCRequest, RPCResponse
 from ..types import AuthResponse
+
+# Backoff delays (seconds) between attempts when recovering from a transient
+# ``401`` caused by a freshly-minted JWT whose ``nbf`` claim is momentarily in
+# the future under host clock skew (e.g. WSL2 backward clock jumps). Each attempt
+# re-mints the token, so these delays just space out attempts while the clock
+# settles; the number of entries bounds how long genuine auth failures take to
+# surface.
+_AUTH_RETRY_BACKOFFS_S: tuple[float, ...] = (0.1, 0.25, 0.5, 1.0)
 
 
 class HTTPConnection(BaseSurrealConnection):
@@ -64,6 +73,9 @@ class HTTPConnection(BaseSurrealConnection):
         self._client: httpx.AsyncClient | None = None
         self._request_id = 0
         self.protocol: Literal["json", "cbor"] = protocol
+        # Retained signin credentials so ``_send_rpc`` can transparently
+        # re-mint a token after a transient clock-skew 401 (see below).
+        self._signin_args: dict[str, Any] | None = None
 
     @property
     def headers(self) -> dict[str, str]:
@@ -148,39 +160,74 @@ class HTTPConnection(BaseSurrealConnection):
 
         request.id = self._next_request_id()
 
-        try:
-            if self.protocol == "cbor":
-                # Use CBOR encoding which properly handles all data types
-                headers = {
-                    **self.headers,
-                    "Content-Type": "application/cbor",
-                    "Accept": "application/cbor",
-                }
-                response = await self._client.post(
-                    "/rpc",
-                    content=request.to_cbor(),
-                    headers=headers,
-                )
-                response.raise_for_status()
-                return RPCResponse.from_cbor(response.content)
-            else:
-                # Use JSON encoding
-                headers = {**self.headers, "Content-Type": "application/json"}
-                response = await self._client.post(
-                    "/rpc",
-                    content=request.to_json(),
-                    headers=headers,
-                )
-                response.raise_for_status()
-                return RPCResponse.from_dict(response.json())
+        # A freshly-minted SurrealDB JWT carries ``iat == nbf == now``. If the
+        # server clock moves *backwards* between minting the token and verifying
+        # it on a subsequent request, the token's ``nbf`` claim is momentarily in
+        # the future and the server rejects it with a transient ``401`` ("Token
+        # verification failed due to the 'nbf' claim containing a future time").
+        # This happens on hosts with unstable clocks — most notably WSL2, whose
+        # VM clock can jump backwards — and surfaces as non-deterministic 401s
+        # under load. We recover by re-minting the token (a fresh signin produces
+        # an ``nbf`` aligned with the *current* clock, so it is valid regardless
+        # of the jump magnitude) and retrying with a short backoff. Re-minting is
+        # only possible when we have retained signin credentials; otherwise a 401
+        # is treated as a genuine credentials problem and raised immediately.
+        last_status_error: httpx.HTTPStatusError | None = None
+        for attempt in range(len(_AUTH_RETRY_BACKOFFS_S) + 1):
+            try:
+                if self.protocol == "cbor":
+                    # Use CBOR encoding which properly handles all data types
+                    headers = {
+                        **self.headers,
+                        "Content-Type": "application/cbor",
+                        "Accept": "application/cbor",
+                    }
+                    response = await self._client.post(
+                        "/rpc",
+                        content=request.to_cbor(),
+                        headers=headers,
+                    )
+                    response.raise_for_status()
+                    return RPCResponse.from_cbor(response.content)
+                else:
+                    # Use JSON encoding
+                    headers = {**self.headers, "Content-Type": "application/json"}
+                    response = await self._client.post(
+                        "/rpc",
+                        content=request.to_json(),
+                        headers=headers,
+                    )
+                    response.raise_for_status()
+                    return RPCResponse.from_dict(response.json())
 
-        except httpx.HTTPStatusError as e:
-            raise QueryError(
-                message=f"HTTP error: {e.response.status_code} - {e.response.text}",
-                code=e.response.status_code,
-            )
-        except httpx.RequestError as e:
-            raise ConnectionError(f"Request failed: {e}")
+            except httpx.HTTPStatusError as e:
+                last_status_error = e
+                can_reauth = (
+                    e.response.status_code == 401 and self._signin_args is not None and attempt < len(_AUTH_RETRY_BACKOFFS_S)
+                )
+                if can_reauth:
+                    await asyncio.sleep(_AUTH_RETRY_BACKOFFS_S[attempt])
+                    try:
+                        # Re-mint a token aligned with the current server clock.
+                        await self.signin(**self._signin_args)  # type: ignore[arg-type]
+                    except Exception:
+                        # Best-effort: if re-auth fails, retry with the existing
+                        # token anyway (the skew window may simply have passed).
+                        pass
+                    continue
+                raise QueryError(
+                    message=f"HTTP error: {e.response.status_code} - {e.response.text}",
+                    code=e.response.status_code,
+                )
+            except httpx.RequestError as e:
+                raise ConnectionError(f"Request failed: {e}")
+
+        # Unreachable: the loop always returns or raises, but keeps type checkers
+        # happy about the function always producing a value.
+        raise QueryError(  # pragma: no cover
+            message=f"HTTP error: {last_status_error.response.status_code if last_status_error else 401}",
+            code=last_status_error.response.status_code if last_status_error else 401,
+        )
 
     async def signin(
         self,
@@ -243,6 +290,16 @@ class HTTPConnection(BaseSurrealConnection):
             token = data.get("token")
             self._token = token
             self._authenticated = True
+            # Retain credentials so a transient auth failure (clock-skew 401)
+            # can re-mint a token — see the retry loop in ``_send_rpc``.
+            self._signin_args = {
+                "user": user,
+                "password": password,
+                "namespace": namespace,
+                "database": database,
+                "access": access,
+                **credentials,
+            }
             return AuthResponse(token=token, success=True, raw=data)
 
         except httpx.RequestError as e:

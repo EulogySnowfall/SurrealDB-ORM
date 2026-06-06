@@ -1,6 +1,6 @@
 [project]
 name = "surreal-sdk"
-version = "0.20.0"
+version = "0.21.0"
 description = "Custom Python SDK for SurrealDB with HTTP and WebSocket support. No dependency on official surrealdb package."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,8 +23,11 @@ classifiers = [
 
 dependencies = [
     "httpx>=0.27.0",
-    "aiohttp>=3.9.0",
-    "cbor2>=5.6.0",
+    # aiohttp floor raised to 3.14.0 — patches CVE-2026-34513..34525 and others
+    "aiohttp>=3.14.0",
+    # Floor at 5.9.0 (avoid vulnerable 5.6–5.8); capped at <6 on the V2 LTS branch
+    # since cbor2 6.0 may break SurrealDB 2.x custom tags
+    "cbor2>=5.9.0,<6",
 ]
 
 [project.urls]
