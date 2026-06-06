@@ -13,7 +13,7 @@ and adheres to [SemVer](https://semver.org/) versioning.
 - **V2 LTS branch deprecated in favor of [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite).**
   The official SurrealDB Python SDK v2 has matured, so the bundled custom SDK is no longer needed for the
   SurrealDB 2.x line. SurrealDB-ORM-lite continues to support SurrealDB 2.x on top of that official SDK.
-  This branch will only receive **security and bug fixes** until SurrealDB-ORM-lite reaches **v0.20.0**,
+  This branch will only receive **security and bug fixes** until SurrealDB-ORM-lite reaches **v0.40.0 (beta)**,
   after which it will be retired.
   - Importing `surreal_orm` now emits a `DeprecationWarning` pointing to SurrealDB-ORM-lite.
   - README carries a deprecation banner; the package stays `Development Status :: 4 - Beta` while still maintained.

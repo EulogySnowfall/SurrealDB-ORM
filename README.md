@@ -15,7 +15,7 @@
 > continues to support **SurrealDB 2.x** on top of the now-matured **official SurrealDB
 > Python SDK v2** — the SDK improvements are what make a bundled custom SDK unnecessary
 > for the 2.x line. This branch will only receive **security and bug fixes** until
-> SurrealDB-ORM-lite reaches **v0.20.0**, after which it will be retired. New projects
+> SurrealDB-ORM-lite reaches **v0.40.0 (beta)**, after which it will be retired. New projects
 > targeting SurrealDB 2.x should adopt SurrealDB-ORM-lite.
 
 **SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, and JWT authentication.
@@ -51,7 +51,7 @@ Tested with SurrealDB: v2.6.5
 
 > **Deprecation release.** This branch is now deprecated in favor of
 > [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite). It remains
-> under security/bug-fix maintenance until SurrealDB-ORM-lite reaches v0.20.0.
+> under security/bug-fix maintenance until SurrealDB-ORM-lite reaches v0.40.0 (beta).
 
 - **Deprecation notice** - README banner + a runtime `DeprecationWarning` on `import surreal_orm`,
   pointing to SurrealDB-ORM-lite (which supports SurrealDB 2.x via the official SurrealDB Python SDK v2).
