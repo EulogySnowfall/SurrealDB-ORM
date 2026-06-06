@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: March 2026
+> Context document for Claude AI - Last updated: June 2026
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.31.4 (Beta) — First PyPI release for SurrealDB 3.0
+## Current Version: 0.31.5 (Beta) — First PyPI release for SurrealDB 3.0
 
 ### Branch Strategy
 
@@ -18,6 +18,17 @@
 | ------ | --------- | ----------- | ------------------------------- |
 | `main` | 3.X       | 0.31.x      | Active development              |
 | `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.31.5
+
+- **Documentation & maintenance release** — no library code changes vs 0.31.4. Brought `CHANGELOG.md`
+  and the README "What's New" history up to date through the whole 0.31.x line (0.31.1–0.31.4 were
+  released but undocumented), added a consolidated 0.31.0 → 0.31.4 summary, renamed `CHANGELOG` →
+  `CHANGELOG.md` (so the README link resolves), and corrected stale "last updated" dates.
+
+  **0.31.x recap:** 0.31.0 (SurrealDB 3.0 migration ops) → 0.31.1 (cbor2 5.9.0 security bump) →
+  0.31.2 (critical cbor2 6.x 401 fix + floor bumps) → 0.31.3 (SurrealDB 3.1.3 support) →
+  0.31.4 (JWT `nbf` clock-skew 401 fix + dependency refresh / Pygments ReDoS).
 
 ### What's New in 0.31.4
 
@@ -60,6 +71,12 @@
   bugs in 6.0.x/6.1.0 (fixed in 6.1.1/6.1.2).
 - **Security dependency-floor bumps** — `aiohttp>=3.12` (CVE-affected 3.9.x dropped),
   `pydantic>=2.11`, `httpx>=0.28`, `click>=8.1.8`.
+
+### What's New in 0.31.1
+
+- **Automated security patch** — `cbor2` 5.8.0 → 5.9.0 (Dependabot auto-merge). CI / release-automation
+  fixes: `tag-release` uses `PAT_TOKEN` so tag pushes trigger publishing; Dependabot v2 sync + version-bump
+  PR flow; version tests made dynamic instead of hardcoded.
 
 ### What's New in 0.31.0
 
