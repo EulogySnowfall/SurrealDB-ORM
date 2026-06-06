@@ -159,25 +159,44 @@ jobs:
       - name: Extract metadata from PR title (security sync)
         if: needs.check-pr-type.outputs.is-security-sync == 'true'
         id: sync-metadata
+        # The PR title is attacker-influenced under pull_request_target. Bind it
+        # to an env var and reference the shell variable so it is never expanded
+        # into the script text (prevents GitHub Actions script injection).
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          TITLE="${{ github.event.pull_request.title }}"
-          DEP_NAME=$(echo "$TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
-          NEW_VER=$(echo "$TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
-          PREV_VER=$(echo "$TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
-          echo "dependency-names=$DEP_NAME" >> $GITHUB_OUTPUT
-          echo "new-version=$NEW_VER" >> $GITHUB_OUTPUT
-          echo "previous-version=$PREV_VER" >> $GITHUB_OUTPUT
-          echo "update-type=version-update:semver-patch" >> $GITHUB_OUTPUT
+          DEP_NAME=$(printf '%s' "$PR_TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
+          NEW_VER=$(printf '%s' "$PR_TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
+          PREV_VER=$(printf '%s' "$PR_TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
+          # Validate the extracted dependency name against a strict allowlist
+          # before it flows into downstream outputs / commit messages.
+          if ! printf '%s' "$DEP_NAME" | grep -qE '^[A-Za-z0-9._-]+$'; then
+            echo "Refusing to process unexpected dependency name: '$DEP_NAME'" >&2
+            exit 1
+          fi
+          echo "dependency-names=$DEP_NAME" >> "$GITHUB_OUTPUT"
+          echo "new-version=$NEW_VER" >> "$GITHUB_OUTPUT"
+          echo "previous-version=$PREV_VER" >> "$GITHUB_OUTPUT"
+          echo "update-type=version-update:semver-patch" >> "$GITHUB_OUTPUT"
 
       - name: Resolve dependency info
         id: dep-info
+        # Values derived from the PR title (sync-metadata) are attacker-influenced
+        # under pull_request_target. Bind every ${{ }} expression to an env var and
+        # reference the shell variable so nothing is expanded into the script text.
+        env:
+          IS_DEPENDABOT: ${{ needs.check-pr-type.outputs.is-dependabot }}
+          DBM_DEP_NAMES: ${{ steps.dependabot-metadata.outputs.dependency-names }}
+          DBM_UPDATE_TYPE: ${{ steps.dependabot-metadata.outputs.update-type }}
+          SYNC_DEP_NAMES: ${{ steps.sync-metadata.outputs.dependency-names }}
+          SYNC_UPDATE_TYPE: ${{ steps.sync-metadata.outputs.update-type }}
         run: |
-          if [[ "${{ needs.check-pr-type.outputs.is-dependabot }}" == "true" ]]; then
-            echo "dep-names=${{ steps.dependabot-metadata.outputs.dependency-names }}" >> $GITHUB_OUTPUT
-            echo "update-type=${{ steps.dependabot-metadata.outputs.update-type }}" >> $GITHUB_OUTPUT
+          if [[ "$IS_DEPENDABOT" == "true" ]]; then
+            echo "dep-names=$DBM_DEP_NAMES" >> "$GITHUB_OUTPUT"
+            echo "update-type=$DBM_UPDATE_TYPE" >> "$GITHUB_OUTPUT"
           else
-            echo "dep-names=${{ steps.sync-metadata.outputs.dependency-names }}" >> $GITHUB_OUTPUT
-            echo "update-type=${{ steps.sync-metadata.outputs.update-type }}" >> $GITHUB_OUTPUT
+            echo "dep-names=$SYNC_DEP_NAMES" >> "$GITHUB_OUTPUT"
+            echo "update-type=$SYNC_UPDATE_TYPE" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Calculate next security patch version
