@@ -6,6 +6,86 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.31.5] - 2026-06-06
+
+**Documentation & maintenance release.** Brings the changelog and README up to
+date through 0.31.4, adds a consolidated summary of the 0.31.x line, and corrects
+stale "last updated" dates. No library code changes — runtime behaviour is
+identical to 0.31.4.
+
+### Changed
+
+- Documented the previously-unreleased 0.31.1–0.31.4 entries in this changelog and in the README "What's New" history.
+- Renamed `CHANGELOG` → `CHANGELOG.md` so the README link resolves and the file follows convention.
+- Refreshed the "last updated" date in `CLAUDE.md` (was stuck at "March 2026").
+
+### 0.31.x at a glance
+
+- **0.31.0** — First PyPI release for SurrealDB 3.0: `RebuildIndex`, `DefineGraphQLConfig` / `RemoveGraphQLConfig`, `DefineBearerAccess`, and `QuerySet.upsert()` / `bulk_upsert()` with `ON DUPLICATE KEY UPDATE`.
+- **0.31.1** — Security: bumped `cbor2` 5.8.0 → 5.9.0; CI / release-automation fixes.
+- **0.31.2** — Critical: fixed the cbor2 6.x incompatibility that produced 401 auth failures on every CBOR RPC; raised security dependency floors.
+- **0.31.3** — Validated against SurrealDB 3.1.3 (test/CI target + Docker image).
+- **0.31.4** — Fixed intermittent integration-suite 401s caused by JWT `nbf` clock skew (WSL2 backward clock jumps); upgraded locked dependencies, clearing the Pygments ReDoS advisory.
+
+---
+
+## [0.31.4] - 2026-06-06
+
+**Fixes non-deterministic `401 Unauthorized` failures in the integration suite
+(issue #101) and refreshes dependencies.**
+
+### Fixed
+
+- **Transient JWT `nbf` clock-skew 401s (#101 / #106)** — A freshly-minted SurrealDB JWT carries `iat == nbf == now`. When the server clock jumps *backwards* between minting and verifying a token (notably on WSL2, whose VM clock can jump back), the token's `nbf` claim is momentarily in the future and SurrealDB rejects the request with a transient `401` ("Token verification failed due to the 'nbf' claim containing a future time"). Under load this surfaced as non-deterministic, disjoint failure sets per run. `HTTPConnection` now retains its last signin arguments and `_send_rpc()` recovers by re-minting the token (a fresh `nbf` aligned with the current clock) and retrying with a short bounded backoff. The earlier "shared singleton auth-leak" hypothesis was disproven — every rejected token was a valid, unexpired root token.
+
+### Changed
+
+- **Dependency upgrade (#107)** — Refreshed `uv.lock` to the latest compatible versions: **pygments 2.19.2 → 2.20.0** (see Security below), plus mypy 2.1.0, pydantic 2.13.4, ruff 0.15.16 and assorted transitive bumps. Runtime floor pins in `pyproject.toml` are unchanged.
+
+### Security
+
+- **Pygments 2.19.2 → 2.20.0** — Resolves Dependabot alert #6 (GHSA-5239-wwwm-4pmq / CVE-2026-4539), a low-severity ReDoS in GUID matching (transitive dev dependency).
+
+---
+
+## [0.31.3] - 2026-06-06
+
+**SurrealDB 3.1.3 support.**
+
+### Changed
+
+- Bumped the integration-test / CI target and Docker Compose image to `surrealdb/surrealdb:v3.1.3` (#104). No source changes — the SDK and ORM are compatible as-is.
+
+---
+
+## [0.31.2] - 2026-06-06
+
+**Critical cbor2 6.x compatibility fix.**
+
+### Fixed
+
+- **cbor2 6+ compatibility (CRITICAL — fixes 401 auth failures)** — Under cbor2 6.x the decoder's `tag_hook` callback signature changed from `(decoder, tag)` to `(tag, immutable)`. Run with cbor2 6.x, the old code raised `CBORDecodeError: error decoding semantic tag 6` on every SurrealDB response containing a `NONE` value (i.e. virtually all of them), breaking all CBOR RPC operations — including authentication — and surfacing as 401 Unauthorized in applications (the workaround was pinning `cbor2<6`). `_cbor_tag_decoder(tag, immutable)` in `src/surreal_sdk/protocol/cbor.py` is fixed for cbor2 6.x, and the RecordId tag branch now accepts `list | tuple` (cbor2 6.x exposes a `CBORTag` array value as a `tuple` rather than a `list`).
+
+### Security
+
+- Raised dependency floors and pinned `cbor2>=6.1.2` (avoids the data-corruption bugs in 6.0.x / 6.1.0, fixed in 6.1.1 / 6.1.2): `aiohttp>=3.12` (drops CVE-affected 3.9.x), `pydantic>=2.11`, `httpx>=0.28`, `click>=8.1.8`.
+
+---
+
+## [0.31.1] - 2026-03-28
+
+**Automated security-patch release.**
+
+### Security
+
+- Bumped `cbor2` 5.8.0 → 5.9.0 (Dependabot auto-merge).
+
+### Changed
+
+- CI / release automation: `tag-release` now uses `PAT_TOKEN` so tag pushes trigger the publish workflow; Dependabot v2 sync and version-bump PR flow; PyPI scoping fixes; version tests made dynamic instead of hardcoded.
+
+---
+
 ## [0.31.0] - 2026-03-22
 
 **First PyPI release for SurrealDB 3.0.** Previous 0.30.x versions were

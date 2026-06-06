@@ -24,6 +24,26 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.31.5
+
+**Documentation & maintenance release** — no library code changes vs 0.31.4. It
+brings the changelog and this README up to date across the whole 0.31.x line and
+corrects stale dates. See [CHANGELOG.md](CHANGELOG.md) for the full detail.
+
+### 0.31.x at a glance (0.31.0 → 0.31.4)
+
+| Version | Highlights |
+| ------- | ---------- |
+| **0.31.0** | First PyPI release for SurrealDB 3.0 — `RebuildIndex`, GraphQL config (`DefineGraphQLConfig` / `RemoveGraphQLConfig`), bearer access (`DefineBearerAccess`), and `QuerySet.upsert()` / `bulk_upsert()` with `ON DUPLICATE KEY UPDATE`. |
+| **0.31.1** | Security: `cbor2` 5.8.0 → 5.9.0; CI / release-automation fixes. |
+| **0.31.2** | **Critical** — fixed a cbor2 6.x incompatibility that broke every CBOR RPC (surfaced as `401 Unauthorized`); raised security dependency floors (`aiohttp>=3.12`, `pydantic>=2.11`, `httpx>=0.28`, `cbor2>=6.1.2`). |
+| **0.31.3** | Validated against **SurrealDB 3.1.3** (test/CI target + Docker image). |
+| **0.31.4** | Fixed intermittent integration-suite **401s caused by JWT `nbf` clock skew** (issue #101); dependency refresh that also cleared the Pygments ReDoS advisory. |
+
+> **Upgrading from 0.31.0 / 0.31.1?** 0.31.2 is an important fix: under `cbor2>=6`, earlier versions fail **all** authenticated CBOR operations with `401 Unauthorized`. Move to ≥ 0.31.2 (ideally the latest 0.31.x).
+
+---
+
 ## What's New in 0.31.0
 
 ### REBUILD INDEX Migration Operation
@@ -975,7 +995,7 @@ pip install surrealdb-orm[cli]
 | **0.30.x+** | >= 3.0    | `main` | Active development  |
 | **0.20.x**  | 2.6.x     | `v2`   | Security fixes only |
 
-- **SurrealDB 3.0+** — Use `surrealdb-orm >= 0.30.0` (this branch).
+- **SurrealDB 3.0+** — Use `surrealdb-orm >= 0.30.0` (this branch). Tested through SurrealDB **3.1.3**.
 - **SurrealDB 2.6.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.20.x`). This branch receives security patches but no new features.
 
 ---
