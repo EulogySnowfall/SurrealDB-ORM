@@ -43,6 +43,8 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 - **Version bump to 0.21.0** — `pyproject.toml`, `surreal_orm/__init__.py`, `surreal_sdk/__init__.py`,
   `surreal_sdk/pyproject.toml`.
+- **`publish.yml` tag filter** — added `v0.21.*` so the PyPI publish workflow triggers for the 0.21.x
+  LTS line (previously only `v0.20.*`).
 - **Validated against SurrealDB v2.6.5** — `.surrealdb-version` and Docker Compose pinned to v2.6.5;
   README "Tested with" updated. Full unit suite plus 362 integration tests pass on v2.6.5.
 - **Docs synced with `main`** — `SECURITY.md` adopts the two-branch supported-versions policy; "last updated"
