@@ -8,7 +8,7 @@
 > **This is the deprecated `v2` LTS branch** (SurrealDB 2.x), superseded since 0.21.0 by
 > [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite), which targets
 > SurrealDB 2.x on the official SurrealDB Python SDK v2. The `v2` branch receives security and
-> bug fixes only until SurrealDB-ORM-lite reaches v0.20.0, then it is retired. The `main` branch
+> bug fixes only until SurrealDB-ORM-lite reaches v0.40.0 (beta), then it is retired. The `main` branch
 > targets SurrealDB 3.x. Do not develop new features here.
 
 ## Project Vision

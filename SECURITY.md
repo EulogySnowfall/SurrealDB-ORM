@@ -14,7 +14,7 @@ Two release lines are maintained, one per SurrealDB major version:
 > :warning: The `v2` branch is **deprecated** (security & bug fixes only) in favor of
 > [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite), which supports
 > SurrealDB 2.x via the official SurrealDB Python SDK v2. The `v2` branch receives **security and
-> bug fixes only** until SurrealDB-ORM-lite reaches **v0.20.0**, after which it will be retired.
+> bug fixes only** until SurrealDB-ORM-lite reaches **v0.40.0 (beta)**, after which it will be retired.
 
 ## Versioning Scheme
 
