@@ -61,80 +61,12 @@ jobs:
           echo "should-process=$SHOULD_PROCESS" >> $GITHUB_OUTPUT
 
   # =============================================================================
-  # Run full test suite for Dependabot PRs
-  # =============================================================================
-  test-dependabot:
-    name: Test Dependabot Changes
-    needs: check-dependabot
-    if: needs.check-dependabot.outputs.should-process == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      tests-passed: ${{ steps.test-result.outputs.passed }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install dependencies
-        run: uv sync --frozen --group lint --group dev
-
-      - name: Run linting
-        run: |
-          uv run ruff format --check
-          uv run ruff check
-
-      - name: Run type checking
-        run: uv run python -m mypy src/
-
-      - name: Run unit tests
-        run: |
-          uv run pytest tests/ -m "not integration" \
-            --junitxml=junit-unit.xml \
-            --cov=src \
-            --cov-branch \
-            --cov-report=xml:coverage-unit.xml
-
-      - name: Start SurrealDB
-        run: |
-          docker compose -f devops/docker-compose.yml up -d surrealdb
-          ./devops/wait-for-healthy.sh localhost 8000 60
-
-      - name: Run integration tests
-        run: |
-          uv run pytest tests/ -m integration \
-            --junitxml=junit-integration.xml \
-            --cov=src \
-            --cov-branch \
-            --cov-report=xml:coverage-integration.xml
-
-      - name: Stop SurrealDB
-        if: always()
-        run: docker compose -f devops/docker-compose.yml down
-
-      - name: Set test result
-        id: test-result
-        if: success()
-        run: echo "passed=true" >> $GITHUB_OUTPUT
-
-  # =============================================================================
   # Auto-merge and create patch version tag
   # =============================================================================
   automerge:
     name: Auto-merge & Tag
-    needs: [check-dependabot, test-dependabot]
-    if: |
-      needs.check-dependabot.outputs.should-process == 'true' &&
-      needs.test-dependabot.outputs.tests-passed == 'true'
+    needs: [check-dependabot]
+    if: needs.check-dependabot.outputs.should-process == 'true'
     runs-on: ubuntu-latest
     outputs:
       merged: ${{ steps.wait-merge.outputs.merged }}
@@ -144,6 +76,11 @@ jobs:
       new-version-dep: ${{ steps.dep-info.outputs.new-ver }}
 
     steps:
+      - name: Wait for CI checks to pass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr checks "${{ github.event.pull_request.number }}" --watch --fail-fast --repo "${{ github.repository }}"
+
       - name: Checkout code
         uses: actions/checkout@v6
         with:
@@ -161,11 +98,12 @@ jobs:
       - name: Extract metadata from PR title (security sync)
         if: needs.check-dependabot.outputs.is-security-sync == 'true'
         id: sync-metadata
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          TITLE="${{ github.event.pull_request.title }}"
-          DEP_NAME=$(echo "$TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
-          NEW_VER=$(echo "$TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
-          PREV_VER=$(echo "$TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
+          DEP_NAME=$(echo "$PR_TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
+          NEW_VER=$(echo "$PR_TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
+          PREV_VER=$(echo "$PR_TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
           echo "dependency-names=$DEP_NAME" >> $GITHUB_OUTPUT
           echo "new-version=$NEW_VER" >> $GITHUB_OUTPUT
           echo "previous-version=$PREV_VER" >> $GITHUB_OUTPUT
@@ -173,17 +111,30 @@ jobs:
 
       - name: Resolve dependency info
         id: dep-info
+        # Values derived from the PR title (sync-metadata) are attacker-influenced
+        # under pull_request_target. Bind every ${{ }} expression to an env var and
+        # reference the shell variable so nothing is expanded into the script text.
+        env:
+          IS_DEPENDABOT: ${{ needs.check-dependabot.outputs.is-dependabot }}
+          DBM_DEP_NAMES: ${{ steps.dependabot-metadata.outputs.dependency-names }}
+          DBM_UPDATE_TYPE: ${{ steps.dependabot-metadata.outputs.update-type }}
+          DBM_PREV_VER: ${{ steps.dependabot-metadata.outputs.previous-version }}
+          DBM_NEW_VER: ${{ steps.dependabot-metadata.outputs.new-version }}
+          SYNC_DEP_NAMES: ${{ steps.sync-metadata.outputs.dependency-names }}
+          SYNC_UPDATE_TYPE: ${{ steps.sync-metadata.outputs.update-type }}
+          SYNC_PREV_VER: ${{ steps.sync-metadata.outputs.previous-version }}
+          SYNC_NEW_VER: ${{ steps.sync-metadata.outputs.new-version }}
         run: |
-          if [[ "${{ needs.check-dependabot.outputs.is-dependabot }}" == "true" ]]; then
-            echo "dep-names=${{ steps.dependabot-metadata.outputs.dependency-names }}" >> $GITHUB_OUTPUT
-            echo "update-type=${{ steps.dependabot-metadata.outputs.update-type }}" >> $GITHUB_OUTPUT
-            echo "prev-ver=${{ steps.dependabot-metadata.outputs.previous-version }}" >> $GITHUB_OUTPUT
-            echo "new-ver=${{ steps.dependabot-metadata.outputs.new-version }}" >> $GITHUB_OUTPUT
+          if [[ "$IS_DEPENDABOT" == "true" ]]; then
+            echo "dep-names=$DBM_DEP_NAMES" >> "$GITHUB_OUTPUT"
+            echo "update-type=$DBM_UPDATE_TYPE" >> "$GITHUB_OUTPUT"
+            echo "prev-ver=$DBM_PREV_VER" >> "$GITHUB_OUTPUT"
+            echo "new-ver=$DBM_NEW_VER" >> "$GITHUB_OUTPUT"
           else
-            echo "dep-names=${{ steps.sync-metadata.outputs.dependency-names }}" >> $GITHUB_OUTPUT
-            echo "update-type=${{ steps.sync-metadata.outputs.update-type }}" >> $GITHUB_OUTPUT
-            echo "prev-ver=${{ steps.sync-metadata.outputs.previous-version }}" >> $GITHUB_OUTPUT
-            echo "new-ver=${{ steps.sync-metadata.outputs.new-version }}" >> $GITHUB_OUTPUT
+            echo "dep-names=$SYNC_DEP_NAMES" >> "$GITHUB_OUTPUT"
+            echo "update-type=$SYNC_UPDATE_TYPE" >> "$GITHUB_OUTPUT"
+            echo "prev-ver=$SYNC_PREV_VER" >> "$GITHUB_OUTPUT"
+            echo "new-ver=$SYNC_NEW_VER" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Enable auto-merge
@@ -237,11 +188,14 @@ jobs:
 
       - name: Create version bump PR
         if: steps.wait-merge.outputs.merged == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          # Bind context/step outputs to env vars — never expand them into the script text.
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          DEP_NAMES: ${{ steps.dep-info.outputs.dep-names }}
+          UPDATE_TYPE: ${{ steps.dep-info.outputs.update-type }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
-          DEP_NAMES="${{ steps.dep-info.outputs.dep-names }}"
-          UPDATE_TYPE="${{ steps.dep-info.outputs.update-type }}"
-
           # Calculate version from the BASE BRANCH's pyproject.toml (not main's)
           # This ensures v2 (0.20.x) and main (0.31.x) bump independently
           CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
@@ -250,6 +204,7 @@ jobs:
           PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
           NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
           NEW_TAG="v${NEW_VERSION}"
+          BRANCH="chore/version-bump-${NEW_VERSION}"
 
           echo "Base branch: $BASE_BRANCH, Current: $CURRENT_VERSION, New: $NEW_VERSION"
 
@@ -272,7 +227,7 @@ jobs:
             --title "chore(release): bump version to $NEW_VERSION" \
             --body "## Version Bump
 
-          Automated version bump after merging Dependabot PR #${{ github.event.pull_request.number }}.
+          Automated version bump after merging Dependabot PR #$PR_NUMBER.
 
           ### Updated Dependencies
           - **Package:** $DEP_NAMES
@@ -284,8 +239,6 @@ jobs:
             --head "$BRANCH"
 
           gh pr merge --auto --squash "$BRANCH"
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
 
   # =============================================================================
   # Sync dependency update to V2 branch (if the same dep exists there)
@@ -316,24 +269,28 @@ jobs:
 
       - name: Check if dependency exists in v2
         id: check
+        env:
+          DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
         run: |
-          DEP_NAME="${{ needs.automerge.outputs.dependency-names }}"
           echo "Checking for '$DEP_NAME' in v2 uv.lock..."
           if grep -qi "name = \"${DEP_NAME}\"" uv.lock 2>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Found '$DEP_NAME' in v2"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "'$DEP_NAME' not found in v2 — skipping sync"
           fi
 
       - name: Update dependency and create PR
         if: steps.check.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          # Job outputs derive from the PR title — bind to env, never expand into the script.
+          DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
+          NEW_VER: ${{ needs.automerge.outputs.new-version-dep }}
+          PREV_VER: ${{ needs.automerge.outputs.previous-version-dep }}
+          UPDATE_TYPE: ${{ needs.automerge.outputs.update-type }}
         run: |
-          DEP_NAME="${{ needs.automerge.outputs.dependency-names }}"
-          NEW_VER="${{ needs.automerge.outputs.new-version-dep }}"
-          PREV_VER="${{ needs.automerge.outputs.previous-version-dep }}"
-          UPDATE_TYPE="${{ needs.automerge.outputs.update-type }}"
           SAFE_DEP=$(echo "$DEP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
           BRANCH="chore/sync-${SAFE_DEP}-${NEW_VER}-v2"
 
@@ -378,5 +335,3 @@ jobs:
             --base v2 \
             --head "$BRANCH" \
             --label "security-sync,dependencies"
-        env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
