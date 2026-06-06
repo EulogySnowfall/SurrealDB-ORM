@@ -161,11 +161,12 @@ jobs:
       - name: Extract metadata from PR title (security sync)
         if: needs.check-dependabot.outputs.is-security-sync == 'true'
         id: sync-metadata
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          TITLE="${{ github.event.pull_request.title }}"
-          DEP_NAME=$(echo "$TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
-          NEW_VER=$(echo "$TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
-          PREV_VER=$(echo "$TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
+          DEP_NAME=$(echo "$PR_TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
+          NEW_VER=$(echo "$PR_TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
+          PREV_VER=$(echo "$PR_TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
           echo "dependency-names=$DEP_NAME" >> $GITHUB_OUTPUT
           echo "new-version=$NEW_VER" >> $GITHUB_OUTPUT
           echo "previous-version=$PREV_VER" >> $GITHUB_OUTPUT
