@@ -15,8 +15,11 @@ permissions:
 jobs:
   tag-release:
     name: Create Tag & Release
-    # Only run on version bump commits from the automerge workflow
-    if: startsWith(github.event.head_commit.message, 'chore(release): bump version to')
+    # Only run on version bump commits from the automerge workflow.
+    # NOTE: the whole expression MUST be quoted — the ': ' inside the string
+    # literal otherwise makes YAML parse this as a mapping and the entire
+    # workflow fails to load ("mapping values are not allowed here").
+    if: "${{ startsWith(github.event.head_commit.message, 'chore(release): bump version to') }}"
     runs-on: ubuntu-latest
 
     steps:
@@ -31,41 +34,45 @@ jobs:
 
       - name: Extract version from commit message
         id: version
+        # Commit message is attacker-influenceable — bind to env vars and never
+        # expand context expressions directly into the shell script.
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          MSG="${{ github.event.head_commit.message }}"
           # Extract version: "chore(release): bump version to 0.31.2" → "0.31.2"
-          VERSION=$(echo "$MSG" | sed -n 's/.*bump version to \([0-9.]*\).*/\1/p')
+          VERSION=$(echo "$COMMIT_MSG" | sed -n 's/.*bump version to \([0-9.]*\).*/\1/p')
 
           if [[ -z "$VERSION" ]]; then
-            echo "Could not extract version from commit message: $MSG"
+            echo "Could not extract version from commit message: $COMMIT_MSG"
             exit 1
           fi
 
           TAG="v${VERSION}"
-          BRANCH="${{ github.ref_name }}"
 
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION, Tag: $TAG, Branch: $BRANCH"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "branch=$REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION, Tag: $TAG, Branch: $REF_NAME"
 
       - name: Check if tag already exists
         id: check-tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Tag $TAG already exists — skipping"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create and push tag
         if: steps.check-tag.outputs.exists == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          TAG="${{ steps.version.outputs.tag }}"
-          VERSION="${{ steps.version.outputs.version }}"
-
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
