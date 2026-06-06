@@ -1,6 +1,6 @@
 [project]
 name = "surrealdb-orm"
-version = "0.20.0"
+version = "0.21.0"
 description = "SurrealDB ORM as 'DJango style' for Python with async support. Works with pydantic validation."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,10 +24,14 @@ dependencies = [
     "pydantic>=2.10.5",
     # SDK dependencies (bundled until surreal-sdk is published to PyPI)
     "httpx>=0.27.0",
-    "aiohttp>=3.9.0",
+    # aiohttp floor raised to 3.14.0 — patches CVE-2026-34513..34525 and others
+    "aiohttp>=3.14.0",
     # CBOR is required for proper binary protocol support
     # (fixes data:xxx strings being interpreted as record links)
-    "cbor2>=5.6.0",
+    # Floor at 5.9.0 to avoid vulnerable 5.6–5.8 releases; capped at <6 on the
+    # V2 LTS branch since cbor2 6.0 may break the SurrealDB 2.x custom-tag
+    # encoding this branch relies on. Do not allow 6.x here.
+    "cbor2>=5.9.0,<6",
 ]
 
 [project.optional-dependencies]

@@ -1,6 +1,15 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: February 2026
+> Context document for Claude AI - Last updated: June 2026
+
+<!-- -->
+
+> [!WARNING]
+> **This is the deprecated `v2` LTS branch** (SurrealDB 2.x), superseded since 0.21.0 by
+> [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite), which targets
+> SurrealDB 2.x on the official SurrealDB Python SDK v2. The `v2` branch receives security and
+> bug fixes only until SurrealDB-ORM-lite reaches v0.20.0, then it is retired. The `main` branch
+> targets SurrealDB 3.x. Do not develop new features here.
 
 ## Project Vision
 
@@ -10,7 +19,12 @@
 
 ---
 
-## Current Version: 0.14.4 (Beta)
+## Current Version: 0.21.0 (Beta — V2 LTS, deprecated)
+
+> Maintenance line `0.2y.x` for SurrealDB 2.6.x. Tested against SurrealDB **v2.6.5**.
+> See the deprecation notice above and the [CHANGELOG](CHANGELOG) for the 0.21.0 details
+> (deprecation, security dependency upgrades, 401 clock-skew fix). The detailed "What's New"
+> history below predates the LTS split and is retained for reference.
 
 ### What's New in 0.14.4
 

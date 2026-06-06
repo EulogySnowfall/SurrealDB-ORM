@@ -7,6 +7,17 @@
 
 > **V2 LTS Branch** - Maintenance-only for SurrealDB 2.X compatibility. For SurrealDB 3.X, see the [`main` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main).
 
+<!-- -->
+
+> [!WARNING]
+> **Deprecated (since 0.21.0).** This V2 branch is deprecated in favor of
+> **[SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite)**, which
+> continues to support **SurrealDB 2.x** on top of the now-matured **official SurrealDB
+> Python SDK v2** — the SDK improvements are what make a bundled custom SDK unnecessary
+> for the 2.x line. This branch will only receive **security and bug fixes** until
+> SurrealDB-ORM-lite reaches **v0.20.0**, after which it will be retired. New projects
+> targeting SurrealDB 2.x should adopt SurrealDB-ORM-lite.
+
 **SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, and JWT authentication.
 
 **Includes a custom SDK (`surreal_sdk`)** - Zero dependency on the official `surrealdb` package!
@@ -17,8 +28,10 @@
 
 | Branch                                                                        | SurrealDB Version | Status             | Version |
 | ----------------------------------------------------------------------------- | ----------------- | ------------------ | ------- |
-| [`main`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main)           | 3.X               | Active development | 0.30.x  |
-| [`v2`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (this branch) | 2.X               | LTS maintenance    | 0.20.x  |
+| [`main`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main)           | 3.X               | Active development | 0.3y.x  |
+| [`v2`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (this branch) | 2.X               | Deprecated (LTS)¹  | 0.2y.x  |
+
+> ¹ Deprecated since 0.21.0 — see the notice above. Superseded by [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite).
 
 ### V2 LTS Policy
 
@@ -30,7 +43,28 @@
 
 ### SurrealDB Compatibility
 
-Tested with SurrealDB: v2.6.0
+Tested with SurrealDB: v2.6.5
+
+---
+
+## What's New in 0.21.0
+
+> **Deprecation release.** This branch is now deprecated in favor of
+> [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite). It remains
+> under security/bug-fix maintenance until SurrealDB-ORM-lite reaches v0.20.0.
+
+- **Deprecation notice** - README banner + a runtime `DeprecationWarning` on `import surreal_orm`,
+  pointing to SurrealDB-ORM-lite (which supports SurrealDB 2.x via the official SurrealDB Python SDK v2).
+- **Security: dependency upgrades** - Cleared 21 known CVEs across 7 packages. Runtime floor raised to
+  `aiohttp>=3.14.0`; `cbor2` constrained to `>=5.9.0,<6` so installs stay on a non-vulnerable 5.x and
+  never pull the breaking 6.0 on SurrealDB 2.x.
+- **Fix: 401 clock-skew retry (issue #101)** - The SDK HTTP layer now re-mints the JWT and retries on a
+  transient `401` caused by a freshly-minted token whose `nbf` claim is briefly in the future under host
+  clock skew (e.g. WSL2 backward clock jumps). Backported from `main`.
+- **Fix: transaction rollback test on SurrealDB 2.6.x** - `SELECT` on a non-existent table returns an
+  `ERR` ("table does not exist") on 2.6.x; the rollback assertion now treats that as proof no records
+  were created.
+- **Validated against SurrealDB v2.6.5** - Full unit + integration suite (362 integration tests) green.
 
 ---
 
