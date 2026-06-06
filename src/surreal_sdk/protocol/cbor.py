@@ -146,11 +146,15 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
         raise TypeError(f"Cannot CBOR encode {type(value)}")
 
 
-def _cbor_tag_decoder(decoder: Any, tag: Any) -> Any:
+def _cbor_tag_decoder(tag: Any, immutable: bool) -> Any:
     """
     Custom CBOR tag decoder for SurrealDB types.
 
     Handles decoding of SurrealDB CBOR tags to Python types.
+
+    Signature follows the cbor2 6.x ``tag_hook`` contract:
+    ``(CBORTag, immutable)``. The ``immutable`` flag is unused here because all
+    SurrealDB custom tags decode to mutable/standalone Python objects.
     """
     if tag.tag == TAG_NONE:
         return None
@@ -158,7 +162,8 @@ def _cbor_tag_decoder(decoder: Any, tag: Any) -> Any:
         return Table(name=tag.value)
     elif tag.tag == TAG_RECORDID:
         # RecordId is encoded as [table, id]
-        if isinstance(tag.value, list) and len(tag.value) == 2:
+        # cbor2 6.x decodes nested CBOR arrays as tuples, 5.x used lists.
+        if isinstance(tag.value, list | tuple) and len(tag.value) == 2:
             return RecordId(table=tag.value[0], id=tag.value[1])
         # Some versions may encode as string
         elif isinstance(tag.value, str):
