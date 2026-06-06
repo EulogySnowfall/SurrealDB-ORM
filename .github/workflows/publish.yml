@@ -105,7 +105,8 @@ jobs:
           path: dist/
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        # v3 = same action, runtime moved Node 20 -> Node 24 (no input/behaviour changes)
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
