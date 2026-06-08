@@ -31,7 +31,7 @@ dependencies = [
     # Floor at 5.9.0 to avoid vulnerable 5.6–5.8 releases; capped at <6 on the
     # V2 LTS branch since cbor2 6.0 may break the SurrealDB 2.x custom-tag
     # encoding this branch relies on. Do not allow 6.x here.
-    "cbor2>=5.9.0,<6",
+    "cbor2>=5.9.0,<7",
 ]
 
 [project.optional-dependencies]
