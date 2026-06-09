@@ -53,6 +53,12 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       prefix-development: "chore(deps-dev)"
+    ignore:
+      # The V2 LTS branch is pinned to cbor2 <6 on purpose: cbor2 6.x changed the
+      # custom-tag encoding and breaks SurrealDB 2.x CBOR RPC on this branch (the
+      # 6.x compatibility fix only landed on main / the 3.x line). Stay on 5.x.
+      - dependency-name: "cbor2"
+        update-types: ["version-update:semver-major"]
     groups:
       python-patch:
         patterns:

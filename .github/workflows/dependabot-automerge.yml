@@ -76,11 +76,12 @@ jobs:
       new-version-dep: ${{ steps.dep-info.outputs.new-ver }}
 
     steps:
-      - name: Wait for CI checks to pass
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr checks "${{ github.event.pull_request.number }}" --watch --fail-fast --repo "${{ github.repository }}"
-
+      # NOTE: do NOT add a `gh pr checks --watch` gate here. This job is itself
+      # reported as the "Auto-merge & Tag" check on the PR, so watching *all*
+      # PR checks waits on this job too — a self-referential deadlock that ran
+      # until the 6h max-job timeout and never merged. Gating is delegated to
+      # `gh pr merge --auto` below, which merges only once the branch's required
+      # status checks (CI) pass.
       - name: Checkout code
         uses: actions/checkout@v6
         with:
