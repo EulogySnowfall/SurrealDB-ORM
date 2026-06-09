@@ -24,6 +24,18 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.31.6
+
+**CI / maintenance release** — no library code changes vs 0.31.5. Integrates the
+open Dependabot updates and fixes the release-automation deadlock that kept them
+from auto-merging. See [CHANGELOG.md](CHANGELOG.md) for the full detail.
+
+- **Fixed the Dependabot auto-merge deadlock** — the `Auto-merge & Tag` job waited on `gh pr checks --watch`, which includes the job's *own* check, so it waited on itself until the 6h job timeout and never merged. Tests were green the whole time; this was never a test or version-bump failure. Gating now relies on `gh pr merge --auto`.
+- **Dependency bumps** — `dependabot/fetch-metadata` 2 → 3 (#115), `codecov/codecov-action` 5 → 7 (#116).
+- **Dependabot now ignores `cbor2` major bumps on `v2`** — that LTS branch is pinned `<6` on purpose (6.x breaks SurrealDB 2.x CBOR).
+
+---
+
 ## What's New in 0.31.5
 
 **Documentation & maintenance release** — no library code changes vs 0.31.4. It
