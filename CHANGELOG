@@ -6,6 +6,38 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.1] - 2026-06-09
+
+**Security maintenance release (V2 LTS).** No library code changes vs 0.21.0 —
+runtime behaviour is identical. Reaffirms the `cbor2 <6` pin and tags the CI/docs
+fixes that landed after 0.21.0.
+
+### Security
+
+- **`cbor2` stays pinned `<6` — rejected the 6.x widening.** Dependabot proposed
+  relaxing the requirement to `cbor2>=5.9.0,<7` (PR #117), which would re-allow
+  cbor2 **6.x** on this branch. 6.x changed the custom-tag encoding and breaks the
+  SurrealDB **2.x** CBOR RPC path the bundled SDK relies on; the 6.x compatibility
+  fix only landed on `main` (the 3.x line) and was **not** backported here. The
+  security floor (`cbor2>=5.9.0`, avoiding the vulnerable 5.6–5.8 range) is already
+  in place, so #117 added no security value and was closed.
+- **Dependabot now ignores `cbor2` `semver-major` updates on the `v2` target**
+  (config lives on the default branch). This stops the `<7` widening from being
+  re-proposed against this LTS branch.
+
+### Changed
+
+- **CI: v2 LTS releases are no longer marked GitHub "Latest" (#113)** — the
+  "Latest" badge belongs to the active 3.x `main` line; a v2 release must not
+  outrank a higher-versioned main release on the releases page.
+- **Docs: V2 retirement threshold clarified (#114)** — this branch is retired once
+  [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite)
+  reaches **v0.40.0 (beta)**.
+- **Version bump to 0.21.1** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
 ## [0.21.0] - 2026-06-06
 
 ### Deprecated

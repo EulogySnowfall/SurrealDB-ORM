@@ -47,6 +47,19 @@ Tested with SurrealDB: v2.6.5
 
 ---
 
+## What's New in 0.21.1
+
+> **Security maintenance release.** No library code changes vs 0.21.0.
+
+- **`cbor2` stays pinned `<6`** - Rejected the Dependabot proposal to widen the requirement to
+  `>=5.9.0,<7` (PR #117), which would re-allow cbor2 **6.x**. 6.x changed the custom-tag encoding and
+  breaks SurrealDB 2.x CBOR; the 6.x compatibility fix only landed on `main` (3.x) and was not backported
+  here. The security floor (`>=5.9.0`) is already in place. Dependabot now ignores cbor2 major bumps on `v2`.
+- **CI: v2 LTS releases are no longer marked GitHub "Latest" (#113)** and the **retirement threshold is
+  clarified as SurrealDB-ORM-lite v0.40.0 (beta) (#114)**.
+
+---
+
 ## What's New in 0.21.0
 
 > **Deprecation release.** This branch is now deprecated in favor of

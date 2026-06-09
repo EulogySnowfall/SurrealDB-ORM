@@ -19,12 +19,19 @@
 
 ---
 
-## Current Version: 0.21.0 (Beta — V2 LTS, deprecated)
+## Current Version: 0.21.1 (Beta — V2 LTS, deprecated)
 
 > Maintenance line `0.2y.x` for SurrealDB 2.6.x. Tested against SurrealDB **v2.6.5**.
-> See the deprecation notice above and the [CHANGELOG](CHANGELOG) for the 0.21.0 details
-> (deprecation, security dependency upgrades, 401 clock-skew fix). The detailed "What's New"
-> history below predates the LTS split and is retained for reference.
+> See the deprecation notice above and the [CHANGELOG](CHANGELOG) for details.
+> The detailed "What's New" history below predates the LTS split and is retained for reference.
+>
+> **0.21.1** (security maintenance) — reaffirmed the `cbor2 <6` pin: rejected the Dependabot
+> proposal to widen it to `<7` (#117), which would re-allow cbor2 6.x (breaks SurrealDB 2.x
+> custom-tag CBOR; the 6.x fix only landed on `main`). Dependabot now ignores cbor2 major
+> bumps on `v2`. Also tagged the post-0.21.0 CI/docs fixes (#113 v2 releases not GitHub
+> "Latest", #114 retirement threshold = SurrealDB-ORM-lite v0.40.0 beta).
+>
+> **0.21.0** — deprecation, security dependency upgrades, 401 clock-skew fix.
 
 ### What's New in 0.14.4
 
