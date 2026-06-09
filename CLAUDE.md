@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: June 2026
+> Context document for Claude AI - Last updated: June 2026 (0.31.6)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.31.5 (Beta) — First PyPI release for SurrealDB 3.0
+## Current Version: 0.31.6 (Beta) — SurrealDB 3.0 line
 
 ### Branch Strategy
 
@@ -18,6 +18,16 @@
 | ------ | --------- | ----------- | ------------------------------- |
 | `main` | 3.X       | 0.31.x      | Active development              |
 | `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.31.6
+
+- **CI / maintenance release** — no library code changes vs 0.31.5. Integrated the open Dependabot
+  PRs (`dependabot/fetch-metadata` 2→3 #115, `codecov/codecov-action` 5→7 #116) and fixed the
+  Dependabot auto-merge **self-watch deadlock** (#118): the `Auto-merge & Tag` job ran
+  `gh pr checks --watch`, which includes its own check, so it waited on itself until the 6h job
+  timeout — no Dependabot PR ever merged (tests were green throughout). Gating now relies on
+  `gh pr merge --auto`. Also told Dependabot to ignore `cbor2` major bumps on `v2` (pinned `<6`
+  because 6.x breaks SurrealDB 2.x CBOR).
 
 ### What's New in 0.31.5
 

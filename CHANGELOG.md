@@ -6,6 +6,24 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.31.6] - 2026-06-09
+
+**CI / maintenance release.** No library code changes — runtime behaviour is
+identical to 0.31.5. Integrates the open Dependabot PRs and fixes the
+release-automation deadlock that was preventing them from auto-merging.
+
+### Fixed
+
+- **Dependabot auto-merge self-watch deadlock (#118)** — The `Auto-merge & Tag` job in `dependabot-automerge.yml` began with `gh pr checks --watch`, which waits for *all* of the PR's checks to finish — including this job's own check run. The job therefore waited on itself until the 6-hour max-job timeout and was cancelled, so no Dependabot PR ever auto-merged. The full test suite (lint, mypy, unit, integration, CodeQL) was green throughout — this was never a test or version-bump failure. Removed the self-referential gate; merging is delegated to `gh pr merge --auto`, which merges only once the branch's required `CI Success` check passes. Because `pull_request_target` always runs the workflow from the default branch, the already-fixed copy on `v2` never executed — the broken `main` copy ran for every PR.
+
+### Changed
+
+- **`dependabot/fetch-metadata` 2 → 3 (#115).**
+- **`codecov/codecov-action` 5 → 7 (#116).**
+- **Dependabot config** — Ignore `cbor2` `semver-major` updates on the **v2** target branch. v2 is intentionally pinned to `cbor2 <6`; 6.x changed the custom-tag encoding and breaks SurrealDB 2.x CBOR RPC (the 6.x compatibility fix only landed on the `main` / 3.x line in 0.31.2). This stops Dependabot from re-proposing the `<7` widening on v2.
+
+---
+
 ## [0.31.5] - 2026-06-06
 
 **Documentation & maintenance release.** Brings the changelog and README up to
