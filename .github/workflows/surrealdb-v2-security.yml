@@ -62,7 +62,7 @@ jobs:
 
     steps:
       - name: Checkout V2 branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: v2
 
@@ -172,7 +172,7 @@ jobs:
 
     steps:
       - name: Checkout V2 branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: v2
 
@@ -253,7 +253,7 @@ jobs:
 
     steps:
       - name: Checkout V2 branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: v2
           fetch-depth: 0
