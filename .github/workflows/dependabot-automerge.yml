@@ -83,7 +83,7 @@ jobs:
       # `gh pr merge --auto` below, which merges only once the branch's required
       # status checks (CI) pass.
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -255,7 +255,7 @@ jobs:
 
     steps:
       - name: Checkout v2 branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: v2
           token: ${{ secrets.PAT_TOKEN }}
