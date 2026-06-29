@@ -35,6 +35,15 @@ class SurrealDbError(Exception):
 
 logger = logging.getLogger(__name__)
 
+# Raised when an update/merge affects no records. SurrealDB returns an empty
+# result both when the target row does not exist and when row-level
+# PERMISSIONS deny the write; in either case the update did not happen, so we
+# surface it instead of silently no-opping (mirrors the create-path guard).
+_UPDATE_NO_RECORD_MSG = (
+    "Can't update data, no record affected for {thing} "
+    "(record may not exist or the write was denied by permissions)."
+)
+
 # Global registry of all SurrealDB models for migration introspection
 _MODEL_REGISTRY: list[type["BaseSurrealModel"]] = []
 
@@ -931,8 +940,10 @@ class BaseSurrealModel(BaseModel):
                 )
             variables.update(extra_vars)
 
-        if self._db_persisted and id is not None:
-            thing = format_thing(table, id)
+        is_update = self._db_persisted and id is not None
+        thing: str | None = None
+        if is_update:
+            thing = format_thing(table, id)  # type: ignore[arg-type]
             query = f"UPDATE {thing} SET {set_clause};"
         elif id is not None:
             thing = format_thing(table, id)
@@ -949,6 +960,12 @@ class BaseSurrealModel(BaseModel):
             start = _start_timer()
             result = await client.query(query, variables)
             _log_query(query, variables, _elapsed_ms(start))
+
+        # A persisted UPDATE that affects no rows is a denied/missing write —
+        # surface it (skipped for deferred HTTP transactions). Mirrors the
+        # plain merge guard for the SurrealFunc / complex-nested-data paths.
+        if is_update:
+            self._raise_if_no_record_affected(result, thing or table, tx)
 
         if not self._db_persisted and result.all_records:
             record = result.all_records[0]
@@ -990,6 +1007,29 @@ class BaseSurrealModel(BaseModel):
         """
         await self._execute_save_using_query(tx, table, id, data, extra_vars)
 
+    def _raise_if_no_record_affected(
+        self,
+        result: Any,
+        thing: str,
+        tx: "BaseTransaction | None" = None,
+    ) -> None:
+        """Raise ``SurrealDbError`` when an update/merge affected no records.
+
+        SurrealDB returns an empty result both when the target row is missing
+        and when row-level ``PERMISSIONS`` deny the write; in either case the
+        update did not happen, so we surface it instead of silently no-opping
+        (mirrors the create-path "no record returned" guard).
+
+        The check is skipped for transactions whose results are *deferred*:
+        HTTP transactions batch statements and return an empty placeholder from
+        each operation until ``commit()``, so an empty placeholder there is not
+        a denied write and must not be treated as one.
+        """
+        if tx is not None and tx.defers_results:
+            return
+        if result is None or result.is_empty:
+            raise SurrealDbError(_UPDATE_NO_RECORD_MSG.format(thing=thing))
+
     async def _execute_save(
         self,
         tx: "BaseTransaction | None",
@@ -1017,7 +1057,9 @@ class BaseSurrealModel(BaseModel):
             if self._db_persisted and id is not None:
                 # Already persisted: use merge for partial update
                 thing = format_thing(table, id)
-                await tx.merge(thing, data)
+                result = await tx.merge(thing, data)
+                # Surface a denied/missing update (skipped for deferred HTTP tx).
+                self._raise_if_no_record_affected(result, thing, tx)
             elif id is not None:
                 # New record with user-provided ID: use upsert
                 thing = format_thing(table, id)
@@ -1036,8 +1078,12 @@ class BaseSurrealModel(BaseModel):
             # Already persisted: use merge for partial update
             thing = format_thing(table, id)
             start = _start_timer()
-            await client.merge(thing, data)
+            result = await client.merge(thing, data)
             _log_query(f"MERGE {thing}", data, _elapsed_ms(start))
+            # Mirror the create guard: a permission-denied (or missing-record)
+            # update returns no affected records. Surface it instead of
+            # silently no-opping, so callers can distinguish denied from done.
+            self._raise_if_no_record_affected(result, thing)
             return
 
         if id is not None:
@@ -1197,6 +1243,7 @@ class BaseSurrealModel(BaseModel):
             update_fields=data_set,
             tx=tx,
         ):
+            result: Any
             if self._has_surreal_funcs(data_set):
                 # Use raw query path for SurrealFunc values
                 set_clause, variables = self._build_set_clause(data_set)
@@ -1212,19 +1259,22 @@ class BaseSurrealModel(BaseModel):
                 query = f"UPDATE {thing} SET {set_clause};"
                 if tx is not None:
                     start = _start_timer()
-                    await tx.query(query, variables)
+                    result = await tx.query(query, variables)
                     _log_query(query, variables, _elapsed_ms(start))
                 else:
                     client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                     start = _start_timer()
-                    await client.query(query, variables)
+                    result = await client.query(query, variables)
                     _log_query(query, variables, _elapsed_ms(start))
+                # Surface a denied/missing update (skipped for deferred HTTP tx).
+                self._raise_if_no_record_affected(result, thing, tx)
                 if refresh:
                     await self.refresh()
             elif tx is not None:
                 start = _start_timer()
-                await tx.merge(thing, data_set)
+                result = await tx.merge(thing, data_set)
                 _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
+                self._raise_if_no_record_affected(result, thing, tx)
                 # Update local instance with merged data
                 for key, value in data_set.items():
                     if hasattr(self, key):
@@ -1232,8 +1282,12 @@ class BaseSurrealModel(BaseModel):
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
-                await client.merge(thing, data_set)
+                result = await client.merge(thing, data_set)
                 _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
+                # A permission-denied (or missing-record) merge affects no
+                # records. Raise rather than silently returning self, so a
+                # denied write is never mistaken for a successful one.
+                self._raise_if_no_record_affected(result, thing)
                 if refresh:
                     await self.refresh()
 

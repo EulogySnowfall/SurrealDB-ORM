@@ -76,6 +76,24 @@ class BaseTransaction(ABC):
         """Check if transaction was rolled back."""
         return self._rolled_back
 
+    @property
+    def defers_results(self) -> bool:
+        """Whether per-statement results are deferred until commit.
+
+        HTTP transactions batch statements and return an *empty placeholder*
+        response from each operation immediately; the real per-statement
+        results only exist once :meth:`commit` runs. WebSocket transactions
+        execute each statement on the server right away and return the real
+        result.
+
+        Callers that inspect a statement's result (e.g. to detect a
+        permission-denied no-op, where SurrealDB returns zero affected rows)
+        must skip that check when results are deferred — an empty placeholder
+        is indistinguishable from a genuinely empty result. Defaults to
+        ``False`` (immediate results); overridden by buffering transports.
+        """
+        return False
+
     async def __aenter__(self) -> Self:
         """Begin transaction on context entry."""
         await self._begin()
@@ -168,6 +186,11 @@ class HTTPTransaction(BaseTransaction):
     The statements are wrapped in BEGIN TRANSACTION / COMMIT TRANSACTION
     and sent as a single request.
     """
+
+    @property
+    def defers_results(self) -> bool:
+        """HTTP transactions buffer statements; results are known only at commit."""
+        return True
 
     async def _begin(self) -> None:
         """Mark transaction as active (no server call needed for HTTP)."""
