@@ -1006,13 +1006,29 @@ class QuerySet(Generic[T]):
             return f"{field_name} {op} {value}"
 
         # ── Function-based lookups (no SurrealQL operator equivalent) ─
-        # startswith / istartswith → string::starts_with()
-        if lookup_name in ("startswith", "istartswith"):
+        # startswith → string::starts_with(field, value)
+        if lookup_name == "startswith":
             return f"string::starts_with({field_name}, ${_bind(value)})"
 
-        # endswith / iendswith → string::ends_with()
-        if lookup_name in ("endswith", "iendswith"):
+        # istartswith → string::starts_with(lowercase(field), lowercase(value))
+        if lookup_name == "istartswith":
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"Value for 'istartswith' lookup on '{field_name}' must be a string, got {type(value).__name__!r}."
+                )
+            return f"string::starts_with(string::lowercase({field_name}), ${_bind(value.lower())})"
+
+        # endswith → string::ends_with(field, value)
+        if lookup_name == "endswith":
             return f"string::ends_with({field_name}, ${_bind(value)})"
+
+        # iendswith → string::ends_with(lowercase(field), lowercase(value))
+        if lookup_name == "iendswith":
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"Value for 'iendswith' lookup on '{field_name}' must be a string, got {type(value).__name__!r}."
+                )
+            return f"string::ends_with(string::lowercase({field_name}), ${_bind(value.lower())})"
 
         # like → string::matches(field, regex)  (LIKE pattern converted to regex)
         if lookup_name == "like":
