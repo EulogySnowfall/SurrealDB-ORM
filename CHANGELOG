@@ -6,6 +6,41 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.2] - 2026-07-20
+
+**Bug-fix maintenance release (V2 LTS).** Two correctness fixes backported from
+the 3.x `main` line.
+
+### Fixed
+
+- **Denied / missing `UPDATE` and `merge()` now raise instead of silently
+  no-opping (#139, backport of #135).** On a table protected by row-level
+  `PERMISSIONS`, a write the current user is not allowed to make — or one
+  targeting a row that no longer exists — makes SurrealDB return an *empty*
+  result (zero affected rows), not an error. Previously `save()` on a persisted
+  instance and `merge()` discarded that result and returned `self`, so a denied
+  update was indistinguishable from a successful one and callers could silently
+  lose data while reporting success. A denied/missing update now raises
+  `SurrealDbError`, mirroring the existing create-path guard, across every
+  non-deferred write path: plain `client.merge()`, the `SurrealFunc`
+  raw-`UPDATE` path, the complex-nested-data SET-clause path, and WebSocket
+  transactions. A new `BaseTransaction.defers_results` property keeps
+  HTTP-transaction behaviour unchanged — their per-statement results only exist
+  at `commit()`, so the guard is skipped there. (Known limitation: denial
+  *inside* an HTTP transaction remains undetectable at statement time.)
+- **`istartswith` / `iendswith` are now actually case-insensitive (#138,
+  backport of #134).** They previously compiled to the same SurrealQL as the
+  case-sensitive `startswith` / `endswith`, so e.g. `name__istartswith="ali"`
+  did not match `"Alice"`. Both the field and the value are now lowercased
+  (mirroring `icontains`), and both raise `TypeError` for non-string values.
+
+### Changed
+
+- **Version bump to 0.21.2** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
 ## [0.21.1] - 2026-06-09
 
 **Security maintenance release (V2 LTS).** No library code changes vs 0.21.0 —
