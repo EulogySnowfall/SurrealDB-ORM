@@ -168,12 +168,42 @@ def test_queryset_compile_startswith() -> None:
     assert qs._variables["_f0"] == "Al"
 
 
+def test_queryset_compile_istartswith() -> None:
+    """istartswith is case-insensitive: lowercases both field and value."""
+    qs = ModelTest.objects().filter(name__istartswith="ALI")
+    query = qs._compile_query()
+    assert "string::starts_with(string::lowercase(name), $_f0)" in query
+    assert qs._variables["_f0"] == "ali"
+
+
+def test_queryset_compile_istartswith_differs_from_startswith() -> None:
+    """istartswith must not compile to the same SurrealQL as startswith."""
+    qs_i = ModelTest.objects().filter(name__istartswith="ali")
+    qs_cs = ModelTest.objects().filter(name__startswith="ali")
+    assert qs_i._compile_query() != qs_cs._compile_query()
+
+
 def test_queryset_compile_endswith() -> None:
     """endswith generates string::ends_with() function call."""
     qs = ModelTest.objects().filter(name__endswith="ce")
     query = qs._compile_query()
     assert "string::ends_with(name, $_f0)" in query
     assert qs._variables["_f0"] == "ce"
+
+
+def test_queryset_compile_iendswith() -> None:
+    """iendswith is case-insensitive: lowercases both field and value."""
+    qs = ModelTest.objects().filter(name__iendswith="CE")
+    query = qs._compile_query()
+    assert "string::ends_with(string::lowercase(name), $_f0)" in query
+    assert qs._variables["_f0"] == "ce"
+
+
+def test_queryset_compile_iendswith_differs_from_endswith() -> None:
+    """iendswith must not compile to the same SurrealQL as endswith."""
+    qs_i = ModelTest.objects().filter(name__iendswith="ce")
+    qs_cs = ModelTest.objects().filter(name__endswith="ce")
+    assert qs_i._compile_query() != qs_cs._compile_query()
 
 
 def test_queryset_compile_like() -> None:
