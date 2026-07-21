@@ -42,7 +42,13 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           # Extract version: "chore(release): bump version to 0.31.2" → "0.31.2"
-          VERSION=$(printf '%s' "$COMMIT_MSG" | sed -n 's/.*bump version to \([0-9.]*\).*/\1/p')
+          # head -n1: a squash-merge concatenates every commit message, so the
+          # "bump version to" phrase can appear on multiple lines (e.g. the bump
+          # commit's own subject plus a CHANGELOG commit). Without head -n1, sed
+          # prints one match per line and $VERSION becomes multi-line, which
+          # makes `echo "version=$VERSION" >> "$GITHUB_OUTPUT"` fail with
+          # "Invalid format" and the release is never tagged (hit on 0.21.2).
+          VERSION=$(printf '%s' "$COMMIT_MSG" | sed -n 's/.*bump version to \([0-9.]*\).*/\1/p' | head -n1)
 
           if [[ -z "$VERSION" ]]; then
             echo "Could not extract version from commit message: $COMMIT_MSG"
