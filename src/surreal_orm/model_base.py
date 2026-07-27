@@ -40,8 +40,7 @@ logger = logging.getLogger(__name__)
 # PERMISSIONS deny the write; in either case the update did not happen, so we
 # surface it instead of silently no-opping (mirrors the create-path guard).
 _UPDATE_NO_RECORD_MSG = (
-    "Can't update data, no record affected for {thing} "
-    "(record may not exist or the write was denied by permissions)."
+    "Can't update data, no record affected for {thing} (record may not exist or the write was denied by permissions)."
 )
 
 # Global registry of all SurrealDB models for migration introspection
