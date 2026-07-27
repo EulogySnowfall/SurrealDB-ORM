@@ -41,6 +41,76 @@ Thanks to [@rmortes](https://github.com/rmortes) for both fixes.
 
 ---
 
+## [0.31.12] - 2026-07-20
+
+**CI maintenance release.** No library code changes — runtime behaviour is
+identical to 0.31.11.
+
+### Changed
+
+- **CI: `actions/setup-python` 6 → 7 (#136).**
+
+---
+
+## [0.31.11] - 2026-06-22
+
+**CI maintenance release.** No library code changes — runtime behaviour is
+identical to 0.31.10.
+
+### Changed
+
+- **CI: `actions/checkout` 6 → 7 (#132).**
+
+---
+
+## [0.31.10] - 2026-06-20
+
+**Maintenance release.** No library code changes — runtime behaviour is
+identical to 0.31.9.
+
+### Changed
+
+- **Dependency: `tornado` 6.5.6 → 6.5.7 (#127)** — transitive dev-group
+  dependency; not part of the runtime install.
+
+---
+
+## [0.31.9] - 2026-06-20
+
+**Maintenance release.** No library code changes — the SDK and ORM are
+compatible as-is.
+
+### Changed
+
+- **Validated against SurrealDB 3.1.5 (#128)** — bumped the test/CI target and
+  Docker Compose image `surrealdb/surrealdb:v3.1.4` → `v3.1.5`.
+
+---
+
+## [0.31.8] - 2026-06-17
+
+**Maintenance release.** No library code changes — runtime behaviour is
+identical to 0.31.7.
+
+### Changed
+
+- **Dependency: `aiohttp` 3.14.0 → 3.14.1 (#123)** — the WebSocket transport's
+  runtime dependency (Dependabot).
+
+---
+
+## [0.31.7] - 2026-06-11
+
+**Maintenance release.** No library code changes — the SDK and ORM are
+compatible as-is.
+
+### Changed
+
+- **Validated against SurrealDB 3.1.4 (#121)** — bumped the test/CI target and
+  Docker Compose image `surrealdb/surrealdb:v3.1.3` → `v3.1.4`.
+
+---
+
 ## [0.31.6] - 2026-06-09
 
 **CI / maintenance release.** No library code changes — runtime behaviour is
