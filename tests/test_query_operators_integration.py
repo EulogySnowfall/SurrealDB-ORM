@@ -128,10 +128,34 @@ async def test_filter_startswith() -> None:
 
 
 @pytest.mark.integration
+async def test_filter_istartswith() -> None:
+    """istartswith → case-insensitive prefix match (lowercases both sides)."""
+    results = await Person.objects().filter(name__istartswith="al").exec()
+    assert len(results) == 1
+    assert results[0].name == "Alice Smith"
+
+    # A case-sensitive startswith with the same lowercase prefix matches nothing.
+    cs = await Person.objects().filter(name__startswith="al").exec()
+    assert cs == []
+
+
+@pytest.mark.integration
 async def test_filter_endswith() -> None:
     results = await Person.objects().filter(name__endswith="Jones").exec()
     assert len(results) == 1
     assert results[0].name == "Bob Jones"
+
+
+@pytest.mark.integration
+async def test_filter_iendswith() -> None:
+    """iendswith → case-insensitive suffix match (lowercases both sides)."""
+    results = await Person.objects().filter(name__iendswith="JONES").exec()
+    assert len(results) == 1
+    assert results[0].name == "Bob Jones"
+
+    # A case-sensitive endswith with the same uppercase suffix matches nothing.
+    cs = await Person.objects().filter(name__endswith="JONES").exec()
+    assert cs == []
 
 
 @pytest.mark.integration

@@ -30,7 +30,7 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 open Dependabot updates and fixes the release-automation deadlock that kept them
 from auto-merging. See [CHANGELOG.md](CHANGELOG.md) for the full detail.
 
-- **Fixed the Dependabot auto-merge deadlock** — the `Auto-merge & Tag` job waited on `gh pr checks --watch`, which includes the job's *own* check, so it waited on itself until the 6h job timeout and never merged. Tests were green the whole time; this was never a test or version-bump failure. Gating now relies on `gh pr merge --auto`.
+- **Fixed the Dependabot auto-merge deadlock** — the `Auto-merge & Tag` job waited on `gh pr checks --watch`, which includes the job's _own_ check, so it waited on itself until the 6h job timeout and never merged. Tests were green the whole time; this was never a test or version-bump failure. Gating now relies on `gh pr merge --auto`.
 - **Dependency bumps** — `dependabot/fetch-metadata` 2 → 3 (#115), `codecov/codecov-action` 5 → 7 (#116).
 - **Dependabot now ignores `cbor2` major bumps on `v2`** — that LTS branch is pinned `<6` on purpose (6.x breaks SurrealDB 2.x CBOR).
 
@@ -44,13 +44,13 @@ corrects stale dates. See [CHANGELOG.md](CHANGELOG.md) for the full detail.
 
 ### 0.31.x at a glance (0.31.0 → 0.31.4)
 
-| Version | Highlights |
-| ------- | ---------- |
+| Version    | Highlights                                                                                                                                                                                                                             |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **0.31.0** | First PyPI release for SurrealDB 3.0 — `RebuildIndex`, GraphQL config (`DefineGraphQLConfig` / `RemoveGraphQLConfig`), bearer access (`DefineBearerAccess`), and `QuerySet.upsert()` / `bulk_upsert()` with `ON DUPLICATE KEY UPDATE`. |
-| **0.31.1** | Security: `cbor2` 5.8.0 → 5.9.0; CI / release-automation fixes. |
-| **0.31.2** | **Critical** — fixed a cbor2 6.x incompatibility that broke every CBOR RPC (surfaced as `401 Unauthorized`); raised security dependency floors (`aiohttp>=3.12`, `pydantic>=2.11`, `httpx>=0.28`, `cbor2>=6.1.2`). |
-| **0.31.3** | Validated against **SurrealDB 3.1.3** (test/CI target + Docker image). |
-| **0.31.4** | Fixed intermittent integration-suite **401s caused by JWT `nbf` clock skew** (issue #101); dependency refresh that also cleared the Pygments ReDoS advisory. |
+| **0.31.1** | Security: `cbor2` 5.8.0 → 5.9.0; CI / release-automation fixes.                                                                                                                                                                        |
+| **0.31.2** | **Critical** — fixed a cbor2 6.x incompatibility that broke every CBOR RPC (surfaced as `401 Unauthorized`); raised security dependency floors (`aiohttp>=3.12`, `pydantic>=2.11`, `httpx>=0.28`, `cbor2>=6.1.2`).                     |
+| **0.31.3** | Validated against **SurrealDB 3.1.3** (test/CI target + Docker image).                                                                                                                                                                 |
+| **0.31.4** | Fixed intermittent integration-suite **401s caused by JWT `nbf` clock skew** (issue #101); dependency refresh that also cleared the Pygments ReDoS advisory.                                                                           |
 
 > **Upgrading from 0.31.0 / 0.31.1?** 0.31.2 is an important fix: under `cbor2>=6`, earlier versions fail **all** authenticated CBOR operations with `401 Unauthorized`. Move to ≥ 0.31.2 (ideally the latest 0.31.x).
 
@@ -1420,15 +1420,36 @@ make ci-lint           # Run all linters
 
 A lightweight Django-style ORM built on the **official SurrealDB Python SDK**.
 
-| Feature         | SurrealDB-ORM          | SurrealDB-ORM-lite   |
-| --------------- | ---------------------- | -------------------- |
-| SDK             | Custom (`surreal_sdk`) | Official `surrealdb` |
-| Live Queries    | Full support           | Limited              |
-| CBOR Protocol   | Default                | SDK-dependent        |
-| Transactions    | Full support           | Basic                |
-| Typed Functions | Yes                    | No                   |
+The two projects target the same feature set; they differ in **how** (custom SDK vs official
+SDK) and in **which servers they support**. Lite is further along than this table used to
+suggest — the comparison below reflects lite **v0.13.0**:
 
-Choose **SurrealDB-ORM-lite** if you prefer to use the official SDK with basic ORM features.
+| Feature                               | SurrealDB-ORM          | SurrealDB-ORM-lite                                  |
+| ------------------------------------- | ---------------------- | --------------------------------------------------- |
+| SDK                                   | Custom (`surreal_sdk`) | Official `surrealdb`                                |
+| Supported SurrealDB                   | 3.x only               | **2.6.x and 3.1**                                   |
+| CBOR protocol                         | Default (own codec)    | Handled internally by the official SDK              |
+| CRUD, QuerySet, aggregations, signals | Yes                    | Yes                                                 |
+| Relations & graph traversal           | Yes                    | Yes                                                 |
+| Transactions                          | Full support           | Full — interactive on 3.x, buffered on 2.6.x (v0.9) |
+| `upsert` / `patch` / atomic field ops | Yes                    | Yes (v0.10 – v0.11)                                 |
+| Retry on conflict                     | Yes                    | Yes (v0.12)                                         |
+| Server-side values (`SurrealFunc`)    | Yes                    | Yes (v0.13)                                         |
+| Computed fields                       | Yes                    | Planned (v0.14)                                     |
+| Typed functions API / `call_function` | Yes                    | Planned (v0.15)                                     |
+| JWT / scope authentication            | Yes                    | Planned (v0.16 – v0.17)                             |
+| Live queries / CDC                    | Full support           | Not yet — planned (v0.19 – v0.21)                   |
+| Full-text & vector search             | Yes                    | Planned (v0.34 – v0.36)                             |
+| Migrations & CLI                      | Yes                    | Planned (v0.37 – v0.38)                             |
+
+Everything on lite's roadmap is implementable with the official SDK (native methods, or any
+SurrealQL — DDL included — through `query()`); only the custom SDK and its CBOR internals stay
+exclusive to this project. See [lite's roadmap](https://github.com/EulogySnowfall/SurrealDB-ORM-lite/blob/main/docs/ROADMAP.md)
+for the full schedule.
+
+Choose **SurrealDB-ORM-lite** if you want the official SDK, minimal dependencies, or support for
+SurrealDB **2.6.x as well as 3.1**. Choose **SurrealDB-ORM** if you need the features above that
+lite has not shipped yet (live queries, auth, search, migrations) or the custom-SDK internals.
 
 ```bash
 pip install surreal-orm-lite
