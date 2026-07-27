@@ -24,6 +24,28 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.31.13
+
+**Bug-fix release** — two correctness fixes (thanks [@rmortes](https://github.com/rmortes)).
+See [CHANGELOG.md](CHANGELOG.md) for the full detail.
+
+- **Denied / missing `UPDATE` and `merge()` now raise instead of silently no-opping (#135)** — on a table with row-level `PERMISSIONS`, a write the current user isn't allowed to make (or one targeting a row that no longer exists) makes SurrealDB return an *empty* result, not an error. `save()` on a persisted instance and `merge()` previously discarded that and returned `self`, so a denied update looked identical to success. All non-deferred write paths now raise `SurrealDbError`; a new `BaseTransaction.defers_results` keeps HTTP-transaction behaviour unchanged.
+- **`istartswith` / `iendswith` are now actually case-insensitive (#134)** — they previously compiled to the same SurrealQL as `startswith` / `endswith`, so `name__istartswith="ali"` did not match `"Alice"`. Both sides are now lowercased (mirroring `icontains`).
+
+## What's New in 0.31.7 → 0.31.12
+
+**Maintenance / dependency releases** — no library code changes; runtime behaviour
+is identical across this range. See [CHANGELOG.md](CHANGELOG.md) for the full detail.
+
+| Version | Change |
+| ------- | ------ |
+| **0.31.7** | Validated against **SurrealDB 3.1.4** (test/CI target + Docker image) (#121). |
+| **0.31.8** | Dependency: `aiohttp` 3.14.0 → 3.14.1 (WebSocket transport runtime dep) (#123). |
+| **0.31.9** | Validated against **SurrealDB 3.1.5** (test/CI target + Docker image) (#128). |
+| **0.31.10** | Dependency: `tornado` 6.5.6 → 6.5.7 (transitive dev-group dep) (#127). |
+| **0.31.11** | CI: `actions/checkout` 6 → 7 (#132). |
+| **0.31.12** | CI: `actions/setup-python` 6 → 7 (#136). |
+
 ## What's New in 0.31.6
 
 **CI / maintenance release** — no library code changes vs 0.31.5. Integrates the
