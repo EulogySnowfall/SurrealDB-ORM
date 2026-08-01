@@ -822,9 +822,29 @@ class QuerySet(Generic[T]):
         Returns:
             list[dict[str, Any]]: A list of dictionaries containing grouped results.
         """
+        query = self._compile_annotate_query()
+
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+        result = await client.query(remove_quotes_for_variables(query), self._variables)
+
+        return result.all_records
+
+    def _compile_annotate_query(self) -> str:
+        """
+        Compile the GROUP BY / aggregation query used by :meth:`_execute_annotate`.
+
+        Aggregations render inline; ``Subquery`` annotations are hoisted into a
+        ``LET`` prelude, exactly as in :meth:`_compile_query` (see
+        :meth:`Subquery.to_surql` for why).
+
+        Returns:
+            str: The compiled SurrealQL, including any ``LET`` prelude.
+        """
+        prelude: list[str] = []
+
         # Build WHERE clause first so the shared counter is advanced before
         # subquery annotations — prevents $_fN variable collisions.
-        where_parts, filter_vars = self._build_where_parts()
+        where_parts, filter_vars = self._build_where_parts(prelude)
         if filter_vars:
             self._variables.update(filter_vars)
         where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
@@ -841,7 +861,7 @@ class QuerySet(Generic[T]):
 
         for alias, annotation in self._annotations.items():
             if isinstance(annotation, Subquery):
-                select_parts.append(f"{annotation.to_surql(sub_vars, counter)} AS {alias}")
+                select_parts.append(f"{annotation.to_surql(sub_vars, counter, prelude)} AS {alias}")
             else:
                 select_parts.append(annotation.to_surql(alias))
 
@@ -858,10 +878,9 @@ class QuerySet(Generic[T]):
 
         query = f"SELECT {select_clause} FROM {self._model_table}{where_clause}{group_clause};"
 
-        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
-
-        return result.all_records
+        if prelude:
+            return " ".join(prelude) + " " + query
+        return query
 
     async def _execute_prefetch(
         self,
@@ -955,6 +974,7 @@ class QuerySet(Generic[T]):
         value: Any,
         variables: dict[str, Any],
         counter: list[int],
+        prelude: list[str] | None = None,
     ) -> str:
         """
         Render a single filter condition to a parameterized SurrealQL expression.
@@ -969,6 +989,9 @@ class QuerySet(Generic[T]):
             value: The filter value.
             variables: Mutable dict to collect parameterized variables.
             counter: Mutable single-element list ``[int]`` used as auto-increment counter.
+            prelude: Mutable list collecting ``LET`` statements for hoisted
+                subqueries. ``None`` keeps subqueries inline (see
+                :meth:`Subquery.to_surql`).
 
         Returns:
             str: The rendered SurrealQL condition.
@@ -985,7 +1008,7 @@ class QuerySet(Generic[T]):
 
         # ── Subquery values ──────────────────────────────────────────
         if isinstance(value, Subquery):
-            sub_sql = value.to_surql(variables, counter)
+            sub_sql = value.to_surql(variables, counter, prelude)
             _COLLECTION_LOOKUPS = {"in", "not_in", "containsall", "containsany"}
             if lookup_name in _COLLECTION_LOOKUPS:
                 return f"{field_name} {op} {sub_sql}"
@@ -1083,6 +1106,7 @@ class QuerySet(Generic[T]):
         q: Q,
         variables: dict[str, Any],
         counter: list[int],
+        prelude: list[str] | None = None,
     ) -> str:
         """
         Recursively render a Q object tree to a parameterized SurrealQL expression.
@@ -1101,12 +1125,12 @@ class QuerySet(Generic[T]):
         parts: list[str] = []
         for child in q.children:
             if isinstance(child, Q):
-                rendered = self._render_q(child, variables, counter)
+                rendered = self._render_q(child, variables, counter, prelude)
                 if rendered:
                     parts.append(rendered)
             else:
                 field_name, lookup_name, value = child
-                parts.append(self._render_condition(field_name, lookup_name, value, variables, counter))
+                parts.append(self._render_condition(field_name, lookup_name, value, variables, counter, prelude))
 
         if not parts:
             return ""
@@ -1122,7 +1146,7 @@ class QuerySet(Generic[T]):
 
         return result
 
-    def _build_where_parts(self) -> tuple[list[str], dict[str, Any]]:
+    def _build_where_parts(self, prelude: list[str] | None = None) -> tuple[list[str], dict[str, Any]]:
         """
         Build all WHERE clause parts from both keyword filters and Q objects.
 
@@ -1137,11 +1161,11 @@ class QuerySet(Generic[T]):
 
         # Keyword-based filters (always AND-joined)
         for field_name, lookup_name, value in self._filters:
-            parts.append(self._render_condition(field_name, lookup_name, value, variables, counter))
+            parts.append(self._render_condition(field_name, lookup_name, value, variables, counter, prelude))
 
         # Q object filters
         for q in self._q_filters:
-            rendered = self._render_q(q, variables, counter)
+            rendered = self._render_q(q, variables, counter, prelude)
             if rendered:
                 parts.append(rendered)
 
@@ -1163,6 +1187,11 @@ class QuerySet(Generic[T]):
         Returns:
             str: The compiled SQL query string.
         """
+        # ── LET prelude ─────────────────────────────────────────────────
+        # Uncorrelated subqueries are hoisted into `LET $_sqN = (...);`
+        # statements emitted ahead of the SELECT (see Subquery.to_surql).
+        prelude: list[str] = []
+
         # ── SELECT clause ───────────────────────────────────────────────
         extra_select: list[str] = []
 
@@ -1187,7 +1216,7 @@ class QuerySet(Generic[T]):
                 query = f"SELECT * FROM {self._model_table}"
 
         # ── WHERE clause ────────────────────────────────────────────────
-        where_parts, filter_vars = self._build_where_parts()
+        where_parts, filter_vars = self._build_where_parts(prelude)
         if filter_vars:
             self._variables.update(filter_vars)
 
@@ -1246,6 +1275,11 @@ class QuerySet(Generic[T]):
             query += f" FETCH {', '.join(fetch_targets)}"
 
         query += ";"
+
+        # A LET statement returns no records, so prepending the prelude does
+        # not affect QueryResponse.all_records — only the SELECT contributes.
+        if prelude:
+            return " ".join(prelude) + " " + query
         return query
 
     async def exec(self) -> list[T]:

@@ -55,21 +55,38 @@ class Subquery:
         self,
         variables: dict[str, Any],
         counter: list[int],
+        prelude: list[str] | None = None,
     ) -> str:
         """
-        Compile the inner QuerySet to a parenthesized sub-SELECT.
+        Compile the inner QuerySet to a sub-SELECT.
 
         Uses the shared ``counter`` to generate unique ``$_fN`` variable
         names that don't collide with the outer query.  Inner variable
         bindings are added to the shared ``variables`` dict.
 
+        When ``prelude`` is provided, the sub-SELECT is *hoisted*: a
+        ``LET $_sqN = (...);`` statement is appended to ``prelude`` and the
+        variable reference ``$_sqN`` is returned instead of the inline
+        expression.  This is required on SurrealDB 3.2.x, which evaluates an
+        inline uncorrelated sub-SELECT once per outer row while sharing its
+        ``LIMIT`` budget across those evaluations — so a subquery combining
+        ``ORDER BY`` and ``LIMIT`` returns its value for only some rows and an
+        empty array for the rest (issue #147).  A ``LET`` binding is evaluated
+        exactly once, which is correct on every supported version.
+
+        Callers that cannot emit a prelude — notably ``LIVE SELECT``, whose
+        WHERE clause must be self-contained — pass ``None`` and get the inline
+        form.
+
         Args:
             variables: Mutable dict to collect parameterized variables.
             counter: Mutable single-element list ``[int]`` used as
                 auto-increment counter.
+            prelude: Mutable list collecting ``LET`` statements. ``None``
+                keeps the legacy inline form.
 
         Returns:
-            The sub-SELECT expression wrapped in parentheses.
+            ``$_sqN`` when hoisted, otherwise the parenthesized sub-SELECT.
         """
         qs = self.queryset
 
@@ -90,10 +107,10 @@ class Subquery:
         qs_class = type(qs)
 
         for field_name, lookup_name, value in qs._filters:
-            parts.append(qs_class._render_condition(field_name, lookup_name, value, variables, counter))
+            parts.append(qs_class._render_condition(field_name, lookup_name, value, variables, counter, prelude))
 
         for q in qs._q_filters:
-            rendered = qs._render_q(q, variables, counter)
+            rendered = qs._render_q(q, variables, counter, prelude)
             if rendered:
                 parts.append(rendered)
 
@@ -112,7 +129,15 @@ class Subquery:
         if qs._offset is not None:
             query += f" START {qs._offset}"
 
-        return f"({query})"
+        if prelude is None:
+            return f"({query})"
+
+        # Hoist. Any nested subquery has already appended its own LET above,
+        # so numbering by current prelude length binds innermost-first — a
+        # LET may only reference variables bound before it.
+        name = f"_sq{len(prelude)}"
+        prelude.append(f"LET ${name} = ({query});")
+        return f"${name}"
 
     def __repr__(self) -> str:
         return f"Subquery({self.queryset!r})"

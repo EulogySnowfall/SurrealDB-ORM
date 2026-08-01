@@ -6,6 +6,120 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.32.0] - 2026-07-31
+
+> ### ⚠️ BREAKING — SurrealDB 3.2+ is now required
+>
+> **Upgrade your database to 3.2.3+ before upgrading the ORM.** SurrealDB 3.1.x
+> and earlier are no longer supported or tested on `main`.
+>
+> | Your SurrealDB | Install |
+> | -------------- | ------- |
+> | **3.2+** | `surrealdb-orm` 0.32.x |
+> | 3.0 – 3.1 | `surrealdb-orm<0.32` |
+> | 2.x | `surrealdb-orm<0.30`, or the `v2` branch (`0.20.x`) |
+>
+> **`Subquery` also emits different SQL** (a `LET` prelude). The Python API and
+> the results are unchanged — only code asserting on the *generated SQL string*
+> needs updating.
+
+### Breaking
+
+- **Minimum SurrealDB is now 3.2** — `.surrealdb-version` and every image tag in
+  `devops/docker-compose.yml` move from `3.1.5` to `3.2.3`. The 3.1.x line is no
+  longer tested or supported on `main`. (SurrealDB 2.x remains served by the
+  `v2` branch.)
+- **`Subquery` now compiles to a `LET` prelude instead of an inline sub-SELECT.**
+  A query with a subquery used to be a single statement:
+
+  ```sql
+  SELECT * FROM orders WHERE user_id IN (SELECT VALUE id FROM users WHERE is_active = $_f0);
+  ```
+
+  It is now two, with the subquery bound once up front:
+
+  ```sql
+  LET $_sq0 = (SELECT VALUE id FROM users WHERE is_active = $_f0);
+  SELECT * FROM orders WHERE user_id IN $_sq0;
+  ```
+
+  Scalar subqueries wrap the variable — `total = array::first($_sq0)`. Nested
+  subqueries emit one `LET` each, innermost first, since a `LET` may only
+  reference variables bound before it. Only code asserting on the *generated
+  SQL string* is affected; the Python API is unchanged and results are
+  identical. A `LET` statement returns no records, so `QueryResponse.all_records`
+  is unaffected and no SDK change was needed.
+
+  `LIVE SELECT` cannot carry a prelude, so `QuerySet.live()` keeps the inline
+  form — its WHERE clause must stay self-contained.
+
+### Fixed
+
+- **`Subquery` returned wrong results on SurrealDB 3.2.x (#147).** 3.2.x
+  evaluates an inline uncorrelated sub-SELECT once per outer row while sharing
+  its `LIMIT` budget across those evaluations, so a subquery combining
+  `ORDER BY` **and** `LIMIT` yields its value for only some outer rows and `[]`
+  for the rest — `QuerySet.filter(field=Subquery(...))` then matched nothing.
+  The corruption is non-deterministic (~75% of executions, affected rows varying
+  run to run), which is why the regression tests repeat each probe.
+
+  Verified trigger boundary on 3.2.3 — only `ORDER BY` **and** `LIMIT` together
+  break; `START`/offset is irrelevant:
+
+  | inner clauses | corrupted |
+  | ------------- | --------- |
+  | none / `LIMIT` / `ORDER BY` / `START` | 0/12 |
+  | `ORDER BY` + `START` | 0/12 |
+  | `LIMIT` + `START` | 0/12 |
+  | **`ORDER BY` + `LIMIT`** | **12/12** |
+  | **`ORDER BY` + `LIMIT` + `START`** | **12/12** |
+
+  Rather than special-casing that combination, `Subquery` now hoists *every*
+  uncorrelated subquery into a `LET` binding, which is evaluated exactly once
+  and is correct regardless of how the upstream trigger evolves.
+
+  This remains an upstream SurrealDB bug — still unfixed in 3.2.3, the latest
+  release, and reproducible in plain SurrealQL. The standalone repro is kept as
+  an `xfail`-marked upstream tracker
+  (`test_inline_subquery_order_by_and_limit_is_row_stable_upstream`) so it
+  documents the defect without gating CI, and will `xpass` once upstream fixes it.
+
+- **The SurrealDB version monitors never filed their failure issue (#146).**
+  `create-failure-issue` exists only to run when `test-new-version` fails, but
+  its `if:` contained no status-check function. GitHub
+  [implicitly ANDs `success()`](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#status-check-functions)
+  into such a condition, so a failed dependency skipped the job outright — the
+  condition it guarded was unreachable. Both the 3.x and 2.x monitors had
+  therefore failed daily since ~2026-07-15 (12+ consecutive scheduled runs)
+  without ever opening an issue. Adding `always()` restores the intended
+  behaviour; it does not weaken the guard, since a failing `check-release`
+  leaves `has-update` empty and a cancelled run yields `result == 'cancelled'`.
+
+### Added
+
+- **`QuerySet._compile_annotate_query()`** — the GROUP BY / aggregation query is
+  now compiled by a dedicated method (extracted from `_execute_annotate()`) so
+  it can hoist subquery annotations and be unit-tested without a database.
+- **`tests/test_workflow_conditions.py`** — workflow lint tests that fail if any
+  job or step condition in `.github/workflows/` tests a dependency's failure
+  without a status-check function, so the #146 bug class cannot silently return.
+  No database required. Adds `pyyaml` to the dev dependency group.
+- **Subquery clause-isolation and hoisting tests** — `tests/test_subquery.py`
+  gains a `TestSubqueryLetHoisting` unit class (prelude shape, nesting order,
+  distinct variables, `annotate()` path, and the inline form `live()` still
+  needs) plus integration tests splitting the failure surface by clause.
+
+### Changed
+
+- **Dependency refresh** — lockfile upgraded across the board, notably
+  `aiohttp` 3.14.1 → 3.14.3, `cbor2` 6.1.2 → 6.1.3, `certifi` 2026.5.20 →
+  2026.7.22, `mypy` 2.1.0 → 2.3.0, `pytest` 9.0.3 → 9.1.1, `ruff` 0.15.16 →
+  0.16.0, `coverage` 7.14.1 → 7.15.2, `docker` 7.1.0 → 7.2.0.
+- **Version bump to 0.32.0** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
 ## [0.31.13] - 2026-07-27
 
 **Bug-fix release.** Two correctness fixes.

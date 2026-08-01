@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: June 2026 (0.31.6)
+> Context document for Claude AI - Last updated: July 2026 (0.32.0)
 
 ## Project Vision
 
@@ -10,14 +10,29 @@
 
 ---
 
-## Current Version: 0.31.6 (Beta) — SurrealDB 3.0 line
+## Current Version: 0.32.0 (Beta) — SurrealDB 3.2+ required
 
 ### Branch Strategy
 
 | Branch | SurrealDB | ORM Version | Status                          |
 | ------ | --------- | ----------- | ------------------------------- |
-| `main` | 3.X       | 0.31.x      | Active development              |
+| `main` | **3.2+**  | 0.32.x      | Active development              |
 | `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.32.0 (BREAKING)
+
+- **SurrealDB 3.2+ required** — `.surrealdb-version` and `devops/docker-compose.yml` pinned to
+  `3.2.3`. The 3.1.x line is no longer supported on `main`; 2.x stays on the `v2` branch.
+- **`Subquery` now hoists into a `LET` prelude instead of an inline sub-SELECT** — required because
+  SurrealDB 3.2.x evaluates an inline uncorrelated sub-SELECT once per outer row while sharing its
+  `LIMIT` budget, so `ORDER BY` + `LIMIT` subqueries returned values for only some rows (#147,
+  upstream, still unfixed in 3.2.3). Generated SQL changed:
+  `LET $_sq0 = (...); SELECT ... WHERE x IN $_sq0;`. Python API unchanged. `live()` keeps the inline
+  form (a `LIVE SELECT` WHERE cannot carry a prelude). `Subquery.to_surql()` takes an optional
+  `prelude` list; `QuerySet._compile_annotate_query()` was extracted so the `annotate()` path hoists too.
+- **CI: monitors never filed their failure issue (#146)** — `if:` without a status-check function gets
+  an implicit `success() &&`, so `create-failure-issue` was unreachable. Guarded now by
+  `tests/test_workflow_conditions.py`.
 
 ### What's New in 0.31.6
 
