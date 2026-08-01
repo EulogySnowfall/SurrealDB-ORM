@@ -56,7 +56,10 @@ build-backend = "hatchling.build"
 [tool.ruff]
 line-length = 128
 target-version = "py312"
-exclude = ["examples"]
+# Markdown is excluded because ruff 0.16 formats Python code blocks inside it.
+# The docs use deliberately expanded, line-per-argument examples for readability;
+# letting the formatter collapse them onto single lines makes them worse to read.
+exclude = ["examples", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

@@ -115,6 +115,10 @@ and adheres to [SemVer](https://semver.org/) versioning.
   `aiohttp` 3.14.1 → 3.14.3, `cbor2` 6.1.2 → 6.1.3, `certifi` 2026.5.20 →
   2026.7.22, `mypy` 2.1.0 → 2.3.0, `pytest` 9.0.3 → 9.1.1, `ruff` 0.15.16 →
   0.16.0, `coverage` 7.14.1 → 7.15.2, `docker` 7.1.0 → 7.2.0.
+- **Ruff no longer formats Markdown** (`exclude = ["examples", "*.md"]`) — ruff
+  0.16 started formatting Python code blocks inside `.md`, which would collapse
+  the docs' deliberately line-per-argument examples onto single lines. Excluding
+  Markdown keeps `ruff format --check` green without rewriting the docs.
 - **Version bump to 0.32.0** — `pyproject.toml`, `surreal_orm/__init__.py`,
   `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
 
