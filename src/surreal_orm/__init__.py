@@ -170,7 +170,7 @@ __all__ = [
     "retry_on_conflict",
 ]
 
-__version__ = "0.21.2"
+__version__ = "0.21.3"
 
 # ---------------------------------------------------------------------------
 # Deprecation notice (V2 LTS branch)
