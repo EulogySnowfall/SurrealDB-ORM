@@ -75,7 +75,7 @@ from .types import (
     ResponseStatus,
 )
 
-__version__ = "0.31.14"
+__version__ = "0.32.0"
 __all__ = [
     # Connections
     "BaseSurrealConnection",

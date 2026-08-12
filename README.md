@@ -5,9 +5,22 @@
 [![codecov](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM/graph/badge.svg?token=XUONTG2M6Z)](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM)
 ![GitHub License](https://img.shields.io/github/license/EulogySnowfall/SurrealDB-ORM)
 
-> **First PyPI release for SurrealDB 3.0!** This is a Beta — core APIs are stabilizing. Feedback welcome!
+> ## ⚠️ BREAKING CHANGE in 0.32.0 — SurrealDB **3.2+ is now required**
 >
-> **Looking for SurrealDB 2.X compatibility?** Install `surrealdb-orm<0.30` or use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`0.20.x`). The `v2` branch receives security patches and critical bug fixes but no new features.
+> **SurrealDB 3.1.x and earlier are no longer supported.** Upgrade your database to **3.2.3+** before
+> upgrading the ORM, or pin the ORM to the version matching your server:
+>
+> | Your SurrealDB | Install |
+> | -------------- | ------- |
+> | **3.2+** | `pip install surrealdb-orm` (0.32.x) |
+> | 3.0 – 3.1 | `pip install "surrealdb-orm<0.32"` |
+> | 2.x | `pip install "surrealdb-orm<0.30"` — or the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`0.20.x`, security + critical fixes only) |
+>
+> `Subquery` also emits different SQL in 0.32.0 (a `LET` prelude). The Python API and the results are
+> unchanged — only code asserting on the *generated SQL string* is affected. See
+> [What's New in 0.32.0](#whats-new-in-0320) and [CHANGELOG.md](CHANGELOG.md).
+>
+> This is a Beta — core APIs are stabilizing. Feedback welcome!
 
 **SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, and JWT authentication.
 
@@ -17,12 +30,41 @@
 
 | Branch | SurrealDB | ORM Version | Status                          |
 | ------ | --------- | ----------- | ------------------------------- |
-| `main` | 3.X       | 0.31.x      | Active development              |
+| `main` | **3.2+**  | 0.32.x      | Active development              |
 | `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
 
 ---
+
+## What's New in 0.32.0
+
+> ### ⚠️ Two breaking changes
+>
+> 1. **SurrealDB 3.2+ is required.** 3.1.x and earlier are no longer supported or tested. The pin moves
+>    from `3.1.5` to `3.2.3` (`.surrealdb-version`, `devops/docker-compose.yml`). **Upgrade your database
+>    first**, or pin `surrealdb-orm<0.32`.
+> 2. **`Subquery` emits different SQL** — a `LET` prelude instead of an inline sub-SELECT. The Python API
+>    and results are unchanged; only code asserting on the generated SQL string needs updating.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full detail.
+
+- **`Subquery` returned wrong results on SurrealDB 3.2.x (#147)** — 3.2.x evaluates an inline uncorrelated sub-SELECT once per outer row while sharing its `LIMIT` budget across those evaluations, so a subquery combining `ORDER BY` **and** `LIMIT` produced a value for only some rows and `[]` for the rest, making `filter(field=Subquery(...))` match nothing. The corruption was non-deterministic (~75% of executions). **This is an upstream SurrealDB bug, still unfixed in 3.2.3** — the ORM now works around it.
+- **Subqueries are hoisted into a `LET` binding (breaking: generated SQL changed)** — evaluated exactly once, which is correct on every version:
+
+  ```sql
+  -- before
+  SELECT * FROM orders WHERE user_id IN (SELECT VALUE id FROM users WHERE is_active = $_f0);
+
+  -- now
+  LET $_sq0 = (SELECT VALUE id FROM users WHERE is_active = $_f0);
+  SELECT * FROM orders WHERE user_id IN $_sq0;
+  ```
+
+  The Python API is unchanged and results are identical — only code asserting on the generated SQL string is affected. `QuerySet.live()` keeps the inline form, since a `LIVE SELECT` WHERE clause cannot carry a prelude.
+- **SurrealDB pin moves to 3.2.3** — `.surrealdb-version` and `devops/docker-compose.yml`. SurrealDB 2.x remains served by the `v2` branch.
+- **The version monitors never filed their failure issue (#146)** — `create-failure-issue` runs only when `test-new-version` fails, but its `if:` had no status-check function, and GitHub implicitly ANDs `success()` into such conditions, so the job was skipped precisely when it was meant to run. Both monitors had failed daily since ~2026-07-15 without ever opening an issue. New workflow lint tests (`tests/test_workflow_conditions.py`) prevent the bug class from returning.
+- **Dependency refresh** — notably `aiohttp` 3.14.3, `cbor2` 6.1.3, `mypy` 2.3.0, `pytest` 9.1.1, `ruff` 0.16.0.
 
 ## What's New in 0.31.13
 

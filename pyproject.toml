@@ -1,6 +1,6 @@
 [project]
 name = "surrealdb-orm"
-version = "0.31.14"
+version = "0.32.0"
 description = "SurrealDB ORM as 'DJango style' for Python with async support. Works with pydantic validation."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -56,7 +56,10 @@ build-backend = "hatchling.build"
 [tool.ruff]
 line-length = 128
 target-version = "py312"
-exclude = ["examples"]
+# Markdown is excluded because ruff 0.16 formats Python code blocks inside it.
+# The docs use deliberately expanded, line-per-argument examples for readability;
+# letting the formatter collapse them onto single lines makes them worse to read.
+exclude = ["examples", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
@@ -114,6 +117,7 @@ dev = [
     "pydantic>=2.11",
     "docker>=7.1.0",
     "python-dotenv>=1.2.2",
+    "pyyaml>=6.0.3",
 ]
 lint = [
     "ruff>=0.15.5",
