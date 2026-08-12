@@ -32,7 +32,8 @@
 | 0.14.0  | Released | Testing & Developer Experience (Alpha → Beta)              |
 | 0.14.4  | Released | Datetime Fix, Typed QuerySet[T] & get_related, mypy strict |
 | 0.30.0  | Released | SurrealDB 3.0 Compatibility                                |
-| 0.31.0  | Beta     | Phase 2b: GraphQL, Bearer, UPSERT, REBUILD INDEX           |
+| 0.31.0  | Released | Phase 2b: GraphQL, Bearer, UPSERT, REBUILD INDEX           |
+| 0.32.0  | Released | SurrealDB 3.2+ required; `Subquery` `LET` prelude          |
 
 ---
 
@@ -1849,10 +1850,11 @@ await User.objects().bulk_upsert(
 | ------- | ---------------- | ----------------------------------------------------------------------------- |
 | 0.30.0  | SurrealDB 3.0    | Refresh tokens, Record references, DEFINE API (Done)                          |
 | 0.31.0  | SurrealDB 3.0    | Bearer access, GraphQL config, REBUILD INDEX, UPSERT ON DUPLICATE (Done)      |
-| 0.32.0  | Graph Power      | Recursive traversal, shortest path, path collection                           |
-| 0.33.0  | ML & Data        | SurrealML inference, JSONL import/export, DB dump/restore                     |
-| 0.34.0  | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring                      |
-| 0.35.0  | File Storage     | DEFINE BUCKET, FileField/ImageField, SDK bucket CRUD, upload/download helpers |
+| 0.32.0  | SurrealDB 3.2    | **Breaking:** requires 3.2+; `Subquery` hoisted into a `LET` prelude (Done)   |
+| 0.33.0  | Graph Power      | Recursive traversal, shortest path, path collection                           |
+| 0.34.0  | ML & Data        | SurrealML inference, JSONL import/export, DB dump/restore                     |
+| 0.35.0  | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring                      |
+| 0.36.0  | File Storage     | DEFINE BUCKET, FileField/ImageField, SDK bucket CRUD, upload/download helpers |
 
 ---
 

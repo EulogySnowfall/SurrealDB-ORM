@@ -93,10 +93,21 @@ jobs:
           echo "Latest:  $LATEST_VERSION"
           echo "Docker:  $DOCKER_TAG"
 
-          # --- Compare: skip if already up to date ---
+          # --- Compare: skip if already up to date, and NEVER downgrade ---
+          # A plain `!=` treats "different" as "newer", which is wrong whenever
+          # GitHub Releases lag Docker Hub: SurrealDB shipped 3.2.1-3.2.3 as
+          # image tags without release entries, so the newest v3.x *release* was
+          # v3.2.0 while .surrealdb-version already read 3.2.3. The monitor then
+          # opened a PR *downgrading* the pin (#155). Compare with `sort -V` and
+          # only act when the candidate is strictly newer.
           HAS_UPDATE="false"
           if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
-            HAS_UPDATE="true"
+            NEWEST=$(printf '%s\n%s\n' "$CURRENT_VERSION" "$LATEST_VERSION" | sort -V | tail -1)
+            if [[ "$NEWEST" == "$LATEST_VERSION" ]]; then
+              HAS_UPDATE="true"
+            else
+              echo "Latest release ($LATEST_VERSION) is older than the current pin ($CURRENT_VERSION) — not downgrading."
+            fi
           fi
 
           # Force update overrides the check

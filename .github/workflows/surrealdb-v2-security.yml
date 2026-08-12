@@ -108,10 +108,18 @@ jobs:
           echo "Latest:  $LATEST_VERSION"
           echo "Docker:  $DOCKER_TAG"
 
-          # --- Compare: skip if already up to date ---
+          # --- Compare: skip if already up to date, and NEVER downgrade ---
+          # See the same guard in surrealdb-security.yml (#155): a plain `!=`
+          # treats "different" as "newer", so whenever GitHub Releases lag the
+          # published image tags the monitor opens a PR downgrading the pin.
           HAS_UPDATE="false"
           if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
-            HAS_UPDATE="true"
+            NEWEST=$(printf '%s\n%s\n' "$CURRENT_VERSION" "$LATEST_VERSION" | sort -V | tail -1)
+            if [[ "$NEWEST" == "$LATEST_VERSION" ]]; then
+              HAS_UPDATE="true"
+            else
+              echo "Latest release ($LATEST_VERSION) is older than the current pin ($CURRENT_VERSION) — not downgrading."
+            fi
           fi
 
           # Force update overrides the check

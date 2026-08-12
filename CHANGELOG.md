@@ -6,7 +6,87 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
-## [0.32.0] - 2026-07-31
+## [0.32.2] - 2026-08-12
+
+**CI fix + documentation release.** No library code changes vs 0.32.0 or 0.32.1.
+
+### Fixed
+
+- **The SurrealDB monitors downgraded the version pin (#155).** Both monitors
+  decided "a new version is available" with a plain string inequality:
+
+  ```bash
+  if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then HAS_UPDATE="true"; fi
+  ```
+
+  "different" is not "newer". SurrealDB published 3.2.1–3.2.3 as image tags
+  **without matching GitHub Release entries**, so the newest v3.x *release* read
+  `3.2.0` while `.surrealdb-version` already read `3.2.3`. The monitor opened —
+  and auto-merged — a PR moving the pin *backwards* to 3.2.0, reverting the
+  version the 0.32.0 release had validated against.
+
+  A lexical compare was wrong across digit widths too: `2.10.0` sorts *below*
+  `2.6.5` as a string, so the v2 monitor would have skipped a real upgrade.
+
+  Both monitors now compare with `sort -V` and act only when the candidate is
+  strictly newer. `.surrealdb-version` and `devops/docker-compose.yml` are
+  restored to **3.2.3**.
+
+  This surfaced immediately after #146 was fixed: the monitors had failed every
+  day since ~2026-07-15 on the `Subquery` regression (#147), so `Update
+  SurrealDB Version` had never been reached. With #148 merged, the monitor's
+  integration tests passed for the first time in weeks — and the downgrade path
+  finally ran.
+
+### Added
+
+- **`tests/test_surrealdb_monitor.py`** — extracts the comparison block from each
+  monitor workflow and *executes it* against a table of version pairs, so the
+  guard is tested rather than merely asserted. No database required.
+
+### Changed
+
+- **CHANGELOG backfill for 0.31.14** — released 2026-08-05 (aiohttp 3.14.1 →
+  3.14.3) but never documented. Its entry is restored below, and the README
+  version-history table gains the matching row.
+- **`0.32.0` release date corrected** to 2026-08-12, the date it was actually
+  tagged and published. The previous `2026-07-31` was the date the work was
+  written, not released — the tag was blocked in the meantime by the
+  version-bump auto-merge failure described in #153.
+- **Roadmap corrected** — `docs/roadmap.md` still listed 0.32.0 as the "Graph
+  Power" milestone (recursive traversal, shortest path, path collection). That
+  work did not ship in 0.32.0; the slot was taken by the SurrealDB 3.2 migration
+  and the `Subquery` fix. Graph Power moves to 0.33.0.
+- **Stale SurrealDB version references refreshed** across `README.md` and
+  `CLAUDE.md` — the compatibility notes still said "tested through SurrealDB
+  3.1.3" after the pin had moved to 3.2.3.
+- **`v2` branch protection restored** — the `V2 LTS Protection` ruleset targeted
+  `refs/heads/V2` while the branch is `v2`, so it applied to nothing and `v2` ran
+  unprotected (see #153 in 0.32.0). Corrected in repo settings; `v2` now requires
+  the `CI Success` check like `main`.
+- **Version bump to 0.32.2** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`. 0.32.1 was consumed
+  by the automation described below, so the fix ships as 0.32.2.
+
+---
+
+## [0.32.1] - 2026-08-12
+
+**Automation artifact — do not use as a reference point.** Published by the
+release pipeline as a side effect of the #155 downgrade, not by intent.
+
+The monitor's downgrade PR (#155) was auto-merged, which made the Dependabot
+auto-merge workflow open and merge its own version-bump PR (#156). That tagged
+`v0.32.1` and published it to PyPI before the problem was noticed.
+
+**The distributed package is byte-identical in behaviour to 0.32.0** — the only
+changes were `.surrealdb-version` and `devops/docker-compose.yml`, neither of
+which ships in the wheel. Nothing to do if you already installed it; 0.32.2 is
+the version carrying the actual fix.
+
+---
+
+## [0.32.0] - 2026-08-12
 
 > ### ⚠️ BREAKING — SurrealDB 3.2+ is now required
 >
@@ -95,6 +175,32 @@ and adheres to [SemVer](https://semver.org/) versioning.
   behaviour; it does not weaken the guard, since a failing `check-release`
   leaves `has-update` empty and a cancelled run yields `result == 'cancelled'`.
 
+- **Version-bump PRs stalled forever on an unprotected base branch (#153).**
+  `gh pr merge --auto` is only accepted when the PR's *base* branch carries a
+  ruleset / branch protection with required status checks. The `V2 LTS
+  Protection` ruleset targeted `refs/heads/V2` while the branch is `v2`, and
+  ruleset ref matching is case-sensitive — so `v2` had **no rules at all** and
+  GitHub rejected the call with *"Protected branch rules not configured for this
+  branch (enablePullRequestAutoMerge)"*. The step failed after the bump branch
+  was already pushed and its PR opened, so PR #152 (`0.21.3`) sat open from
+  2026-08-05: no tag, no PyPI publish for the v2 LTS line, while the aiohttp
+  3.14.3 security fix was already merged into `v2`. Every future v2 security
+  sync would have stalled the same way.
+
+  The ruleset casing was corrected in repo settings, and the workflow no longer
+  depends on the base branch being protected: a `merge-when-green.sh` helper
+  prefers native auto-merge and, when GitHub rejects it, polls the named
+  `CI Success` check on that PR and merges explicitly once it is green. The
+  helper is written to `$RUNNER_TEMP` rather than committed under
+  `.github/scripts/` — `pull_request_target` takes the workflow from the default
+  branch but checks out the PR's *base* branch, so a committed helper would be
+  missing whenever the base is `v2`.
+
+  This does not reintroduce the #118 self-watch deadlock: that was
+  `gh pr checks --watch` waiting on *all* checks, including this job's own
+  `Auto-merge & Tag`. The helper polls one *named* check produced by a different
+  workflow.
+
 ### Added
 
 - **`QuerySet._compile_annotate_query()`** — the GROUP BY / aggregation query is
@@ -104,6 +210,10 @@ and adheres to [SemVer](https://semver.org/) versioning.
   job or step condition in `.github/workflows/` tests a dependency's failure
   without a status-check function, so the #146 bug class cannot silently return.
   No database required. Adds `pyyaml` to the dev dependency group.
+- **`tests/test_dependabot_automerge.py`** — workflow lint tests guarding the
+  #153 and #118 regressions: no step may call `gh pr merge --auto` outside the
+  fallback helper, the helper must be defined before it is used and must end the
+  version-bump step, and `gh pr checks --watch` may never reappear.
 - **Subquery clause-isolation and hoisting tests** — `tests/test_subquery.py`
   gains a `TestSubqueryLetHoisting` unit class (prelude shape, nesting order,
   distinct variables, `annotate()` path, and the inline form `live()` still
@@ -121,6 +231,22 @@ and adheres to [SemVer](https://semver.org/) versioning.
   Markdown keeps `ruff format --check` green without rewriting the docs.
 - **Version bump to 0.32.0** — `pyproject.toml`, `surreal_orm/__init__.py`,
   `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
+## [0.31.14] - 2026-08-05
+
+**Automated security patch.** No library code changes — dependency bump only.
+(Documented retroactively in 0.32.1; the release itself shipped on time.)
+
+### Changed
+
+- **`aiohttp` 3.14.1 → 3.14.3** in the `uv` group (#149, Dependabot auto-merge),
+  followed by the automated version bump PR #150. `aiohttp` is the WebSocket
+  transport for `surreal_sdk`, so the floor matters for live queries.
+- The same bump was synced to the `v2` LTS branch (#151). Its version-bump PR
+  (#152, `0.21.3`) then failed to auto-merge and stalled for a week — see #153
+  in the 0.32.0 entry above.
 
 ---
 

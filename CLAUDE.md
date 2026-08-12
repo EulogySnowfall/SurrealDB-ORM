@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: July 2026 (0.32.0)
+> Context document for Claude AI - Last updated: August 2026 (0.32.2)
 
 ## Project Vision
 
@@ -10,14 +10,42 @@
 
 ---
 
-## Current Version: 0.32.0 (Beta) — SurrealDB 3.2+ required
+## Current Version: 0.32.2 (Beta) — SurrealDB 3.2+ required
 
 ### Branch Strategy
 
-| Branch | SurrealDB | ORM Version | Status                          |
-| ------ | --------- | ----------- | ------------------------------- |
-| `main` | **3.2+**  | 0.32.x      | Active development              |
-| `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
+| Branch | SurrealDB  | ORM Version | Status                          |
+| ------ | ---------- | ----------- | ------------------------------- |
+| `main` | **3.2.3**  | 0.32.x      | Active development              |
+| `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.32.2
+
+- **Version monitors downgraded the SurrealDB pin (#155)** — the update decision used a string
+  inequality (`"$CURRENT" != "$LATEST"`), and *different* is not *newer*. SurrealDB shipped
+  3.2.1–3.2.3 as image tags with **no matching GitHub Release entries**, so the newest v3.x
+  *release* read `3.2.0` while `.surrealdb-version` read `3.2.3` — the monitor opened and
+  auto-merged a PR moving the pin backwards. Lexical compare also breaks across digit widths
+  (`2.10.0` < `2.6.5` as strings). Both monitors now use `sort -V` and act only on a strictly
+  newer version; the pin is restored to 3.2.3. Guarded by `tests/test_surrealdb_monitor.py`,
+  which extracts the workflow's shell block and executes it.
+  Note the ordering: this path had been unreachable for weeks because the monitors failed daily
+  on #147, so the bug only surfaced once #148 made their tests pass.
+- **`v2` branch protection restored (#153)** — the `V2 LTS Protection` ruleset targeted
+  `refs/heads/V2` while the branch is `v2`; ref matching is case-sensitive, so it applied to
+  nothing. That also made `gh pr merge --auto` fail on every v2 version-bump PR, stalling the
+  LTS release chain (PR #152 / `0.21.3` sat open for a week). Repo setting corrected; the
+  workflow now falls back to an explicit `CI Success` gate (#154,
+  `tests/test_dependabot_automerge.py`).
+- **Docs** — `0.31.14` backfilled (released 2026-08-05, undocumented), `0.32.0` date corrected,
+  compatibility tables refreshed to 3.2.x / 0.21.x, roadmap's 0.32.0 slot corrected (Graph Power
+  moves to 0.33.0).
+- **`0.32.1` is an automation artifact, not a real release.** #155 (the downgrade) was auto-merged,
+  which made the auto-merge workflow open, merge, tag and publish its own bump PR (#156) before the
+  problem was caught. The wheel behaves identically to 0.32.0 — `.surrealdb-version` and
+  `devops/docker-compose.yml` don't ship in the package. **The cascade is the lesson:** an
+  auto-merged bad PR triggers a full release with no human in the loop, so the guards on what the
+  monitors are allowed to propose matter more than the release gate does.
 
 ### What's New in 0.32.0 (BREAKING)
 

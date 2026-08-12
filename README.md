@@ -14,7 +14,7 @@
 > | -------------- | ------- |
 > | **3.2+** | `pip install surrealdb-orm` (0.32.x) |
 > | 3.0 – 3.1 | `pip install "surrealdb-orm<0.32"` |
-> | 2.x | `pip install "surrealdb-orm<0.30"` — or the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`0.20.x`, security + critical fixes only) |
+> | 2.x | `pip install "surrealdb-orm<0.30"` — or the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`0.21.x`, security + critical fixes only) |
 >
 > `Subquery` also emits different SQL in 0.32.0 (a `LET` prelude). The Python API and the results are
 > unchanged — only code asserting on the *generated SQL string* is affected. See
@@ -28,14 +28,24 @@
 
 ## Branch Strategy
 
-| Branch | SurrealDB | ORM Version | Status                          |
-| ------ | --------- | ----------- | ------------------------------- |
-| `main` | **3.2+**  | 0.32.x      | Active development              |
-| `v2`   | 2.X       | 0.20.x      | LTS (security & bug fixes only) |
+| Branch | SurrealDB  | ORM Version | Status                          |
+| ------ | ---------- | ----------- | ------------------------------- |
+| `main` | **3.2.3**  | 0.32.x      | Active development              |
+| `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
 
 ---
+
+## What's New in 0.32.2
+
+**CI fix + documentation release** — no library code changes vs 0.32.0.
+
+> **0.32.1 was an automation artifact.** The monitor's downgrade PR (#155) was auto-merged, which made the release pipeline open, merge, tag and publish its own version bump (#156) before the problem was caught. The published wheel behaves identically to 0.32.0 — the only changes were `.surrealdb-version` and `devops/docker-compose.yml`, neither of which ships in the package. Upgrade to 0.32.2 for the actual fix.
+
+- **The version monitors downgraded the SurrealDB pin (#155)** — both monitors decided "an update is available" with a plain string inequality, and *different* is not *newer*. SurrealDB published 3.2.1–3.2.3 as image tags without matching GitHub Release entries, so the newest v3.x **release** read `3.2.0` while the pin already read `3.2.3` — and the monitor opened, then auto-merged, a PR moving the pin **backwards**. A lexical compare was also wrong across digit widths (`2.10.0` sorts *below* `2.6.5` as a string, so the v2 monitor would have skipped a real upgrade). Both monitors now compare with `sort -V` and only act on a strictly newer version; the pin is restored to **3.2.3**. `tests/test_surrealdb_monitor.py` extracts the workflow's own shell block and runs it against a table of version pairs.
+- **`v2` branch protection restored (#153)** — the `V2 LTS Protection` ruleset targeted `refs/heads/V2` while the branch is `v2`, so it matched nothing and `v2` ran unprotected. That also broke `gh pr merge --auto` for every v2 version-bump PR, stalling the LTS release chain for a week.
+- **Documentation** — `0.31.14` was released but never documented (backfilled here), the `0.32.0` date is corrected to its actual release date, the compatibility table is refreshed to 3.2.x, and `docs/roadmap.md` no longer claims 0.32.0 is the "Graph Power" milestone (that work moves to 0.33.0).
 
 ## What's New in 0.32.0
 
@@ -65,6 +75,12 @@ See [CHANGELOG.md](CHANGELOG.md) for the full detail.
 - **SurrealDB pin moves to 3.2.3** — `.surrealdb-version` and `devops/docker-compose.yml`. SurrealDB 2.x remains served by the `v2` branch.
 - **The version monitors never filed their failure issue (#146)** — `create-failure-issue` runs only when `test-new-version` fails, but its `if:` had no status-check function, and GitHub implicitly ANDs `success()` into such conditions, so the job was skipped precisely when it was meant to run. Both monitors had failed daily since ~2026-07-15 without ever opening an issue. New workflow lint tests (`tests/test_workflow_conditions.py`) prevent the bug class from returning.
 - **Dependency refresh** — notably `aiohttp` 3.14.3, `cbor2` 6.1.3, `mypy` 2.3.0, `pytest` 9.1.1, `ruff` 0.16.0.
+
+## What's New in 0.31.14
+
+**Automated security patch** — no library code changes.
+
+- **`aiohttp` 3.14.1 → 3.14.3** (#149, Dependabot auto-merge), followed by the automated version bump (#150). `aiohttp` is the WebSocket transport for `surreal_sdk`. The same bump was synced to the `v2` branch (#151); its version-bump PR then stalled for a week on the auto-merge bug fixed in 0.32.0 (#153).
 
 ## What's New in 0.31.13
 
@@ -1060,19 +1076,21 @@ pip install surrealdb-orm
 pip install surrealdb-orm[cli]
 ```
 
-**Requirements:** Python 3.12+ | SurrealDB 3.0+
+**Requirements:** Python 3.12+ | SurrealDB 3.2+ (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
 
 **Included:** `pydantic`, `httpx`, `aiohttp`, `cbor2` (CBOR is the default protocol for WebSocket)
 
 ### SurrealDB Compatibility
 
-| ORM Version | SurrealDB | Branch | Status              |
-| ----------- | --------- | ------ | ------------------- |
-| **0.30.x+** | >= 3.0    | `main` | Active development  |
-| **0.20.x**  | 2.6.x     | `v2`   | Security fixes only |
+| ORM Version           | SurrealDB   | Branch | Status              |
+| --------------------- | ----------- | ------ | ------------------- |
+| **0.32.x**            | >= 3.2      | `main` | Active development  |
+| **0.30.x – 0.31.x**   | 3.0 – 3.1   | —      | Superseded          |
+| **0.21.x**            | 2.6.x       | `v2`   | Security fixes only |
 
-- **SurrealDB 3.0+** — Use `surrealdb-orm >= 0.30.0` (this branch). Tested through SurrealDB **3.1.3**.
-- **SurrealDB 2.6.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.20.x`). This branch receives security patches but no new features.
+- **SurrealDB 3.2+** — Use `surrealdb-orm >= 0.32.0` (this branch). Tested against SurrealDB **3.2.3**.
+- **SurrealDB 3.0 – 3.1** — Pin `surrealdb-orm<0.32`. 0.32.0 requires 3.2+ and is not tested against 3.1.x.
+- **SurrealDB 2.6.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`). This branch receives security patches but no new features.
 
 ---
 
