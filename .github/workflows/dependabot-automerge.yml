@@ -138,10 +138,82 @@ jobs:
             echo "new-ver=$SYNC_NEW_VER" >> "$GITHUB_OUTPUT"
           fi
 
+      # Written to $RUNNER_TEMP rather than committed as .github/scripts/*.sh:
+      # under `pull_request_target` the workflow file always comes from the
+      # default branch, but the checkout is of the PR's *base* branch — a
+      # committed helper would be missing whenever the base is `v2`.
+      - name: Prepare merge helper
+        run: |
+          cat > "$RUNNER_TEMP/merge-when-green.sh" <<'HELPER'
+          #!/usr/bin/env bash
+          # Merge a PR as soon as its required CI check is green.
+          #
+          # `gh pr merge --auto` is preferred, but GitHub only accepts it when the
+          # PR's BASE branch has protection / a ruleset with required status checks.
+          # `v2` had none (its ruleset targeted `refs/heads/V2` — wrong case), so the
+          # call failed outright and every v2 version-bump PR stalled (#153). Fall
+          # back to polling the required check and merging explicitly.
+          #
+          # NOTE (#118): never gate on `gh pr checks --watch` here. This job is itself
+          # reported as the "Auto-merge & Tag" check, so watching *all* checks waits on
+          # this job — a self-referential deadlock that ran to the 6h job timeout. We
+          # poll one named check ("CI Success") that is produced by a different workflow.
+          set -euo pipefail
+
+          PR="${1:?usage: merge-when-green.sh <pr-number-or-branch> [required-check]}"
+          REQUIRED_CHECK="${2:-CI Success}"
+          POLL_INTERVAL="${POLL_INTERVAL:-20}"
+          MAX_ATTEMPTS="${MAX_ATTEMPTS:-90}"  # 90 * 20s = 30 min
+
+          if gh pr merge --auto --squash "$PR"; then
+            echo "auto-merge enabled (or merged) for $PR"
+            exit 0
+          fi
+
+          echo "::warning::native auto-merge unavailable for $PR (base branch likely unprotected) — falling back to an explicit '$REQUIRED_CHECK' gate"
+
+          for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+            STATE=$(gh pr view "$PR" --json state --jq '.state')
+            case "$STATE" in
+              MERGED) echo "$PR is merged"; exit 0 ;;
+              CLOSED) echo "::error::$PR was closed without merging"; exit 1 ;;
+            esac
+
+            CONCLUSION=$(gh pr view "$PR" --json statusCheckRollup --jq '.statusCheckRollup' \
+              | jq -r --arg c "$REQUIRED_CHECK" '
+                  [.[] | select((.name // .context) == $c)] | .[0]
+                  | if . == null then "PENDING"
+                    elif .__typename == "StatusContext" then .state
+                    elif .status != "COMPLETED" then "PENDING"
+                    else .conclusion end')
+
+            case "$CONCLUSION" in
+              SUCCESS|NEUTRAL|SKIPPED)
+                echo "'$REQUIRED_CHECK' is $CONCLUSION — merging $PR"
+                gh pr merge --squash "$PR"
+                exit 0
+                ;;
+              FAILURE|ERROR|CANCELLED|TIMED_OUT|ACTION_REQUIRED|STARTUP_FAILURE)
+                echo "::error::'$REQUIRED_CHECK' concluded $CONCLUSION on $PR — not merging"
+                exit 1
+                ;;
+              *)
+                echo "waiting for '$REQUIRED_CHECK' on $PR ($CONCLUSION) — attempt $attempt/$MAX_ATTEMPTS"
+                sleep "$POLL_INTERVAL"
+                ;;
+            esac
+          done
+
+          echo "::error::'$REQUIRED_CHECK' did not conclude on $PR within the timeout"
+          exit 1
+          HELPER
+          chmod +x "$RUNNER_TEMP/merge-when-green.sh"
+
       - name: Enable auto-merge
-        run: gh pr merge --auto --squash "${{ github.event.pull_request.number }}"
+        run: '"$RUNNER_TEMP/merge-when-green.sh" "$PR_NUMBER"'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
 
       - name: Wait for merge
         id: wait-merge
@@ -239,7 +311,7 @@ jobs:
             --base "$BASE_BRANCH" \
             --head "$BRANCH"
 
-          gh pr merge --auto --squash "$BRANCH"
+          "$RUNNER_TEMP/merge-when-green.sh" "$BRANCH"
 
   # =============================================================================
   # Sync dependency update to V2 branch (if the same dep exists there)
