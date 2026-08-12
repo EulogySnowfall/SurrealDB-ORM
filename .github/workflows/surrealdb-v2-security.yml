@@ -377,7 +377,11 @@ jobs:
   create-failure-issue:
     name: Create Failure Issue
     needs: [check-release, test-new-version]
+    # `always()` is required: without a status-check function GitHub implicitly
+    # ANDs `success()` into the condition, so this job — which by definition only
+    # runs when `test-new-version` failed — was always skipped.
     if: |
+      always() &&
       needs.check-release.outputs.has-update == 'true' &&
       needs.test-new-version.result == 'failure'
     runs-on: ubuntu-latest
