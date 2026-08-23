@@ -155,14 +155,30 @@ class TestGetForeignKeyTargets:
 # ==================== Assignment ====================
 
 
-class TestGetRecordLink:
-    """Tests for the model's own "table:id" accessor."""
+class TestRecordIdProperty:
+    """Tests for the reserved ``record_id`` accessor (the Django ``pk`` analog)."""
 
     def test_saved_instance(self) -> None:
-        assert FkUser(id="alice").get_record_link() == "fk_users:alice"
+        assert FkUser(id="alice").record_id == RecordId(table="fk_users", id="alice")
 
     def test_unsaved_instance(self) -> None:
-        assert FkUser(name="Alice").get_record_link() is None
+        assert FkUser(name="Alice").record_id is None
+
+    def test_str_form(self) -> None:
+        """str() of the property is the "table:id" record link."""
+        assert str(FkUser(id="alice").record_id) == "fk_users:alice"
+
+    def test_not_serialized(self) -> None:
+        """A property, not a field — never leaks into dumps or saves."""
+        assert "record_id" not in FkUser(id="alice").model_dump()
+
+    def test_usable_as_bound_variable(self) -> None:
+        """The intended use: binding against a record<> column."""
+        author = FkUser(id="alice")
+        qs = FkPost.objects().filter(author="$a").variables(a=author.record_id)
+        query = qs._compile_query()
+        assert "author = $a" in query
+        assert qs._variables["a"] == RecordId(table="fk_users", id="alice")
 
 
 class TestForeignKeyAssignment:

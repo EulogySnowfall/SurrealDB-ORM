@@ -214,12 +214,11 @@ def record_link_to_str(value: Any) -> Any:
         record_link_to_str("users:alice")                    # "users:alice"
     """
     # Duck-typed like _convert_record_id_to_string: avoids import path
-    # issues between src.surreal_orm and surreal_orm
-    get_record_link = getattr(value, "get_record_link", None)
-    if callable(get_record_link):
-        link = get_record_link()
-        if link is not None:
-            return link
+    # issues between src.surreal_orm and surreal_orm. The isinstance guard
+    # keeps unrelated objects with a plain `record_id` attribute untouched.
+    record_id = getattr(value, "record_id", None)
+    if isinstance(record_id, RecordId):
+        return str(record_id)
     if isinstance(value, RecordId):
         return str(value)
     return value
@@ -745,17 +744,24 @@ class BaseSurrealModel(BaseModel):
 
         return None  # pragma: no cover
 
-    def get_record_link(self) -> str | None:
+    @property
+    def record_id(self) -> RecordId | None:
         """
-        Get the full ``"table:id"`` reference for this instance.
+        This record's full identity as a ``RecordId`` — the ``Model.pk`` analog.
+
+        Use it wherever a value is bound against a ``record<...>`` column,
+        e.g. ``variables={"a": author.record_id}``; ``str(instance.record_id)``
+        gives the ``"table:id"`` string form.  Not a Pydantic field, so it is
+        never serialized; a model that declares its own ``record_id`` field
+        shadows it (Pydantic warns).
 
         Returns:
-            The record link, or ``None`` when the instance has no ID yet.
+            The ``RecordId``, or ``None`` when the instance has no ID yet.
         """
         record_id = self.get_id()
         if record_id is None:
             return None
-        return f"{self.get_table_name()}:{record_id}"
+        return RecordId(table=self.get_table_name(), id=record_id)
 
     @classmethod
     def from_db(cls, record: dict[str, Any] | list[Any] | None) -> Self | list[Self]:
