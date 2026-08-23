@@ -174,9 +174,17 @@ def _cbor_tag_decoder(tag: Any, immutable: bool) -> Any:
     elif tag.tag == TAG_STRING_DECIMAL:
         return Decimal(tag.value)
     elif tag.tag == TAG_DATETIME:
-        # Parse ISO 8601 datetime string
+        # SurrealDB sends tag 12 either as an ISO 8601 string or as a compact
+        # [seconds, nanoseconds] pair, and 3.x uses the compact form for every
+        # datetime. Decoding it here is what makes datetimes outside a typed
+        # model field — raw queries, values nested in objects — come back as
+        # datetimes rather than as a pair of ints.
         if isinstance(tag.value, str):
             return datetime.fromisoformat(tag.value.replace("Z", "+00:00"))
+        if isinstance(tag.value, list | tuple) and len(tag.value) == 2:
+            seconds, nanoseconds = tag.value
+            if isinstance(seconds, int) and isinstance(nanoseconds, int):
+                return datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=nanoseconds // 1000)
         return tag.value
     elif tag.tag == TAG_STRING_DURATION:
         return Duration(value=tag.value)
