@@ -68,9 +68,13 @@ jobs:
           if [[ -n "${{ inputs.surrealdb_version }}" ]]; then
             LATEST_VERSION="${{ inputs.surrealdb_version }}"
           else
-            # Get latest v3.x release (includes pre-releases like beta/RC)
+            # Get latest *stable* v3.x release. Pre-releases are excluded on
+            # purpose: this pin is the SurrealDB version the library declares
+            # support for and runs CI against, and a bump to it cascades into a
+            # published PyPI release. #163 pinned 3.3.0-beta.3 and burned three
+            # such releases (0.32.3-0.32.5). The v2 monitor has always filtered.
             LATEST_VERSION=$(gh api repos/surrealdb/surrealdb/releases \
-              --jq '[.[] | select(.tag_name | startswith("v3.")) | .tag_name][0]' \
+              --jq '[.[] | select(.tag_name | startswith("v3.")) | select(.prerelease == false) | select(.draft == false) | .tag_name][0]' \
               | sed 's/^v//')
 
             # Fallback to latest stable if no v3.x found
@@ -100,8 +104,19 @@ jobs:
           # v3.2.0 while .surrealdb-version already read 3.2.3. The monitor then
           # opened a PR *downgrading* the pin (#155). Compare with `sort -V` and
           # only act when the candidate is strictly newer.
+          # A pre-release is never a candidate (#163). The API query already
+          # filters them, but `workflow_dispatch` feeds `surrealdb_version`
+          # straight through, and `sort -V` has no notion of a pre-release: it
+          # ranks 3.3.0-beta.3 *above* 3.3.0, so a beta pin would also refuse
+          # every later stable as a "downgrade" and stay stuck forever.
           HAS_UPDATE="false"
-          if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+          if [[ "$LATEST_VERSION" == *-* ]]; then
+            echo "Candidate ($LATEST_VERSION) is a pre-release — not pinning."
+          elif [[ "$CURRENT_VERSION" == *-* ]]; then
+            # The pin itself is a pre-release: any stable release supersedes it.
+            echo "Current pin ($CURRENT_VERSION) is a pre-release — replacing with $LATEST_VERSION."
+            HAS_UPDATE="true"
+          elif [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
             NEWEST=$(printf '%s\n%s\n' "$CURRENT_VERSION" "$LATEST_VERSION" | sort -V | tail -1)
             if [[ "$NEWEST" == "$LATEST_VERSION" ]]; then
               HAS_UPDATE="true"

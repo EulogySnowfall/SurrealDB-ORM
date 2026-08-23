@@ -91,3 +91,60 @@ class TestNoDowngrade:
         assert _decide(workflow, current, latest) == expected, (
             f"{workflow}: current={current} latest={latest} should yield HAS_UPDATE={expected}"
         )
+
+
+@pytest.mark.parametrize("workflow", MONITORS)
+class TestNoPrerelease:
+    """Regression tests for #163.
+
+    The v3 monitor's release query deliberately included pre-releases, left over
+    from the 3.0 alpha migration. Once 3.3.0 entered beta it pinned
+    ``3.3.0-beta.3`` as the version the library declares support for and runs CI
+    against — and because a pin bump auto-merges into a version bump, it burned
+    three PyPI releases (0.32.3-0.32.5) on a beta database.
+
+    ``sort -V`` makes it worse rather than catching it: it ranks
+    ``3.3.0-beta.3`` *above* ``3.3.0``, so a beta pin refuses every subsequent
+    stable release as a "downgrade" and stays stuck forever.
+    """
+
+    @pytest.mark.parametrize(
+        ("current", "latest"),
+        [
+            ("3.2.4", "3.3.0-beta.3"),
+            ("3.2.4", "3.3.0-rc.1"),
+            ("2.6.5", "2.7.0-beta.1"),
+        ],
+    )
+    def test_prerelease_candidate_is_rejected(self, workflow: str, current: str, latest: str) -> None:
+        assert _decide(workflow, current, latest) == "false", (
+            f"{workflow}: {latest} is a pre-release and must never be pinned (#163)"
+        )
+
+    @pytest.mark.parametrize(
+        ("current", "latest"),
+        [
+            # The state #163 left main in: a beta pin must not strand the repo.
+            ("3.3.0-beta.3", "3.2.4"),
+            ("3.3.0-beta.3", "3.3.0"),
+        ],
+    )
+    def test_prerelease_pin_is_replaced_by_a_stable_release(self, workflow: str, current: str, latest: str) -> None:
+        assert _decide(workflow, current, latest) == "true", (
+            f"{workflow}: a stable release must supersede the pre-release pin {current} (#163) — "
+            "`sort -V` alone ranks the pre-release higher and would stay stuck"
+        )
+
+
+def test_v3_release_query_excludes_prereleases() -> None:
+    """The v3 monitor must filter pre-releases at the source, like the v2 one (#163)."""
+    text = (WORKFLOW_DIR / "surrealdb-security.yml").read_text(encoding="utf-8")
+    query = next(line for line in text.splitlines() if 'startswith("v3.")' in line)
+    assert "select(.prerelease == false)" in query, "the v3 release query must exclude pre-releases (#163)"
+    assert "select(.draft == false)" in query, "the v3 release query must exclude drafts"
+
+
+def test_pinned_version_is_not_a_prerelease() -> None:
+    """`.surrealdb-version` must name a stable release (#163)."""
+    pin = (WORKFLOW_DIR.parent.parent / ".surrealdb-version").read_text(encoding="utf-8").strip()
+    assert "-" not in pin, f"the pinned SurrealDB version {pin!r} is a pre-release"

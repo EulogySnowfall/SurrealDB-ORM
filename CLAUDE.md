@@ -16,7 +16,7 @@
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.2.3**  | 0.32.x      | Active development              |
+| `main` | **3.2.4**  | 0.32.x      | Active development              |
 | `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
 
 ### What's New in 0.32.2

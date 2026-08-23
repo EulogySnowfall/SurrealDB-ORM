@@ -53,6 +53,90 @@ the thing it is named after. Both were confirmed to fail without the fix.
 
 ---
 
+## [0.32.7] - 2026-08-23
+
+**SDK bug fix.**
+
+### Fixed
+
+- **Compact CBOR datetimes decoded as a tuple of ints (#165).** SurrealDB 3.x sends
+  tag 12 as a compact `[seconds, nanoseconds]` pair, not an ISO 8601 string, and
+  `_cbor_tag_decoder()` only handled the string form. Every datetime the ORM does
+  not coerce from a model annotation — `raw_query()` results, datetimes nested
+  inside an object field — was returned as `(1739422800, 0)`:
+
+  ```python
+  rows = await Event.raw_query("SELECT * FROM events;")
+  rows[0]["occurred_at"]     # before: (1739422800, 0)
+  rows[0]["payload"]["at"]   # before: (1739422800, 0)
+  ```
+
+  Fields annotated `datetime` on a model were unaffected — the ORM rescued those
+  after the fact. Both forms now decode, wherever they appear in a payload.
+
+  **Upgrade note:** this changes the type of those values. Code that worked around
+  the bug by unpacking the tuple must drop the workaround.
+
+  Precision is kept to the microsecond (a Python `datetime` holds no more); the
+  remaining nanoseconds are truncated. Both branches fall back to the raw value
+  rather than raising: SurrealDB's datetime range is far wider than Python's year
+  1-9999, and an exception inside the tag hook comes back out of `cbor2` as a
+  `CBORDecodeError` that takes down every other value in the same response.
+
+  This makes `_parse_datetime()`'s array branch redundant for CBOR; it is left in
+  place for the JSON protocol. Covered by `tests/sdk/test_cbor_protocol.py`.
+
+---
+
+## [0.32.6] - 2026-08-23
+
+**CI fix.** No library code changes vs 0.32.2.
+
+`0.32.3`, `0.32.4` and `0.32.5` are automation artifacts: each was published by
+the release pipeline off an auto-merged monitor PR that moved the SurrealDB pin
+to a pre-release (`3.3.0-beta.1` → `beta.2` → `beta.3`). The wheels behave
+identically to 0.32.2 — `.surrealdb-version` and `devops/docker-compose.yml` do
+not ship in the package — but the library was declaring support for, and running
+CI against, a beta database.
+
+### Fixed
+
+- **The v3 monitor pinned pre-releases (#163).** Its release query deliberately
+  included betas and RCs, left over from the 3.0 alpha migration:
+
+  ```bash
+  # Get latest v3.x release (includes pre-releases like beta/RC)
+  --jq '[.[] | select(.tag_name | startswith("v3.")) | .tag_name][0]'
+  ```
+
+  Once 3.3.0 entered beta, this pinned `3.3.0-beta.x` as the version the library
+  declares support for and runs CI against. Because a pin bump auto-merges into
+  a version bump, it burned three PyPI releases. The query now filters
+  `prerelease` and `draft`, matching what the v2 monitor always did.
+
+  The `sort -V` guard added in 0.32.2 for #155 does not catch this — it makes it
+  worse. `sort -V` ranks `3.3.0-beta.3` *above* `3.3.0`, so once pinned to a
+  beta the monitor would refuse every subsequent stable release as a
+  "downgrade" and stay stuck indefinitely.
+
+  Both monitors now reject a pre-release candidate outright — which also covers
+  the manual `workflow_dispatch` input, that bypasses the API query — and treat
+  any stable release as superseding a pre-release pin.
+
+- **The pin is restored to SurrealDB 3.2.4** (`.surrealdb-version`,
+  `devops/docker-compose.yml`), the newest stable 3.x release.
+
+### Notes
+
+This is the third occurrence of the same cascade (#155/#156, then #163): an
+auto-merged monitor PR reaches PyPI with no human in the loop. The constraint
+that matters is what the monitors are *allowed to propose*, not the release
+gate. `tests/test_surrealdb_monitor.py` extracts the workflows' own shell block
+and executes it, and now covers both directions — a pre-release candidate is
+never adopted, and a stable release always supersedes a pre-release pin.
+
+---
+
 ## [0.32.2] - 2026-08-12
 
 **CI fix + documentation release.** No library code changes vs 0.32.0 or 0.32.1.

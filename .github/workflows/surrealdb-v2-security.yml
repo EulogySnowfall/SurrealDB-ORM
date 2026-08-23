@@ -112,8 +112,19 @@ jobs:
           # See the same guard in surrealdb-security.yml (#155): a plain `!=`
           # treats "different" as "newer", so whenever GitHub Releases lag the
           # published image tags the monitor opens a PR downgrading the pin.
+          # A pre-release is never a candidate (#163). The API query already
+          # filters them, but `workflow_dispatch` feeds `surrealdb_version`
+          # straight through, and `sort -V` has no notion of a pre-release: it
+          # ranks 3.3.0-beta.3 *above* 3.3.0, so a beta pin would also refuse
+          # every later stable as a "downgrade" and stay stuck forever.
           HAS_UPDATE="false"
-          if [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
+          if [[ "$LATEST_VERSION" == *-* ]]; then
+            echo "Candidate ($LATEST_VERSION) is a pre-release — not pinning."
+          elif [[ "$CURRENT_VERSION" == *-* ]]; then
+            # The pin itself is a pre-release: any stable release supersedes it.
+            echo "Current pin ($CURRENT_VERSION) is a pre-release — replacing with $LATEST_VERSION."
+            HAS_UPDATE="true"
+          elif [[ "$CURRENT_VERSION" != "$LATEST_VERSION" ]]; then
             NEWEST=$(printf '%s\n%s\n' "$CURRENT_VERSION" "$LATEST_VERSION" | sort -V | tail -1)
             if [[ "$NEWEST" == "$LATEST_VERSION" ]]; then
               HAS_UPDATE="true"
