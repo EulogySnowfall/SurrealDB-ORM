@@ -10,6 +10,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..fields.relation import on_delete_to_surql
 from ..types import FieldType
 
 
@@ -267,7 +268,7 @@ class AddField(Operation):
         if self.reference:
             parts.append("REFERENCE")
             if self.on_delete:
-                parts.append(f"ON DELETE {self.on_delete.upper()}")
+                parts.append(f"ON DELETE {on_delete_to_surql(self.on_delete)}")
 
         if self.comment:
             escaped_comment = self.comment.replace("'", "''")
@@ -398,7 +399,7 @@ class AlterField(Operation):
         if self.reference:
             parts.append("REFERENCE")
             if self.on_delete:
-                parts.append(f"ON DELETE {self.on_delete.upper()}")
+                parts.append(f"ON DELETE {on_delete_to_surql(self.on_delete)}")
 
         return " ".join(parts) + ";"
 

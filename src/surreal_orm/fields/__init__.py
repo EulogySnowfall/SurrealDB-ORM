@@ -27,6 +27,7 @@ from .relation import (
     is_graph_relation,
     is_many_to_many,
     is_relation_field,
+    on_delete_to_surql,
 )
 from .vector import VectorField, get_vector_info, is_vector_field
 
@@ -66,4 +67,5 @@ __all__ = [
     "is_graph_relation",
     "is_many_to_many",
     "is_relation_field",
+    "on_delete_to_surql",
 ]

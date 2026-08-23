@@ -12,6 +12,7 @@ from src.surreal_orm.fields.relation import (
     is_graph_relation,
     is_many_to_many,
     is_relation_field,
+    on_delete_to_surql,
 )
 from src.surreal_orm.model_base import BaseSurrealModel
 
@@ -66,6 +67,22 @@ def test_foreign_key_with_on_delete() -> None:
     assert info_set_null.on_delete == "SET_NULL"
     assert info_protect is not None
     assert info_protect.on_delete == "PROTECT"
+
+
+def test_on_delete_maps_django_vocabulary() -> None:
+    """Test SET_NULL and PROTECT are translated to SurrealDB keywords."""
+    assert on_delete_to_surql("SET_NULL") == "UNSET"
+    assert on_delete_to_surql("PROTECT") == "REJECT"
+    assert on_delete_to_surql("set_null") == "UNSET"
+
+
+def test_on_delete_passes_surrealdb_keywords_through() -> None:
+    """Test SurrealDB's own keywords are left unchanged."""
+    assert on_delete_to_surql("CASCADE") == "CASCADE"
+    assert on_delete_to_surql("UNSET") == "UNSET"
+    assert on_delete_to_surql("REJECT") == "REJECT"
+    assert on_delete_to_surql("IGNORE") == "IGNORE"
+    assert on_delete_to_surql(None) is None
 
 
 def test_foreign_key_with_related_name() -> None:
