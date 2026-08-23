@@ -7,7 +7,7 @@
 
 > ## ⚠️ BREAKING CHANGE in 0.32.0 — SurrealDB **3.2+ is now required**
 >
-> **SurrealDB 3.1.x and earlier are no longer supported.** Upgrade your database to **3.2.3+** before
+> **SurrealDB 3.1.x and earlier are no longer supported.** Upgrade your database to **3.2.4+** before
 > upgrading the ORM, or pin the ORM to the version matching your server:
 >
 > | Your SurrealDB | Install |
@@ -30,10 +30,40 @@
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.2.3**  | 0.32.x      | Active development              |
+| `main` | **3.2.4**  | 0.32.x      | Active development              |
 | `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
+
+---
+
+## What's New in 0.32.6
+
+**CI fix** — no library code changes vs 0.32.2.
+
+> **0.32.3, 0.32.4 and 0.32.5 are automation artifacts.** Each was published by the release
+> pipeline off an auto-merged monitor PR that moved the SurrealDB pin to a **pre-release**
+> (`3.3.0-beta.1` → `beta.2` → `beta.3`). The wheels behave identically to 0.32.2 —
+> `.surrealdb-version` and `devops/docker-compose.yml` don't ship in the package — but the
+> library was declaring support for, and running CI against, a beta database.
+
+- **The v3 monitor pinned pre-releases (#163)** — its release query deliberately included
+  betas and RCs, left over from the 3.0 alpha migration. Once 3.3.0 entered beta it started
+  pinning `3.3.0-beta.x` as the version the library declares support for and tests against,
+  and because a pin bump auto-merges into a version bump, it burned three PyPI releases.
+  The query now filters `prerelease`/`draft`, matching what the v2 monitor always did.
+
+  `sort -V` made this worse rather than catching it: it ranks `3.3.0-beta.3` **above**
+  `3.3.0`, so the beta pin would have refused every subsequent stable release as a
+  "downgrade" and stayed stuck indefinitely. Both monitors now reject a pre-release
+  candidate outright — which also covers the manual `workflow_dispatch` input, that bypasses
+  the API query entirely — and treat any stable release as superseding a pre-release pin.
+
+  The pin is restored to **3.2.4**. `tests/test_surrealdb_monitor.py` covers both directions.
+
+  **The recurring lesson is the cascade, not the individual bug** (third occurrence after
+  #155/#156): an auto-merged monitor PR reaches PyPI with no human in the loop, so what the
+  monitors are *allowed to propose* matters more than the release gate does.
 
 ---
 
@@ -1088,7 +1118,7 @@ pip install surrealdb-orm[cli]
 | **0.30.x – 0.31.x**   | 3.0 – 3.1   | —      | Superseded          |
 | **0.21.x**            | 2.6.x       | `v2`   | Security fixes only |
 
-- **SurrealDB 3.2+** — Use `surrealdb-orm >= 0.32.0` (this branch). Tested against SurrealDB **3.2.3**.
+- **SurrealDB 3.2+** — Use `surrealdb-orm >= 0.32.0` (this branch). Tested against SurrealDB **3.2.4**.
 - **SurrealDB 3.0 – 3.1** — Pin `surrealdb-orm<0.32`. 0.32.0 requires 3.2+ and is not tested against 3.1.x.
 - **SurrealDB 2.6.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`). This branch receives security patches but no new features.
 
