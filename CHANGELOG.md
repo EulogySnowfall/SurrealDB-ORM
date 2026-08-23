@@ -6,6 +6,55 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.32.6] - 2026-08-23
+
+**CI fix.** No library code changes vs 0.32.2.
+
+`0.32.3`, `0.32.4` and `0.32.5` are automation artifacts: each was published by
+the release pipeline off an auto-merged monitor PR that moved the SurrealDB pin
+to a pre-release (`3.3.0-beta.1` → `beta.2` → `beta.3`). The wheels behave
+identically to 0.32.2 — `.surrealdb-version` and `devops/docker-compose.yml` do
+not ship in the package — but the library was declaring support for, and running
+CI against, a beta database.
+
+### Fixed
+
+- **The v3 monitor pinned pre-releases (#163).** Its release query deliberately
+  included betas and RCs, left over from the 3.0 alpha migration:
+
+  ```bash
+  # Get latest v3.x release (includes pre-releases like beta/RC)
+  --jq '[.[] | select(.tag_name | startswith("v3.")) | .tag_name][0]'
+  ```
+
+  Once 3.3.0 entered beta, this pinned `3.3.0-beta.x` as the version the library
+  declares support for and runs CI against. Because a pin bump auto-merges into
+  a version bump, it burned three PyPI releases. The query now filters
+  `prerelease` and `draft`, matching what the v2 monitor always did.
+
+  The `sort -V` guard added in 0.32.2 for #155 does not catch this — it makes it
+  worse. `sort -V` ranks `3.3.0-beta.3` *above* `3.3.0`, so once pinned to a
+  beta the monitor would refuse every subsequent stable release as a
+  "downgrade" and stay stuck indefinitely.
+
+  Both monitors now reject a pre-release candidate outright — which also covers
+  the manual `workflow_dispatch` input, that bypasses the API query — and treat
+  any stable release as superseding a pre-release pin.
+
+- **The pin is restored to SurrealDB 3.2.4** (`.surrealdb-version`,
+  `devops/docker-compose.yml`), the newest stable 3.x release.
+
+### Notes
+
+This is the third occurrence of the same cascade (#155/#156, then #163): an
+auto-merged monitor PR reaches PyPI with no human in the loop. The constraint
+that matters is what the monitors are *allowed to propose*, not the release
+gate. `tests/test_surrealdb_monitor.py` extracts the workflows' own shell block
+and executes it, and now covers both directions — a pre-release candidate is
+never adopted, and a stable release always supersedes a pre-release pin.
+
+---
+
 ## [0.32.2] - 2026-08-12
 
 **CI fix + documentation release.** No library code changes vs 0.32.0 or 0.32.1.
