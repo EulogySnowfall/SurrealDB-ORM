@@ -295,6 +295,14 @@ AlterField(
 )
 ```
 
+Generates `DEFINE FIELD OVERWRITE email ON users ...`. `OVERWRITE` is required, not
+cosmetic: on SurrealDB 3.x a plain `DEFINE FIELD` over an existing field is rejected
+(`The field 'email' already exists`) and leaves the definition untouched, so the
+alteration silently does not happen (#162). The same applies to the rollback.
+
+`AddField` deliberately does **not** use `OVERWRITE` — adding a field that already
+exists is a genuine conflict, and the migration author should see it fail.
+
 ### CreateIndex
 
 ```python
@@ -453,6 +461,33 @@ async def run_migrations():
 import asyncio
 asyncio.run(run_migrations())
 ```
+
+### Handling Failed Statements
+
+`client.query()` only raises on an RPC-level failure. A statement SurrealDB
+*rejects* comes back inside a perfectly successful RPC, carrying `status: ERR`
+per statement. The executor inspects every statement and raises
+`MigrationStatementError` when one failed, so a migration can no longer report
+success while having changed nothing (#162):
+
+```python
+from surreal_orm.migrations import MigrationExecutor, MigrationStatementError
+
+try:
+    await MigrationExecutor(Path("migrations")).migrate()
+except MigrationStatementError as exc:
+    # The rejected statement and its SQL are in the message.
+    print(f"Migration aborted: {exc}")
+```
+
+This covers `migrate()`, `rollback()` and `upgrade()`, including the SQL inside
+`DataMigration` and `RawSQL` bodies.
+
+> **Migrations are not wrapped in a transaction.** When a statement fails
+> mid-migration, the operations already executed stay applied and the migration
+> is *not* recorded, so the next `migrate()` replays it from the start. Write
+> operations that tolerate a replay, or repair the schema by hand before
+> re-running.
 
 ### Introspect Models
 

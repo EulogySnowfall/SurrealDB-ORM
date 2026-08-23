@@ -25,6 +25,7 @@ from .define_parser import (
     parse_define_index,
     parse_define_table,
 )
+from .executor import MigrationExecutor, MigrationStatementError
 from .migration import Migration
 from .model_generator import ModelCodeGenerator
 from .operations import (
@@ -72,4 +73,7 @@ __all__ = [
     "RebuildIndex",
     "DefineGraphQLConfig",
     "RemoveGraphQLConfig",
+    # Execution
+    "MigrationExecutor",
+    "MigrationStatementError",
 ]

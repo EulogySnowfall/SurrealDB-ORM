@@ -261,11 +261,13 @@ class MigrationExecutor:
                     if isinstance(op, DataMigration) and op.forwards_func:
                         await op.forwards_func()
 
-            # Record migration as applied
-            await client.query(
-                f"CREATE {MIGRATIONS_TABLE} SET name = $name;",
-                {"name": migration.name},
-            )
+            # Record migration as applied. Checked like any other statement: a
+            # rejected CREATE here leaves the migration applied but unrecorded,
+            # so the next `migrate()` would replay it against a schema it has
+            # already changed.
+            record_sql = f"CREATE {MIGRATIONS_TABLE} SET name = $name;"
+            response = await client.query(record_sql, {"name": migration.name})
+            _check_statements(response, record_sql, f"Failed to record migration {migration.name} as applied")
 
             applied_names.append(migration.name)
             logger.info(f"Applied: {migration.name}")
@@ -321,11 +323,11 @@ class MigrationExecutor:
                 if isinstance(op, DataMigration) and op.backwards_func:
                     await op.backwards_func()
 
-            # Remove migration record
-            await client.query(
-                f"DELETE {MIGRATIONS_TABLE} WHERE name = $name;",
-                {"name": name},
-            )
+            # Remove migration record — checked for the mirror reason: an
+            # unrecorded rollback leaves the migration listed as applied.
+            record_sql = f"DELETE {MIGRATIONS_TABLE} WHERE name = $name;"
+            response = await client.query(record_sql, {"name": name})
+            _check_statements(response, record_sql, f"Failed to un-record rolled back migration {name}")
 
             rolled_back.append(name)
             logger.info(f"Rolled back: {name}")
