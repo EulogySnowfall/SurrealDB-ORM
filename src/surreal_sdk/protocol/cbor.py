@@ -12,7 +12,7 @@ Custom CBOR Tags used by SurrealDB:
 - TAG_RECORDID (8): Record ID (table:id)
 - TAG_STRING_UUID (9): UUID as string
 - TAG_STRING_DECIMAL (10): Decimal as string
-- TAG_DATETIME (12): DateTime (ISO 8601)
+- TAG_DATETIME (12): DateTime (ISO 8601 string, or a [seconds, nanoseconds] pair)
 - TAG_STRING_DURATION (14): Duration as string
 """
 
@@ -179,12 +179,23 @@ def _cbor_tag_decoder(tag: Any, immutable: bool) -> Any:
         # datetime. Decoding it here is what makes datetimes outside a typed
         # model field — raw queries, values nested in objects — come back as
         # datetimes rather than as a pair of ints.
+        #
+        # Both branches fall back to the raw value rather than raising: SurrealDB's
+        # datetime range is far wider than Python's year 1-9999, so a single
+        # out-of-range value would otherwise abort the decode of the *whole*
+        # response with CBORDecodeError instead of affecting just that field.
         if isinstance(tag.value, str):
-            return datetime.fromisoformat(tag.value.replace("Z", "+00:00"))
-        if isinstance(tag.value, list | tuple) and len(tag.value) == 2:
+            try:
+                return datetime.fromisoformat(tag.value.replace("Z", "+00:00"))
+            except ValueError:
+                return tag.value
+        if isinstance(tag.value, (list, tuple)) and len(tag.value) == 2:
             seconds, nanoseconds = tag.value
             if isinstance(seconds, int) and isinstance(nanoseconds, int):
-                return datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=nanoseconds // 1000)
+                try:
+                    return datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=nanoseconds // 1000)
+                except (ValueError, OverflowError, OSError):
+                    return tag.value
         return tag.value
     elif tag.tag == TAG_STRING_DURATION:
         return Duration(value=tag.value)

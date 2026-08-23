@@ -218,6 +218,90 @@ class TestCBOREncodeDecode:
             encode(CustomClass())
 
 
+class TestCompactDatetimeDecoding:
+    """Regression tests for #165.
+
+    SurrealDB 3.x sends tag 12 as a compact ``[seconds, nanoseconds]`` pair, not
+    an ISO 8601 string. The decoder only handled the string form and returned the
+    pair unchanged, so every datetime that the ORM does not coerce per model
+    annotation — ``raw_query()`` results, datetimes nested inside object fields —
+    surfaced as a tuple of ints.
+    """
+
+    def test_compact_pair_decodes_to_datetime(self) -> None:
+        from cbor2 import CBORTag
+
+        from src.surreal_sdk.protocol.cbor import _cbor_tag_decoder
+
+        result = _cbor_tag_decoder(CBORTag(TAG_DATETIME, [1739422800, 0]), immutable=False)
+        assert result == datetime(2025, 2, 13, 5, 0, tzinfo=UTC)
+
+    def test_compact_pair_keeps_sub_second_precision(self) -> None:
+        from cbor2 import CBORTag
+
+        from src.surreal_sdk.protocol.cbor import _cbor_tag_decoder
+
+        # cbor2 6.x hands tag array values over as a tuple rather than a list.
+        result = _cbor_tag_decoder(CBORTag(TAG_DATETIME, (1739422800, 123_456_789)), immutable=False)
+        assert result == datetime(2025, 2, 13, 5, 0, 0, 123_456, tzinfo=UTC)
+
+    def test_iso_string_form_still_decodes(self) -> None:
+        from cbor2 import CBORTag
+
+        from src.surreal_sdk.protocol.cbor import _cbor_tag_decoder
+
+        result = _cbor_tag_decoder(CBORTag(TAG_DATETIME, "2025-02-13T05:00:00Z"), immutable=False)
+        assert result == datetime(2025, 2, 13, 5, 0, tzinfo=UTC)
+
+    def test_nested_datetime_decodes_through_a_full_payload(self) -> None:
+        """The pair is decoded wherever it appears, not only at the top level."""
+        from cbor2 import CBORTag
+
+        payload = {"when": CBORTag(TAG_DATETIME, [1739422800, 0]), "nested": {"at": CBORTag(TAG_DATETIME, [1739422800, 0])}}
+        decoded = decode(cbor_module.cbor2.dumps(payload))
+        expected = datetime(2025, 2, 13, 5, 0, tzinfo=UTC)
+        assert decoded["when"] == expected
+        assert decoded["nested"]["at"] == expected
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            # SurrealDB's datetime range is far wider than Python's year 1-9999.
+            [734_708_966_400, 0],  # year 25252
+            [-100_000_000_000_000, 0],
+            [1739422800, 5_000_000_000],  # nanoseconds overflowing a second
+        ],
+    )
+    def test_undecodable_pair_falls_back_instead_of_raising(self, value: list[int]) -> None:
+        """An out-of-range datetime must not abort the decode of the whole response.
+
+        Without the guard, ``datetime.fromtimestamp`` raises inside the tag hook and
+        cbor2 re-raises it as ``CBORDecodeError``, so one unrepresentable field takes
+        down every other value in the same payload.
+        """
+        from cbor2 import CBORTag
+
+        from src.surreal_sdk.protocol.cbor import _cbor_tag_decoder
+
+        assert _cbor_tag_decoder(CBORTag(TAG_DATETIME, value), immutable=False) == value
+
+    def test_unrepresentable_datetime_does_not_poison_its_payload(self) -> None:
+        from cbor2 import CBORTag
+
+        payload = {"ok": CBORTag(TAG_DATETIME, [1739422800, 0]), "huge": CBORTag(TAG_DATETIME, [734_708_966_400, 0])}
+        decoded = decode(cbor_module.cbor2.dumps(payload))
+        assert decoded["ok"] == datetime(2025, 2, 13, 5, 0, tzinfo=UTC)
+        # cbor2 6.x surfaces a tag's array value as a tuple.
+        assert tuple(decoded["huge"]) == (734_708_966_400, 0)
+
+    def test_malformed_iso_string_falls_back(self) -> None:
+        from cbor2 import CBORTag
+
+        from src.surreal_sdk.protocol.cbor import _cbor_tag_decoder
+
+        assert _cbor_tag_decoder(CBORTag(TAG_DATETIME, "not-a-datetime"), immutable=False) == "not-a-datetime"
+
+
 class TestCBORTags:
     """Test CBOR tag constants."""
 
