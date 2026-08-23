@@ -68,6 +68,8 @@ async def clean_database():
         "ThirdTable",
         "SqlTable",
         "StatusTable",
+        "alt_regression",
+        "err_regression",
         MIGRATIONS_TABLE,
     ]
 
@@ -366,9 +368,15 @@ class TestAlterFieldActuallyAlters:
 
     Together they made every `AlterField` a silent no-op. Unit tests on the
     generated SQL cannot catch this — it only shows up against a real server.
+
+    Both tests take `clean_database`: a migration that applies successfully
+    records its name in `_surreal_orm_migrations`, which persists in the
+    database. Without the cleanup, a second run against the same instance finds
+    the migration already applied, executes nothing and fails on the assertion —
+    green on a fresh CI container, red on a reused local one.
     """
 
-    async def test_alter_field_changes_the_live_schema(self, temp_migrations_dir: Path) -> None:
+    async def test_alter_field_changes_the_live_schema(self, temp_migrations_dir: Path, clean_database: None) -> None:
         from src.surreal_orm.migrations.operations import AlterField
 
         client = await surreal_orm.SurrealDBConnectionManager.get_client()
@@ -390,7 +398,7 @@ class TestAlterFieldActuallyAlters:
 
         assert "TYPE int" in await field_definition(), "AlterField reported success without changing the field (#162)"
 
-    async def test_a_rejected_statement_fails_the_migration(self, temp_migrations_dir: Path) -> None:
+    async def test_a_rejected_statement_fails_the_migration(self, temp_migrations_dir: Path, clean_database: None) -> None:
         """A statement-level ERR must not pass as success (#162).
 
         `client.query()` raises only on an RPC-level failure. This statement is
