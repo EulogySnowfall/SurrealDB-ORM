@@ -37,9 +37,44 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
-## What's New in 0.32.8
+## What's New in 0.32.6
 
-**Migration bug fix** — addresses group 1 of #162.
+**Bug fix release** — a CBOR decoding bug in the SDK, a migration operation that never did
+anything, and the CI monitor that pinned pre-release SurrealDB versions.
+
+> **0.32.3, 0.32.4 and 0.32.5 are automation artifacts.** Each was published by the release
+> pipeline off an auto-merged monitor PR that moved the SurrealDB pin to a **pre-release**
+> (`3.3.0-beta.1` → `beta.2` → `beta.3`). The wheels behave identically to 0.32.2 —
+> `.surrealdb-version` and `devops/docker-compose.yml` don't ship in the package — but the
+> library was declaring support for, and running CI against, a beta database.
+
+### SDK
+
+- **Datetimes came back as a pair of ints outside typed model fields (#165)** — SurrealDB 3.x
+  encodes CBOR tag 12 as a compact `[seconds, nanoseconds]` pair rather than an ISO 8601 string,
+  and the decoder only handled the string form. Anywhere the ORM does not coerce a value from its
+  model annotation — `raw_query()` results, datetimes nested inside an object field — the value
+  surfaced as `(1739422800, 0)` instead of a `datetime`:
+
+  ```python
+  rows = await Event.raw_query("SELECT * FROM events;")
+  rows[0]["occurred_at"]          # before: (1739422800, 0)   after: datetime(..., tzinfo=utc)
+  rows[0]["payload"]["at"]        # before: (1739422800, 0)   after: datetime(..., tzinfo=utc)
+  ```
+
+  Fields declared `datetime` on a model were never affected — the ORM already rescued those.
+
+  > **If you worked around this**, remove the workaround before upgrading: code that unpacked the
+  > tuple (`seconds, _ = row["occurred_at"]`) now receives a `datetime` and will break.
+
+  Sub-second precision is preserved to the microsecond, which is all a Python `datetime` can hold;
+  the remaining nanoseconds are truncated. A datetime outside Python's year 1–9999 range is
+  returned as the raw pair instead of raising, so one unrepresentable value can no longer abort the
+  decoding of the whole response.
+
+### Migrations
+
+Addresses group 1 of #162.
 
 - **`AlterField` never altered anything** — it emitted a plain `DEFINE FIELD`, which on
   SurrealDB 3.x does not update an existing field: the server answers `The field 'x' already
@@ -66,45 +101,7 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
   > Migrations are not wrapped in a transaction, so a mid-migration failure leaves the earlier
   > operations applied and the migration unrecorded — the next `migrate()` replays it in full.
 
----
-
-## What's New in 0.32.7
-
-**SDK bug fix.**
-
-- **Datetimes came back as a pair of ints outside typed model fields (#165)** — SurrealDB 3.x
-  encodes CBOR tag 12 as a compact `[seconds, nanoseconds]` pair rather than an ISO 8601 string,
-  and the decoder only handled the string form. Anywhere the ORM does not coerce a value from its
-  model annotation — `raw_query()` results, datetimes nested inside an object field — the value
-  surfaced as `(1739422800, 0)` instead of a `datetime`:
-
-  ```python
-  rows = await Event.raw_query("SELECT * FROM events;")
-  rows[0]["occurred_at"]          # before: (1739422800, 0)   after: datetime(..., tzinfo=utc)
-  rows[0]["payload"]["at"]        # before: (1739422800, 0)   after: datetime(..., tzinfo=utc)
-  ```
-
-  Fields declared `datetime` on a model were never affected — the ORM already rescued those.
-
-  > **If you worked around this**, remove the workaround before upgrading: code that unpacked the
-  > tuple (`seconds, _ = row["occurred_at"]`) now receives a `datetime` and will break.
-
-  Sub-second precision is preserved to the microsecond, which is all a Python `datetime` can hold;
-  the remaining nanoseconds are truncated. A datetime outside Python's year 1–9999 range is
-  returned as the raw pair instead of raising, so one unrepresentable value can no longer abort the
-  decoding of the whole response.
-
----
-
-## What's New in 0.32.6
-
-**CI fix** — no library code changes vs 0.32.2.
-
-> **0.32.3, 0.32.4 and 0.32.5 are automation artifacts.** Each was published by the release
-> pipeline off an auto-merged monitor PR that moved the SurrealDB pin to a **pre-release**
-> (`3.3.0-beta.1` → `beta.2` → `beta.3`). The wheels behave identically to 0.32.2 —
-> `.surrealdb-version` and `devops/docker-compose.yml` don't ship in the package — but the
-> library was declaring support for, and running CI against, a beta database.
+### CI
 
 - **The v3 monitor pinned pre-releases (#163)** — its release query deliberately included
   betas and RCs, left over from the 3.0 alpha migration. Once 3.3.0 entered beta it started
