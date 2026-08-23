@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: August 2026 (0.32.2)
+> Context document for Claude AI - Last updated: August 2026 (0.32.6)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.32.2 (Beta) — SurrealDB 3.2+ required
+## Current Version: 0.32.6 (Beta) — SurrealDB 3.2+ required
 
 ### Branch Strategy
 
@@ -18,6 +18,37 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.2.4**  | 0.32.x      | Active development              |
 | `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.32.6
+
+Three independent fixes; `0.32.3`-`0.32.5` were automation artifacts (see below).
+
+- **Compact CBOR datetimes decoded as a tuple of ints (#165, #166)** — SurrealDB 3.x sends
+  CBOR tag 12 as a `[seconds, nanoseconds]` pair, not an ISO 8601 string, and
+  `_cbor_tag_decoder()` only handled the string form. Every datetime the ORM does not coerce
+  from a model annotation — `raw_query()` results, datetimes nested in an object field — came
+  back as `(1739422800, 0)`. Both forms decode now, wherever they appear in a payload; an
+  out-of-range value falls back to the raw pair rather than raising, since an exception inside
+  the tag hook surfaces as a `CBORDecodeError` that kills the whole response.
+- **`AlterField` never altered anything (#162, #168)** — it emitted a plain `DEFINE FIELD`,
+  which on SurrealDB 3.x does not update an existing field (`The field 'x' already exists`,
+  definition untouched). `backwards()` had the same defect. Both emit `DEFINE FIELD OVERWRITE`
+  now; `AddField` deliberately does not.
+  **And the executor hid it:** `client.query()` raises only on an RPC-level failure, while a
+  rejected statement rides back inside a *successful* RPC as `status: ERR` per statement. That
+  hid failures in `DataMigration`/`RawSQL` bodies just as effectively. `migrate()`,
+  `rollback()` and `upgrade()` now check every statement and raise `MigrationStatementError`.
+  Migrations are not transactional, so a mid-migration failure leaves a partial state.
+- **The v3 monitor pinned pre-releases (#163, #167)** — its release query deliberately
+  included betas, left from the 3.0 alpha migration, so it pinned `3.3.0-beta.x` and burned
+  three PyPI releases (0.32.3-0.32.5). `sort -V` did not catch it — it ranks `3.3.0-beta.3`
+  *above* `3.3.0`, so a beta pin would refuse every later stable as a "downgrade" and stay
+  stuck. Both monitors now filter pre-releases at the API, reject a pre-release candidate
+  outright (covering the manual `workflow_dispatch` input) and treat any stable release as
+  superseding a pre-release pin. Pin restored to **3.2.4**.
+  **Third occurrence of the same cascade** (#155/#156, then #163): an auto-merged monitor PR
+  reaches PyPI with no human in the loop. What the monitors may *propose* matters more than
+  the release gate.
 
 ### What's New in 0.32.2
 

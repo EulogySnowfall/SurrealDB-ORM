@@ -6,11 +6,51 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
-## [0.32.8] - 2026-08-23
+## [0.32.6] - 2026-08-23
 
-**Migration bug fix.** Addresses group 1 of #162 (reported by @leosilberg).
+**Bug fix release.** Three independent fixes: a CBOR decoding bug in the SDK, a
+migration operation that never did anything, and the CI monitor that pinned
+pre-release SurrealDB versions.
 
-### Fixed
+`0.32.3`, `0.32.4` and `0.32.5` are automation artifacts: each was published by
+the release pipeline off an auto-merged monitor PR that moved the SurrealDB pin
+to a pre-release (`3.3.0-beta.1` → `beta.2` → `beta.3`). The wheels behave
+identically to 0.32.2 — `.surrealdb-version` and `devops/docker-compose.yml` do
+not ship in the package — but the library was declaring support for, and running
+CI against, a beta database.
+
+### Fixed — SDK
+
+- **Compact CBOR datetimes decoded as a tuple of ints (#165).** SurrealDB 3.x sends
+  tag 12 as a compact `[seconds, nanoseconds]` pair, not an ISO 8601 string, and
+  `_cbor_tag_decoder()` only handled the string form. Every datetime the ORM does
+  not coerce from a model annotation — `raw_query()` results, datetimes nested
+  inside an object field — was returned as `(1739422800, 0)`:
+
+  ```python
+  rows = await Event.raw_query("SELECT * FROM events;")
+  rows[0]["occurred_at"]     # before: (1739422800, 0)
+  rows[0]["payload"]["at"]   # before: (1739422800, 0)
+  ```
+
+  Fields annotated `datetime` on a model were unaffected — the ORM rescued those
+  after the fact. Both forms now decode, wherever they appear in a payload.
+
+  **Upgrade note:** this changes the type of those values. Code that worked around
+  the bug by unpacking the tuple must drop the workaround.
+
+  Precision is kept to the microsecond (a Python `datetime` holds no more); the
+  remaining nanoseconds are truncated. Both branches fall back to the raw value
+  rather than raising: SurrealDB's datetime range is far wider than Python's year
+  1-9999, and an exception inside the tag hook comes back out of `cbor2` as a
+  `CBORDecodeError` that takes down every other value in the same response.
+
+  This makes `_parse_datetime()`'s array branch redundant for CBOR; it is left in
+  place for the JSON protocol. Covered by `tests/sdk/test_cbor_protocol.py`.
+
+### Fixed — Migrations
+
+Addresses group 1 of #162 (reported by @leosilberg).
 
 - **`AlterField` never altered anything.** It emitted a plain `DEFINE FIELD`,
   which on SurrealDB 3.x does not update an existing field — the server answers
@@ -44,62 +84,12 @@ and adheres to [SemVer](https://semver.org/) versioning.
   mid-migration leaves the earlier operations applied and the migration
   unrecorded, so the next `migrate()` replays it from the start.
 
-### Notes
-
 Two integration tests pin this against a live database — one asserts the field
 type actually changes, the other asserts its own precondition (that SurrealDB
 really does return a statement-level `ERR`) so it cannot silently stop testing
 the thing it is named after. Both were confirmed to fail without the fix.
 
----
-
-## [0.32.7] - 2026-08-23
-
-**SDK bug fix.**
-
-### Fixed
-
-- **Compact CBOR datetimes decoded as a tuple of ints (#165).** SurrealDB 3.x sends
-  tag 12 as a compact `[seconds, nanoseconds]` pair, not an ISO 8601 string, and
-  `_cbor_tag_decoder()` only handled the string form. Every datetime the ORM does
-  not coerce from a model annotation — `raw_query()` results, datetimes nested
-  inside an object field — was returned as `(1739422800, 0)`:
-
-  ```python
-  rows = await Event.raw_query("SELECT * FROM events;")
-  rows[0]["occurred_at"]     # before: (1739422800, 0)
-  rows[0]["payload"]["at"]   # before: (1739422800, 0)
-  ```
-
-  Fields annotated `datetime` on a model were unaffected — the ORM rescued those
-  after the fact. Both forms now decode, wherever they appear in a payload.
-
-  **Upgrade note:** this changes the type of those values. Code that worked around
-  the bug by unpacking the tuple must drop the workaround.
-
-  Precision is kept to the microsecond (a Python `datetime` holds no more); the
-  remaining nanoseconds are truncated. Both branches fall back to the raw value
-  rather than raising: SurrealDB's datetime range is far wider than Python's year
-  1-9999, and an exception inside the tag hook comes back out of `cbor2` as a
-  `CBORDecodeError` that takes down every other value in the same response.
-
-  This makes `_parse_datetime()`'s array branch redundant for CBOR; it is left in
-  place for the JSON protocol. Covered by `tests/sdk/test_cbor_protocol.py`.
-
----
-
-## [0.32.6] - 2026-08-23
-
-**CI fix.** No library code changes vs 0.32.2.
-
-`0.32.3`, `0.32.4` and `0.32.5` are automation artifacts: each was published by
-the release pipeline off an auto-merged monitor PR that moved the SurrealDB pin
-to a pre-release (`3.3.0-beta.1` → `beta.2` → `beta.3`). The wheels behave
-identically to 0.32.2 — `.surrealdb-version` and `devops/docker-compose.yml` do
-not ship in the package — but the library was declaring support for, and running
-CI against, a beta database.
-
-### Fixed
+### Fixed — CI
 
 - **The v3 monitor pinned pre-releases (#163).** Its release query deliberately
   included betas and RCs, left over from the 3.0 alpha migration:
