@@ -11,7 +11,7 @@ This module handles:
 import importlib.util
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..connection_manager import SurrealDBConnectionManager
 from .migration import Migration, parse_migration_name
@@ -24,6 +24,34 @@ logger = logging.getLogger(__name__)
 
 # Table name for tracking migrations
 MIGRATIONS_TABLE = "_surreal_orm_migrations"
+
+
+class MigrationStatementError(RuntimeError):
+    """A statement inside a migration was rejected by SurrealDB."""
+
+
+def _check_statements(response: Any, sql: str, context: str) -> None:
+    """Raise if any statement in a multi-statement response reported ERR.
+
+    ``client.query()`` only raises on an RPC-level failure. A statement that
+    SurrealDB rejects comes back as a perfectly successful RPC carrying
+    ``status: ERR`` per statement, so without this check a migration reports
+    success while having changed nothing (#162)::
+
+        DEFINE FIELD f ON t TYPE int;
+        -> [(ResponseStatus.ERR, "The field 'f' already exists")]
+
+    That is how `AlterField` stayed a silent no-op, and it hid statement-level
+    failures in `DataMigration` bodies just as effectively.
+    """
+    results = getattr(response, "results", None)
+    if not results:
+        return
+
+    errors = [str(r.result) for r in results if getattr(getattr(r, "status", None), "value", None) == "ERR"]
+    if errors:
+        detail = "; ".join(errors)
+        raise MigrationStatementError(f"{context}: {detail}\nSQL: {sql.strip()[:500]}")
 
 
 class MigrationExecutor:
@@ -223,7 +251,8 @@ class MigrationExecutor:
                     if sql:
                         logger.debug(f"Executing: {sql[:100]}...")
                         try:
-                            await client.query(sql)
+                            response = await client.query(sql)
+                            _check_statements(response, sql, f"Migration failed at {op.describe()}")
                         except Exception as e:
                             logger.error(f"Migration failed at {op.describe()}: {e}")
                             raise
@@ -281,7 +310,8 @@ class MigrationExecutor:
                 if sql:
                     logger.debug(f"Executing: {sql[:100]}...")
                     try:
-                        await client.query(sql)
+                        response = await client.query(sql)
+                        _check_statements(response, sql, f"Rollback failed for migration {name}")
                     except Exception as e:
                         logger.error(f"Rollback failed for migration {name}, SQL: {sql[:200]}... Error: {e}")
                         raise RuntimeError(f"Rollback failed for migration {name}: {e}") from e
@@ -337,7 +367,8 @@ class MigrationExecutor:
                 sql = op.forwards()
                 if sql:
                     logger.debug(f"Executing: {sql[:100]}...")
-                    await client.query(sql)
+                    response = await client.query(sql)
+                    _check_statements(response, sql, f"Data migration failed at {op.describe()}")
 
                 if isinstance(op, DataMigration) and op.forwards_func:
                     await op.forwards_func()

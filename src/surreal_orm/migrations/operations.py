@@ -325,7 +325,7 @@ class AlterField(Operation):
         )
 
     Generates:
-        DEFINE FIELD email ON users TYPE string ASSERT is::email($value);
+        DEFINE FIELD OVERWRITE email ON users TYPE string ASSERT is::email($value);
     """
 
     table: str
@@ -356,8 +356,12 @@ class AlterField(Operation):
         object.__setattr__(self, "reversible", self.previous_type is not None)
 
     def forwards(self) -> str:
-        # DEFINE FIELD is idempotent - it creates or updates
-        parts = [f"DEFINE FIELD {self.name} ON {self.table}"]
+        # OVERWRITE is required, not optional (#162). A plain `DEFINE FIELD` over
+        # an existing field does NOT update it — SurrealDB answers
+        # `The field 'x' already exists` and leaves the definition untouched, so
+        # every AlterField was a no-op. OVERWRITE is create-or-redefine, so it is
+        # still correct when the field happens to be missing.
+        parts = [f"DEFINE FIELD OVERWRITE {self.name} ON {self.table}"]
 
         if self.flexible:
             parts.append("FLEXIBLE")
@@ -403,7 +407,9 @@ class AlterField(Operation):
             return ""
 
         normalized_prev_type = _normalize_field_type(self.previous_type)
-        parts = [f"DEFINE FIELD {self.name} ON {self.table}"]
+        # OVERWRITE for the same reason as forwards(): a rollback re-defining the
+        # previous type is otherwise a silent no-op too.
+        parts = [f"DEFINE FIELD OVERWRITE {self.name} ON {self.table}"]
 
         if self.previous_flexible:
             parts.append("FLEXIBLE")

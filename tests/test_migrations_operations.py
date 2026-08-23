@@ -171,7 +171,7 @@ class TestAlterField:
             previous_type="string",
         )
         sql = op.forwards()
-        assert "DEFINE FIELD age ON users TYPE int" in sql
+        assert "DEFINE FIELD OVERWRITE age ON users TYPE int" in sql
 
     def test_alter_field_backwards(self) -> None:
         """Test rollback restores previous type."""
@@ -183,6 +183,31 @@ class TestAlterField:
         )
         sql = op.backwards()
         assert "TYPE string" in sql
+
+    def test_alter_field_uses_overwrite(self) -> None:
+        """Regression for #162: a plain DEFINE FIELD never alters anything.
+
+        On SurrealDB 3.x, re-defining an existing field without OVERWRITE is
+        rejected with "The field 'x' already exists" and the definition is left
+        untouched — so every AlterField was a no-op that reported success.
+        """
+        op = AlterField(table="users", name="age", field_type="int", previous_type="string")
+        assert op.forwards().startswith("DEFINE FIELD OVERWRITE ")
+
+    def test_alter_field_backwards_uses_overwrite(self) -> None:
+        """A rollback re-defining the previous type is a silent no-op too (#162)."""
+        op = AlterField(table="users", name="age", field_type="int", previous_type="string")
+        assert op.backwards().startswith("DEFINE FIELD OVERWRITE ")
+
+    def test_add_field_does_not_use_overwrite(self) -> None:
+        """AddField must keep failing loudly on an existing field (#162).
+
+        OVERWRITE belongs to AlterField only — adding a field that already
+        exists is a real conflict the migration author needs to see.
+        """
+        from surreal_orm.migrations.operations import AddField
+
+        assert "OVERWRITE" not in AddField(table="users", name="age", field_type="int").forwards()
 
     def test_alter_field_reversible_with_previous(self) -> None:
         """Test reversibility depends on previous_type."""
