@@ -6,6 +6,53 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.32.8] - 2026-08-23
+
+**Migration bug fix.** Addresses group 1 of #162 (reported by @leosilberg).
+
+### Fixed
+
+- **`AlterField` never altered anything.** It emitted a plain `DEFINE FIELD`,
+  which on SurrealDB 3.x does not update an existing field — the server answers
+  `The field 'x' already exists` and leaves the definition as it was:
+
+  ```text
+  initial           : DEFINE FIELD f ON alt162 TYPE string
+  after plain DEFINE: DEFINE FIELD f ON alt162 TYPE string   <- unchanged
+  after OVERWRITE   : DEFINE FIELD f ON alt162 TYPE int
+  ```
+
+  `forwards()` and `backwards()` now emit `DEFINE FIELD OVERWRITE`, so rollbacks
+  stop being no-ops too. `AddField` deliberately keeps failing loudly on an
+  existing field — that is a real conflict the migration author needs to see.
+
+- **The executor hid statement-level failures.** `client.query()` raises only on
+  an RPC-level failure; a rejected statement rides back inside a perfectly
+  successful RPC as `status: ERR` per statement, and the executor never looked.
+  That is what let `AlterField` report success, and it hid failures inside
+  `DataMigration` and `RawSQL` bodies just as effectively — which is where the
+  reporter originally hit it. `migrate()`, `rollback()` and `upgrade()` now inspect every
+  statement, including the queries that record and un-record a migration, and
+  raise the new `MigrationStatementError`.
+
+  ```python
+  from surreal_orm.migrations import MigrationExecutor, MigrationStatementError
+  ```
+
+  **Upgrade note:** migrations that previously reported success while silently
+  failing now raise. Since migrations are not wrapped in a transaction, a failure
+  mid-migration leaves the earlier operations applied and the migration
+  unrecorded, so the next `migrate()` replays it from the start.
+
+### Notes
+
+Two integration tests pin this against a live database — one asserts the field
+type actually changes, the other asserts its own precondition (that SurrealDB
+really does return a statement-level `ERR`) so it cannot silently stop testing
+the thing it is named after. Both were confirmed to fail without the fix.
+
+---
+
 ## [0.32.7] - 2026-08-23
 
 **SDK bug fix.**

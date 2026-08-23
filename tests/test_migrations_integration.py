@@ -68,6 +68,8 @@ async def clean_database():
         "ThirdTable",
         "SqlTable",
         "StatusTable",
+        "alt_regression",
+        "err_regression",
         MIGRATIONS_TABLE,
     ]
 
@@ -349,3 +351,76 @@ class TestEndToEndMigrationWorkflow:
         assert not result.is_empty
         assert result.first["name"] == "test"
         assert result.first["value"] == 42
+
+
+@pytest.mark.integration
+class TestAlterFieldActuallyAlters:
+    """Regression tests for #162, against a live database.
+
+    Two defects compounded each other:
+
+    1. `AlterField` emitted a plain `DEFINE FIELD`, which SurrealDB 3.x rejects
+       over an existing field ("The field 'x' already exists") and leaves
+       untouched — so the alteration never happened.
+    2. The executor only caught RPC-level failures, never inspecting the
+       per-statement `status`. A statement-level `ERR` rode back inside a
+       perfectly successful RPC, so the migration reported success.
+
+    Together they made every `AlterField` a silent no-op. Unit tests on the
+    generated SQL cannot catch this — it only shows up against a real server.
+
+    Both tests take `clean_database`: a migration that applies successfully
+    records its name in `_surreal_orm_migrations`, which persists in the
+    database. Without the cleanup, a second run against the same instance finds
+    the migration already applied, executes nothing and fails on the assertion —
+    green on a fresh CI container, red on a reused local one.
+    """
+
+    async def test_alter_field_changes_the_live_schema(self, temp_migrations_dir: Path, clean_database: None) -> None:
+        from src.surreal_orm.migrations.operations import AlterField
+
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        await client.query("REMOVE TABLE IF EXISTS alt_regression;")
+        await client.query("DEFINE TABLE alt_regression SCHEMAFULL; DEFINE FIELD f ON alt_regression TYPE string;")
+
+        async def field_definition() -> str:
+            info = await client.query("INFO FOR TABLE alt_regression;")
+            return str(info.first_result.result["fields"]["f"])
+
+        assert "TYPE string" in await field_definition()
+
+        generator = MigrationGenerator(temp_migrations_dir)
+        generator.generate(
+            name="alter_f",
+            operations=[AlterField(table="alt_regression", name="f", field_type="int", previous_type="string")],
+        )
+        await MigrationExecutor(temp_migrations_dir).migrate()
+
+        assert "TYPE int" in await field_definition(), "AlterField reported success without changing the field (#162)"
+
+    async def test_a_rejected_statement_fails_the_migration(self, temp_migrations_dir: Path, clean_database: None) -> None:
+        """A statement-level ERR must not pass as success (#162).
+
+        `client.query()` raises only on an RPC-level failure. This statement is
+        a *successful* RPC carrying `status: ERR` per statement — exactly the
+        shape that let AlterField report success while doing nothing.
+        """
+        from src.surreal_orm.migrations.executor import MigrationStatementError
+        from src.surreal_orm.migrations.operations import RawSQL
+
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        await client.query("REMOVE TABLE IF EXISTS err_regression;")
+        await client.query("DEFINE TABLE err_regression SCHEMAFULL; DEFINE FIELD f ON err_regression TYPE string;")
+
+        # Re-defining an existing field without OVERWRITE: RPC succeeds, statement errors.
+        response = await client.query("DEFINE FIELD f ON err_regression TYPE int;")
+        assert response.results[0].status.value == "ERR", "precondition: SurrealDB should reject this at statement level"
+
+        generator = MigrationGenerator(temp_migrations_dir)
+        generator.generate(
+            name="silent_err",
+            operations=[RawSQL(sql="DEFINE FIELD f ON err_regression TYPE int;")],
+        )
+
+        with pytest.raises(MigrationStatementError, match="already exists"):
+            await MigrationExecutor(temp_migrations_dir).migrate()

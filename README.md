@@ -37,6 +37,37 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.32.8
+
+**Migration bug fix** — addresses group 1 of #162.
+
+- **`AlterField` never altered anything** — it emitted a plain `DEFINE FIELD`, which on
+  SurrealDB 3.x does not update an existing field: the server answers `The field 'x' already
+  exists` and leaves the definition untouched. `backwards()` had the same defect, so rollbacks
+  were no-ops too. Both now emit `DEFINE FIELD OVERWRITE`. `AddField` deliberately keeps failing
+  on an existing field — that is a real conflict, not something to overwrite.
+
+- **The executor hid statement-level failures** — `client.query()` raises only on an RPC-level
+  failure, and a rejected statement rides back inside a *successful* RPC as `status: ERR` per
+  statement. That is why the broken `AlterField` reported success, and it hid failures inside
+  `DataMigration` and `RawSQL` bodies just as effectively. Every statement is now checked and a
+  failure raises `MigrationStatementError`:
+
+  ```python
+  from surreal_orm.migrations import MigrationExecutor, MigrationStatementError
+
+  try:
+      await MigrationExecutor(Path("migrations")).migrate()
+  except MigrationStatementError as exc:
+      print(f"Migration aborted: {exc}")
+  ```
+
+  > **Upgrade note:** migrations that used to report success while silently failing now raise.
+  > Migrations are not wrapped in a transaction, so a mid-migration failure leaves the earlier
+  > operations applied and the migration unrecorded — the next `migrate()` replays it in full.
+
+---
+
 ## What's New in 0.32.7
 
 **SDK bug fix.**
