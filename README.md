@@ -37,6 +37,34 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.32.7
+
+**SDK bug fix.**
+
+- **Datetimes came back as a pair of ints outside typed model fields (#165)** — SurrealDB 3.x
+  encodes CBOR tag 12 as a compact `[seconds, nanoseconds]` pair rather than an ISO 8601 string,
+  and the decoder only handled the string form. Anywhere the ORM does not coerce a value from its
+  model annotation — `raw_query()` results, datetimes nested inside an object field — the value
+  surfaced as `(1739422800, 0)` instead of a `datetime`:
+
+  ```python
+  rows = await Event.raw_query("SELECT * FROM events;")
+  rows[0]["occurred_at"]          # before: (1739422800, 0)   after: datetime(..., tzinfo=utc)
+  rows[0]["payload"]["at"]        # before: (1739422800, 0)   after: datetime(..., tzinfo=utc)
+  ```
+
+  Fields declared `datetime` on a model were never affected — the ORM already rescued those.
+
+  > **If you worked around this**, remove the workaround before upgrading: code that unpacked the
+  > tuple (`seconds, _ = row["occurred_at"]`) now receives a `datetime` and will break.
+
+  Sub-second precision is preserved to the microsecond, which is all a Python `datetime` can hold;
+  the remaining nanoseconds are truncated. A datetime outside Python's year 1–9999 range is
+  returned as the raw pair instead of raising, so one unrepresentable value can no longer abort the
+  decoding of the whole response.
+
+---
+
 ## What's New in 0.32.6
 
 **CI fix** — no library code changes vs 0.32.2.

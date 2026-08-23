@@ -6,6 +6,41 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.32.7] - 2026-08-23
+
+**SDK bug fix.**
+
+### Fixed
+
+- **Compact CBOR datetimes decoded as a tuple of ints (#165).** SurrealDB 3.x sends
+  tag 12 as a compact `[seconds, nanoseconds]` pair, not an ISO 8601 string, and
+  `_cbor_tag_decoder()` only handled the string form. Every datetime the ORM does
+  not coerce from a model annotation — `raw_query()` results, datetimes nested
+  inside an object field — was returned as `(1739422800, 0)`:
+
+  ```python
+  rows = await Event.raw_query("SELECT * FROM events;")
+  rows[0]["occurred_at"]     # before: (1739422800, 0)
+  rows[0]["payload"]["at"]   # before: (1739422800, 0)
+  ```
+
+  Fields annotated `datetime` on a model were unaffected — the ORM rescued those
+  after the fact. Both forms now decode, wherever they appear in a payload.
+
+  **Upgrade note:** this changes the type of those values. Code that worked around
+  the bug by unpacking the tuple must drop the workaround.
+
+  Precision is kept to the microsecond (a Python `datetime` holds no more); the
+  remaining nanoseconds are truncated. Both branches fall back to the raw value
+  rather than raising: SurrealDB's datetime range is far wider than Python's year
+  1-9999, and an exception inside the tag hook comes back out of `cbor2` as a
+  `CBORDecodeError` that takes down every other value in the same response.
+
+  This makes `_parse_datetime()`'s array branch redundant for CBOR; it is left in
+  place for the JSON protocol. Covered by `tests/sdk/test_cbor_protocol.py`.
+
+---
+
 ## [0.32.6] - 2026-08-23
 
 **CI fix.** No library code changes vs 0.32.2.
