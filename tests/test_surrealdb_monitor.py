@@ -129,9 +129,7 @@ class TestNoPrerelease:
             ("3.3.0-beta.3", "3.3.0"),
         ],
     )
-    def test_prerelease_pin_is_replaced_by_a_stable_release(
-        self, workflow: str, current: str, latest: str
-    ) -> None:
+    def test_prerelease_pin_is_replaced_by_a_stable_release(self, workflow: str, current: str, latest: str) -> None:
         assert _decide(workflow, current, latest) == "true", (
             f"{workflow}: a stable release must supersede the pre-release pin {current} (#163) — "
             "`sort -V` alone ranks the pre-release higher and would stay stuck"
@@ -141,10 +139,8 @@ class TestNoPrerelease:
 def test_v3_release_query_excludes_prereleases() -> None:
     """The v3 monitor must filter pre-releases at the source, like the v2 one (#163)."""
     text = (WORKFLOW_DIR / "surrealdb-security.yml").read_text(encoding="utf-8")
-    query = next(line for line in text.splitlines() if "startswith(\"v3.\")" in line)
-    assert "select(.prerelease == false)" in query, (
-        "the v3 release query must exclude pre-releases (#163)"
-    )
+    query = next(line for line in text.splitlines() if 'startswith("v3.")' in line)
+    assert "select(.prerelease == false)" in query, "the v3 release query must exclude pre-releases (#163)"
     assert "select(.draft == false)" in query, "the v3 release query must exclude drafts"
 
 
