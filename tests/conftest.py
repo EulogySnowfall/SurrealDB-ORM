@@ -139,6 +139,12 @@ def pytest_configure(config: pytest.Config) -> None:
     if SKIP_CONTAINER:
         print(f"\n[conftest] SURREALDB_SKIP_CONTAINER set — skipping container management (port {TEST_PORT})")
         _container_started_by_tests = False
+        # Skipping container *management* is not skipping setup (#172): SurrealDB
+        # 3.x no longer auto-creates a namespace/database on USE, so a server we
+        # did not start still needs them. This is the path CI takes when it
+        # provides its own SurrealDB service, and the suite only survived it
+        # because some early test happened to define them as a side effect.
+        ensure_namespace_and_database()
         return
 
     # If SurrealDB is already healthy (container or external), skip startup

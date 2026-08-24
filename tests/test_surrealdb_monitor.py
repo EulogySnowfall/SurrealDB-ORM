@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+yaml = pytest.importorskip("yaml", reason="pyyaml required for workflow lint tests")
+
 WORKFLOW_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 
 MONITORS = ["surrealdb-security.yml", "surrealdb-v2-security.yml"]
@@ -148,3 +150,98 @@ def test_pinned_version_is_not_a_prerelease() -> None:
     """`.surrealdb-version` must name a stable release (#163)."""
     pin = (WORKFLOW_DIR.parent.parent / ".surrealdb-version").read_text(encoding="utf-8").strip()
     assert "-" not in pin, f"the pinned SurrealDB version {pin!r} is a pre-release"
+
+
+CANARY = "surrealdb-prerelease-canary.yml"
+
+
+class TestPrereleaseCanary:
+    """The canary tests pre-releases; it must never adopt one.
+
+    Testing a beta and *pinning* a beta are different acts. `.surrealdb-version`
+    is the version the library declares support for, and a bump to it cascades
+    into a published PyPI release — that is what burned 0.32.3-0.32.5 (#163).
+    The canary exists to give early warning on an upcoming SurrealDB line
+    without touching either.
+    """
+
+    def _text(self) -> str:
+        return (WORKFLOW_DIR / CANARY).read_text(encoding="utf-8")
+
+    def test_canary_exists(self) -> None:
+        assert (WORKFLOW_DIR / CANARY).is_file(), f"{CANARY} not found"
+
+    def test_it_cannot_write_to_the_repository(self) -> None:
+        """`contents: read` is the structural guarantee, not the step bodies."""
+        data = yaml.safe_load(self._text())
+        assert data["permissions"]["contents"] == "read", (
+            "the canary must not be able to push — testing a pre-release is not adopting it (#163)"
+        )
+        assert "pull-requests" not in data["permissions"], "the canary must not open PRs (#163)"
+
+    def test_it_never_touches_the_pin_or_the_compose_file(self) -> None:
+        text = self._text()
+        for forbidden in ("> .surrealdb-version", ">> .surrealdb-version", "sed -i"):
+            assert forbidden not in text, f"the canary must never rewrite the pin ({forbidden!r} found)"
+        assert "gh pr create" not in text, "the canary must never open a PR"
+
+    def test_it_only_considers_pre_releases(self) -> None:
+        text = self._text()
+        query = next(line for line in text.splitlines() if 'startswith("v3.")' in line)
+        assert "select(.prerelease == true)" in query, "the canary is for pre-releases only"
+        assert "select(.draft == false)" in query, "drafts are not testable releases"
+
+    def test_a_stable_candidate_is_refused(self) -> None:
+        """The inverse mistake: the monitor owns stable releases, not this job."""
+        assert 'if [[ "$VERSION" != *-* ]]; then' in self._text(), (
+            "the canary must refuse a stable candidate — otherwise a manual dispatch would silently duplicate the monitor's job"
+        )
+
+
+_CANARY_START = "# --- Decide:"
+_CANARY_END = 'echo "version=$VERSION"'
+
+
+def _canary_decide(version: str, pin: str) -> str:
+    """Run the canary's own selection block and return the FOUND it computes."""
+    text = (WORKFLOW_DIR / CANARY).read_text(encoding="utf-8")
+    start = text.index(_CANARY_START)
+    end = text.index(_CANARY_END, start)
+    block = textwrap.dedent(text[start:end])
+    script = f"""
+        set -euo pipefail
+        VERSION={version!r}
+        PIN={pin!r}
+        {block}
+        echo "$FOUND"
+    """
+    result = subprocess.run(
+        ["bash", "-c", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"PATH": "/usr/bin:/bin", "GITHUB_OUTPUT": "/dev/null"},
+    )
+    return result.stdout.strip().splitlines()[-1]
+
+
+@pytest.mark.parametrize(
+    ("version", "pin", "expected"),
+    [
+        # The case that motivated the canary: a beta of the next minor line.
+        ("3.3.0-beta.3", "3.2.4", "true"),
+        ("3.3.0-rc.1", "3.2.4", "true"),
+        # Numeric, not lexical — "3.10.0" is ahead of "3.9.0" despite sorting below.
+        ("3.10.0-beta.1", "3.9.0", "true"),
+        # A pre-release of the pinned version teaches nothing.
+        ("3.2.4-beta.1", "3.2.4", "false"),
+        # Behind the pin.
+        ("3.1.0-beta.1", "3.2.4", "false"),
+        # Stable releases belong to the monitor, not here.
+        ("3.3.0", "3.2.4", "false"),
+        # No open pre-release.
+        ("", "3.2.4", "false"),
+    ],
+)
+def test_canary_selection(version: str, pin: str, expected: str) -> None:
+    assert _canary_decide(version, pin) == expected, f"canary: version={version!r} pin={pin!r} should yield found={expected}"
