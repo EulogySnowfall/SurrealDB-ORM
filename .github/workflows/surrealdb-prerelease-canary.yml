@@ -138,13 +138,19 @@ jobs:
 
           echo "Running SurrealDB version: $(curl -s http://localhost:8000/version || echo unknown)"
 
+      # --no-cov on both: `--cov-fail-under=30` lives in pyproject addopts, and a
+      # partial selection never reaches it (the integration selection alone
+      # measures ~28%). Without this the job fails green — "435 passed" followed
+      # by a coverage error — and the canary reports that SurrealDB broke when
+      # nothing did. A compatibility check answers one question: does the suite
+      # pass. Coverage is CI's job, not this one's.
       - name: Run unit tests
-        run: uv run pytest tests/ -m "not integration" --junitxml=junit-unit.xml
+        run: uv run pytest tests/ -m "not integration" --no-cov --junitxml=junit-unit.xml
 
       - name: Run integration tests
         env:
           SURREALDB_SKIP_CONTAINER: "true"
-        run: uv run pytest tests/ -m integration --junitxml=junit-integration.xml -v
+        run: uv run pytest tests/ -m integration --no-cov --junitxml=junit-integration.xml -v
 
       - name: Stop SurrealDB
         if: always()
@@ -176,6 +182,9 @@ jobs:
       - name: Create issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job has no checkout — `gh` resolves the repo from git otherwise
+          # and dies with "not a git repository" before it can file anything.
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.check-prerelease.outputs.version }}
           PIN: ${{ needs.check-prerelease.outputs.pin }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
