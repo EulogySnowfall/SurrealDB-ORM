@@ -1,0 +1,211 @@
+# SurrealDB Pre-release Canary
+#
+# Early warning only. Runs the suite against the newest SurrealDB 3.x
+# *pre-release* and opens an issue when it breaks — so a regression in a beta
+# is known before that line ships stable and the monitor proposes the pin.
+#
+# What this workflow deliberately does NOT do (#163):
+#   - it never writes .surrealdb-version or devops/docker-compose.yml
+#   - it never opens a PR, and never bumps the ORM version
+#   - it therefore cannot reach PyPI
+# The pin is the version the library declares support for, and a bump to it
+# cascades into a published release. Pinning a beta burned three of them
+# (0.32.3-0.32.5). Both monitors reject pre-releases; this job tests them
+# without adopting them. `permissions:` below is the structural guarantee —
+# with `contents: read` it cannot push even if the steps were edited.
+
+name: SurrealDB Pre-release Canary
+
+on:
+  schedule:
+    # Mondays at 7:30 AM Montreal time (UTC-5 -> 12:30 UTC), after the daily monitor.
+    - cron: '30 12 * * 1'
+  workflow_dispatch:
+    inputs:
+      surrealdb_version:
+        description: 'Pre-release to test (e.g. 3.3.0-beta.3, leave empty for the newest v3.x pre-release)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  SURREALDB_URL: http://localhost:8000
+  SURREALDB_USER: root
+  SURREALDB_PASS: root
+  SURREALDB_NAMESPACE: test
+  SURREALDB_DATABASE: test
+
+jobs:
+  # =============================================================================
+  # Step 1: Find the newest v3.x pre-release worth testing
+  # =============================================================================
+  check-prerelease:
+    name: Check for a pre-release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      docker-tag: ${{ steps.check.outputs.docker-tag }}
+      pin: ${{ steps.check.outputs.pin }}
+      found: ${{ steps.check.outputs.found }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Resolve pre-release
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Never interpolate an input straight into the shell.
+          INPUT_VERSION: ${{ inputs.surrealdb_version }}
+        run: |
+          if [[ -n "$INPUT_VERSION" ]]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION=$(gh api repos/surrealdb/surrealdb/releases \
+              --jq '[.[] | select(.tag_name | startswith("v3.")) | select(.prerelease == true) | select(.draft == false) | .tag_name][0]' \
+              | sed 's/^v//')
+          fi
+
+          PIN=$(cat .surrealdb-version | tr -d '[:space:]')
+
+          # --- Decide: only a pre-release ahead of the stable pin is worth testing ---
+          FOUND="false"
+
+          if [[ -z "$VERSION" || "$VERSION" == "null" ]]; then
+            echo "No open v3.x pre-release — nothing to canary."
+          elif [[ "$VERSION" != *-* ]]; then
+            # Guard against the inverse mistake: this workflow exists to test
+            # pre-releases, and must never quietly exercise a stable one that
+            # the monitor is responsible for.
+            echo "Candidate ($VERSION) is not a pre-release — the monitor owns stable releases."
+          else
+            # Only interesting once its base version is ahead of the stable pin;
+            # a 3.2.x pre-release after pinning 3.2.4 tells us nothing new.
+            BASE="${VERSION%%-*}"
+            NEWEST=$(printf '%s\n%s\n' "$PIN" "$BASE" | sort -V | tail -1)
+            if [[ "$BASE" == "$PIN" || "$NEWEST" != "$BASE" ]]; then
+              echo "Pre-release $VERSION is not ahead of the pin ($PIN) — skipping."
+            else
+              echo "Will test SurrealDB $VERSION against the current pin $PIN."
+              FOUND="true"
+            fi
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "docker-tag=v$VERSION" >> $GITHUB_OUTPUT
+          echo "pin=$PIN" >> $GITHUB_OUTPUT
+          echo "found=$FOUND" >> $GITHUB_OUTPUT
+
+  # =============================================================================
+  # Step 2: Run the suite against it — informational, never gating
+  # =============================================================================
+  test-prerelease:
+    name: Test SurrealDB ${{ needs.check-prerelease.outputs.version }}
+    needs: check-prerelease
+    if: needs.check-prerelease.outputs.found == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Start SurrealDB ${{ needs.check-prerelease.outputs.docker-tag }}
+        env:
+          DOCKER_TAG: ${{ needs.check-prerelease.outputs.docker-tag }}
+        run: |
+          docker run -d \
+            --name surrealdb-canary \
+            -p 8000:8000 \
+            "surrealdb/surrealdb:${DOCKER_TAG}" \
+            start --log error --user root --pass root memory
+
+          ./devops/wait-for-healthy.sh localhost 8000 60
+
+          echo "Running SurrealDB version: $(curl -s http://localhost:8000/version || echo unknown)"
+
+      - name: Run unit tests
+        run: uv run pytest tests/ -m "not integration" --junitxml=junit-unit.xml
+
+      - name: Run integration tests
+        env:
+          SURREALDB_SKIP_CONTAINER: "true"
+        run: uv run pytest tests/ -m integration --junitxml=junit-integration.xml -v
+
+      - name: Stop SurrealDB
+        if: always()
+        run: docker stop surrealdb-canary && docker rm surrealdb-canary || true
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: surrealdb-canary-results
+          path: junit-*.xml
+
+  # =============================================================================
+  # Step 3: Report a break — an issue, never a pin change
+  # =============================================================================
+  report-failure:
+    name: Report Canary Failure
+    needs: [check-prerelease, test-prerelease]
+    # `always()` is required: without a status-check function GitHub implicitly
+    # ANDs `success()` into the condition, so this job — which by definition
+    # only runs when the tests failed — would always be skipped (#146).
+    if: |
+      always() &&
+      needs.check-prerelease.outputs.found == 'true' &&
+      needs.test-prerelease.result == 'failure'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check-prerelease.outputs.version }}
+          PIN: ${{ needs.check-prerelease.outputs.pin }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          ISSUE_TITLE="SurrealDB $VERSION (pre-release) — canary tests failed"
+
+          EXISTING=$(gh issue list --state open --search "$ISSUE_TITLE" --json number -q '.[0].number')
+          if [[ -n "$EXISTING" ]]; then
+            echo "Issue #$EXISTING already open — skipping."
+            exit 0
+          fi
+
+          gh issue create \
+            --title "$ISSUE_TITLE" \
+            --label "surrealdb,needs-investigation" \
+            --body "$(cat <<EOF
+          The suite fails against SurrealDB **$VERSION**, an upcoming pre-release.
+
+          | Field | Value |
+          |---|---|
+          | Pre-release tested | \`$VERSION\` |
+          | Current stable pin | \`$PIN\` |
+
+          **Nothing is broken for users today** — the pin is unchanged and no release
+          was published. This is early warning: unless it is fixed upstream or here,
+          the same failure will block the pin bump when this line ships stable.
+
+          [Workflow run]($RUN_URL)
+
+          ---
+          *Automatically created by the SurrealDB pre-release canary.*
+          EOF
+          )"
