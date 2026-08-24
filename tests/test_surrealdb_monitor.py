@@ -191,6 +191,25 @@ class TestPrereleaseCanary:
         assert "select(.prerelease == true)" in query, "the canary is for pre-releases only"
         assert "select(.draft == false)" in query, "drafts are not testable releases"
 
+    def test_pytest_steps_disable_coverage(self) -> None:
+        """A coverage gate must never be able to masquerade as a broken database.
+
+        ``--cov-fail-under=30`` lives in pyproject addopts and a partial selection
+        never reaches it — the integration selection alone measures ~28%. The
+        canary's first live run failed exactly this way: ``435 passed`` followed
+        by a coverage error, which the workflow would have reported as SurrealDB
+        3.3.0-beta.3 breaking the suite.
+        """
+        for line in self._text().splitlines():
+            if "uv run pytest" in line:
+                assert "--no-cov" in line, f"canary pytest step must disable coverage: {line.strip()!r}"
+
+    def test_the_reporting_job_can_reach_the_api_without_a_checkout(self) -> None:
+        """`gh` resolves the repo from git; that job has no checkout (#175 follow-up)."""
+        data = yaml.safe_load(self._text())
+        step = next(s for s in data["jobs"]["report-failure"]["steps"] if "gh issue" in str(s.get("run", "")))
+        assert "GH_REPO" in step["env"], "without GH_REPO, gh dies with 'not a git repository' before filing anything"
+
     def test_a_stable_candidate_is_refused(self) -> None:
         """The inverse mistake: the monitor owns stable releases, not this job."""
         assert 'if [[ "$VERSION" != *-* ]]; then' in self._text(), (
