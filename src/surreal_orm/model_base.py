@@ -208,6 +208,11 @@ def record_link_to_str(value: Any) -> Any:
     Returns:
         The record link as a string, otherwise the original value
 
+    Raises:
+        ValueError: If a model instance has no ID yet.  An unsaved record
+            cannot be referenced, and reporting it here beats the string
+            schema's "Input should be a valid string".
+
     Examples:
         record_link_to_str(user_instance)                    # "users:alice"
         record_link_to_str(RecordId(table="users", id="a"))  # "users:a"
@@ -221,6 +226,8 @@ def record_link_to_str(value: Any) -> Any:
         return str(record_id)
     if isinstance(value, RecordId):
         return str(value)
+    if record_id is None and callable(getattr(value, "get_id", None)):
+        raise ValueError(f"cannot reference an unsaved {type(value).__name__}; save it first")
     return value
 
 
@@ -727,6 +734,26 @@ class BaseSurrealModel(BaseModel):
                     targets[name] = _resolve_target_table(meta.to)
                     break
         return targets
+
+    @classmethod
+    def get_foreign_key_columns(cls) -> dict[str, str | None]:
+        """
+        Map each foreign-key *column* name to its target table.
+
+        Filters and bulk writes address database columns, so an aliased
+        :func:`ForeignKey` must be resolvable under its alias too.
+
+        Returns:
+            Dict mapping foreign-key column name — the field name and, when
+            declared, its alias — to the target table name.
+        """
+        columns: dict[str, str | None] = {}
+        for field_name, table in cls.get_foreign_key_targets().items():
+            columns[field_name] = table
+            alias = cls.model_fields[field_name].alias
+            if alias:
+                columns[alias] = table
+        return columns
 
     def get_id(self) -> str | None:
         """
@@ -1328,7 +1355,8 @@ class BaseSurrealModel(BaseModel):
         exclude_fields = {"id"} | self.get_server_fields()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
-        data = self._coerce_foreign_keys(data)
+        # data keeps the original values for signals; only the wire copy is coerced
+        wire_data = self._coerce_foreign_keys(data)
         record_id = self.get_id()
 
         if record_id is None:
@@ -1354,13 +1382,13 @@ class BaseSurrealModel(BaseModel):
         ):
             if tx is not None:
                 start = _start_timer()
-                await tx.merge(thing, data)
-                _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
+                await tx.merge(thing, wire_data)
+                _log_query(f"UPDATE MERGE {thing}", wire_data, _elapsed_ms(start))
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
-                result = await client.merge(thing, data)
-                _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
+                result = await client.merge(thing, wire_data)
+                _log_query(f"UPDATE MERGE {thing}", wire_data, _elapsed_ms(start))
                 result_records = result.records
 
         # Send post_update signal

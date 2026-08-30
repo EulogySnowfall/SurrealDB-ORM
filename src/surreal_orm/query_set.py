@@ -992,13 +992,14 @@ class QuerySet(Generic[T]):
         Returns:
             The value with record references converted to ``RecordId`` objects.
         """
-        targets = self.model.get_foreign_key_targets()
+        targets = self.model.get_foreign_key_columns()
         if field_name not in targets or lookup_name not in ("exact", "in", "not_in"):
             return value
 
         table = targets[field_name]
         if isinstance(value, (list, tuple, set)):
-            return type(value)(_to_record_link(item, table) for item in value)
+            # Always a list: RecordId is unhashable, and IN takes an array anyway
+            return [_to_record_link(item, table) for item in value]
         return _to_record_link(value, table)
 
     @staticmethod
@@ -1935,7 +1936,7 @@ class QuerySet(Generic[T]):
 
         # Build SET clause — foreign-key values are bound as record links,
         # since a record<...> column rejects a plain string on write
-        fk_targets = self.model.get_foreign_key_targets()
+        fk_targets = self.model.get_foreign_key_columns()
         set_parts = []
         update_vars: dict[str, Any] = {}
         for field, value in data.items():
@@ -2050,6 +2051,13 @@ class QuerySet(Generic[T]):
 
         table = self._model_table
         variables: dict[str, Any] = {}
+        # Bind foreign keys as record links, as the other write paths do
+        fk_columns = self.model.get_foreign_key_columns()
+
+        def _bind(field_name: str, value: Any) -> Any:
+            if field_name in fk_columns:
+                return _to_record_link(value, fk_columns[field_name])
+            return value
 
         if on_conflict:
             # Use INSERT INTO ... ON DUPLICATE KEY UPDATE syntax
@@ -2064,7 +2072,7 @@ class QuerySet(Generic[T]):
                 else:
                     var_name = f"_up_{field_name}"
                     obj_parts.append(f"{field_name}: ${var_name}")
-                    variables[var_name] = value
+                    variables[var_name] = _bind(field_name, value)
 
             conflict_parts: list[str] = []
             for field_name, value in on_conflict.items():
@@ -2074,7 +2082,7 @@ class QuerySet(Generic[T]):
                 else:
                     var_name = f"_oc_{field_name}"
                     conflict_parts.append(f"{field_name} = ${var_name}")
-                    variables[var_name] = value
+                    variables[var_name] = _bind(field_name, value)
 
             query = f"INSERT INTO {table} {{{', '.join(obj_parts)}}} ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)};"
         else:
@@ -2092,7 +2100,7 @@ class QuerySet(Generic[T]):
                 else:
                     var_name = f"_up_{field_name}"
                     set_parts.append(f"{field_name} = ${var_name}")
-                    variables[var_name] = value
+                    variables[var_name] = _bind(field_name, value)
             query = f"UPSERT {thing} SET {', '.join(set_parts)};"
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
@@ -2156,12 +2164,14 @@ class QuerySet(Generic[T]):
         # Build a single batch query with semicolons
         queries: list[str] = []
         all_variables: dict[str, Any] = {}
+        fk_columns = self.model.get_foreign_key_columns()
 
         for idx, instance in enumerate(instances):
             record_id = instance.get_id() if hasattr(instance, "get_id") else getattr(instance, "id", None)
 
             data = instance.model_dump(exclude_unset=True, by_alias=True)
             data.pop("id", None)
+            data = instance._coerce_foreign_keys(data)
 
             if on_conflict:
                 # Use INSERT INTO ... ON DUPLICATE KEY UPDATE
@@ -2186,6 +2196,8 @@ class QuerySet(Generic[T]):
                     else:
                         var_name = f"_oc{idx}_{field_name}"
                         conflict_parts.append(f"{field_name} = ${var_name}")
+                        if field_name in fk_columns:
+                            value = _to_record_link(value, fk_columns[field_name])
                         all_variables[var_name] = value
 
                 query = f"INSERT INTO {table} {{{', '.join(obj_parts)}}} ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)}"

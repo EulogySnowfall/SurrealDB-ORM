@@ -26,8 +26,14 @@ import pytest
 from pydantic import Field
 from pydantic_core import ValidationError
 
+from src.surreal_orm import signals as model_signals
 from src.surreal_orm.fields.relation import ForeignKey, ManyToMany
-from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict, to_record_id
+from src.surreal_orm.model_base import (
+    BaseSurrealModel,
+    SurrealConfigDict,
+    record_link_to_str,
+    to_record_id,
+)
 from src.surreal_orm.q import Q
 from surreal_sdk.protocol.cbor import RecordId
 from surreal_sdk.protocol.rpc import SurrealJSONEncoder
@@ -434,3 +440,220 @@ class TestJSONEncoderRecordId:
     def test_datetime_still_encodes(self) -> None:
         payload = {"at": datetime(2026, 8, 23, 10, 0, 0)}
         assert json.loads(json.dumps(payload, cls=SurrealJSONEncoder)) == {"at": "2026-08-23T10:00:00"}
+
+
+# ==================== Review findings (PR #174) ====================
+
+
+class TestFilterCollectionTypes:
+    """`__in` accepts any collection, including an unhashable-safe set."""
+
+    def test_set_is_accepted(self) -> None:
+        """A set of references must not raise — RecordId is unhashable."""
+        qs = FkPost.objects().filter(author__in={"fk_users:alice", "fk_users:bob"})
+        qs._compile_where_clause()
+        bound = qs._variables["_f0"]
+        assert isinstance(bound, list)
+        assert sorted(str(item) for item in bound) == ["fk_users:alice", "fk_users:bob"]
+
+    def test_tuple_becomes_a_list(self) -> None:
+        qs = FkPost.objects().filter(author__in=("alice", "bob"))
+        qs._compile_where_clause()
+        assert qs._variables["_f0"] == [
+            RecordId(table="fk_users", id="alice"),
+            RecordId(table="fk_users", id="bob"),
+        ]
+
+
+class TestAliasedForeignKeyColumns:
+    """A filter addresses the column, so an alias must resolve too."""
+
+    def test_columns_map_covers_both_spellings(self) -> None:
+        assert FkComment.get_foreign_key_columns() == {
+            "post": "fk_posts",
+            "post_id": "fk_posts",
+        }
+
+    def test_filter_by_alias_binds_a_record_id(self) -> None:
+        qs = FkComment.objects().filter(post_id="fk_posts:1")
+        qs._compile_where_clause()
+        assert qs._variables["_f0"] == RecordId(table="fk_posts", id="1")
+
+    def test_filter_by_alias_in_list(self) -> None:
+        qs = FkComment.objects().filter(post_id__in=["1", "fk_posts:2"])
+        qs._compile_where_clause()
+        assert qs._variables["_f0"] == [
+            RecordId(table="fk_posts", id="1"),
+            RecordId(table="fk_posts", id="2"),
+        ]
+
+    def test_filter_by_alias_in_q_object(self) -> None:
+        qs = FkComment.objects().filter(Q(post_id="fk_posts:1"))
+        qs._compile_where_clause()
+        assert qs._variables["_f0"] == RecordId(table="fk_posts", id="1")
+
+    def test_string_lookups_on_an_alias_stay_untouched(self) -> None:
+        qs = FkComment.objects().filter(post_id__contains="posts")
+        qs._compile_where_clause()
+        assert qs._variables["_f0"] == "posts"
+
+    @pytest.mark.asyncio
+    async def test_bulk_update_coerces_an_aliased_column(self) -> None:
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=MagicMock(all_records=[{}]))
+
+        with patch(
+            "src.surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=mock_client)),
+        ):
+            await FkComment.objects().filter(body="Nice").bulk_update({"post_id": "1"})
+
+        _query, variables = mock_client.query.call_args[0]
+        assert RecordId(table="fk_posts", id="1") in variables.values()
+
+
+class TestUpsertForeignKeys:
+    """upsert()/bulk_upsert() write record links like the other write paths."""
+
+    @pytest.mark.asyncio
+    async def test_upsert_defaults_are_coerced(self) -> None:
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(
+            return_value=MagicMock(all_records=[{"id": "fk_posts:1", "title": "Hello", "author": "fk_users:alice"}]),
+        )
+
+        with patch(
+            "src.surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=mock_client)),
+        ):
+            await FkPost.objects().upsert(
+                defaults={"title": "Hello", "author": "alice"},
+                id="fk_posts:1",
+            )
+
+        _query, variables = mock_client.query.call_args[0]
+        assert variables["_up_author"] == RecordId(table="fk_users", id="alice")
+        assert variables["_up_title"] == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_upsert_on_conflict_is_coerced(self) -> None:
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(
+            return_value=MagicMock(all_records=[{"id": "fk_posts:1", "title": "Hello", "author": "fk_users:alice"}]),
+        )
+
+        with patch(
+            "src.surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=mock_client)),
+        ):
+            await FkPost.objects().upsert(
+                defaults={"title": "Hello", "author": "alice"},
+                id="fk_posts:1",
+                on_conflict={"author": FkUser(id="bob", name="Bob")},
+            )
+
+        _query, variables = mock_client.query.call_args[0]
+        assert variables["_oc_author"] == RecordId(table="fk_users", id="bob")
+
+    @pytest.mark.asyncio
+    async def test_bulk_upsert_coerces_instance_data(self) -> None:
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=MagicMock(all_records=[]))
+
+        posts = [FkPost(id="1", title="Hello", author="fk_users:alice")]
+        with patch(
+            "src.surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=mock_client)),
+        ):
+            await FkPost.objects().bulk_upsert(posts)
+
+        _query, variables = mock_client.query.call_args[0]
+        assert RecordId(table="fk_users", id="alice") in variables.values()
+
+    @pytest.mark.asyncio
+    async def test_bulk_upsert_coerces_on_conflict(self) -> None:
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=MagicMock(all_records=[]))
+
+        posts = [FkPost(id="1", title="Hello", author="fk_users:alice")]
+        with patch(
+            "src.surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=mock_client)),
+        ):
+            await FkPost.objects().bulk_upsert(posts, on_conflict={"author": "bob"})
+
+        _query, variables = mock_client.query.call_args[0]
+        assert variables["_oc0_author"] == RecordId(table="fk_users", id="bob")
+
+
+class TestUpdateSignalPayload:
+    """Signals are a public API and must not see wire types."""
+
+    @pytest.mark.asyncio
+    async def test_update_signals_get_uncoerced_values(self) -> None:
+        mock_client = AsyncMock()
+        mock_client.merge = AsyncMock(return_value=MagicMock(records=[]))
+        seen: list[Any] = []
+
+        async def handler(sender: Any, instance: Any, **kwargs: Any) -> None:
+            seen.append(kwargs["update_fields"]["author"])
+
+        post = FkPost(id="1", title="Hello", author="fk_users:alice")
+        model_signals.pre_update.connect(FkPost)(handler)
+        try:
+            with patch(
+                "src.surreal_orm.model_base.SurrealDBConnectionManager",
+                new=MagicMock(get_client=AsyncMock(return_value=mock_client)),
+            ):
+                await post.update()
+        finally:
+            model_signals.pre_update.disconnect(handler, FkPost)
+
+        assert seen == ["fk_users:alice"]
+
+    @pytest.mark.asyncio
+    async def test_update_still_writes_a_record_id(self) -> None:
+        mock_client = AsyncMock()
+        mock_client.merge = AsyncMock(return_value=MagicMock(records=[]))
+
+        post = FkPost(id="1", title="Hello", author="fk_users:alice")
+        with patch(
+            "src.surreal_orm.model_base.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=mock_client)),
+        ):
+            await post.update()
+
+        _thing, data = mock_client.merge.call_args[0]
+        assert data["author"] == RecordId(table="fk_users", id="alice")
+
+
+class TestUnsavedReference:
+    """An unsaved instance cannot be referenced — say so explicitly."""
+
+    def test_foreign_key_rejects_an_unsaved_instance(self) -> None:
+        with pytest.raises(ValidationError, match="cannot reference an unsaved FkUser"):
+            FkPost(title="Hello", author=FkUser(name="Alice"))
+
+    def test_many_to_many_rejects_an_unsaved_instance(self) -> None:
+        with pytest.raises(ValidationError, match="cannot reference an unsaved FkGroup"):
+            FkMember(groups=[FkGroup()])
+
+    def test_filter_rejects_an_unsaved_instance(self) -> None:
+        with pytest.raises(ValueError, match="cannot reference an unsaved FkUser"):
+            FkPost.objects().filter(author=FkUser(name="Alice"))._compile_where_clause()
+
+    def test_unrelated_object_with_record_id_passes_through(self) -> None:
+        """The guard must not fire on anything that merely has the attribute."""
+
+        class NotAModel:
+            record_id = "not-a-record-id"
+
+        obj = NotAModel()
+        assert record_link_to_str(obj) is obj
+
+    def test_saved_instance_is_still_accepted(self) -> None:
+        post = FkPost(title="Hello", author=FkUser(id="alice", name="Alice"))
+        assert post.author == "fk_users:alice"
+
+    def test_none_is_still_accepted(self) -> None:
+        assert FkComment(body="Nice", post_id=None).post is None
