@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: August 2026 (0.32.6)
+> Context document for Claude AI - Last updated: September 2026 (0.32.7)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.32.6 (Beta) — SurrealDB 3.2+ required
+## Current Version: 0.32.7 (Beta) — SurrealDB 3.2+ required
 
 ### Branch Strategy
 
@@ -18,6 +18,33 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.2.4**  | 0.32.x      | Active development              |
 | `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.32.7
+
+Two ORM fixes, both from #169 (#174).
+
+- **`ForeignKey` values were never coerced to `RecordId`** — a `ForeignKey` holds a
+  `"table:id"` string in Python, and nothing converted it at the wire boundary, so a
+  `record<>` column rejected the write and a filter compared a string against a record
+  value, returning `[]` for a row that demonstrably existed. Every write path
+  (`save`, `merge`, `update`, `bulk_update`, `upsert`, `bulk_upsert`) and every
+  whole-record lookup (`exact`, `in`, `not_in`, incl. inside `Q`) now converts. Four
+  interchangeable forms: model instance, `"table:id"`, bare ID, `RecordId`. String
+  lookups, `isnull` and explicit `$var` references stay uncoerced by design.
+  **The aliased case was the dangerous one:** the write path resolved aliases but the
+  read path keyed off the Python field name, so an aliased FK was *written* as a record
+  link and *filtered* as a string — a wrong answer, not an error. `get_foreign_key_columns()`
+  now maps each FK under both its field name and its alias.
+  Still open, pre-existing: filtering by the *Python* field name on an aliased model emits
+  `author = ...` rather than the real column `author_id`.
+- **`on_delete` generated invalid DDL** — Django's vocabulary passed through verbatim, but
+  SurrealDB takes `CASCADE | UNSET | REJECT | IGNORE | THEN`. `AddField` / `AlterField` map
+  through `on_delete_to_surql()` (`SET_NULL` → `UNSET`, `PROTECT` → `REJECT`). Django
+  literals remain the API; both vocabularies accepted.
+- **New public API** — `instance.record_id` (the `Model.pk` analog, returning a `RecordId`
+  for binding against `record<>` columns in `raw_query()`), plus `to_record_id()`,
+  `record_link_to_str()` and `get_foreign_key_columns()`. The unsaved-instance guard lives in
+  `record_link_to_str()`, which is therefore no longer total — it can raise.
 
 ### What's New in 0.32.6
 

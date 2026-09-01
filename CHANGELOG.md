@@ -6,6 +6,93 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.32.7] - 2026-09-01
+
+**Bug fix release.** Two independent ORM fixes, both reported in #169: foreign
+key values never reached the database as record links, and Django's `on_delete`
+vocabulary generated invalid DDL.
+
+### Fixed — ORM
+
+- **`ForeignKey` values were never coerced to `RecordId` (#169, #174).** A
+  `ForeignKey` field holds a `"table:id"` string in Python, but nothing converted
+  it at the wire boundary, so a `record<>` column rejected the write outright and
+  a filter compared a string against a record value:
+
+  ```python
+  # Before: rejected by SurrealDB — a record<fk_authors> column will not take a string
+  await Article(title="Hello", author="fk_authors:alice").save()
+
+  # Before: the row exists, but the filter compares a string to a record value
+  await Article.objects().filter(author="fk_authors:alice").exec()  # []
+  ```
+
+  Every write path — `save()`, `merge()`, `update()`, `bulk_update()`,
+  `upsert()`, `bulk_upsert()` — and every whole-record filter lookup — `exact`,
+  `in`, `not_in`, including inside `Q` objects — now converts the value to a
+  `RecordId`. Four interchangeable forms are accepted and may be mixed freely
+  within a collection: the related model instance, a full `"table:id"` string, a
+  bare ID qualified through the field's target table, and a `RecordId`.
+
+  Deliberately left untouched: the string lookups (`contains`, `startswith`,
+  `regex`, ...), `isnull`, and explicit `$var` references bound via
+  `.variables()`, which pass through uncoerced by design.
+
+- **Aliased foreign keys were filtered as strings (#169).** The defect the issue
+  singled out as the worst of the three, because it returned a wrong answer
+  rather than an error. The write path resolved aliases while the read path keyed
+  off the Python field name only — so an aliased `ForeignKey` was *written* as a
+  record link and *filtered* as a plain string, yielding an empty result with no
+  error. The new `get_foreign_key_columns()` maps each foreign key under both its
+  field name and its declared alias, and both `_coerce_filter_value()` and
+  `bulk_update()` key off it.
+
+  Still outstanding, pre-existing and tracked separately: filtering by the
+  *Python* field name on an aliased model emits `author = ...` rather than the
+  real column `author_id`.
+
+- **Referencing an unsaved instance raised a confusing error.** Assigning an
+  unsaved model reported `Input should be a valid string`, and the write and
+  filter paths bound the model object straight into the query. The guard now
+  lives in the shared `record_link_to_str()` helper, so all three paths raise
+  `cannot reference an unsaved Author; save it first`. Note that the helper is
+  therefore no longer total — it can raise.
+
+- **`update()` leaked wire types into signal payloads.** `update()` passed its
+  coerced dict as `update_fields`, so handlers received `RecordId` objects while
+  `merge()` deliberately sent the uncoerced values. `update()` now mirrors
+  `merge()`: signals get the uncoerced dict, and only the wire call gets the
+  coerced one.
+
+### Fixed — Migrations
+
+- **Django's `on_delete` vocabulary produced invalid DDL (#169).** The value was
+  passed through verbatim, but SurrealDB accepts only
+  `CASCADE | UNSET | REJECT | IGNORE | THEN`. `AddField` and `AlterField` now map
+  through the new `on_delete_to_surql()`:
+
+  | Django | SurrealDB |
+  | --- | --- |
+  | `SET_NULL` | `UNSET` |
+  | `PROTECT` | `REJECT` |
+  | `CASCADE` / native keywords | unchanged |
+
+  The Django literals remain the public API; both vocabularies are accepted.
+
+### Added
+
+- **`instance.record_id`** — the reserved record-identity property, the analog of
+  Django's `Model.pk`. Returns the identity as a `RecordId`, ready to bind
+  against a `record<>` column in `raw_query()` / `.variables()`, where explicit
+  bindings still pass through uncoerced. `str(instance.record_id)` gives the
+  `"table:id"` form.
+- **`to_record_id()`, `record_link_to_str()`, `get_foreign_key_columns()`** —
+  public helpers in `model_base`.
+- The JSON protocol encoder renders a `RecordId` as `"table:id"`, so the fallback
+  protocol keeps working.
+
+---
+
 ## [0.32.6] - 2026-08-23
 
 **Bug fix release.** Three independent fixes: a CBOR decoding bug in the SDK, a
