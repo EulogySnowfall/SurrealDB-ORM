@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 import logging
 
-from .model_base import SurrealDbError
+from .model_base import SurrealDbError, _to_record_link
 
 logger = logging.getLogger(__name__)
 
@@ -967,6 +967,41 @@ class QuerySet(Generic[T]):
                     related = grouped.get(thing, [])
                     object.__setattr__(inst, to_attr, related)
 
+    def _coerce_filter_value(self, field_name: str, lookup_name: str, value: Any) -> Any:
+        """
+        Convert a filter value on a :func:`ForeignKey` field to a record link.
+
+        SurrealDB never equates a bound string with a record, so
+        ``filter(author="users:abc")`` on a ``record<...>`` column returns an
+        empty result instead of raising.  The related instance and a bare ID
+        are accepted too, so all three of these are equivalent::
+
+            filter(author=alice)
+            filter(author="users:alice")
+            filter(author="alice")
+
+        Only lookups that compare whole records are converted — the string
+        lookups (``contains``, ``startswith``, ``regex``, ...) still match on
+        the raw value.  ``in`` values are converted element-wise.
+
+        Args:
+            field_name: The database field name being filtered on.
+            lookup_name: The lookup type (e.g. "exact", "in").
+            value: The filter value as supplied by the caller.
+
+        Returns:
+            The value with record references converted to ``RecordId`` objects.
+        """
+        targets = self.model.get_foreign_key_columns()
+        if field_name not in targets or lookup_name not in ("exact", "in", "not_in"):
+            return value
+
+        table = targets[field_name]
+        if isinstance(value, (list, tuple, set)):
+            # Always a list: RecordId is unhashable, and IN takes an array anyway
+            return [_to_record_link(item, table) for item in value]
+        return _to_record_link(value, table)
+
     @staticmethod
     def _render_condition(
         field_name: str,
@@ -1130,6 +1165,7 @@ class QuerySet(Generic[T]):
                     parts.append(rendered)
             else:
                 field_name, lookup_name, value = child
+                value = self._coerce_filter_value(field_name, lookup_name, value)
                 parts.append(self._render_condition(field_name, lookup_name, value, variables, counter, prelude))
 
         if not parts:
@@ -1161,6 +1197,7 @@ class QuerySet(Generic[T]):
 
         # Keyword-based filters (always AND-joined)
         for field_name, lookup_name, value in self._filters:
+            value = self._coerce_filter_value(field_name, lookup_name, value)
             parts.append(self._render_condition(field_name, lookup_name, value, variables, counter, prelude))
 
         # Q object filters
@@ -1897,11 +1934,15 @@ class QuerySet(Generic[T]):
         """
         where_clause = self._compile_where_clause()
 
-        # Build SET clause
+        # Build SET clause — foreign-key values are bound as record links,
+        # since a record<...> column rejects a plain string on write
+        fk_targets = self.model.get_foreign_key_columns()
         set_parts = []
         update_vars: dict[str, Any] = {}
         for field, value in data.items():
             validate_identifier(field, "field name")
+            if field in fk_targets:
+                value = _to_record_link(value, fk_targets[field])
             var_name = f"_bu{len(update_vars)}"
             update_vars[var_name] = value
             set_parts.append(f"{field} = ${var_name}")
@@ -2010,6 +2051,13 @@ class QuerySet(Generic[T]):
 
         table = self._model_table
         variables: dict[str, Any] = {}
+        # Bind foreign keys as record links, as the other write paths do
+        fk_columns = self.model.get_foreign_key_columns()
+
+        def _bind(field_name: str, value: Any) -> Any:
+            if field_name in fk_columns:
+                return _to_record_link(value, fk_columns[field_name])
+            return value
 
         if on_conflict:
             # Use INSERT INTO ... ON DUPLICATE KEY UPDATE syntax
@@ -2024,7 +2072,7 @@ class QuerySet(Generic[T]):
                 else:
                     var_name = f"_up_{field_name}"
                     obj_parts.append(f"{field_name}: ${var_name}")
-                    variables[var_name] = value
+                    variables[var_name] = _bind(field_name, value)
 
             conflict_parts: list[str] = []
             for field_name, value in on_conflict.items():
@@ -2034,7 +2082,7 @@ class QuerySet(Generic[T]):
                 else:
                     var_name = f"_oc_{field_name}"
                     conflict_parts.append(f"{field_name} = ${var_name}")
-                    variables[var_name] = value
+                    variables[var_name] = _bind(field_name, value)
 
             query = f"INSERT INTO {table} {{{', '.join(obj_parts)}}} ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)};"
         else:
@@ -2052,7 +2100,7 @@ class QuerySet(Generic[T]):
                 else:
                     var_name = f"_up_{field_name}"
                     set_parts.append(f"{field_name} = ${var_name}")
-                    variables[var_name] = value
+                    variables[var_name] = _bind(field_name, value)
             query = f"UPSERT {thing} SET {', '.join(set_parts)};"
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
@@ -2116,12 +2164,14 @@ class QuerySet(Generic[T]):
         # Build a single batch query with semicolons
         queries: list[str] = []
         all_variables: dict[str, Any] = {}
+        fk_columns = self.model.get_foreign_key_columns()
 
         for idx, instance in enumerate(instances):
             record_id = instance.get_id() if hasattr(instance, "get_id") else getattr(instance, "id", None)
 
             data = instance.model_dump(exclude_unset=True, by_alias=True)
             data.pop("id", None)
+            data = instance._coerce_foreign_keys(data)
 
             if on_conflict:
                 # Use INSERT INTO ... ON DUPLICATE KEY UPDATE
@@ -2146,6 +2196,8 @@ class QuerySet(Generic[T]):
                     else:
                         var_name = f"_oc{idx}_{field_name}"
                         conflict_parts.append(f"{field_name} = ${var_name}")
+                        if field_name in fk_columns:
+                            value = _to_record_link(value, fk_columns[field_name])
                         all_variables[var_name] = value
 
                 query = f"INSERT INTO {table} {{{', '.join(obj_parts)}}} ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)}"

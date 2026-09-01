@@ -132,6 +132,18 @@ class TestAddField:
         sql = op.forwards()
         assert "ASSERT is::email($value)" in sql
 
+    def test_add_field_maps_on_delete_keyword(self) -> None:
+        """Test Django's on_delete vocabulary is translated for SurrealDB."""
+        op = AddField(
+            table="posts",
+            name="author",
+            field_type="record<users>",
+            reference=True,
+            on_delete="SET_NULL",
+        )
+        sql = op.forwards()
+        assert "REFERENCE ON DELETE UNSET" in sql
+
     def test_add_field_backwards(self) -> None:
         """Test field removal on rollback."""
         op = AddField(table="users", name="email", field_type="string")
@@ -172,6 +184,18 @@ class TestAlterField:
         )
         sql = op.forwards()
         assert "DEFINE FIELD OVERWRITE age ON users TYPE int" in sql
+
+    def test_alter_field_maps_on_delete_keyword(self) -> None:
+        """Test Django's on_delete vocabulary is translated for SurrealDB."""
+        op = AlterField(
+            table="posts",
+            name="author",
+            field_type="record<users>",
+            reference=True,
+            on_delete="PROTECT",
+        )
+        sql = op.forwards()
+        assert "REFERENCE ON DELETE REJECT" in sql
 
     def test_alter_field_backwards(self) -> None:
         """Test rollback restores previous type."""

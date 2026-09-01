@@ -13,6 +13,8 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
+from surreal_sdk.protocol.cbor import RecordId
+
 from . import signals as model_signals
 from .connection_manager import SurrealDBConnectionManager
 from .debug import _elapsed_ms, _log_query, _start_timer
@@ -162,6 +164,135 @@ def _convert_record_id_to_string(value: Any) -> Any:
     ):
         return str(value)  # Returns "table:id" format
     return value
+
+
+def to_record_id(value: Any) -> Any:
+    """
+    Convert a full record-ID string (table:id) into a ``RecordId`` object.
+
+    A ``record<...>`` column rejects a bound string, so writes and filters on
+    record links must send a ``RecordId``.  Anything that is not a full
+    record-ID string is returned unchanged.
+
+    Args:
+        value: The value to convert
+
+    Returns:
+        A ``RecordId`` for a record-ID string, otherwise the original value
+
+    Examples:
+        to_record_id("users:abc123")   # RecordId(table="users", id="abc123")
+        to_record_id("users:`7abc`")   # RecordId(table="users", id="7abc")
+        to_record_id("abc123")         # "abc123"
+    """
+    if not isinstance(value, str):
+        return value
+
+    table, id_part = parse_record_id(value)
+    if table is None or not _SAFE_IDENTIFIER_RE.match(table):
+        return value
+
+    return RecordId(table=table, id=id_part)
+
+
+def record_link_to_str(value: Any) -> Any:
+    """
+    Render a model instance or ``RecordId`` as a ``"table:id"`` string.
+
+    Inverse of :func:`to_record_id`.  Values that are neither are returned
+    unchanged.
+
+    Args:
+        value: The value to convert
+
+    Returns:
+        The record link as a string, otherwise the original value
+
+    Raises:
+        ValueError: If a model instance has no ID yet.  An unsaved record
+            cannot be referenced, and reporting it here beats the string
+            schema's "Input should be a valid string".
+
+    Examples:
+        record_link_to_str(user_instance)                    # "users:alice"
+        record_link_to_str(RecordId(table="users", id="a"))  # "users:a"
+        record_link_to_str("users:alice")                    # "users:alice"
+    """
+    # Duck-typed like _convert_record_id_to_string: avoids import path
+    # issues between src.surreal_orm and surreal_orm. The isinstance guard
+    # keeps unrelated objects with a plain `record_id` attribute untouched.
+    record_id = getattr(value, "record_id", None)
+    if isinstance(record_id, RecordId):
+        return str(record_id)
+    if isinstance(value, RecordId):
+        return str(value)
+    if record_id is None and callable(getattr(value, "get_id", None)):
+        raise ValueError(f"cannot reference an unsaved {type(value).__name__}; save it first")
+    return value
+
+
+def _to_record_link(value: Any, table: str | None) -> Any:
+    """
+    Convert a foreign-key value into a record link.
+
+    Accepts the related model instance, a ``RecordId``, a full ``"table:id"``
+    string, or - when the target table is known - a bare ID.  Anything else is
+    returned unchanged.
+
+    Args:
+        value: The foreign-key value
+        table: The target table, used to qualify a bare ID
+
+    Returns:
+        A ``RecordId``, or the original value
+    """
+    if isinstance(value, RecordId):
+        return value
+
+    value = record_link_to_str(value)
+
+    # A bare ID is only resolvable against a known target table. "$var"
+    # references stay untouched — they are user-supplied query variables.
+    if isinstance(value, str) and table and not value.startswith("$"):
+        value_table, id_part = parse_record_id(value)
+        if value_table is None:
+            return RecordId(table=table, id=id_part)
+
+    return to_record_id(value)
+
+
+def _resolve_target_table(model_name: str) -> str | None:
+    """
+    Resolve a :func:`ForeignKey` target model name to its table name.
+
+    ``ForeignKey("Article")`` names the model, which may configure a different
+    ``table_name``.  The table name itself is accepted too.  Returns ``None``
+    when nothing matches, in which case a bare ID cannot be qualified.
+
+    Walks the subclass tree rather than ``_MODEL_REGISTRY``, which
+    :func:`clear_model_registry` empties.  The first match wins when two models
+    share a name.
+
+    Args:
+        model_name: The target model name given to ForeignKey
+
+    Returns:
+        The target table name, or ``None`` when the target is unknown
+    """
+    models: list[type[BaseSurrealModel]] = []
+    pending = BaseSurrealModel.__subclasses__()
+    while pending:
+        model = pending.pop()
+        models.append(model)
+        pending.extend(model.__subclasses__())
+
+    for model in models:
+        if model.__name__ == model_name:
+            return model.get_table_name()
+    for model in models:
+        if model.get_table_name() == model_name:
+            return model_name
+    return None
 
 
 class SurrealConfigDict(ConfigDict):
@@ -577,6 +708,53 @@ class BaseSurrealModel(BaseModel):
             fields.update(computed.keys())
         return fields
 
+    @classmethod
+    def get_foreign_key_targets(cls) -> dict[str, str | None]:
+        """
+        Map each :func:`ForeignKey` field to the table it points at.
+
+        These fields hold record links, so their values must reach SurrealDB as
+        ``RecordId`` objects rather than strings.  The table is ``None`` when
+        the target model is not registered, in which case only fully-qualified
+        ``"table:id"`` values can be resolved.
+
+        Returns:
+            Dict mapping foreign-key field name to target table name.
+        """
+        # Local import: fields.relation imports record_link_to_str from this
+        # module at load time, so importing it at the top would be circular.
+        from .fields.relation import _ForeignKeyMarker
+
+        # Pydantic strips Annotated metadata off `annotation`, so the marker
+        # is read from FieldInfo.metadata instead.
+        targets: dict[str, str | None] = {}
+        for name, field_info in cls.model_fields.items():
+            for meta in field_info.metadata:
+                if isinstance(meta, _ForeignKeyMarker):
+                    targets[name] = _resolve_target_table(meta.to)
+                    break
+        return targets
+
+    @classmethod
+    def get_foreign_key_columns(cls) -> dict[str, str | None]:
+        """
+        Map each foreign-key *column* name to its target table.
+
+        Filters and bulk writes address database columns, so an aliased
+        :func:`ForeignKey` must be resolvable under its alias too.
+
+        Returns:
+            Dict mapping foreign-key column name — the field name and, when
+            declared, its alias — to the target table name.
+        """
+        columns: dict[str, str | None] = {}
+        for field_name, table in cls.get_foreign_key_targets().items():
+            columns[field_name] = table
+            alias = cls.model_fields[field_name].alias
+            if alias:
+                columns[alias] = table
+        return columns
+
     def get_id(self) -> str | None:
         """
         Get the ID of the model instance.
@@ -592,6 +770,25 @@ class BaseSurrealModel(BaseModel):
                 return str(primary_key_value) if primary_key_value is not None else None
 
         return None  # pragma: no cover
+
+    @property
+    def record_id(self) -> RecordId | None:
+        """
+        This record's full identity as a ``RecordId`` — the ``Model.pk`` analog.
+
+        Use it wherever a value is bound against a ``record<...>`` column,
+        e.g. ``variables={"a": author.record_id}``; ``str(instance.record_id)``
+        gives the ``"table:id"`` string form.  Not a Pydantic field, so it is
+        never serialized; a model that declares its own ``record_id`` field
+        shadows it (Pydantic warns).
+
+        Returns:
+            The ``RecordId``, or ``None`` when the instance has no ID yet.
+        """
+        record_id = self.get_id()
+        if record_id is None:
+            return None
+        return RecordId(table=self.get_table_name(), id=record_id)
 
     @classmethod
     def from_db(cls, record: dict[str, Any] | list[Any] | None) -> Self | list[Self]:
@@ -761,6 +958,31 @@ class BaseSurrealModel(BaseModel):
                             data[key] = original
         return data
 
+    def _coerce_foreign_keys(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Wrap foreign-key values into record links before writing.
+
+        ``model_dump()`` renders a :func:`ForeignKey` as a ``"table:id"``
+        string, which a ``record<...>`` column rejects.  A bare ID is qualified
+        with the target model's table.
+
+        Handles aliased fields: when ``model_dump(by_alias=True)`` is used,
+        dict keys may be aliases rather than Python field names.
+
+        Returns:
+            A new dict with foreign-key values converted.
+        """
+        fk_targets = self.__class__.get_foreign_key_targets()
+        if not fk_targets:
+            return data
+
+        coerced = dict(data)
+        for field_name, table in fk_targets.items():
+            alias = self.__class__.model_fields[field_name].alias
+            key = alias if alias and alias in coerced else field_name
+            if key in coerced:
+                coerced[key] = _to_record_link(coerced[key], table)
+        return coerced
+
     async def save(
         self,
         tx: "BaseTransaction | None" = None,
@@ -834,6 +1056,7 @@ class BaseSurrealModel(BaseModel):
         table = self.get_table_name()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
+        data = self._coerce_foreign_keys(data)
 
         # Merge server-side function values
         if server_values:
@@ -1132,6 +1355,8 @@ class BaseSurrealModel(BaseModel):
         exclude_fields = {"id"} | self.get_server_fields()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
+        # data keeps the original values for signals; only the wire copy is coerced
+        wire_data = self._coerce_foreign_keys(data)
         record_id = self.get_id()
 
         if record_id is None:
@@ -1157,13 +1382,13 @@ class BaseSurrealModel(BaseModel):
         ):
             if tx is not None:
                 start = _start_timer()
-                await tx.merge(thing, data)
-                _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
+                await tx.merge(thing, wire_data)
+                _log_query(f"UPDATE MERGE {thing}", wire_data, _elapsed_ms(start))
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
-                result = await client.merge(thing, data)
-                _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
+                result = await client.merge(thing, wire_data)
+                _log_query(f"UPDATE MERGE {thing}", wire_data, _elapsed_ms(start))
                 result_records = result.records
 
         # Send post_update signal
@@ -1220,6 +1445,8 @@ class BaseSurrealModel(BaseModel):
         self._check_not_view()
 
         data_set = {key: value for key, value in data.items()}
+        # data_set keeps the original values for signals and the local setattr
+        wire_data = self._coerce_foreign_keys(data_set)
 
         record_id = self.get_id()
         if not record_id:
@@ -1245,7 +1472,7 @@ class BaseSurrealModel(BaseModel):
             result: Any
             if self._has_surreal_funcs(data_set):
                 # Use raw query path for SurrealFunc values
-                set_clause, variables = self._build_set_clause(data_set)
+                set_clause, variables = self._build_set_clause(wire_data)
                 if extra_vars:
                     conflicting = set(variables) & set(extra_vars)
                     if conflicting:
@@ -1271,18 +1498,19 @@ class BaseSurrealModel(BaseModel):
                     await self.refresh()
             elif tx is not None:
                 start = _start_timer()
-                result = await tx.merge(thing, data_set)
-                _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
+                result = await tx.merge(thing, wire_data)
+                _log_query(f"MERGE {thing}", wire_data, _elapsed_ms(start))
                 self._raise_if_no_record_affected(result, thing, tx)
-                # Update local instance with merged data
-                for key, value in data_set.items():
+                # Update local instance with merged data — from wire_data, so a
+                # foreign key given as a model instance lands as "table:id"
+                for key, value in wire_data.items():
                     if hasattr(self, key):
-                        setattr(self, key, value)
+                        setattr(self, key, _convert_record_id_to_string(value))
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
-                result = await client.merge(thing, data_set)
-                _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
+                result = await client.merge(thing, wire_data)
+                _log_query(f"MERGE {thing}", wire_data, _elapsed_ms(start))
                 # A permission-denied (or missing-record) merge affects no
                 # records. Raise rather than silently returning self, so a
                 # denied write is never mistaken for a successful one.

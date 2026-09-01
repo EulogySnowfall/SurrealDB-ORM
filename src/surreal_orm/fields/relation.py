@@ -28,6 +28,7 @@ from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, core_schema
 
+from surreal_orm.model_base import record_link_to_str
 from surreal_orm.utils import escape_record_id
 
 if TYPE_CHECKING:
@@ -130,14 +131,17 @@ class _ForeignKeyMarker:
                 break
 
         return core_schema.nullable_schema(
-            core_schema.str_schema(
-                metadata={
-                    "relation_type": "foreign_key",
-                    "to_model": to_model,
-                    "on_delete": on_delete,
-                    "related_name": related_name,
-                    "surreal_type": "record",
-                }
+            core_schema.no_info_before_validator_function(
+                record_link_to_str,
+                core_schema.str_schema(
+                    metadata={
+                        "relation_type": "foreign_key",
+                        "to_model": to_model,
+                        "on_delete": on_delete,
+                        "related_name": related_name,
+                        "surreal_type": "record",
+                    }
+                ),
             )
         )
 
@@ -192,9 +196,13 @@ class _ManyToManyMarker:
                 related_name = arg.related_name
                 break
 
-        # ManyToMany is represented as a list of record IDs (virtual field)
+        # ManyToMany is represented as a list of record IDs (virtual field).
+        # Each item accepts a model instance, RecordId, or "table:id" string.
         return core_schema.list_schema(
-            core_schema.str_schema(),
+            core_schema.no_info_before_validator_function(
+                record_link_to_str,
+                core_schema.str_schema(),
+            ),
             metadata={
                 "relation_type": "many_to_many",
                 "to_model": to_model,
@@ -371,6 +379,34 @@ def Relation(
         - followers: SELECT * FROM user:id<-follows<-User
     """
     return Annotated[list, _RelationMarker(edge, to, reverse)]
+
+
+def on_delete_to_surql(on_delete: str | None) -> str | None:
+    """
+    Translate an ``on_delete`` value into its SurrealDB ``ON DELETE`` keyword.
+
+    :func:`ForeignKey` takes Django's vocabulary (``CASCADE``, ``SET_NULL``,
+    ``PROTECT``) while SurrealDB accepts
+    ``CASCADE | UNSET | REJECT | IGNORE | THEN``.  SurrealDB's own keywords
+    pass through unchanged.
+
+    Args:
+        on_delete: The configured delete behavior, in either vocabulary
+
+    Returns:
+        The SurrealDB keyword, or ``None`` when *on_delete* is ``None``
+
+    Examples:
+        on_delete_to_surql("SET_NULL")  # "UNSET"
+        on_delete_to_surql("PROTECT")   # "REJECT"
+        on_delete_to_surql("CASCADE")   # "CASCADE"
+    """
+    if on_delete is None:
+        return None
+
+    # SurrealDB has no SET_NULL/PROTECT; the equivalents are UNSET and REJECT
+    normalized = on_delete.upper()
+    return {"SET_NULL": "UNSET", "PROTECT": "REJECT"}.get(normalized, normalized)
 
 
 def is_relation_field(field_type: Any) -> bool:

@@ -43,10 +43,13 @@ class SurrealJSONEncoder(json.JSONEncoder):
     - time → ISO 8601 string
     - Decimal → float
     - UUID → string
+    - RecordId → "table:id" string
     """
 
     def default(self, obj: Any) -> Any:
         """Encode non-standard types to JSON-serializable values."""
+        if isinstance(obj, cbor_module.RecordId):
+            return str(obj)
         if isinstance(obj, datetime):
             return obj.isoformat()
         if isinstance(obj, date):
