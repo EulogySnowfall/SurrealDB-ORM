@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: August 2026 (0.32.6)
+> Context document for Claude AI - Last updated: September 2026 (0.32.7)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.32.6 (Beta) — SurrealDB 3.2+ required
+## Current Version: 0.32.7 (Beta) — SurrealDB 3.2+ required
 
 ### Branch Strategy
 
@@ -18,6 +18,33 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.2.4**  | 0.32.x      | Active development              |
 | `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.32.7
+
+Two ORM fixes, both from #169 (#174).
+
+- **`ForeignKey` values were never coerced to `RecordId`** — a `ForeignKey` holds a
+  `"table:id"` string in Python, and nothing converted it at the wire boundary, so a
+  `record<>` column rejected the write and a filter compared a string against a record
+  value, returning `[]` for a row that demonstrably existed. Every write path
+  (`save`, `merge`, `update`, `bulk_update`, `upsert`, `bulk_upsert`) and every
+  whole-record lookup (`exact`, `in`, `not_in`, incl. inside `Q`) now converts. Four
+  interchangeable forms: model instance, `"table:id"`, bare ID, `RecordId`. String
+  lookups, `isnull` and explicit `$var` references stay uncoerced by design.
+  **The aliased case was the dangerous one:** the write path resolved aliases but the
+  read path keyed off the Python field name, so an aliased FK was *written* as a record
+  link and *filtered* as a string — a wrong answer, not an error. `get_foreign_key_columns()`
+  now maps each FK under both its field name and its alias.
+  Still open, pre-existing: filtering by the *Python* field name on an aliased model emits
+  `author = ...` rather than the real column `author_id`.
+- **`on_delete` generated invalid DDL** — Django's vocabulary passed through verbatim, but
+  SurrealDB takes `CASCADE | UNSET | REJECT | IGNORE | THEN`. `AddField` / `AlterField` map
+  through `on_delete_to_surql()` (`SET_NULL` → `UNSET`, `PROTECT` → `REJECT`). Django
+  literals remain the API; both vocabularies accepted.
+- **New public API** — `instance.record_id` (the `Model.pk` analog, returning a `RecordId`
+  for binding against `record<>` columns in `raw_query()`), plus `to_record_id()`,
+  `record_link_to_str()` and `get_foreign_key_columns()`. The unsaved-instance guard lives in
+  `record_link_to_str()`, which is therefore no longer total — it can raise.
 
 ### What's New in 0.32.6
 
@@ -1672,6 +1699,53 @@ make test-integration  # Integration tests (auto-starts container)
 make test-all          # All tests
 make ci-lint           # Run all linters (mypy, ruff)
 ```
+
+---
+
+## Release Checklist
+
+A release is triggered by a **commit subject**, not by a tag: `tag-release.yml`
+fires on a push to `main` or `v2` whose head commit starts with
+`chore(release): bump version to X.Y.Z`. It then creates `vX.Y.Z` using
+`PAT_TOKEN` — required, because a tag pushed with `GITHUB_TOKEN` does not
+trigger other workflows — and that tag triggers `publish.yml`, which verifies
+the tag is on `main` before publishing to PyPI.
+
+**Consequence:** squash-merging a release PR with any other subject bumps the
+version on `main` but fires nothing, and the tag then has to be pushed by hand.
+Keep the PR title exactly `chore(release): bump version to X.Y.Z`.
+
+### Files to update on every bump
+
+| File | What |
+| --- | --- |
+| `pyproject.toml` | `version` |
+| `src/surreal_sdk/pyproject.toml` | `version` |
+| `src/surreal_orm/__init__.py` | `__version__` |
+| `src/surreal_sdk/__init__.py` | `__version__` |
+| `CHANGELOG.md` | new `[X.Y.Z]` entry |
+| `README.md` | "What's New in X.Y.Z" section |
+| `CLAUDE.md` | header line 3 date/version, `## Current Version`, new "What's New" section |
+| `SECURITY.md` | **supported-versions table** — only when the `X.Y` line or the SurrealDB floor moves |
+
+`SECURITY.md` is the one that silently rots: it changes on a minor bump, not on
+every patch, so it gets skipped and then misstates which versions are supported.
+It sat at `0.30.x` / SurrealDB `>= 3.0` well past 0.32.0 — which had already
+dropped 3.1.x — telling readers an unsupported combination was supported.
+
+### Order
+
+1. Merge the feature/fix PRs first. Their `fix(...)` / `feat(...)` subjects do
+   not match the gate, so nothing is released.
+2. Then open a single release PR titled `chore(release): bump version to X.Y.Z`
+   carrying the version strings and all the docs above.
+3. Squash-merge it. The tag, the GitHub Release and the PyPI publish follow
+   automatically.
+
+Verify before opening the release PR: `make test` (unit), `make test-integration`,
+`uv run python -m mypy src/` — run it as CI does, via `uv sync --group lint`, since
+syncing extras makes `cli/commands.py` report spurious `unused-ignore` errors —
+and `uv run ruff check src/ tests/`.
 
 ---
 

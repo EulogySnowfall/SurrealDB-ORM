@@ -37,6 +37,61 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.32.7
+
+**Bug fix release** — foreign key values never reached the database as record links, and
+Django's `on_delete` vocabulary generated invalid DDL. Both were reported in #169.
+
+- **`ForeignKey` values are coerced to `RecordId` (#169, #174).** A `ForeignKey` holds a
+  `"table:id"` string in Python, but nothing converted it at the wire boundary — so a
+  `record<>` column rejected the write, and a filter compared a string against a record
+  value and quietly returned nothing:
+
+  ```python
+  # Before: rejected — a record<fk_authors> column will not take a string
+  await Article(title="Hello", author="fk_authors:alice").save()
+  # Before: the row exists, yet the filter matches nothing
+  await Article.objects().filter(author="fk_authors:alice").exec()  # []
+  ```
+
+  Every write path (`save`, `merge`, `update`, `bulk_update`, `upsert`, `bulk_upsert`) and
+  every whole-record lookup (`exact`, `in`, `not_in`, including inside `Q`) now converts the
+  value. Four interchangeable forms are accepted, mixable within one collection:
+
+  ```python
+  Article(author=alice)                                   # model instance
+  Article(author="fk_authors:alice")                      # full "table:id"
+  Article(author="alice")                                 # bare ID, qualified via the field
+  Article(author=RecordId(table="fk_authors", id="alice"))
+
+  Article.objects().filter(author__in=[alice, "bob", RecordId(...)])
+  ```
+
+  String lookups (`contains`, `startswith`, `regex`, ...), `isnull`, and explicit `$var`
+  references bound via `.variables()` are deliberately left uncoerced.
+
+- **Aliased foreign keys are filtered correctly.** The worst of the three defects, because it
+  returned a *wrong answer* rather than an error: an aliased `ForeignKey` was written as a
+  record link but filtered as a plain string, so the query came back empty with nothing to
+  signal why. `get_foreign_key_columns()` now resolves a foreign key under its database
+  column name too.
+
+- **`on_delete` maps to SurrealDB's vocabulary.** Django's literals passed through verbatim
+  into DDL, which SurrealDB rejects — it takes `CASCADE | UNSET | REJECT | IGNORE | THEN`.
+  `SET_NULL` → `UNSET`, `PROTECT` → `REJECT`, native keywords unchanged. The Django literals
+  remain the API; both vocabularies are accepted.
+
+- **Clearer error on an unsaved reference.** Assigning an unsaved instance reported
+  `Input should be a valid string`; it now raises `cannot reference an unsaved Author; save
+  it first`. The write and filter paths previously bound the model object straight into the
+  query — they raise now too.
+
+- **New:** `instance.record_id`, the reserved record-identity property (the `Model.pk`
+  analog), returning a `RecordId` ready to bind against a `record<>` column in `raw_query()`.
+  Plus the `to_record_id()`, `record_link_to_str()` and `get_foreign_key_columns()` helpers.
+
+---
+
 ## What's New in 0.32.6
 
 **Bug fix release** — a CBOR decoding bug in the SDK, a migration operation that never did
