@@ -1702,6 +1702,53 @@ make ci-lint           # Run all linters (mypy, ruff)
 
 ---
 
+## Release Checklist
+
+A release is triggered by a **commit subject**, not by a tag: `tag-release.yml`
+fires on a push to `main` or `v2` whose head commit starts with
+`chore(release): bump version to X.Y.Z`. It then creates `vX.Y.Z` using
+`PAT_TOKEN` — required, because a tag pushed with `GITHUB_TOKEN` does not
+trigger other workflows — and that tag triggers `publish.yml`, which verifies
+the tag is on `main` before publishing to PyPI.
+
+**Consequence:** squash-merging a release PR with any other subject bumps the
+version on `main` but fires nothing, and the tag then has to be pushed by hand.
+Keep the PR title exactly `chore(release): bump version to X.Y.Z`.
+
+### Files to update on every bump
+
+| File | What |
+| --- | --- |
+| `pyproject.toml` | `version` |
+| `src/surreal_sdk/pyproject.toml` | `version` |
+| `src/surreal_orm/__init__.py` | `__version__` |
+| `src/surreal_sdk/__init__.py` | `__version__` |
+| `CHANGELOG.md` | new `[X.Y.Z]` entry |
+| `README.md` | "What's New in X.Y.Z" section |
+| `CLAUDE.md` | header line 3 date/version, `## Current Version`, new "What's New" section |
+| `SECURITY.md` | **supported-versions table** — only when the `X.Y` line or the SurrealDB floor moves |
+
+`SECURITY.md` is the one that silently rots: it changes on a minor bump, not on
+every patch, so it gets skipped and then misstates which versions are supported.
+It sat at `0.30.x` / SurrealDB `>= 3.0` well past 0.32.0 — which had already
+dropped 3.1.x — telling readers an unsupported combination was supported.
+
+### Order
+
+1. Merge the feature/fix PRs first. Their `fix(...)` / `feat(...)` subjects do
+   not match the gate, so nothing is released.
+2. Then open a single release PR titled `chore(release): bump version to X.Y.Z`
+   carrying the version strings and all the docs above.
+3. Squash-merge it. The tag, the GitHub Release and the PyPI publish follow
+   automatically.
+
+Verify before opening the release PR: `make test` (unit), `make test-integration`,
+`uv run python -m mypy src/` — run it as CI does, via `uv sync --group lint`, since
+syncing extras makes `cli/commands.py` report spurious `unused-ignore` errors —
+and `uv run ruff check src/ tests/`.
+
+---
+
 ## Useful Commands
 
 ```bash
