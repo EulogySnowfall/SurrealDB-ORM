@@ -417,6 +417,7 @@ class SchemaState:
                             value=field_state.value,
                             reference=field_state.reference,
                             on_delete=field_state.on_delete,
+                            nullable=field_state.nullable,
                         )
                     )
                 # Add all indexes
@@ -494,6 +495,9 @@ class SchemaState:
                                 flexible=field_state.flexible,
                                 readonly=field_state.readonly,
                                 value=field_state.value,
+                                reference=field_state.reference,
+                                on_delete=field_state.on_delete,
+                                nullable=field_state.nullable,
                             )
                         )
                     elif current_table.fields[field_name] != field_state:
@@ -512,9 +516,11 @@ class SchemaState:
                                 value=field_state.value,
                                 reference=field_state.reference,
                                 on_delete=field_state.on_delete,
+                                nullable=field_state.nullable,
                                 previous_type=current_field.field_type,
                                 previous_default=current_field.default,
                                 previous_assertion=current_field.assertion,
+                                previous_nullable=current_field.nullable,
                             )
                         )
 

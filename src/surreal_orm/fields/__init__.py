@@ -20,6 +20,7 @@ from .references import ReferencesField, get_references_info, get_references_on_
 from .relation import (
     ForeignKey,
     ManyToMany,
+    OnDelete,
     Relation,
     RelationInfo,
     get_relation_info,
@@ -60,6 +61,7 @@ __all__ = [
     # Relation fields
     "ForeignKey",
     "ManyToMany",
+    "OnDelete",
     "Relation",
     "RelationInfo",
     "get_relation_info",

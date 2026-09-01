@@ -6,18 +6,60 @@ a SchemaState that can be compared against the current database state.
 """
 
 import types
-from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Annotated, Any, get_args, get_origin, get_type_hints
 
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
 from ..fields.computed import _ComputedMarker, get_computed_expression, is_computed_field
 from ..fields.encrypted import is_encrypted_field
+from ..fields.references import _ReferencesMarker
+from ..fields.relation import _ForeignKeyMarker, _ManyToManyMarker, _RelationMarker
 from ..types import PYTHON_TO_SURREAL_TYPE, FieldType, TableType
 from .state import AccessState, FieldState, SchemaState, TableState
 
 if TYPE_CHECKING:
     from ..model_base import BaseSurrealModel
+
+
+#: Markers that carry schema information the plain type annotation cannot.
+_RELATION_MARKERS = (_ForeignKeyMarker, _ManyToManyMarker, _RelationMarker, _ReferencesMarker)
+
+#: Markers for fields that exist only in Python.  Graph edges live in their own
+#: edge tables, so a ``ManyToMany`` or ``Relation`` attribute has no column to
+#: define — their own core schema says so with ``surreal_type: "virtual"``.
+_VIRTUAL_MARKERS = (_ManyToManyMarker, _RelationMarker)
+
+
+def _get_relation_marker(
+    type_hint: Any,
+    field_info: FieldInfo,
+) -> _ForeignKeyMarker | _ManyToManyMarker | _RelationMarker | _ReferencesMarker | None:
+    """
+    Find the relation or reference marker attached to a field.
+
+    Read from the ``Annotated`` type hint when one is available, and from
+    ``FieldInfo.metadata`` otherwise — ``_introspect_model`` falls back to
+    ``FieldInfo.annotation`` when ``get_type_hints`` fails, and Pydantic strips
+    the ``Annotated`` metadata off that attribute.
+
+    Args:
+        type_hint: The field's type annotation
+        field_info: Pydantic FieldInfo for the field
+
+    Returns:
+        The marker instance, or None when the field carries none
+    """
+    if get_origin(type_hint) is Annotated:
+        for arg in get_args(type_hint):
+            if isinstance(arg, _RELATION_MARKERS):
+                return arg
+
+    for meta in field_info.metadata:
+        if isinstance(meta, _RELATION_MARKERS):
+            return meta
+
+    return None
 
 
 class ModelIntrospector:
@@ -100,6 +142,9 @@ class ModelIntrospector:
 
             field_type_hint = type_hints.get(field_name, field_info.annotation)
             field_state = self._introspect_field(field_name, field_type_hint, field_info, model)
+            # Virtual fields (ManyToMany, Relation) define no column
+            if field_state is None:
+                continue
             table_state.fields[field_name] = field_state
 
         # Generate access definition for USER tables
@@ -114,7 +159,7 @@ class ModelIntrospector:
         type_hint: Any,
         field_info: FieldInfo,
         model: type["BaseSurrealModel"] | None = None,
-    ) -> FieldState:
+    ) -> FieldState | None:
         """
         Extract field state from type hint and field info.
 
@@ -125,8 +170,19 @@ class ModelIntrospector:
             model: The model class (used to read ``flexible_fields`` from config)
 
         Returns:
-            FieldState representing the field definition
+            FieldState representing the field definition, or None when the
+            field is virtual and therefore defines no column
         """
+        # Relation markers carry information the annotation alone cannot: a
+        # ForeignKey is annotated `str | None` and a ReferencesField
+        # `list[str] | None`, so without this both would map to their Python
+        # type and lose the record link entirely (#170).
+        marker = _get_relation_marker(type_hint, field_info)
+        if marker is not None:
+            if isinstance(marker, _VIRTUAL_MARKERS):
+                return None
+            return self._introspect_link_field(name, marker)
+
         # Check for Computed type
         computed_expression: str | None = None
         if is_computed_field(type_hint):
@@ -198,6 +254,47 @@ class ModelIntrospector:
             encrypted=encrypted,
             flexible=flexible,
             value=computed_expression,
+        )
+
+    def _introspect_link_field(
+        self,
+        name: str,
+        marker: _ForeignKeyMarker | _ReferencesMarker,
+    ) -> FieldState:
+        """
+        Build the field state for a record-link field.
+
+        Both :func:`~surreal_orm.fields.ForeignKey` and
+        :class:`~surreal_orm.fields.ReferencesField` become a ``record<>``
+        column carrying SurrealDB 3.x's ``REFERENCE`` clause; they differ only
+        in arity.  Both are optional in Python, so both are nullable.
+
+        Args:
+            name: Field name
+            marker: The foreign-key or references marker on the field
+
+        Returns:
+            FieldState for the record link
+        """
+        # Local import: model_base imports the relation fields at load time,
+        # so importing it at module scope would be circular.
+        from ..model_base import _resolve_target_table
+
+        if isinstance(marker, _ForeignKeyMarker):
+            target = _resolve_target_table(marker.to)
+            # An unresolved target stays an untyped `record` rather than an
+            # invented table name — a wrong table would be rejected on write.
+            field_type = FieldType.RECORD.generic(target) if target else FieldType.RECORD.value
+        else:
+            target = marker.table
+            field_type = FieldType.ARRAY.generic(FieldType.RECORD.generic(target))
+
+        return FieldState(
+            name=name,
+            field_type=field_type,
+            nullable=True,
+            reference=True,
+            on_delete=marker.on_delete,
         )
 
     def _map_type(self, python_type: Any) -> str:

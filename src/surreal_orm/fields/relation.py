@@ -35,6 +35,25 @@ if TYPE_CHECKING:
     pass
 
 
+#: Accepted ``on_delete`` strategies.
+#:
+#: Django's vocabulary (``CASCADE``, ``SET_NULL``, ``PROTECT``) is the ORM's
+#: public API; SurrealDB's own keywords (``UNSET``, ``REJECT``, ``IGNORE``,
+#: ``THEN``) are accepted too and pass through untranslated.  ``IGNORE`` is the
+#: escape hatch for a purely decorative link: it emits ``REFERENCE`` with no
+#: ``ON DELETE`` clause, so deleting the target leaves this record alone.
+#: :func:`on_delete_to_surql` maps between the two.
+OnDelete = Literal[
+    "CASCADE",
+    "SET_NULL",
+    "PROTECT",
+    "UNSET",
+    "REJECT",
+    "IGNORE",
+    "THEN",
+]
+
+
 @dataclass
 class RelationInfo:
     """
@@ -54,7 +73,7 @@ class RelationInfo:
     relation_type: Literal["foreign_key", "many_to_many", "relation"]
     edge_table: str | None = None
     reverse: bool = False
-    on_delete: Literal["CASCADE", "SET_NULL", "PROTECT"] | None = None
+    on_delete: OnDelete | None = None
     related_name: str | None = None
     through: str | None = None
 
@@ -97,13 +116,13 @@ class _ForeignKeyMarker:
     """
 
     to: str
-    on_delete: Literal["CASCADE", "SET_NULL", "PROTECT"]
+    on_delete: OnDelete
     related_name: str | None
 
     def __init__(
         self,
         to: str,
-        on_delete: Literal["CASCADE", "SET_NULL", "PROTECT"] = "CASCADE",
+        on_delete: OnDelete = "CASCADE",
         related_name: str | None = None,
     ):
         self.to = to
@@ -119,7 +138,7 @@ class _ForeignKeyMarker:
         """Build the Pydantic core schema for validation."""
         # ForeignKey stores a record ID (string) or None
         to_model = ""
-        on_delete: Literal["CASCADE", "SET_NULL", "PROTECT"] = "CASCADE"
+        on_delete: OnDelete = "CASCADE"
         related_name = None
 
         args = get_args(source_type)
@@ -287,21 +306,25 @@ class _RelationMarker:
 
 def ForeignKey(
     to: str,
-    on_delete: Literal["CASCADE", "SET_NULL", "PROTECT"] = "CASCADE",
+    on_delete: OnDelete = "CASCADE",
     related_name: str | None = None,
 ) -> Any:
     """
     Create a ForeignKey field type.
 
     A ForeignKey represents a single reference to another model,
-    stored as a record ID in the database.
+    stored as a record ID in the database.  Migrations emit it as
+    ``TYPE option<record<target>> REFERENCE ON DELETE <strategy>``, so
+    *on_delete* is enforced by SurrealDB rather than by the ORM.
 
     Args:
         to: Target model name (string for forward references)
         on_delete: Behavior when referenced record is deleted
             - CASCADE: Delete this record too
-            - SET_NULL: Set the field to null
-            - PROTECT: Prevent deletion of referenced record
+            - SET_NULL (SurrealDB ``UNSET``): Unset the field
+            - PROTECT (SurrealDB ``REJECT``): Prevent deletion of referenced record
+            - IGNORE: Leave this record untouched — the link is decorative
+            - THEN: Run the custom clause configured on the field
         related_name: Name for reverse relation on target model
 
     Returns:

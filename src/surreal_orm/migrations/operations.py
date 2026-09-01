@@ -59,6 +59,30 @@ def _normalize_field_type(field_type: FieldType | str) -> str:
     )
 
 
+def _apply_nullable(field_type: str, nullable: bool) -> str:
+    """
+    Wrap a field type in ``option<>`` when the column is optional.
+
+    ``FieldState.nullable`` used to stop at the diff boundary: only
+    ``define_table()`` wrapped the type, so generated migrations silently lost
+    optionality (#170).  The wrap is skipped when the type already carries its
+    own optionality — ``option<T>`` or a union such as ``none | T`` — so that a
+    hand-written migration is never double-wrapped.
+
+    Args:
+        field_type: The normalized SurrealDB type
+        nullable: Whether the column accepts NONE
+
+    Returns:
+        The type, wrapped in ``option<>`` when that is both needed and absent
+    """
+    if not nullable:
+        return field_type
+    if field_type.lower().startswith("option<") or "|" in field_type:
+        return field_type
+    return f"option<{field_type}>"
+
+
 @dataclass
 class Operation(ABC):
     """
@@ -224,6 +248,7 @@ class AddField(Operation):
     comment: str | None = None
     reference: bool = False
     on_delete: str | None = None
+    nullable: bool = False
 
     def __post_init__(self) -> None:
         """Validate field_type on initialization."""
@@ -236,7 +261,7 @@ class AddField(Operation):
         if self.flexible:
             parts.append("FLEXIBLE")
 
-        normalized_type = _normalize_field_type(self.field_type)
+        normalized_type = _apply_nullable(_normalize_field_type(self.field_type), self.nullable)
         parts.append(f"TYPE {normalized_type}")
 
         # For encrypted fields, use VALUE clause with crypto function
@@ -340,12 +365,14 @@ class AlterField(Operation):
     value: str | None = None
     reference: bool = False
     on_delete: str | None = None
+    nullable: bool = False
     # Store previous definition for rollback
     previous_type: FieldType | str | None = None
     previous_default: Any = None
     previous_assertion: str | None = None
     previous_flexible: bool = False
     previous_readonly: bool = False
+    previous_nullable: bool = False
 
     def __post_init__(self) -> None:
         """Validate field_type and set reversible based on previous state."""
@@ -368,7 +395,7 @@ class AlterField(Operation):
             parts.append("FLEXIBLE")
 
         if self.field_type:
-            normalized_type = _normalize_field_type(self.field_type)
+            normalized_type = _apply_nullable(_normalize_field_type(self.field_type), self.nullable)
             parts.append(f"TYPE {normalized_type}")
 
         if self.encrypted:
@@ -407,7 +434,7 @@ class AlterField(Operation):
         if not self.previous_type:
             return ""
 
-        normalized_prev_type = _normalize_field_type(self.previous_type)
+        normalized_prev_type = _apply_nullable(_normalize_field_type(self.previous_type), self.previous_nullable)
         # OVERWRITE for the same reason as forwards(): a rollback re-defining the
         # previous type is otherwise a silent no-op too.
         parts = [f"DEFINE FIELD OVERWRITE {self.name} ON {self.table}"]
