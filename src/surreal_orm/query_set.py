@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 import logging
 
-from .model_base import SurrealDbError
+from .model_base import SurrealDbError, _to_record_link
 
 logger = logging.getLogger(__name__)
 
@@ -946,6 +946,41 @@ class QuerySet(Generic[T]):
                     related = grouped.get(thing, [])
                     object.__setattr__(inst, to_attr, related)
 
+    def _coerce_filter_value(self, field_name: str, lookup_name: str, value: Any) -> Any:
+        """
+        Convert a filter value on a :func:`ForeignKey` field to a record link.
+
+        SurrealDB never equates a bound string with a record, so
+        ``filter(author="users:abc")`` on a ``record<...>`` column returns an
+        empty result instead of raising.  The related instance and a bare ID
+        are accepted too, so all three of these are equivalent::
+
+            filter(author=alice)
+            filter(author="users:alice")
+            filter(author="alice")
+
+        Only lookups that compare whole records are converted — the string
+        lookups (``contains``, ``startswith``, ``regex``, ...) still match on
+        the raw value.  ``in`` values are converted element-wise.
+
+        Args:
+            field_name: The database field name being filtered on.
+            lookup_name: The lookup type (e.g. "exact", "in").
+            value: The filter value as supplied by the caller.
+
+        Returns:
+            The value with record references converted to ``RecordId`` objects.
+        """
+        targets = self.model.get_foreign_key_columns()
+        if field_name not in targets or lookup_name not in ("exact", "in", "not_in"):
+            return value
+
+        table = targets[field_name]
+        if isinstance(value, (list, tuple, set)):
+            # Always a list: RecordId is unhashable, and IN takes an array anyway
+            return [_to_record_link(item, table) for item in value]
+        return _to_record_link(value, table)
+
     @staticmethod
     def _render_condition(
         field_name: str,
@@ -1104,6 +1139,7 @@ class QuerySet(Generic[T]):
                     parts.append(rendered)
             else:
                 field_name, lookup_name, value = child
+                value = self._coerce_filter_value(field_name, lookup_name, value)
                 parts.append(self._render_condition(field_name, lookup_name, value, variables, counter))
 
         if not parts:
@@ -1135,6 +1171,7 @@ class QuerySet(Generic[T]):
 
         # Keyword-based filters (always AND-joined)
         for field_name, lookup_name, value in self._filters:
+            value = self._coerce_filter_value(field_name, lookup_name, value)
             parts.append(self._render_condition(field_name, lookup_name, value, variables, counter))
 
         # Q object filters
