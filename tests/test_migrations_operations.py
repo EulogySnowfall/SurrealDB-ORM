@@ -167,7 +167,7 @@ class TestAlterField:
             previous_type="string",
         )
         sql = op.forwards()
-        assert "DEFINE FIELD age ON users TYPE int" in sql
+        assert "DEFINE FIELD OVERWRITE age ON users TYPE int" in sql
 
     def test_alter_field_backwards(self) -> None:
         """Test rollback restores previous type."""
