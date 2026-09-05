@@ -6,6 +6,104 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.5] - 2026-09-05
+
+**Bug-fix maintenance release (V2 LTS).** Four correctness fixes backported from
+the 3.x `main` line. Each was reproduced against a live SurrealDB 2.6.5 on this
+branch before being ported — none was carried over on the assumption that a fix
+which mattered on 3.x also matters here.
+
+### Fixed
+
+- **`AlterField` never altered anything** (#162 on `main`). It emitted a plain
+  `DEFINE FIELD`, which SurrealDB 2.6.x rejects for an existing field:
+
+  ```
+  DEFINE FIELD a ON r TYPE string;   -> OK
+  DEFINE FIELD a ON r TYPE int;      -> ERR "The field 'a' already exists"
+  INFO FOR TABLE r;                  -> a is still TYPE string
+  ```
+
+  Every alter — and every rollback, which had the same defect — was a silent
+  no-op. Both emit `DEFINE FIELD OVERWRITE` now, which is create-or-redefine and
+  therefore still correct when the field is missing. `AddField` deliberately
+  keeps the plain form: adding a field that already exists should be an error the
+  operator sees.
+
+- **The executor treated a rejected statement as success** (#162). `client.query()`
+  raises only on an RPC-level failure; a statement SurrealDB rejects rides back
+  inside a *successful* RPC as `status: ERR` per statement — the probe above
+  returns HTTP 200. `migrate()`, `rollback()` and `upgrade()` now check every
+  statement and raise `MigrationStatementError`, which also stops `DataMigration`
+  and `RawSQL` bodies failing silently. Migrations are not transactional, so a
+  failure part-way through leaves a partial state.
+
+- **`ManyToMany` / `Relation` were emitted as `any` columns, and optional fields
+  lost their optionality** (#170). Graph relations are virtual — the edges live in
+  their own tables — and now define no column at all. `FieldState.nullable`
+  stopped at the operation boundary, so a `str | None` field reached the database
+  as a **required** column; `AddField` / `AlterField` carry `nullable` now, and
+  `AlterField` carries `previous_nullable` so a rollback restores the optionality
+  the column actually had.
+
+- **`ForeignKey` values never reached the database as record links** (#169). A
+  `ForeignKey` holds a `"table:id"` string in Python and nothing converted it at
+  the wire boundary:
+
+  ```python
+  # rejected: a record<> column will not take a string
+  await Article(title="Hello", author="authors:alice").save()
+
+  # the row exists, but the filter compares a string to a record value
+  await Article.objects().filter(author="authors:alice").exec()  # []
+  ```
+
+  The second is the dangerous one — a wrong answer rather than an error. Every
+  write path (`save`, `update`, `merge`) and every whole-record lookup (`exact`,
+  `in`, `not_in`, including inside `Q`) now converts. String lookups
+  (`contains`, `startswith`, `regex`, …) stay uncoerced by design. Four
+  interchangeable forms are accepted: the model instance, `"table:id"`, a bare ID,
+  and a `RecordId`.
+
+- **`makemigrations` diffed against an empty schema**, so it re-emitted every
+  table on every run. It reads the current schema from the database now, through
+  the same `DatabaseIntrospector` path `schemadiff` already used. A second route
+  produced the same symptom: 2.6.x reports `PERMISSIONS NONE` for a table defined
+  without the clause, which the parser expands into a per-action dict, so a
+  database-read state compared unequal to a model configuring nothing. Both sides
+  are normalised before comparison.
+
+### Changed
+
+- **`makemigrations` contacts the database by default** and fails with a clear
+  error when it cannot read the schema, rather than falling back to an empty one —
+  that fallback is the bug above. Pass `--no-from-db` for a genuine first
+  migration or when working offline:
+
+  ```bash
+  surreal-orm makemigrations --name initial --no-from-db
+  ```
+
+### Added
+
+- `to_record_id()`, `record_link_to_str()`, `instance.record_id` (the `Model.pk`
+  analog, for binding against `record<>` columns in `raw_query()`),
+  `get_foreign_key_targets()` and `get_foreign_key_columns()`.
+- `MigrationStatementError`, exported from `surreal_orm.migrations`.
+- `AddField.from_field_state()` / `AlterField.from_field_states()` — the single
+  place a `FieldState` becomes operation arguments. The hand-copied argument
+  lists they replace had already dropped `FLEXIBLE` and `READONLY` from every
+  generated rollback.
+
+### Notes
+
+- **Not backported:** the SurrealDB 3.0 `REFERENCE` / `ON DELETE` half of #170.
+  Record references are a 3.0 feature and `ReferencesField` does not exist on this
+  branch. The permission-denial fix (#135 on `main`) was already present here —
+  verified rather than assumed.
+- This line remains **security and bug fixes only**, until SurrealDB-ORM-lite
+  reaches v0.40.0.
+
 ## [0.21.2] - 2026-07-20
 
 **Bug-fix maintenance release (V2 LTS).** Two correctness fixes backported from

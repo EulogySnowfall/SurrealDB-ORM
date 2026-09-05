@@ -47,6 +47,45 @@ Tested with SurrealDB: v2.6.5
 
 ---
 
+## What's New in 0.21.5
+
+**Bug-fix maintenance release (V2 LTS).** Four correctness fixes backported from the 3.x
+`main` line, each reproduced against a live SurrealDB 2.6.5 on this branch before porting.
+
+- **`AlterField` never altered anything.** It emitted a plain `DEFINE FIELD`, which 2.6.x
+  rejects for an existing field (`The field 'a' already exists`), leaving the definition
+  untouched — every alter and every rollback was a silent no-op. Both emit
+  `DEFINE FIELD OVERWRITE` now.
+- **The executor treated a rejected statement as success.** `client.query()` raises only on
+  RPC-level failures; a rejected statement rides back inside a *successful* RPC as
+  `status: ERR`. `migrate()`, `rollback()` and `upgrade()` now raise `MigrationStatementError`.
+- **`ManyToMany` / `Relation` were emitted as `any` columns**, and a `str | None` field
+  reached the database as a **required** column. Graph relations are virtual and now define
+  no column; `nullable` travels into `AddField` / `AlterField`.
+- **`ForeignKey` values never became record links.** Writes to a `record<>` column were
+  rejected, and whole-record filters returned `[]` for rows that existed — a wrong answer,
+  not an error:
+
+  ```python
+  await Article.objects().filter(author="authors:alice").exec()  # was []
+  ```
+
+  Every write path and whole-record lookup converts now; the model instance, `"table:id"`,
+  a bare ID and a `RecordId` are interchangeable.
+- **`makemigrations` diffed against an empty schema**, re-emitting every table on every run.
+  It reads the current schema from the database now.
+
+> **Behaviour change.** `makemigrations` contacts the database by default and fails with a
+> clear error when it cannot read the schema. Use `--no-from-db` for a genuine first
+> migration or when working offline.
+
+**New:** `to_record_id()`, `record_link_to_str()`, `instance.record_id`,
+`get_foreign_key_targets()`, `get_foreign_key_columns()`, `MigrationStatementError`,
+`AddField.from_field_state()` / `AlterField.from_field_states()`.
+
+The SurrealDB 3.0 `REFERENCE` / `ON DELETE` work is **not** backported — record references
+are a 3.0 feature.
+
 ## What's New in 0.21.1
 
 > **Security maintenance release.** No library code changes vs 0.21.0.
