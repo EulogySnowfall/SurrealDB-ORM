@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: June 2026
+> Context document for Claude AI - Last updated: September 2026 (0.21.5)
 
 <!-- -->
 
@@ -19,7 +19,41 @@
 
 ---
 
-## Current Version: 0.21.1 (Beta — V2 LTS, deprecated)
+## Current Version: 0.21.5 (Beta — V2 LTS, deprecated)
+
+### What's New in 0.21.5
+
+Four correctness fixes backported from the 3.x `main` line. Each was **reproduced against a
+live SurrealDB 2.6.5 on this branch** before porting — the divergence between the lines is
+large enough that "it mattered on main" is not evidence it matters here.
+
+- **`AlterField` was a silent no-op** — it emitted a plain `DEFINE FIELD`, which 2.6.x
+  rejects for an existing field (`The field 'a' already exists`) while leaving the definition
+  untouched. `backwards()` had the same defect, so rollbacks did nothing either. Both emit
+  `DEFINE FIELD OVERWRITE` now; `AddField` deliberately keeps the plain form.
+- **The executor swallowed statement errors** — `client.query()` raises only on an RPC-level
+  failure, and the whole probe above returns HTTP 200 while carrying `status: ERR` per
+  statement. `migrate()` / `rollback()` / `upgrade()` raise `MigrationStatementError` now,
+  which also stops `DataMigration` and `RawSQL` bodies failing silently.
+- **`ManyToMany` / `Relation` produced `any` columns; optionality was lost** — graph
+  relations are virtual and now define no column, and `nullable` travels into
+  `AddField` / `AlterField` (plus `previous_nullable`, so rollbacks restore what the column
+  actually had). `AddField.from_field_state()` / `AlterField.from_field_states()` are now the
+  single wiring point; the hand-copied kwarg lists they replace had already dropped
+  `FLEXIBLE` and `READONLY` from every generated rollback.
+- **`ForeignKey` values never became record links** — writes to a `record<>` column were
+  rejected outright, and whole-record filters returned `[]` for rows that demonstrably
+  existed. The filter case is the dangerous one: a wrong answer, not an error.
+- **`makemigrations` diffed against an empty schema** — re-emitting every table every run.
+  It reads the database now. A second route gave the same symptom: 2.6.x reports
+  `PERMISSIONS NONE` for a table with no clause, which the parser expands into a per-action
+  dict, so a database-read state compared unequal to a model configuring nothing.
+- **BEHAVIOUR CHANGE** — `makemigrations` contacts the database by default and fails clearly
+  when it cannot; `--no-from-db` restores the old path.
+- **Not backported:** the 3.0 `REFERENCE` / `ON DELETE` half of #170 (`ReferencesField` does
+  not exist here). The permission-denial fix (#135) was already present — verified, not
+  assumed.
+
 
 > Maintenance line `0.2y.x` for SurrealDB 2.6.x. Tested against SurrealDB **v2.6.5**.
 > See the deprecation notice above and the [CHANGELOG](CHANGELOG) for details.
