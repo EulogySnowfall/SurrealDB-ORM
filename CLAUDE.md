@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: September 2026 (0.32.7)
+> Context document for Claude AI - Last updated: September 2026 (0.33.0)
 
 ## Project Vision
 
@@ -10,14 +10,61 @@
 
 ---
 
-## Current Version: 0.32.7 (Beta) — SurrealDB 3.2+ required
+## Current Version: 0.33.0 (Beta) — SurrealDB 3.2+ required
 
 ### Branch Strategy
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.2.4**  | 0.32.x      | Active development              |
+| `main` | **3.2.4**  | 0.33.x      | Active development              |
 | `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.33.0
+
+Migration introspection (#170). Relation fields survive the trip from a model to a
+`DEFINE FIELD`, and `on_delete` becomes something SurrealDB enforces.
+
+- **Relation markers never reached the schema state** — `_introspect_field` did not unwrap
+  `Annotated`, so every `ForeignKey`/`ReferencesField` fell through `_map_type` to `any`.
+  `FieldState`, the operations and the DB-side `define_parser` all already carried
+  `reference`/`on_delete`; this one producer was the only thing that never filled them. They
+  now introspect as `option<record<target>>` and `option<array<record<target>>>`, the target
+  resolved to the model's configured `table_name` (unresolvable → untyped `record`, never an
+  invented table).
+- **`ManyToMany`/`Relation` were emitted as `any` columns** — virtual by their own core
+  schema (`surreal_type: "virtual"`), excluded from DDL entirely now.
+- **Nullability was dropped at the diff boundary** — `AddField`/`AlterField` had no `nullable`
+  parameter, so only `define_table()` wrapped `option<>` and generated migrations silently lost
+  optionality. `AlterField` also gained `previous_nullable`/`previous_reference`/
+  `previous_on_delete`; without them a rollback dropped the `REFERENCE` clause and with it
+  referential integrity, and the diff never forwarded `previous_flexible`/`previous_readonly`.
+- **`schema_diff()` never converged for non-`CASCADE`** — the model stored `SET_NULL` while the
+  database reported `UNSET`, and `FieldState.__eq__` compares raw strings. `FieldState` stores
+  the SurrealDB keyword now. `CASCADE` — identical in both vocabularies — was the only case the
+  tests had covered, which is why this survived #169.
+- **`inspectdb` round-tripped a scalar FK into an array** — `ModelCodeGenerator` mapped every
+  `reference=True` field to `ReferencesField` (`array<record<T>>`), so a generated model
+  re-introspected into a destructive scalar→array `AlterField` on an unedited schema. Arity
+  decides now. A repo test asserted the defective mapping and was corrected.
+- **`option<>` wrapping misread unions** — any `|` counted as already-optional, so
+  `int | string` + `nullable=True` gave a non-nullable column; detection mirrors
+  `parse_define_field` (`option<`, `| null`, `none |`).
+- **A union-wrapped marker was invisible** — `ForeignKey("User") | None` regressed to `any`:
+  the origin is a union, not `Annotated`, and Pydantic does not lift metadata out of a union
+  member into `FieldInfo.metadata`.
+- **New public API** — `OnDelete` (accepts SurrealDB's `UNSET`/`REJECT`/`IGNORE` alongside
+  Django's), plus `AddField.from_field_state()` / `AlterField.from_field_states()`, the single
+  place a `FieldState` becomes operation kwargs. Four hand-copied kwarg lists are what produced
+  defect 4 of #170; that shape is gone.
+- **BEHAVIOUR CHANGE — `on_delete` is enforced now.** It was decorative (the column was `any`
+  with no `REFERENCE`). A `ForeignKey` at the default `CASCADE` means deleting the target
+  deletes the referencing record; `on_delete="IGNORE"` opts out. **On upgrade**, the first
+  `schema_diff`/`makemigrations` also emits one-time `REMOVE FIELD` for the `ManyToMany`/
+  `Relation` columns existing databases physically carry — no data loss, but review rather than
+  apply blind.
+- **Not backported to `v2`** — the `REFERENCE` clause is a SurrealDB 3.0 feature and
+  `ReferencesField` does not exist on that branch. The virtual-field and nullability halves are
+  real defects on `v2` (0.21.4) and remain open there as separate work.
 
 ### What's New in 0.32.7
 

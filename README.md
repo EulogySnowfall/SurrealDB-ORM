@@ -37,6 +37,55 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.33.0
+
+**Migration introspection release (#170).** Relation fields now survive the trip from a
+model to a `DEFINE FIELD` statement, and `on_delete` becomes something SurrealDB
+enforces rather than a decorative annotation.
+
+- **`ForeignKey` and `ReferencesField` introspected as `any` (#170)** — `_introspect_field`
+  never unwrapped `Annotated`, so the record link was lost entirely. `FieldState`, the
+  operations and the DB-side parser all already carried `reference` / `on_delete`; this one
+  producer was the only thing that never filled them.
+
+  ```python
+  class Post(BaseSurrealModel):
+      author: ForeignKey("User")
+      citations: ReferencesField["posts"]
+
+  # Before: DEFINE FIELD author ON posts TYPE any;
+  # After:  DEFINE FIELD author ON posts TYPE option<record<users>> REFERENCE ON DELETE CASCADE;
+  #         DEFINE FIELD citations ON posts TYPE option<array<record<posts>>> REFERENCE;
+  ```
+
+- **`ManyToMany` / `Relation` emitted real columns** — they are virtual (graph edges live in
+  their own tables) and now define no column at all.
+- **Nullability stopped at the diff boundary** — `AddField` / `AlterField` had no `nullable`
+  parameter, so only `define_table()` preserved optionality and generated migrations silently
+  lost it. `AlterField` also gained `previous_nullable`, `previous_reference` and
+  `previous_on_delete`, without which a rollback quietly dropped the `REFERENCE` clause.
+- **`schema_diff()` never converged for non-`CASCADE` strategies** — the model stored Django's
+  `SET_NULL` while the database reported SurrealDB's `UNSET`, and the states compare raw
+  strings. `FieldState` now stores the keyword the database reports back.
+- **`inspectdb` turned a scalar foreign key into an array** — every `reference=True` field was
+  mapped to `ReferencesField` (`array<record<T>>`), so a generated model re-introspected into a
+  destructive scalar→array `AlterField`. Arity now decides: scalar `record<T>` → `ForeignKey`.
+
+**New:** `OnDelete`, a public type alias exported from `surreal_orm` — `ForeignKey` accepts
+SurrealDB's vocabulary (`UNSET`, `REJECT`, `IGNORE`) alongside Django's. Plus
+`AddField.from_field_state()` / `AlterField.from_field_states()`, the single place a
+`FieldState` becomes operation arguments.
+
+> **Behaviour change.** `on_delete` used to be decorative — the column landed as `any` with no
+> `REFERENCE` clause, so nothing was applied. SurrealDB enforces it now, so a `ForeignKey` left
+> at the default `on_delete="CASCADE"` means deleting the referenced record deletes the
+> referencing one. Use `on_delete="IGNORE"` for a link that should stay decorative.
+>
+> **On upgrading**, the first `schema_diff` / `makemigrations` emits one-time `REMOVE FIELD`
+> statements for the `ManyToMany` / `Relation` columns existing databases physically carry, plus
+> `any -> option<record<...>>` alters. No data is lost — the ORM never read those columns — but
+> review the generated migration rather than applying it blind.
+
 ## What's New in 0.32.7
 
 **Bug fix release** — foreign key values never reached the database as record links, and
