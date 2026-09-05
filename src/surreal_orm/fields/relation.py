@@ -38,11 +38,15 @@ if TYPE_CHECKING:
 #: Accepted ``on_delete`` strategies.
 #:
 #: Django's vocabulary (``CASCADE``, ``SET_NULL``, ``PROTECT``) is the ORM's
-#: public API; SurrealDB's own keywords (``UNSET``, ``REJECT``, ``IGNORE``,
-#: ``THEN``) are accepted too and pass through untranslated.  ``IGNORE`` is the
-#: escape hatch for a purely decorative link: it emits ``REFERENCE`` with no
-#: ``ON DELETE`` clause, so deleting the target leaves this record alone.
+#: public API; SurrealDB's own keywords (``UNSET``, ``REJECT``, ``IGNORE``) are
+#: accepted too and pass through untranslated.  ``IGNORE`` is the escape hatch
+#: for a purely decorative link: it emits ``REFERENCE ON DELETE IGNORE``, which
+#: is SurrealDB's own no-op, so deleting the target leaves this record alone.
 #: :func:`on_delete_to_surql` maps between the two.
+#:
+#: SurrealDB's ``ON DELETE THEN <expression>`` is deliberately absent: it takes
+#: a required expression, and no part of the field definition carries one, so
+#: accepting the bare keyword would only emit DDL SurrealDB cannot parse.
 OnDelete = Literal[
     "CASCADE",
     "SET_NULL",
@@ -50,7 +54,6 @@ OnDelete = Literal[
     "UNSET",
     "REJECT",
     "IGNORE",
-    "THEN",
 ]
 
 
@@ -324,7 +327,6 @@ def ForeignKey(
             - SET_NULL (SurrealDB ``UNSET``): Unset the field
             - PROTECT (SurrealDB ``REJECT``): Prevent deletion of referenced record
             - IGNORE: Leave this record untouched — the link is decorative
-            - THEN: Run the custom clause configured on the field
         related_name: Name for reverse relation on target model
 
     Returns:

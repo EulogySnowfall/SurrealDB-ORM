@@ -8,10 +8,13 @@ applied (forwards) or reverted (backwards).
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..fields.relation import on_delete_to_surql
 from ..types import FieldType
+
+if TYPE_CHECKING:
+    from .state import FieldState
 
 
 def _normalize_field_type(field_type: FieldType | str) -> str:
@@ -66,8 +69,11 @@ def _apply_nullable(field_type: str, nullable: bool) -> str:
     ``FieldState.nullable`` used to stop at the diff boundary: only
     ``define_table()`` wrapped the type, so generated migrations silently lost
     optionality (#170).  The wrap is skipped when the type already carries its
-    own optionality — ``option<T>`` or a union such as ``none | T`` — so that a
-    hand-written migration is never double-wrapped.
+    own optionality — ``option<T>``, or a union with a ``none``/``null`` member
+    such as SurrealDB 3.x's ``none | T`` — so that a hand-written migration is
+    never double-wrapped.  Detection mirrors :func:`parse_define_field`, the
+    other side of the round-trip; a union *without* such a member (``int |
+    string``) is not optional and is wrapped like any other type.
 
     Args:
         field_type: The normalized SurrealDB type
@@ -78,7 +84,8 @@ def _apply_nullable(field_type: str, nullable: bool) -> str:
     """
     if not nullable:
         return field_type
-    if field_type.lower().startswith("option<") or "|" in field_type:
+    lowered = field_type.lower()
+    if lowered.startswith("option<") or "| null" in lowered or lowered.startswith("none |"):
         return field_type
     return f"option<{field_type}>"
 
@@ -255,6 +262,37 @@ class AddField(Operation):
         # Validate the field type (raises ValueError if invalid)
         _normalize_field_type(self.field_type)
 
+    @classmethod
+    def from_field_state(cls, table: str, state: "FieldState") -> "AddField":
+        """
+        Build the operation that defines *state* on *table*.
+
+        Every attribute is wired here and only here.  Enumerating them by hand
+        at each call site is what let ``reference`` / ``on_delete`` go missing
+        from one diff branch and ``nullable`` from all of them (#170).
+
+        Args:
+            table: Name of the table the field belongs to
+            state: The desired field state
+
+        Returns:
+            An ``AddField`` carrying the whole field state
+        """
+        return cls(
+            table=table,
+            name=state.name,
+            field_type=state.field_type,
+            nullable=state.nullable,
+            default=state.default,
+            assertion=state.assertion,
+            encrypted=state.encrypted,
+            flexible=state.flexible,
+            readonly=state.readonly,
+            value=state.value,
+            reference=state.reference,
+            on_delete=state.on_delete,
+        )
+
     def forwards(self) -> str:
         parts = [f"DEFINE FIELD {self.name} ON {self.table}"]
 
@@ -373,6 +411,49 @@ class AlterField(Operation):
     previous_flexible: bool = False
     previous_readonly: bool = False
     previous_nullable: bool = False
+    previous_reference: bool = False
+    previous_on_delete: str | None = None
+
+    @classmethod
+    def from_field_states(cls, table: str, current: "FieldState", target: "FieldState") -> "AlterField":
+        """
+        Build the operation that moves *current* to *target* on *table*.
+
+        The counterpart to :meth:`AddField.from_field_state`, wiring the target
+        state forwards and the current state into the ``previous_*`` attributes
+        ``backwards()`` needs.  Hand-copying these is what left ``REFERENCE``,
+        ``FLEXIBLE`` and ``READONLY`` off every generated rollback.
+
+        Args:
+            table: Name of the table the field belongs to
+            current: The field state the database is in
+            target: The field state the models describe
+
+        Returns:
+            An ``AlterField`` carrying both states in full
+        """
+        return cls(
+            table=table,
+            name=target.name,
+            field_type=target.field_type,
+            nullable=target.nullable,
+            default=target.default,
+            assertion=target.assertion,
+            encrypted=target.encrypted,
+            flexible=target.flexible,
+            readonly=target.readonly,
+            value=target.value,
+            reference=target.reference,
+            on_delete=target.on_delete,
+            previous_type=current.field_type,
+            previous_nullable=current.nullable,
+            previous_default=current.default,
+            previous_assertion=current.assertion,
+            previous_flexible=current.flexible,
+            previous_readonly=current.readonly,
+            previous_reference=current.reference,
+            previous_on_delete=current.on_delete,
+        )
 
     def __post_init__(self) -> None:
         """Validate field_type and set reversible based on previous state."""
@@ -455,6 +536,13 @@ class AlterField(Operation):
 
         if self.previous_readonly:
             parts.append("READONLY")
+
+        # Without this a rollback silently dropped referential integrity: the
+        # column came back as a plain record link with no REFERENCE clause.
+        if self.previous_reference:
+            parts.append("REFERENCE")
+            if self.previous_on_delete:
+                parts.append(f"ON DELETE {on_delete_to_surql(self.previous_on_delete)}")
 
         return " ".join(parts) + ";"
 

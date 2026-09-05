@@ -13,6 +13,8 @@ Four related defects in the model → ``SchemaState`` → operation path:
    ``on_delete`` that the new-table branch included.
 """
 
+from typing import get_args
+
 import pytest
 
 from src.surreal_orm.fields import ForeignKey, ManyToMany, ReferencesField, Relation
@@ -68,7 +70,11 @@ class TestForeignKeyIntrospection:
         assert state.tables["posts"].fields["author"].nullable is True
 
     def test_foreign_key_carries_reference_and_on_delete(self) -> None:
-        """``on_delete`` reaches ``FieldState`` so the REFERENCE clause is emitted."""
+        """``on_delete`` reaches ``FieldState`` in SurrealDB's vocabulary.
+
+        Django's ``SET_NULL`` is stored as ``UNSET`` — the spelling the database
+        reports back — so the state compares equal on the next diff.
+        """
 
         class RefUser(BaseSurrealModel):
             model_config = SurrealConfigDict(table_name="users")
@@ -83,7 +89,7 @@ class TestForeignKeyIntrospection:
         field = state.tables["posts"].fields["author"]
 
         assert field.reference is True
-        assert field.on_delete == "SET_NULL"
+        assert field.on_delete == "UNSET"
 
     def test_foreign_key_accepts_surrealdb_on_delete_vocabulary(self) -> None:
         """SurrealDB's own keywords are accepted, so a no-op FK is expressible."""
@@ -326,3 +332,263 @@ class TestDiffCarriesFieldState:
         assert "TYPE option<string>" in alter.forwards()
         assert "TYPE string" in alter.backwards()
         assert "option<" not in alter.backwards()
+
+
+class TestOnDeleteNormalization:
+    """Review: the model side stored Django's vocabulary, the database reports
+    SurrealDB's, and ``FieldState.__eq__`` compares raw strings — so every
+    non-CASCADE strategy diffed forever without ever converging."""
+
+    def test_field_state_stores_the_surrealdb_keyword(self) -> None:
+        """``SET_NULL`` reaches ``FieldState`` as SurrealDB's ``UNSET``."""
+
+        class NormUser(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="users")
+            id: str | None = None
+
+        class NormPost(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="posts")
+            id: str | None = None
+            author: ForeignKey("NormUser", on_delete="SET_NULL")
+
+        state = ModelIntrospector([NormPost]).introspect()
+
+        assert state.tables["posts"].fields["author"].on_delete == "UNSET"
+
+    def test_emitted_ddl_parses_back_to_an_equal_field_state(self) -> None:
+        """The producer and the parser agree, so the diff converges."""
+        from src.surreal_orm.migrations.define_parser import parse_define_field
+        from src.surreal_orm.migrations.operations import AddField
+
+        class RoundUser(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="users")
+            id: str | None = None
+
+        class RoundPost(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="posts")
+            id: str | None = None
+            author: ForeignKey("RoundUser", on_delete="PROTECT")
+
+        state = ModelIntrospector([RoundPost]).introspect()
+        field = state.tables["posts"].fields["author"]
+        ddl = AddField.from_field_state("posts", field).forwards()
+
+        assert parse_define_field(ddl) == field
+
+
+class TestReferencesTargetResolution:
+    """Review: the ReferencesField branch used the marker verbatim — and
+    lowercased — while the ForeignKey branch resolved through the registry."""
+
+    def test_references_field_resolves_a_model_name_to_its_table(self) -> None:
+        """A model name reaches DDL as the model's configured table."""
+
+        class CamelWriter(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="CamelWriters")
+            id: str | None = None
+
+        class CamelShelf(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="shelves")
+            id: str | None = None
+            writers: ReferencesField["CamelWriter"]
+
+        state = ModelIntrospector([CamelShelf]).introspect()
+
+        assert state.tables["shelves"].fields["writers"].field_type == "array<record<CamelWriters>>"
+
+    def test_references_field_keeps_an_unresolved_table_name(self) -> None:
+        """A bare table name is documented usage and must survive verbatim."""
+
+        class LooseShelf(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="shelves")
+            id: str | None = None
+            books: ReferencesField["books"]  # noqa: F821
+
+        state = ModelIntrospector([LooseShelf]).introspect()
+
+        assert state.tables["shelves"].fields["books"].field_type == "array<record<books>>"
+
+
+class TestUnionWrappedMarker:
+    """Review: `ForeignKey("X") | None` made get_origin() a Union, so both
+    marker lookups missed and the field regressed to `any`."""
+
+    def test_foreign_key_wrapped_in_an_optional_union_is_still_a_record_link(self) -> None:
+        """The redundant outer ``| None`` does not hide the marker."""
+
+        class OptUser(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="users")
+            id: str | None = None
+
+        class OptPost(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="posts")
+            id: str | None = None
+            author: ForeignKey("OptUser") | None = None
+
+        state = ModelIntrospector([OptPost]).introspect()
+        field = state.tables["posts"].fields["author"]
+
+        assert field.field_type == "record<users>"
+        assert field.reference is True
+
+
+class TestNullableUnionGuard:
+    """Review: `"|" in field_type` treated every union as already optional."""
+
+    def test_a_union_without_none_is_still_wrapped(self) -> None:
+        """``int | string`` is not optional, so ``nullable`` must apply."""
+        from src.surreal_orm.migrations.operations import AddField
+
+        op = AddField(table="t", name="f", field_type="int | string", nullable=True)
+
+        assert "TYPE option<int | string>" in op.forwards()
+
+    def test_a_union_carrying_none_is_left_alone(self) -> None:
+        """SurrealDB 3.x reports optional unions as ``none | T``."""
+        from src.surreal_orm.migrations.operations import AddField
+
+        op = AddField(table="t", name="f", field_type="none | int", nullable=True)
+
+        assert "TYPE none | int" in op.forwards()
+        assert "option<" not in op.forwards()
+
+
+class TestAlterFieldRollbackCompleteness:
+    """Review: backwards() silently dropped REFERENCE, FLEXIBLE and READONLY."""
+
+    def test_rollback_restores_the_reference_clause(self) -> None:
+        """Rolling back an FK alter must not disable referential integrity."""
+        from src.surreal_orm.migrations.operations import AlterField
+
+        op = AlterField(
+            table="posts",
+            name="author",
+            field_type="record<users>",
+            reference=True,
+            on_delete="CASCADE",
+            previous_type="record<users>",
+            previous_nullable=True,
+            previous_reference=True,
+            previous_on_delete="UNSET",
+        )
+
+        assert "REFERENCE ON DELETE UNSET" in op.backwards()
+
+    def test_diff_forwards_every_previous_attribute(self) -> None:
+        """The alter branch must carry the whole previous FieldState."""
+        from src.surreal_orm.migrations.operations import AlterField
+        from src.surreal_orm.migrations.state import FieldState, SchemaState, TableState
+
+        current = SchemaState()
+        current.tables["posts"] = TableState(
+            name="posts",
+            fields={
+                "author": FieldState(
+                    name="author",
+                    field_type="record<users>",
+                    nullable=True,
+                    flexible=True,
+                    readonly=True,
+                    reference=True,
+                    on_delete="UNSET",
+                )
+            },
+        )
+        target = SchemaState()
+        target.tables["posts"] = TableState(
+            name="posts",
+            fields={"author": FieldState(name="author", field_type="record<users>", nullable=True)},
+        )
+
+        alter = next(op for op in current.diff(target) if isinstance(op, AlterField))
+        rollback = alter.backwards()
+
+        assert "FLEXIBLE" in rollback
+        assert "READONLY" in rollback
+        assert "REFERENCE ON DELETE UNSET" in rollback
+
+
+class TestOnDeleteVocabulary:
+    """Review: ``THEN`` requires an expression the ORM has no channel for."""
+
+    def test_then_is_not_an_accepted_strategy(self) -> None:
+        """``ON DELETE THEN`` without an expression is a parse error."""
+        from src.surreal_orm.fields.relation import OnDelete
+
+        assert "THEN" not in get_args(OnDelete)
+
+
+class TestModelGeneratorRecordLinks:
+    """Review: inspectdb mapped every reference field to ReferencesField, so a
+    scalar record link round-tripped into a destructive scalar→array alter."""
+
+    def test_scalar_record_reference_generates_a_foreign_key(self) -> None:
+        """A scalar ``record<T> REFERENCE`` is a ForeignKey, not a list."""
+        from src.surreal_orm.migrations.model_generator import ModelCodeGenerator
+        from src.surreal_orm.migrations.state import FieldState, SchemaState, TableState
+
+        state = SchemaState()
+        state.tables["posts"] = TableState(
+            name="posts",
+            fields={
+                "author": FieldState(
+                    name="author",
+                    field_type="record<users>",
+                    nullable=True,
+                    reference=True,
+                    on_delete="CASCADE",
+                )
+            },
+        )
+
+        code = ModelCodeGenerator().generate(state)
+
+        assert 'author: ForeignKey("users", on_delete="CASCADE")' in code
+        assert "ReferencesField" not in code
+
+    def test_array_record_reference_still_generates_references_field(self) -> None:
+        """The plural form keeps its ReferencesField mapping."""
+        from src.surreal_orm.migrations.model_generator import ModelCodeGenerator
+        from src.surreal_orm.migrations.state import FieldState, SchemaState, TableState
+
+        state = SchemaState()
+        state.tables["authors"] = TableState(
+            name="authors",
+            fields={
+                "books": FieldState(
+                    name="books",
+                    field_type="array<record<books>>",
+                    nullable=True,
+                    reference=True,
+                    on_delete="CASCADE",
+                )
+            },
+        )
+
+        code = ModelCodeGenerator().generate(state)
+
+        assert 'books: ReferencesField["books", "CASCADE"]' in code
+
+    def test_generated_foreign_key_round_trips_without_a_type_change(self) -> None:
+        """Re-introspecting the generated model reproduces the same column."""
+        from src.surreal_orm.migrations.state import FieldState
+
+        class RtUser(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="users")
+            id: str | None = None
+
+        class RtPost(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="posts")
+            id: str | None = None
+            author: ForeignKey("RtUser", on_delete="CASCADE")
+
+        from_db = FieldState(
+            name="author",
+            field_type="record<users>",
+            nullable=True,
+            reference=True,
+            on_delete="CASCADE",
+        )
+        from_model = ModelIntrospector([RtPost]).introspect().tables["posts"].fields["author"]
+
+        assert from_model == from_db

@@ -37,12 +37,18 @@ class _ReferencesMarker:
 
     Stored inside ``Annotated[list[str] | None, _ReferencesMarker(table, on_delete)]``
     to carry the referenced table name and optional ON DELETE strategy.
+
+    ``table`` is lowercased, which is right for a table name but destroys the
+    casing a model name needs to be resolved through the registry, so ``target``
+    keeps the value exactly as written.
     """
 
+    target: str
     table: str
     on_delete: str | None
 
     def __init__(self, table: str = "", on_delete: str | None = None) -> None:
+        self.target = table
         self.table = table.lower()
         self.on_delete = on_delete.upper() if on_delete else None
 

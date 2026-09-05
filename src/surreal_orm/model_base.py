@@ -640,24 +640,9 @@ class BaseSurrealModel(BaseModel):
         is_user_table = table_state.table_type == TableType.USER.value
 
         for _field_name, field_state in table_state.fields.items():
-            encrypted = field_state.encrypted
-            if is_user_table and encrypted:
-                encrypted = False
-
-            add_field = AddField(
-                table=table_state.name,
-                name=field_state.name,
-                field_type=field_state.field_type,
-                nullable=field_state.nullable,
-                default=field_state.default,
-                assertion=field_state.assertion,
-                encrypted=encrypted,
-                flexible=field_state.flexible,
-                readonly=field_state.readonly,
-                value=field_state.value,
-                reference=field_state.reference,
-                on_delete=field_state.on_delete,
-            )
+            add_field = AddField.from_field_state(table_state.name, field_state)
+            if is_user_table and add_field.encrypted:
+                add_field.encrypted = False
             statements.append(add_field.forwards())
 
         combined_sql = "\n".join(statements)

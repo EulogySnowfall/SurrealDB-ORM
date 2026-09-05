@@ -6,7 +6,7 @@ a SchemaState that can be compared against the current database state.
 """
 
 import types
-from typing import TYPE_CHECKING, Annotated, Any, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
@@ -14,7 +14,7 @@ from pydantic_core import PydanticUndefined
 from ..fields.computed import _ComputedMarker, get_computed_expression, is_computed_field
 from ..fields.encrypted import is_encrypted_field
 from ..fields.references import _ReferencesMarker
-from ..fields.relation import _ForeignKeyMarker, _ManyToManyMarker, _RelationMarker
+from ..fields.relation import _ForeignKeyMarker, _ManyToManyMarker, _RelationMarker, on_delete_to_surql
 from ..types import PYTHON_TO_SURREAL_TYPE, FieldType, TableType
 from .state import AccessState, FieldState, SchemaState, TableState
 
@@ -43,6 +43,12 @@ def _get_relation_marker(
     ``FieldInfo.annotation`` when ``get_type_hints`` fails, and Pydantic strips
     the ``Annotated`` metadata off that attribute.
 
+    A redundant outer union — ``ForeignKey("User") | None``, which mypy accepts
+    silently because ``ForeignKey(...)`` is ``Any`` — hides the marker from both
+    lookups: the origin is a union rather than ``Annotated``, and Pydantic does
+    not lift metadata out of a union member into ``FieldInfo.metadata``.  Union
+    members are therefore searched too.
+
     Args:
         type_hint: The field's type annotation
         field_info: Pydantic FieldInfo for the field
@@ -50,16 +56,32 @@ def _get_relation_marker(
     Returns:
         The marker instance, or None when the field carries none
     """
-    if get_origin(type_hint) is Annotated:
-        for arg in get_args(type_hint):
-            if isinstance(arg, _RELATION_MARKERS):
-                return arg
+    for candidate in _unwrap_union(type_hint):
+        if get_origin(candidate) is Annotated:
+            for arg in get_args(candidate):
+                if isinstance(arg, _RELATION_MARKERS):
+                    return arg
 
     for meta in field_info.metadata:
         if isinstance(meta, _RELATION_MARKERS):
             return meta
 
     return None
+
+
+def _unwrap_union(type_hint: Any) -> list[Any]:
+    """
+    Expand a union annotation into its members, dropping ``None``.
+
+    Args:
+        type_hint: The field's type annotation
+
+    Returns:
+        The union's non-None members, or the annotation itself when not a union
+    """
+    if get_origin(type_hint) in (types.UnionType, Union):
+        return [arg for arg in get_args(type_hint) if arg is not type(None)]
+    return [type_hint]
 
 
 class ModelIntrospector:
@@ -269,6 +291,12 @@ class ModelIntrospector:
         column carrying SurrealDB 3.x's ``REFERENCE`` clause; they differ only
         in arity.  Both are optional in Python, so both are nullable.
 
+        ``on_delete`` is stored in SurrealDB's vocabulary, not Django's.  The
+        database reports back what it was given — ``UNSET`` for ``SET_NULL`` —
+        and ``FieldState.__eq__`` compares the raw strings, so keeping Django's
+        spelling here would make every non-``CASCADE`` strategy diff forever
+        without ever converging.
+
         Args:
             name: Field name
             marker: The foreign-key or references marker on the field
@@ -286,7 +314,10 @@ class ModelIntrospector:
             # invented table name — a wrong table would be rejected on write.
             field_type = FieldType.RECORD.generic(target) if target else FieldType.RECORD.value
         else:
-            target = marker.table
+            # ReferencesField documents its parameter as the table name, so an
+            # unresolved target keeps that literal instead of degrading to an
+            # untyped `record`; resolution only adds support for a model name.
+            target = _resolve_target_table(marker.target) or marker.table
             field_type = FieldType.ARRAY.generic(FieldType.RECORD.generic(target))
 
         return FieldState(
@@ -294,7 +325,7 @@ class ModelIntrospector:
             field_type=field_type,
             nullable=True,
             reference=True,
-            on_delete=marker.on_delete,
+            on_delete=on_delete_to_surql(marker.on_delete),
         )
 
     def _map_type(self, python_type: Any) -> str:

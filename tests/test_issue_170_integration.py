@@ -70,6 +70,10 @@ class I170Post(BaseSurrealModel):
     title: str
     subtitle: str | None = None
     author: ForeignKey("I170Author")
+    # A non-CASCADE strategy: the only spelling that differs between Django's
+    # vocabulary and SurrealDB's, and so the only one that catches a
+    # normalization gap in the round-trip.
+    reviewer: ForeignKey("I170Author", on_delete="SET_NULL")
     tags: Relation("tagged", "I170Author")
 
 
@@ -81,6 +85,16 @@ async def test_define_table_emits_a_typed_optional_record_link() -> None:
 
     assert "TYPE option<record<i170_authors>> REFERENCE ON DELETE CASCADE" in sql
     assert "option<option<" not in sql
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_django_on_delete_vocabulary_is_translated_in_ddl() -> None:
+    """``SET_NULL`` reaches SurrealDB as its own ``UNSET`` keyword."""
+    sql = await I170Post.define_table()
+
+    assert "DEFINE FIELD reviewer ON i170_posts TYPE option<record<i170_authors>> REFERENCE ON DELETE UNSET" in sql
+    assert "SET_NULL" not in sql
 
 
 @pytest.mark.integration

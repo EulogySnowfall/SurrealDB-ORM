@@ -403,23 +403,8 @@ class SchemaState:
                     )
                 )
                 # Add all fields
-                for field_name, field_state in target_table.fields.items():
-                    operations.append(
-                        AddField(
-                            table=table_name,
-                            name=field_name,
-                            field_type=field_state.field_type,
-                            default=field_state.default,
-                            assertion=field_state.assertion,
-                            encrypted=field_state.encrypted,
-                            flexible=field_state.flexible,
-                            readonly=field_state.readonly,
-                            value=field_state.value,
-                            reference=field_state.reference,
-                            on_delete=field_state.on_delete,
-                            nullable=field_state.nullable,
-                        )
-                    )
+                for _field_name, field_state in target_table.fields.items():
+                    operations.append(AddField.from_field_state(table_name, field_state))
                 # Add all indexes
                 for _index_name, index_state in target_table.indexes.items():
                     operations.append(self._create_index_from_state(table_name, index_state))
@@ -484,45 +469,11 @@ class SchemaState:
                 # Fields to add
                 for field_name, field_state in target_table.fields.items():
                     if field_name not in current_table.fields:
-                        operations.append(
-                            AddField(
-                                table=table_name,
-                                name=field_name,
-                                field_type=field_state.field_type,
-                                default=field_state.default,
-                                assertion=field_state.assertion,
-                                encrypted=field_state.encrypted,
-                                flexible=field_state.flexible,
-                                readonly=field_state.readonly,
-                                value=field_state.value,
-                                reference=field_state.reference,
-                                on_delete=field_state.on_delete,
-                                nullable=field_state.nullable,
-                            )
-                        )
+                        operations.append(AddField.from_field_state(table_name, field_state))
                     elif current_table.fields[field_name] != field_state:
                         # Field changed
                         current_field = current_table.fields[field_name]
-                        operations.append(
-                            AlterField(
-                                table=table_name,
-                                name=field_name,
-                                field_type=field_state.field_type,
-                                default=field_state.default,
-                                assertion=field_state.assertion,
-                                encrypted=field_state.encrypted,
-                                flexible=field_state.flexible,
-                                readonly=field_state.readonly,
-                                value=field_state.value,
-                                reference=field_state.reference,
-                                on_delete=field_state.on_delete,
-                                nullable=field_state.nullable,
-                                previous_type=current_field.field_type,
-                                previous_default=current_field.default,
-                                previous_assertion=current_field.assertion,
-                                previous_nullable=current_field.nullable,
-                            )
-                        )
+                        operations.append(AlterField.from_field_states(table_name, current_field, field_state))
 
                 # Fields to drop
                 for field_name in current_table.fields:

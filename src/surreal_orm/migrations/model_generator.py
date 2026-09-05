@@ -196,17 +196,30 @@ class ModelCodeGenerator:
         """
         extra_imports: set[str] = set()
 
-        # Handle REFERENCE fields → ReferencesField["table"] or ReferencesField["table", "CASCADE"]
+        # Handle REFERENCE fields.  Arity decides the field type: a scalar
+        # `record<T>` is a single link (ForeignKey), only `array<record<T>>` is
+        # the plural ReferencesField.  Mapping both to ReferencesField made a
+        # scalar link round-trip into a destructive scalar→array AlterField on
+        # a schema nobody had edited.
         if field.reference:
             table_name = self._extract_record_table(field.field_type)
             if table_name:
-                extra_imports.add("from surreal_orm.fields import ReferencesField")
+                if self._is_array_type(field.field_type):
+                    extra_imports.add("from surreal_orm.fields import ReferencesField")
+                    if field.on_delete:
+                        return (
+                            f'{field.name}: ReferencesField["{table_name}", "{field.on_delete}"]',
+                            extra_imports,
+                        )
+                    return f'{field.name}: ReferencesField["{table_name}"]', extra_imports
+
+                extra_imports.add("from surreal_orm.fields import ForeignKey")
                 if field.on_delete:
                     return (
-                        f'{field.name}: ReferencesField["{table_name}", "{field.on_delete}"]',
+                        f'{field.name}: ForeignKey("{table_name}", on_delete="{field.on_delete}")',
                         extra_imports,
                     )
-                return f'{field.name}: ReferencesField["{table_name}"]', extra_imports
+                return f'{field.name}: ForeignKey("{table_name}")', extra_imports
 
         python_type = self._surreal_type_to_python(field.field_type)
 
@@ -255,6 +268,11 @@ class ModelCodeGenerator:
         """Extract the table name from a record<T> or array<record<T>> type."""
         m = re.search(r"record<(\w+)>", field_type, re.IGNORECASE)
         return m.group(1) if m else None
+
+    @staticmethod
+    def _is_array_type(field_type: str) -> bool:
+        """Check whether a type is a collection of records rather than one."""
+        return re.match(r"\s*(option<\s*)?(array|set)<", field_type, re.IGNORECASE) is not None
 
     def _surreal_type_to_python(self, surreal_type: str) -> str:
         """
