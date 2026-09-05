@@ -6,6 +6,109 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.33.0] - 2026-09-05
+
+**Migration introspection release.** Foreign keys, record references, virtual graph
+fields and nullability now survive the trip from a model to a `DEFINE FIELD`
+statement — and `on_delete` becomes something SurrealDB enforces rather than a
+decorative annotation.
+
+### Fixed — Migrations
+
+- **Relation markers never reached the schema state (#170).** `_introspect_field`
+  did not unwrap `Annotated`, so every `ForeignKey` and `ReferencesField` fell
+  through `_map_type` to `any`. `FieldState`, the operations and the DB-side
+  `define_parser` all already carried `reference` / `on_delete`; this one producer
+  was the only thing that never filled them:
+
+  ```python
+  class Post(BaseSurrealModel):
+      author: ForeignKey("User")
+      citations: ReferencesField["posts"]
+
+  # Before: DEFINE FIELD author ON posts TYPE any;
+  # After:  DEFINE FIELD author ON posts TYPE option<record<users>> REFERENCE ON DELETE CASCADE;
+  #         DEFINE FIELD citations ON posts TYPE option<array<record<posts>>> REFERENCE;
+  ```
+
+  The target model name is resolved to the model's configured `table_name`; an
+  unresolvable target stays an untyped `record` rather than an invented table.
+
+- **`ManyToMany` and `Relation` were emitted as `any` columns (#170).** They are
+  virtual — their own core schema says `surreal_type: "virtual"` — and graph edges
+  live in their own tables, so they now define no column at all.
+
+- **Nullability was dropped at the diff boundary (#170).** `AddField` / `AlterField`
+  had no `nullable` parameter and never wrapped `option<>`, so only `define_table()`
+  preserved optionality and generated migrations silently lost it. Both operations
+  take `nullable` now; `AlterField` also takes `previous_nullable` so a rollback
+  restores the optionality the column actually had.
+
+- **Rollbacks silently dropped clauses.** `AlterField.backwards()` emitted no
+  `REFERENCE`, and the diff never forwarded `previous_flexible` / `previous_readonly`,
+  so rolling back a foreign-key alter disabled referential integrity without an error.
+
+- **`schema_diff()` proposed the same operation forever.** The model side stored
+  Django's `SET_NULL` while the database reported SurrealDB's `UNSET`, and
+  `FieldState.__eq__` compares raw strings — so every non-`CASCADE` strategy diffed
+  on every run and applying it never converged. `FieldState` now stores the SurrealDB
+  keyword, the spelling the database reports back.
+
+- **`inspectdb` turned a scalar foreign key into an array.** `ModelCodeGenerator`
+  mapped every `reference=True` field to `ReferencesField`, whose type is
+  `array<record<T>>`, so a generated model re-introspected into a destructive
+  scalar→array `AlterField` on a schema nobody had edited. Arity now decides:
+  `array<record<T>>` keeps `ReferencesField`, a scalar `record<T>` generates
+  `ForeignKey`.
+
+- **`option<>` wrapping misread unions.** Any type containing `|` was treated as
+  already optional, so `int | string` with `nullable=True` produced a non-nullable
+  column. Detection now mirrors `parse_define_field`: `option<`, `| null`, `none |`.
+
+- **A union-wrapped marker was invisible.** `author: ForeignKey("User") | None`
+  regressed to `any`, because the annotation's origin is a union rather than
+  `Annotated` and Pydantic does not lift metadata out of a union member.
+
+### Added
+
+- **`OnDelete`** — public type alias for the accepted strategies, exported from
+  `surreal_orm` and `surreal_orm.fields`. `ForeignKey` now accepts SurrealDB's own
+  vocabulary (`UNSET`, `REJECT`, `IGNORE`) alongside Django's (`CASCADE`,
+  `SET_NULL`, `PROTECT`).
+- **`AddField.from_field_state()` / `AlterField.from_field_states()`** — the single
+  place a `FieldState` becomes operation keyword arguments, replacing four
+  hand-copied argument lists. That duplication is what produced the fourth defect of
+  #170 in the first place.
+
+### Changed
+
+- **`on_delete` is now enforced by SurrealDB.** It used to be decorative: the column
+  landed as `any` with no `REFERENCE` clause, so nothing was applied. A `ForeignKey`
+  left at the default `on_delete="CASCADE"` now means deleting the referenced record
+  deletes the referencing one.
+
+  ```python
+  author: ForeignKey("User")                       # ON DELETE CASCADE — now enforced
+  author: ForeignKey("User", on_delete="IGNORE")   # opt out: nothing cascades
+  ```
+
+- `ON DELETE THEN` is no longer accepted. SurrealDB requires
+  `ON DELETE THEN <expression>` and no part of a field definition carries one, so the
+  bare keyword only produced DDL that fails mid-migration.
+
+### Notes
+
+- **Expect one-time `REMOVE FIELD` statements on the first diff after upgrading.**
+  `ManyToMany` / `Relation` previously introspected as real `any` columns, so existing
+  databases physically carry those `DEFINE FIELD` entries. The first
+  `schema_diff` / `makemigrations` after upgrading emits `REMOVE FIELD groups ON users;`
+  and friends, alongside `any -> option<record<...>>` `AlterField` operations. No data
+  is lost — the ORM never read those columns — but the statements are auto-generated
+  and worth reviewing rather than applying blind.
+- Foreign keys previously introspected as `any` while the database reported
+  `record<...>`, so `schema_diff()` proposed a phantom `AlterField` on every run. That
+  is gone; an integration test asserts the round trip is stable.
+
 ## [0.32.7] - 2026-09-01
 
 **Bug fix release.** Two independent ORM fixes, both reported in #169: foreign
