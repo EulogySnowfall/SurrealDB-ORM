@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: September 2026 (0.33.0)
+> Context document for Claude AI - Last updated: September 2026 (0.33.1)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.33.0 (Beta) — SurrealDB 3.2+ required
+## Current Version: 0.33.1 (Beta) — SurrealDB 3.2+ required
 
 ### Branch Strategy
 
@@ -18,6 +18,34 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.2.4**  | 0.33.x      | Active development              |
 | `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.33.1
+
+`makemigrations` regenerated the whole schema on every run (#171), by two independent routes.
+
+- **It diffed against an empty schema.** `current_state` was a bare `SchemaState()` — the
+  code said so outright ("For now, assume current state is empty") — so every table was
+  re-emitted every time. It reads the current schema through `DatabaseIntrospector` now, the
+  same path `schemadiff` already used, so no new machinery. Worth noting *why it works now*:
+  only 0.33.0's producer/parser fix made it viable — while foreign keys introspected as `any`
+  and virtual fields produced columns, diffing against the database would have generated
+  spurious operations on every run, a worse bug than the one reported.
+- **A table's default permissions read as a configured value.** SurrealDB reports
+  `{"select": "NONE", "create": "NONE", "update": "NONE", "delete": "NONE"}` for a table
+  defined with no `PERMISSIONS` clause. Those are its defaults, so a database-read state
+  compared unequal to a model state configuring nothing and the diff emitted a redundant
+  `CreateTable` for every table — the same symptom by a second route, found only by running
+  the fix end to end against a real server. Fixing the state source alone would have left the
+  issue half fixed. Both sides are normalised before comparison, which also makes an explicit
+  `NONE` equal to omitting the clause.
+- **BEHAVIOUR CHANGE — `makemigrations` contacts the database by default** and fails with a
+  clear error naming `--no-from-db` when it cannot read the schema. Falling back to an empty
+  schema is precisely the bug being fixed, so it is not a fallback. `--no-from-db` restores
+  the old behaviour for a genuine first migration or offline use — Django does not need a
+  database to generate migrations, and that gap is tracked in #186 (nothing currently folds an
+  operation back into a `SchemaState`, so offline replay is a subsystem, not a fix).
+- `test_makemigrations_with_model` relied on the old default of never touching a database; it
+  passes `--no-from-db` now, which is what its intent means with no server present.
 
 ### What's New in 0.33.0
 

@@ -37,6 +37,31 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.33.1
+
+**Bug fix release (#171).** `makemigrations` regenerated the whole schema on every run,
+by two independent routes.
+
+- **It diffed against an empty schema.** The current state was a bare `SchemaState()`, so
+  every table was re-emitted every time. It now reads the current schema through
+  `DatabaseIntrospector` — the same path `schemadiff` already used. This only became viable
+  once 0.33.0 fixed the producer/parser symmetry.
+- **A table's default permissions read as a configured value.** SurrealDB reports
+  `{"select": "NONE", ...}` for a table defined with no `PERMISSIONS` clause; comparing that
+  against a model configuring nothing made every table look changed, emitting a redundant
+  `CreateTable`. Both sides are normalised now.
+
+> **Behaviour change.** `makemigrations` contacts the database by default and fails with a
+> clear error when it cannot read the schema, rather than silently falling back to an empty
+> one — that fallback *is* the bug. Use `--no-from-db` for a genuine first migration or when
+> working offline:
+>
+> ```bash
+> surreal-orm makemigrations --name initial --no-from-db
+> ```
+
+Generating migrations offline from the replayed migration history is tracked in #186.
+
 ## What's New in 0.33.0
 
 **Migration introspection release (#170).** Relation fields now survive the trip from a

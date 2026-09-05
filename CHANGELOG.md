@@ -6,6 +6,55 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.33.1] - 2026-09-05
+
+**Bug fix release.** `makemigrations` regenerated the whole schema on every run,
+by two independent routes.
+
+### Fixed — Migrations
+
+- **`makemigrations` diffed against an empty schema (#171).** The current state
+  was a bare `SchemaState()` — the code said so outright — so every table was
+  re-emitted on every run:
+
+  ```python
+  # For now, assume current state is empty (first migration)
+  current_state = SchemaState()
+  ```
+
+  It now reads the current schema through `DatabaseIntrospector`, the same path
+  `schemadiff` already used. This only became viable once 0.33.0 fixed the
+  producer/parser symmetry — while foreign keys introspected as `any` and virtual
+  fields produced columns, diffing against the database would have generated
+  spurious operations on every run.
+
+- **A table's default permissions read as a configured value (#171).** SurrealDB
+  reports `{"select": "NONE", "create": "NONE", "update": "NONE", "delete": "NONE"}`
+  for a table defined with no `PERMISSIONS` clause. Those are its defaults, so a
+  state read from the database compared unequal to a model state configuring
+  nothing, and the diff emitted a redundant `CreateTable` for every table — the
+  same symptom by a second route. Both sides are normalised before comparison,
+  which also makes an explicit `NONE` equal to omitting the clause.
+
+### Changed
+
+- **`makemigrations` contacts the database by default.** It fails with a clear
+  error when the database cannot be read, rather than falling back to an empty
+  schema — that fallback is the bug above. Pass `--no-from-db` to generate against
+  an empty schema instead, which is what you want for a genuine first migration or
+  when working offline:
+
+  ```bash
+  surreal-orm makemigrations --name initial --no-from-db
+  ```
+
+### Notes
+
+- Generating migrations offline from the replayed migration history — what Django
+  does, and what would remove the database requirement entirely — is tracked in
+  #186. No operation currently folds back into a `SchemaState`, so that route is a
+  subsystem rather than a fix.
+
 ## [0.33.0] - 2026-09-05
 
 **Migration introspection release.** Foreign keys, record references, virtual graph
