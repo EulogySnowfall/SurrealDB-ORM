@@ -13,6 +13,7 @@ from pydantic_core import PydanticUndefined
 
 from ..fields.computed import _ComputedMarker, get_computed_expression, is_computed_field
 from ..fields.encrypted import is_encrypted_field
+from ..fields.relation import is_graph_relation, is_many_to_many
 from ..types import PYTHON_TO_SURREAL_TYPE, FieldType, TableType
 from .state import AccessState, FieldState, SchemaState, TableState
 
@@ -99,6 +100,13 @@ class ModelIntrospector:
                 continue
 
             field_type_hint = type_hints.get(field_name, field_info.annotation)
+
+            # ManyToMany and Relation are virtual: the edges live in their own
+            # tables, so the attribute has no column to define. They used to be
+            # emitted as `any` columns (#170).
+            if is_many_to_many(field_type_hint) or is_graph_relation(field_type_hint):
+                continue
+
             field_state = self._introspect_field(field_name, field_type_hint, field_info, model)
             table_state.fields[field_name] = field_state
 
