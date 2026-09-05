@@ -371,3 +371,54 @@ class TestConnectionCacheInvalidation:
         # Cleanup
         SurrealDBConnectionManager._configs.pop("test_cache2", None)
         SurrealDBConnectionManager._clients.pop("test_cache2", None)
+
+
+class TestInlineDictVariablesEscapes:
+    """``re.sub`` reads its *replacement* as a pattern, not as literal text.
+
+    ``json.dumps`` emits ``\\uXXXX`` for any non-ASCII character and doubles every
+    backslash, and ``re.sub`` then tries to interpret those sequences:
+
+        {"nom": "café"}          -> PatternError: bad escape \\u
+        {"path": "C:\\temp"}      -> the doubled backslash is collapsed, silently
+                                    corrupting the value
+
+    So the crash hits any accented text and the corruption hits any Windows path
+    or regex-ish string. Both go through the inlining path added for #55, which
+    exists precisely to carry complex nested data.
+    """
+
+    def test_non_ascii_content_does_not_raise(self) -> None:
+        """An accent used to abort the whole query with a regex PatternError."""
+        variables = {"state": {"joueur": {"nom": "café"}}}
+
+        new_query, _ = inline_dict_variables("UPDATE t:1 SET state = $state", variables)
+
+        assert "$state" not in new_query
+
+    def test_non_ascii_content_round_trips(self) -> None:
+        """And the value survives, rather than merely not crashing."""
+        state = {"joueur": {"nom": "café", "ville": "Montréal"}}
+
+        new_query, _ = inline_dict_variables("UPDATE t:1 SET state = $state", {"state": state})
+        parsed = json.loads(new_query[len("UPDATE t:1 SET state = ") :])
+
+        assert parsed == state
+
+    def test_backslashes_are_not_collapsed(self) -> None:
+        """A Windows path used to lose one backslash per pair, silently."""
+        state = {"cfg": {"path": "C:\\temp\\x"}}
+
+        new_query, _ = inline_dict_variables("UPDATE t:1 SET state = $state", {"state": state})
+        parsed = json.loads(new_query[len("UPDATE t:1 SET state = ") :])
+
+        assert parsed == state
+
+    def test_regex_backreferences_are_literal(self) -> None:
+        """``\\1`` and ``\\g<0>`` are replacement syntax — they must stay data."""
+        state = {"tpl": {"group": "\\g<0>", "backref": "\\1"}}
+
+        new_query, _ = inline_dict_variables("UPDATE t:1 SET state = $state", {"state": state})
+        parsed = json.loads(new_query[len("UPDATE t:1 SET state = ") :])
+
+        assert parsed == state
