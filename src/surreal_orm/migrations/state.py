@@ -12,6 +12,31 @@ if TYPE_CHECKING:
     from .operations import CreateIndex, Operation
 
 
+def _effective_permissions(permissions: dict[str, str] | None) -> dict[str, str]:
+    """
+    Drop permission entries that only restate SurrealDB's default.
+
+    A table defined without a ``PERMISSIONS`` clause is reported back as
+    ``PERMISSIONS NONE``, which the parser expands to
+    ``{"select": "NONE", "create": "NONE", ...}`` — the server's defaults, not a
+    configured value. Comparing the raw dicts made a database-read state differ
+    from a model state that configures nothing, so the diff re-emitted
+    ``CreateTable`` for every table on every run (#171).
+
+    Normalising both sides also makes an explicit ``NONE`` equal to omitting the
+    clause, which is what it means.
+
+    Args:
+        permissions: The permissions mapping, or None
+
+    Returns:
+        The mapping without its default-valued entries
+    """
+    if not permissions:
+        return {}
+    return {action: rule for action, rule in permissions.items() if str(rule).strip().upper() != "NONE"}
+
+
 @dataclass
 class FieldState:
     """
@@ -370,7 +395,7 @@ class SchemaState:
                 if (
                     current_table.schema_mode != target_table.schema_mode
                     or current_table.changefeed != target_table.changefeed
-                    or current_table.permissions != target_table.permissions
+                    or _effective_permissions(current_table.permissions) != _effective_permissions(target_table.permissions)
                     or current_table.view_query != target_table.view_query
                     or current_table.relation_in != target_table.relation_in
                     or current_table.relation_out != target_table.relation_out

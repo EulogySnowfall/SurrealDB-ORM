@@ -27,6 +27,32 @@ def run_async(coro: Any) -> Any:
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
+async def _introspect_database(ctx: Any) -> Any:
+    """
+    Read the live database schema into a ``SchemaState``.
+
+    ``makemigrations`` needs to know what the database already has, otherwise it
+    diffs against nothing and re-emits the whole schema every run (#171).
+
+    Args:
+        ctx: The click context carrying the connection settings
+
+    Returns:
+        SchemaState describing the current database schema
+    """
+    from ..connection_manager import SurrealDBConnectionManager
+    from ..migrations.db_introspector import DatabaseIntrospector
+
+    SurrealDBConnectionManager.set_connection(
+        url=ctx.obj["url"],
+        user=ctx.obj["user"],
+        password=ctx.obj["password"],
+        namespace=ctx.obj["namespace"],
+        database=ctx.obj["database"],
+    )
+    return await DatabaseIntrospector().introspect()
+
+
 # Only define CLI if click is available
 if click is not None:
 
@@ -91,12 +117,18 @@ if click is not None:
     @click.option("--name", "-n", required=True, help="Migration name")  # type: ignore[untyped-decorator]
     @click.option("--empty", is_flag=True, help="Create empty migration for manual editing")  # type: ignore[untyped-decorator]
     @click.option("--models", "-m", multiple=True, help="Specific model modules to include")  # type: ignore[untyped-decorator]
+    @click.option(  # type: ignore[untyped-decorator]
+        "--from-db/--no-from-db",
+        default=True,
+        help="Diff against the live database schema (default) instead of an empty schema",
+    )
     @click.pass_context  # type: ignore[untyped-decorator]
     def makemigrations(
         ctx: click.Context,
         name: str,
         empty: bool,
         models: tuple[str, ...],
+        from_db: bool,
     ) -> None:
         """Generate migration files from model changes."""
         from ..migrations.generator import MigrationGenerator, generate_empty_migration
@@ -127,9 +159,22 @@ if click is not None:
             click.echo("No models found. Register models by importing them.")
             sys.exit(1)
 
-        # For now, assume current state is empty (first migration)
-        # In a full implementation, we'd load current state from database
-        current_state = SchemaState()
+        # The current state used to be an empty SchemaState, so every table was
+        # re-emitted on every run (#171). It comes from the live database now.
+        if from_db:
+            try:
+                current_state = run_async(_introspect_database(ctx))
+            except Exception as e:
+                # Falling back to an empty schema here would silently reintroduce
+                # the very bug this replaces, so fail and name the way out.
+                click.echo(f"Error reading the database schema: {e}", err=True)
+                click.echo(
+                    "Pass --no-from-db to generate against an empty schema instead (a first migration, or working offline).",
+                    err=True,
+                )
+                sys.exit(1)
+        else:
+            current_state = SchemaState()
 
         # Compute differences
         operations = current_state.diff(desired_state)
