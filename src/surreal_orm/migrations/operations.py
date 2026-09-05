@@ -8,9 +8,12 @@ applied (forwards) or reverted (backwards).
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..types import FieldType
+
+if TYPE_CHECKING:
+    from .state import FieldState
 
 
 def _normalize_field_type(field_type: FieldType | str) -> str:
@@ -56,6 +59,35 @@ def _normalize_field_type(field_type: FieldType | str) -> str:
         f"Must be a FieldType enum value, a valid SurrealDB type string, "
         f"or a generic type like 'array<string>' or 'record<users>'."
     )
+
+
+def _apply_nullable(field_type: str, nullable: bool) -> str:
+    """
+    Wrap a field type in ``option<>`` when the column is optional.
+
+    ``FieldState.nullable`` stopped at the operation boundary: nothing wrapped
+    the type, so an optional model field reached the database as a required
+    column and generated migrations silently lost optionality (#170).
+
+    The wrap is skipped when the type already carries its own optionality —
+    ``option<T>``, or a union with a ``none``/``null`` member — so a hand-written
+    migration is never double-wrapped. Detection mirrors ``parse_define_field``,
+    the other side of the round-trip; a union *without* such a member
+    (``int | string``) is not optional and is wrapped like any other type.
+
+    Args:
+        field_type: The normalized SurrealDB type
+        nullable: Whether the column accepts NONE
+
+    Returns:
+        The type, wrapped in ``option<>`` when that is both needed and absent
+    """
+    if not nullable:
+        return field_type
+    lowered = field_type.lower()
+    if lowered.startswith("option<") or "| null" in lowered or lowered.startswith("none |"):
+        return field_type
+    return f"option<{field_type}>"
 
 
 @dataclass
@@ -221,11 +253,41 @@ class AddField(Operation):
     readonly: bool = False
     value: str | None = None
     comment: str | None = None
+    nullable: bool = False
 
     def __post_init__(self) -> None:
         """Validate field_type on initialization."""
         # Validate the field type (raises ValueError if invalid)
         _normalize_field_type(self.field_type)
+
+    @classmethod
+    def from_field_state(cls, table: str, state: "FieldState") -> "AddField":
+        """
+        Build the operation that defines *state* on *table*.
+
+        Every attribute is wired here and only here. Enumerating them by hand at
+        each call site is what let ``nullable`` go missing from every diff branch
+        and from ``define_table()`` at once.
+
+        Args:
+            table: Name of the table the field belongs to
+            state: The desired field state
+
+        Returns:
+            An ``AddField`` carrying the whole field state
+        """
+        return cls(
+            table=table,
+            name=state.name,
+            field_type=state.field_type,
+            nullable=state.nullable,
+            default=state.default,
+            assertion=state.assertion,
+            encrypted=state.encrypted,
+            flexible=state.flexible,
+            readonly=state.readonly,
+            value=state.value,
+        )
 
     def forwards(self) -> str:
         parts = [f"DEFINE FIELD {self.name} ON {self.table}"]
@@ -233,7 +295,7 @@ class AddField(Operation):
         if self.flexible:
             parts.append("FLEXIBLE")
 
-        normalized_type = _normalize_field_type(self.field_type)
+        normalized_type = _apply_nullable(_normalize_field_type(self.field_type), self.nullable)
         parts.append(f"TYPE {normalized_type}")
 
         # For encrypted fields, use VALUE clause with crypto function
@@ -330,11 +392,50 @@ class AlterField(Operation):
     readonly: bool = False
     value: str | None = None
     # Store previous definition for rollback
+    nullable: bool = False
     previous_type: FieldType | str | None = None
     previous_default: Any = None
     previous_assertion: str | None = None
     previous_flexible: bool = False
     previous_readonly: bool = False
+    previous_nullable: bool = False
+
+    @classmethod
+    def from_field_states(cls, table: str, current: "FieldState", target: "FieldState") -> "AlterField":
+        """
+        Build the operation that moves *current* to *target* on *table*.
+
+        The counterpart to :meth:`AddField.from_field_state`, wiring the target
+        state forwards and the current state into the ``previous_*`` attributes
+        ``backwards()`` needs. Hand-copying these is what left ``FLEXIBLE`` and
+        ``READONLY`` off every generated rollback.
+
+        Args:
+            table: Name of the table the field belongs to
+            current: The field state the database is in
+            target: The field state the models describe
+
+        Returns:
+            An ``AlterField`` carrying both states in full
+        """
+        return cls(
+            table=table,
+            name=target.name,
+            field_type=target.field_type,
+            nullable=target.nullable,
+            default=target.default,
+            assertion=target.assertion,
+            encrypted=target.encrypted,
+            flexible=target.flexible,
+            readonly=target.readonly,
+            value=target.value,
+            previous_type=current.field_type,
+            previous_nullable=current.nullable,
+            previous_default=current.default,
+            previous_assertion=current.assertion,
+            previous_flexible=current.flexible,
+            previous_readonly=current.readonly,
+        )
 
     def __post_init__(self) -> None:
         """Validate field_type and set reversible based on previous state."""
@@ -357,7 +458,7 @@ class AlterField(Operation):
             parts.append("FLEXIBLE")
 
         if self.field_type:
-            normalized_type = _normalize_field_type(self.field_type)
+            normalized_type = _apply_nullable(_normalize_field_type(self.field_type), self.nullable)
             parts.append(f"TYPE {normalized_type}")
 
         if self.encrypted:
@@ -390,7 +491,7 @@ class AlterField(Operation):
         if not self.previous_type:
             return ""
 
-        normalized_prev_type = _normalize_field_type(self.previous_type)
+        normalized_prev_type = _apply_nullable(_normalize_field_type(self.previous_type), self.previous_nullable)
         # OVERWRITE for the same reason as forwards(): a rollback re-defining the
         # previous type is otherwise a silent no-op too.
         parts = [f"DEFINE FIELD OVERWRITE {self.name} ON {self.table}"]
