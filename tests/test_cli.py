@@ -143,7 +143,12 @@ class TestMakeMigrationsCommand:
         assert "No models found" in result.output or result.exit_code != 0
 
     def test_makemigrations_with_model(self, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
-        """Test makemigrations detects model changes."""
+        """Test makemigrations detects model changes.
+
+        Uses ``--no-from-db`` because this test has no database: since #171 the
+        default reads the current schema from the live server, and the point
+        here is only that a model turns into operations.
+        """
         from src.surreal_orm.model_base import BaseSurrealModel, clear_model_registry
 
         clear_model_registry()
@@ -162,6 +167,7 @@ class TestMakeMigrationsCommand:
                 "makemigrations",
                 "--name",
                 "create_user",
+                "--no-from-db",
             ],
         )
         assert result.exit_code == 0
@@ -170,6 +176,121 @@ class TestMakeMigrationsCommand:
 
         # Clean up
         clear_model_registry()
+
+
+class TestMakeMigrationsAgainstDatabase:
+    """Issue #171 — makemigrations diffed against an empty SchemaState.
+
+    It re-emitted every table on every run. The current state now comes from the
+    live database, so an already-migrated schema produces no operations.
+    """
+
+    @patch("src.surreal_orm.cli.commands.run_async")
+    def test_an_already_migrated_schema_produces_no_operations(
+        self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path
+    ) -> None:
+        """A table the database already has is not re-emitted."""
+        from src.surreal_orm.migrations.introspector import introspect_models
+        from src.surreal_orm.model_base import BaseSurrealModel, clear_model_registry
+
+        clear_model_registry()
+
+        class MigratedUser(BaseSurrealModel):
+            id: str | None = None
+            name: str
+
+        # The database reports exactly what the models describe.
+        mock_run_async.side_effect = mock_run_async_factory(introspect_models())
+
+        result = runner.invoke(
+            cli_command,
+            ["--migrations-dir", str(temp_migrations_dir), "makemigrations", "--name", "noop"],
+        )
+
+        clear_model_registry()
+        assert result.exit_code == 0
+        assert "No changes detected" in result.output
+
+    @patch("src.surreal_orm.cli.commands.run_async")
+    def test_a_new_model_is_still_emitted(
+        self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path
+    ) -> None:
+        """A model the database does not have still generates a migration."""
+        from src.surreal_orm.migrations.state import SchemaState
+        from src.surreal_orm.model_base import BaseSurrealModel, clear_model_registry
+
+        clear_model_registry()
+
+        class BrandNewThing(BaseSurrealModel):
+            id: str | None = None
+            label: str
+
+        mock_run_async.side_effect = mock_run_async_factory(SchemaState())  # empty database
+
+        result = runner.invoke(
+            cli_command,
+            ["--migrations-dir", str(temp_migrations_dir), "makemigrations", "--name", "create_thing"],
+        )
+
+        clear_model_registry()
+        assert result.exit_code == 0
+        assert "Created migration" in result.output
+
+    def test_no_from_db_skips_the_database_entirely(self, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
+        """``--no-from-db`` restores the empty-state behaviour, with no connection.
+
+        This is the escape hatch for a true first migration and for offline use —
+        Django does not need a database to generate migrations either.
+        """
+        from src.surreal_orm.model_base import BaseSurrealModel, clear_model_registry
+
+        clear_model_registry()
+
+        class OfflineModel(BaseSurrealModel):
+            id: str | None = None
+            title: str
+
+        # No run_async patch: reaching the database at all would fail here.
+        result = runner.invoke(
+            cli_command,
+            [
+                "--migrations-dir",
+                str(temp_migrations_dir),
+                "makemigrations",
+                "--name",
+                "offline",
+                "--no-from-db",
+            ],
+        )
+
+        clear_model_registry()
+        assert result.exit_code == 0
+        assert "Created migration" in result.output
+
+    @patch("src.surreal_orm.cli.commands.run_async")
+    def test_an_unreachable_database_fails_loudly_and_names_the_escape_hatch(
+        self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path
+    ) -> None:
+        """Falling back to an empty schema silently would be the bug itself."""
+        from src.surreal_orm.model_base import BaseSurrealModel, clear_model_registry
+
+        clear_model_registry()
+
+        class UnreachableModel(BaseSurrealModel):
+            id: str | None = None
+            name: str
+
+        mock_run_async.side_effect = mock_run_async_factory(exception=ConnectionError("refused"))
+
+        result = runner.invoke(
+            cli_command,
+            ["--migrations-dir", str(temp_migrations_dir), "makemigrations", "--name", "boom"],
+        )
+
+        clear_model_registry()
+        assert result.exit_code != 0
+        assert "--no-from-db" in result.output
+        assert "Created migration" not in result.output
 
 
 class TestMigrateCommand:
