@@ -28,6 +28,7 @@ from .fields import (
     LineStringField,
     ManyToMany,
     MultiPointField,
+    OnDelete,
     PointField,
     PolygonField,
     ReferencesField,
@@ -132,6 +133,7 @@ __all__ = [
     # Relations
     "ForeignKey",
     "ManyToMany",
+    "OnDelete",
     "Relation",
     "RelationInfo",
     "get_relation_info",

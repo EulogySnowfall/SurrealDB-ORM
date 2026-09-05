@@ -643,8 +643,13 @@ class TestModelGeneratorReferences:
         assert 'ReferencesField["books"]' in code
         assert "from surreal_orm.fields import ReferencesField" in code
 
-    def test_generates_references_field_with_on_delete(self) -> None:
-        """Model generator produces ReferencesField with ON DELETE."""
+    def test_generates_foreign_key_for_a_scalar_record_reference(self) -> None:
+        """A scalar ``record<T> REFERENCE`` is a single link, so a ForeignKey.
+
+        It used to generate ``ReferencesField``, whose type is
+        ``array<record<T>>`` — so re-introspecting the generated model proposed
+        a destructive scalar→array AlterField on an unedited schema.
+        """
         state = SchemaState(
             tables={
                 "post": TableState(
@@ -663,7 +668,30 @@ class TestModelGeneratorReferences:
         )
         gen = ModelCodeGenerator()
         code = gen.generate(state)
-        assert 'ReferencesField["users", "CASCADE"]' in code
+        assert 'ForeignKey("users", on_delete="CASCADE")' in code
+        assert "from surreal_orm.fields import ForeignKey" in code
+
+    def test_generates_references_field_with_on_delete(self) -> None:
+        """Model generator produces ReferencesField with ON DELETE."""
+        state = SchemaState(
+            tables={
+                "author": TableState(
+                    name="author",
+                    fields={
+                        "books": FieldState(
+                            name="books",
+                            field_type="array<record<books>>",
+                            nullable=True,
+                            reference=True,
+                            on_delete="CASCADE",
+                        ),
+                    },
+                ),
+            }
+        )
+        gen = ModelCodeGenerator()
+        code = gen.generate(state)
+        assert 'ReferencesField["books", "CASCADE"]' in code
 
 
 # ==================== FieldType.REFERENCES ====================
