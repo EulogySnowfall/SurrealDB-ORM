@@ -227,6 +227,30 @@ def _extract_datetime_values(
     return value
 
 
+def _literal_replacement(literal: str) -> Callable[[re.Match[str]], str]:
+    """
+    Build a ``re.sub`` replacement that inserts *literal* verbatim.
+
+    ``re.sub`` reads a replacement **string** as a mini-pattern: ``\\1`` is a
+    backreference, ``\\g<0>`` a group reference, and an unknown escape is an error.
+    JSON is full of both — ``json.dumps`` emits ``\\uXXXX`` for every non-ASCII
+    character and doubles every literal backslash — so passing it directly raises
+    ``bad escape \\u`` on any accented text and silently collapses the backslashes
+    in a Windows path.
+
+    A callable replacement is exempt from that parsing: its return value is used
+    as-is. Taking the text as a parameter (rather than closing over a loop
+    variable) keeps the binding unambiguous.
+
+    Args:
+        literal: The exact text to substitute
+
+    Returns:
+        A replacement callable suitable for :func:`re.sub`
+    """
+    return lambda _match: literal
+
+
 def inline_dict_variables(
     query: str,
     variables: dict[str, Any],
@@ -271,7 +295,7 @@ def inline_dict_variables(
                 json_str = json_str.replace(f'"{marker}"', literal)
 
             # Replace $key with inline JSON (word-boundary to avoid partial matches)
-            query = re.sub(rf"\${re.escape(key)}\b", json_str, query)
+            query = re.sub(rf"\${re.escape(key)}\b", _literal_replacement(json_str), query)
         else:
             remaining[key] = value
     return query, remaining
