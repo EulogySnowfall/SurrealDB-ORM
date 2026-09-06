@@ -842,6 +842,36 @@ class TestInlineParams:
         result = LiveSelectStream._inline_params_static(sql, {"_f0": "admin", "_f1": 18})
         assert result == "LIVE SELECT * FROM users WHERE role = 'admin' AND age >= 18"
 
+    def test_escaped_backslashes_survive_substitution(self) -> None:
+        """``_format_value`` doubles backslashes; ``re.sub`` used to undo that.
+
+        The formatted value went to ``re.sub`` as a *replacement string*, which
+        parses escapes — so ``'C:\\\\temp'`` came back out as ``'C:\\temp'``.
+        SurrealQL then reads ``\\t`` as a tab and the live filter silently
+        matches nothing. ``QuerySet.live()`` feeds user filter values here.
+        """
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        result = LiveSelectStream._inline_params_static("WHERE p = $p", {"p": "C:\\temp\\x"})
+
+        assert result == "WHERE p = 'C:\\\\temp\\\\x'", result
+
+    def test_regex_backreferences_in_a_value_are_literal(self) -> None:
+        """``\\1`` and ``\\g<0>`` are replacement syntax — they must stay data."""
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        result = LiveSelectStream._inline_params_static("WHERE p = $p", {"p": "\\g<0>"})
+
+        assert result == "WHERE p = '\\\\g<0>'", result
+
+    def test_a_later_key_does_not_rewrite_an_earlier_value(self) -> None:
+        """Substitution is a single pass over the original SQL."""
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+        result = LiveSelectStream._inline_params_static("WHERE a = $a AND b = $b", {"a": "cost $b here", "b": "x"})
+
+        assert result == "WHERE a = 'cost $b here' AND b = 'x'", result
+
     def test_longer_key_first(self) -> None:
         """$_f10 should be replaced before $_f1 to avoid partial replacement."""
         from src.surreal_sdk.streaming.live_select import LiveSelectStream

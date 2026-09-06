@@ -373,52 +373,76 @@ class TestConnectionCacheInvalidation:
         SurrealDBConnectionManager._clients.pop("test_cache2", None)
 
 
-class TestInlineDictVariablesEscapes:
-    """``re.sub`` reads its *replacement* as a pattern, not as literal text.
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        ("bmp", {"joueur": {"nom": "café", "ville": "Montréal"}}),
+        ("astral", {"joueur": {"nom": "Zoé 🙂", "emoji": "👨‍👩‍👧"}}),
+        ("backslashes", {"cfg": {"path": "C:\\temp\\x"}}),
+        ("backreferences", {"tpl": {"group": "\\g<0>", "backref": "\\1"}}),
+        ("quotes", {"txt": {"q": 'he said "hi"', "a": "it's"}}),
+    ],
+)
+def test_inlined_json_survives_re_sub_replacement_syntax(label: str, value: dict) -> None:
+    """The JSON reaches the query verbatim, whatever it contains.
 
-    ``json.dumps`` emits ``\\uXXXX`` for any non-ASCII character and doubles every
-    backslash, and ``re.sub`` then tries to interpret those sequences:
-
-        {"nom": "café"}          -> PatternError: bad escape \\u
-        {"path": "C:\\temp"}      -> the doubled backslash is collapsed, silently
-                                    corrupting the value
-
-    So the crash hits any accented text and the corruption hits any Windows path
-    or regex-ish string. Both go through the inlining path added for #55, which
-    exists precisely to carry complex nested data.
+    Passing it to ``re.sub`` as a replacement *string* raised ``re.error`` on
+    accented text and silently collapsed backslashes elsewhere; see
+    :func:`surreal_sdk.utils.substitute_params` for why.
     """
+    prefix = "UPDATE t:1 SET state = "
+    new_query, remaining = inline_dict_variables(f"{prefix}$state", {"state": value})
 
-    def test_non_ascii_content_does_not_raise(self) -> None:
-        """An accent used to abort the whole query with a regex PatternError."""
-        variables = {"state": {"joueur": {"nom": "café"}}}
+    assert new_query.startswith(prefix), new_query
+    assert json.loads(new_query.removeprefix(prefix)) == value
+    assert remaining == {}
 
-        new_query, _ = inline_dict_variables("UPDATE t:1 SET state = $state", variables)
 
-        assert "$state" not in new_query
+def test_astral_characters_are_not_escaped_as_surrogate_pairs() -> None:
+    """Emoji must go out raw, not as ``\\ud83d\\ude42``.
 
-    def test_non_ascii_content_round_trips(self) -> None:
-        """And the value survives, rather than merely not crashing."""
-        state = {"joueur": {"nom": "café", "ville": "Montréal"}}
+    ``json.loads`` accepts a surrogate pair, so a round-trip assertion cannot
+    see this — but SurrealDB 3.x rejects the escape at parse time:
+    ``String contains invalid escape sequence, unicode escape character is not
+    a valid unicode character``. Assert on the emitted text instead.
+    """
+    new_query, _ = inline_dict_variables("UPDATE t:1 SET state = $state", {"state": {"a": {"s": "🙂"}}})
 
-        new_query, _ = inline_dict_variables("UPDATE t:1 SET state = $state", {"state": state})
-        parsed = json.loads(new_query[len("UPDATE t:1 SET state = ") :])
+    assert "🙂" in new_query
+    assert "\\ud83d" not in new_query
 
-        assert parsed == state
 
-    def test_backslashes_are_not_collapsed(self) -> None:
-        """A Windows path used to lose one backslash per pair, silently."""
-        state = {"cfg": {"path": "C:\\temp\\x"}}
+def test_a_later_key_does_not_rewrite_earlier_inlined_json() -> None:
+    """Substitution is a single pass over the original query.
 
-        new_query, _ = inline_dict_variables("UPDATE t:1 SET state = $state", {"state": state})
-        parsed = json.loads(new_query[len("UPDATE t:1 SET state = ") :])
+    Replacing one key at a time re-scanned the text already inserted, so a
+    ``$b`` appearing inside a *string value* of ``$a`` was substituted too — and
+    which one won depended on dict insertion order.
+    """
+    query = "UPDATE t:1 SET a = $a, b = $b"
+    variables = {"a": {"x": {"s": "cost $b here"}}, "b": {"y": [1]}}
 
-        assert parsed == state
+    new_query, _ = inline_dict_variables(query, variables)
 
-    def test_regex_backreferences_are_literal(self) -> None:
-        """``\\1`` and ``\\g<0>`` are replacement syntax — they must stay data."""
-        state = {"tpl": {"group": "\\g<0>", "backref": "\\1"}}
+    assert '"cost $b here"' in new_query, new_query
 
-        new_query, _ = inline_dict_variables("UPDATE t:1 SET state = $state", {"state": state})
-        parsed = json.loads(new_query[len("UPDATE t:1 SET state = ") :])
 
-        assert parsed == state
+def test_a_longer_key_is_not_matched_by_a_shorter_one() -> None:
+    """``$state`` must not match inside ``$state_backup`` (pre-existing guarantee)."""
+    query = "UPDATE t:1 SET a = $state, b = $state_backup"
+    variables = {"state": {"x": {"y": 1}}, "state_backup": {"z": {"w": 2}}}
+
+    new_query, _ = inline_dict_variables(query, variables)
+
+    assert '"y": 1' in new_query
+    assert '"w": 2' in new_query
+
+
+def test_an_unknown_reference_is_left_alone() -> None:
+    """A ``$name`` with no matching variable stays a binding reference."""
+    new_query, remaining = inline_dict_variables(
+        "UPDATE t:1 SET a = $a, b = $untouched", {"a": {"x": {"y": 1}}, "untouched": "simple"}
+    )
+
+    assert "$untouched" in new_query
+    assert remaining == {"untouched": "simple"}

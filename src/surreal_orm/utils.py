@@ -7,6 +7,8 @@ import re
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from surreal_sdk.utils import substitute_params
+
 logger = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -227,30 +229,6 @@ def _extract_datetime_values(
     return value
 
 
-def _literal_replacement(literal: str) -> Callable[[re.Match[str]], str]:
-    """
-    Build a ``re.sub`` replacement that inserts *literal* verbatim.
-
-    ``re.sub`` reads a replacement **string** as a mini-pattern: ``\\1`` is a
-    backreference, ``\\g<0>`` a group reference, and an unknown escape is an error.
-    JSON is full of both — ``json.dumps`` emits ``\\uXXXX`` for every non-ASCII
-    character and doubles every literal backslash — so passing it directly raises
-    ``bad escape \\u`` on any accented text and silently collapses the backslashes
-    in a Windows path.
-
-    A callable replacement is exempt from that parsing: its return value is used
-    as-is. Taking the text as a parameter (rather than closing over a loop
-    variable) keeps the binding unambiguous.
-
-    Args:
-        literal: The exact text to substitute
-
-    Returns:
-        A replacement callable suitable for :func:`re.sub`
-    """
-    return lambda _match: literal
-
-
 def inline_dict_variables(
     query: str,
     variables: dict[str, Any],
@@ -276,29 +254,37 @@ def inline_dict_variables(
     Returns:
         ``(modified_query, remaining_variables)`` tuple.
     """
+    inlined: dict[str, str] = {}
     remaining: dict[str, Any] = {}
     for key, value in variables.items():
-        if _is_complex_value(value):
-            # Extract datetime objects as markers so they become d"..." literals
-            dt_markers: dict[str, str] = {}
-            counter = [0]
-            processed = _extract_datetime_values(value, dt_markers, counter)
-
-            try:
-                json_str = json.dumps(processed, cls=_SurrealJSONEncoder)
-            except (TypeError, ValueError) as e:
-                raise ValueError(f"Failed to serialize variable '{key}' to JSON for inlining: {e}") from e
-
-            # Replace datetime marker strings (with JSON quotes) with
-            # unwrapped SurrealQL d"..." literals.
-            for marker, literal in dt_markers.items():
-                json_str = json_str.replace(f'"{marker}"', literal)
-
-            # Replace $key with inline JSON (word-boundary to avoid partial matches)
-            query = re.sub(rf"\${re.escape(key)}\b", _literal_replacement(json_str), query)
-        else:
+        if not _is_complex_value(value):
             remaining[key] = value
-    return query, remaining
+            continue
+
+        # Extract datetime objects as markers so they become d"..." literals
+        dt_markers: dict[str, str] = {}
+        counter = [0]
+        processed = _extract_datetime_values(value, dt_markers, counter)
+
+        try:
+            # ensure_ascii=False keeps astral characters raw. The default emits
+            # them as UTF-16 surrogate pairs (\ud83d\ude42), which SurrealDB 3.x
+            # rejects at parse time: "String contains invalid escape sequence".
+            json_str = json.dumps(processed, cls=_SurrealJSONEncoder, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Failed to serialize variable '{key}' to JSON for inlining: {e}") from e
+
+        # Replace datetime marker strings (with JSON quotes) with
+        # unwrapped SurrealQL d"..." literals.
+        for marker, literal in dt_markers.items():
+            json_str = json_str.replace(f'"{marker}"', literal)
+
+        inlined[key] = json_str
+
+    # One pass over the original query: substituting key by key would re-scan
+    # the JSON just inserted, so a "$b" inside a string value of $a would be
+    # replaced too, with the outcome depending on dict order.
+    return substitute_params(query, inlined), remaining
 
 
 def retry_on_conflict(
