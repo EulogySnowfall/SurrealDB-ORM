@@ -401,20 +401,10 @@ class SchemaState:
                     or current_table.relation_out != target_table.relation_out
                     or current_table.enforced != target_table.enforced
                 ):
-                    # Recreate table definition (DEFINE TABLE is idempotent)
-                    operations.append(
-                        CreateTable(
-                            name=table_name,
-                            schema_mode=target_table.schema_mode,
-                            table_type=target_table.table_type,
-                            changefeed=target_table.changefeed,
-                            permissions=target_table.permissions or None,
-                            view_query=target_table.view_query,
-                            relation_in=target_table.relation_in,
-                            relation_out=target_table.relation_out,
-                            enforced=target_table.enforced,
-                        )
-                    )
+                    # Redefine the table. A plain DEFINE TABLE is NOT idempotent
+                    # — the server rejects it once the table exists — and its
+                    # rollback would be REMOVE TABLE, destroying every row.
+                    operations.append(CreateTable.from_table_states(current_table, target_table))
 
                 # Fields to add
                 for field_name, field_state in target_table.fields.items():

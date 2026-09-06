@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from ..types import FieldType
 
 if TYPE_CHECKING:
-    from .state import FieldState
+    from .state import FieldState, TableState
 
 
 def _normalize_field_type(field_type: FieldType | str) -> str:
@@ -141,51 +141,148 @@ class CreateTable(Operation):
     relation_in: str | None = None
     relation_out: str | None = None
     enforced: bool = False
+    #: Redefine a table that already exists, instead of creating a new one.
+    #: Set by the diff when a table's definition changed; it also decides what
+    #: ``backwards()`` means — see there.
+    overwrite: bool = False
+    # Previous definition, for a non-destructive rollback of an overwrite
+    previous_schema_mode: str | None = None
+    previous_table_type: str | None = None
+    previous_changefeed: str | None = None
+    previous_permissions: dict[str, str] | None = None
+    previous_view_query: str | None = None
+    previous_relation_in: str | None = None
+    previous_relation_out: str | None = None
+    previous_enforced: bool = False
 
-    def forwards(self) -> str:
+    @classmethod
+    def from_table_states(cls, current: "TableState", target: "TableState") -> "CreateTable":
+        """
+        Build the operation that redefines *current* as *target*.
+
+        Used by the diff when a table's definition changed. Carrying the current
+        state is what lets ``backwards()`` restore it rather than drop the table.
+
+        Args:
+            current: The table definition the database holds
+            target: The definition the models describe
+
+        Returns:
+            A ``CreateTable`` in overwrite mode, carrying both definitions
+        """
+        return cls(
+            name=target.name,
+            schema_mode=target.schema_mode,
+            table_type=target.table_type,
+            changefeed=target.changefeed,
+            permissions=target.permissions or None,
+            view_query=target.view_query,
+            relation_in=target.relation_in,
+            relation_out=target.relation_out,
+            enforced=target.enforced,
+            overwrite=True,
+            previous_schema_mode=current.schema_mode,
+            previous_table_type=current.table_type,
+            previous_changefeed=current.changefeed,
+            previous_permissions=current.permissions or None,
+            previous_view_query=current.view_query,
+            previous_relation_in=current.relation_in,
+            previous_relation_out=current.relation_out,
+            previous_enforced=current.enforced,
+        )
+
+    def _render(
+        self,
+        schema_mode: str | None,
+        table_type: str | None,
+        changefeed: str | None,
+        permissions: dict[str, str] | None,
+        view_query: str | None,
+        relation_in: str | None,
+        relation_out: str | None,
+        enforced: bool,
+        overwrite: bool,
+    ) -> str:
+        """
+        Render one ``DEFINE TABLE`` statement.
+
+        Shared by ``forwards()`` and ``backwards()`` so a rollback cannot drift
+        from the definition it is restoring.
+        """
+        keyword = "DEFINE TABLE OVERWRITE" if overwrite else "DEFINE TABLE"
+
         # Materialized view — different syntax
-        if self.view_query:
-            return f"DEFINE TABLE {self.name} AS ({self.view_query});"
+        if view_query:
+            return f"{keyword} {self.name} AS ({view_query});"
 
-        parts = [f"DEFINE TABLE {self.name}"]
+        parts = [f"{keyword} {self.name}"]
 
         # TYPE clause
-        if self.table_type and self.table_type.upper() == "RELATION":
+        if table_type and table_type.upper() == "RELATION":
             type_clause = "TYPE RELATION"
-            if self.relation_in:
-                type_clause += f" IN {self.relation_in}"
-            if self.relation_out:
-                type_clause += f" OUT {self.relation_out}"
-            if self.enforced:
+            if relation_in:
+                type_clause += f" IN {relation_in}"
+            if relation_out:
+                type_clause += f" OUT {relation_out}"
+            if enforced:
                 type_clause += " ENFORCED"
             parts.append(type_clause)
-        elif self.table_type and self.table_type.lower() not in ("normal", ""):
-            parts.append(f"TYPE {self.table_type.upper()}")
+        elif table_type and table_type.lower() not in ("normal", ""):
+            parts.append(f"TYPE {table_type.upper()}")
 
-        if self.schema_mode:
-            parts.append(self.schema_mode)
+        if schema_mode:
+            parts.append(schema_mode)
 
-        if self.changefeed:
-            parts.append(f"CHANGEFEED {self.changefeed}")
+        if changefeed:
+            parts.append(f"CHANGEFEED {changefeed}")
 
         if self.comment:
             escaped_comment = self.comment.replace("'", "''")
             parts.append(f"COMMENT '{escaped_comment}'")
 
-        sql = " ".join(parts) + ";"
+        # PERMISSIONS is a clause of DEFINE TABLE. It used to be emitted as a
+        # second `DEFINE TABLE ... PERMISSIONS ...`, which SurrealDB rejects once
+        # the table exists ("The table 'x' already exists"), so declared table
+        # permissions never reached the database at all.
+        if permissions:
+            rules = " ".join(f"FOR {action} WHERE {condition}" for action, condition in permissions.items())
+            if rules:
+                parts.append(f"PERMISSIONS {rules}")
 
-        # Add permissions if specified
-        if self.permissions:
-            perm_parts = []
-            for action, condition in self.permissions.items():
-                perm_parts.append(f"FOR {action} WHERE {condition}")
-            if perm_parts:
-                sql += f"\nDEFINE TABLE {self.name} PERMISSIONS {' '.join(perm_parts)};"
+        return " ".join(parts) + ";"
 
-        return sql
+    def forwards(self) -> str:
+        return self._render(
+            self.schema_mode,
+            self.table_type,
+            self.changefeed,
+            self.permissions,
+            self.view_query,
+            self.relation_in,
+            self.relation_out,
+            self.enforced,
+            self.overwrite,
+        )
 
     def backwards(self) -> str:
-        return f"REMOVE TABLE {self.name};"
+        # A table this migration created is removed again. But the diff also
+        # reuses CreateTable to *redefine* an existing table, and dropping it
+        # there destroys every row — so an overwrite rolls back by restoring the
+        # definition it replaced.
+        if not self.overwrite:
+            return f"REMOVE TABLE {self.name};"
+
+        return self._render(
+            self.previous_schema_mode,
+            self.previous_table_type,
+            self.previous_changefeed,
+            self.previous_permissions,
+            self.previous_view_query,
+            self.previous_relation_in,
+            self.previous_relation_out,
+            self.previous_enforced,
+            overwrite=True,
+        )
 
     def describe(self) -> str:
         return f"Create table {self.name}"

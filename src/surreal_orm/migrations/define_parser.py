@@ -369,14 +369,20 @@ def _parse_permissions(raw: str | None) -> dict[str, str]:
         }
 
     permissions: dict[str, str] = {}
-    # Match: FOR <action[, action]> WHERE <condition>
+    # Two group shapes, and the server mixes them in one clause:
+    #   FOR select WHERE $auth.id = id, FOR create, update, delete NONE
+    # The condition form needs the trailing comma stripped — it separates the
+    # groups, not part of the expression — and the keyword form has no WHERE at
+    # all, so a WHERE-only pattern dropped those actions entirely.
     for m in re.finditer(
-        r"FOR\s+([\w\s,]+?)\s+WHERE\s+(.+?)(?=\s+FOR\s+|\s*$)",
+        r"FOR\s+([\w\s,]+?)\s+(?:WHERE\s+(.+?)|(FULL|NONE))(?=\s*,?\s*FOR\s+|\s*$)",
         raw,
         re.IGNORECASE,
     ):
         actions_str = m.group(1).strip()
-        condition = m.group(2).strip()
+        condition = (m.group(2) or m.group(3) or "").strip().rstrip(",").strip()
+        if m.group(3):
+            condition = condition.upper()
         for action in re.split(r"[,\s]+", actions_str):
             action = action.strip().lower()
             if action:
