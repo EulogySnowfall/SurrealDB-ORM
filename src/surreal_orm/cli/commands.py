@@ -122,6 +122,11 @@ if click is not None:
         default=True,
         help="Diff against the live database schema (default) instead of an empty schema",
     )
+    @click.option(  # type: ignore[untyped-decorator]
+        "--drop-missing",
+        is_flag=True,
+        help="Also emit REMOVE TABLE for database tables that have no model (irreversible)",
+    )
     @click.pass_context  # type: ignore[untyped-decorator]
     def makemigrations(
         ctx: click.Context,
@@ -129,10 +134,12 @@ if click is not None:
         empty: bool,
         models: tuple[str, ...],
         from_db: bool,
+        drop_missing: bool,
     ) -> None:
         """Generate migration files from model changes."""
         from ..migrations.generator import MigrationGenerator, generate_empty_migration
         from ..migrations.introspector import introspect_models
+        from ..migrations.operations import DropTable
         from ..migrations.state import SchemaState
 
         migrations_dir = ctx.obj["migrations_dir"]
@@ -178,6 +185,20 @@ if click is not None:
 
         # Compute differences
         operations = current_state.diff(desired_state)
+
+        # A table with no model is not necessarily obsolete: it may be a RELATE
+        # edge table (ModelIntrospector skips Relation fields, so those can only
+        # ever look unmodelled), or belong to a module that simply was not
+        # imported. REMOVE TABLE is irreversible, so it is opt-in — but say what
+        # was skipped, otherwise a genuinely obsolete table is invisible.
+        if not drop_missing:
+            skipped = [op.name for op in operations if isinstance(op, DropTable)]
+            operations = [op for op in operations if not isinstance(op, DropTable)]
+            if skipped:
+                click.echo(f"Skipped {len(skipped)} table(s) present in the database with no model:")
+                for table_name in skipped:
+                    click.echo(f"  - {table_name}")
+                click.echo("Pass --drop-missing to remove them (irreversible).")
 
         if not operations:
             click.echo("No changes detected.")
