@@ -715,6 +715,8 @@ class AlterField(Operation):
     previous_nullable: bool = False
     previous_reference: bool = False
     previous_on_delete: str | None = None
+    previous_value: str | None = None
+    previous_encrypted: bool = False
 
     @classmethod
     def from_field_states(cls, table: str, current: "FieldState", target: "FieldState") -> "AlterField":
@@ -755,6 +757,8 @@ class AlterField(Operation):
             previous_readonly=current.readonly,
             previous_reference=current.reference,
             previous_on_delete=current.on_delete,
+            previous_value=current.value,
+            previous_encrypted=current.encrypted,
         )
 
     def __post_init__(self) -> None:
@@ -826,6 +830,14 @@ class AlterField(Operation):
             parts.append("FLEXIBLE")
 
         parts.append(f"TYPE {normalized_prev_type}")
+
+        # OVERWRITE replaces the whole definition, so a clause with no
+        # previous_* slot is dropped. Losing VALUE is the dangerous one: an
+        # Encrypted column stops hashing and stores plaintext from then on.
+        if self.previous_encrypted:
+            parts.append("VALUE crypto::argon2::generate($value)")
+        elif self.previous_value:
+            parts.append(f"VALUE {self.previous_value}")
 
         if self.previous_default is not None:
             if isinstance(self.previous_default, str):
