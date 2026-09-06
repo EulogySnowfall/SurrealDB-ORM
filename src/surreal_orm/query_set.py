@@ -1870,9 +1870,14 @@ class QuerySet(Generic[T]):
         # Build SET clause
         set_parts = []
         update_vars: dict[str, Any] = {}
+        fk_columns = self.model.get_foreign_key_columns()
         for field, value in data.items():
             validate_identifier(field, "field name")
             var_name = f"_bu{len(update_vars)}"
+            # A record<> column rejects a bound string, exactly as on the single
+            # -record write paths — the coercion was simply never wired here.
+            if field in fk_columns:
+                value = _to_record_link(value, fk_columns[field])
             update_vars[var_name] = value
             set_parts.append(f"{field} = ${var_name}")
         set_clause = ", ".join(set_parts)

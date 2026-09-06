@@ -1250,7 +1250,8 @@ class BaseSurrealModel(BaseModel):
         exclude_fields = {"id"} | self.get_server_fields()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
-        data = self._coerce_foreign_keys(data)
+        # data keeps the original values for signals; only the wire copy is coerced
+        wire_data = self._coerce_foreign_keys(data)
         record_id = self.get_id()
 
         if record_id is None:
@@ -1276,12 +1277,12 @@ class BaseSurrealModel(BaseModel):
         ):
             if tx is not None:
                 start = _start_timer()
-                await tx.merge(thing, data)
+                await tx.merge(thing, wire_data)
                 _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
-                result = await client.merge(thing, data)
+                result = await client.merge(thing, wire_data)
                 _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
                 result_records = result.records
 
@@ -1338,7 +1339,11 @@ class BaseSurrealModel(BaseModel):
         """
         self._check_not_view()
 
-        data_set = self._coerce_foreign_keys({key: value for key, value in data.items()})
+        # The caller's values drive the signals and the post-write setattr; only
+        # the copy that goes on the wire is coerced. Coercing in place assigned a
+        # RecordId back onto a str field, which raised *after* the write.
+        data_set = {key: value for key, value in data.items()}
+        wire_data = self._coerce_foreign_keys(data_set)
 
         record_id = self.get_id()
         if not record_id:
@@ -1364,7 +1369,7 @@ class BaseSurrealModel(BaseModel):
             result: Any
             if self._has_surreal_funcs(data_set):
                 # Use raw query path for SurrealFunc values
-                set_clause, variables = self._build_set_clause(data_set)
+                set_clause, variables = self._build_set_clause(wire_data)
                 if extra_vars:
                     conflicting = set(variables) & set(extra_vars)
                     if conflicting:
@@ -1390,7 +1395,7 @@ class BaseSurrealModel(BaseModel):
                     await self.refresh()
             elif tx is not None:
                 start = _start_timer()
-                result = await tx.merge(thing, data_set)
+                result = await tx.merge(thing, wire_data)
                 _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
                 self._raise_if_no_record_affected(result, thing, tx)
                 # Update local instance with merged data
@@ -1400,7 +1405,7 @@ class BaseSurrealModel(BaseModel):
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
-                result = await client.merge(thing, data_set)
+                result = await client.merge(thing, wire_data)
                 _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
                 # A permission-denied (or missing-record) merge affects no
                 # records. Raise rather than silently returning self, so a

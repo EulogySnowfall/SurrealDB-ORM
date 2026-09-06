@@ -43,10 +43,15 @@ class SurrealJSONEncoder(json.JSONEncoder):
     - time → ISO 8601 string
     - Decimal → float
     - UUID → string
+    - RecordId → "table:id" string
     """
 
     def default(self, obj: Any) -> Any:
         """Encode non-standard types to JSON-serializable values."""
+        # Foreign keys reach the wire as RecordId now, so the JSON protocol has
+        # to know the type too — otherwise every FK save raises TypeError.
+        if isinstance(obj, cbor_module.RecordId):
+            return str(obj)
         if isinstance(obj, datetime):
             return obj.isoformat()
         if isinstance(obj, date):
