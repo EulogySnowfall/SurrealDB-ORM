@@ -90,6 +90,134 @@ def _apply_nullable(field_type: str, nullable: bool) -> str:
     return f"option<{field_type}>"
 
 
+#: The VALUE expression that makes a column an ``Encrypted`` one.
+ARGON2_VALUE = "crypto::argon2::generate($value)"
+
+#: The attributes a ``DEFINE FIELD`` statement carries, in clause order.
+#: ``AddField.forwards``, ``AlterField.forwards`` and ``AlterField.backwards``
+#: are all driven off this one tuple. They used to be three hand-written
+#: renderers, and every clause added to one of them was eventually forgotten in
+#: another — #195 (VALUE) and the DEFAULT divergence below are the same
+#: omission. REFERENCE / ON DELETE is absent: it is a SurrealDB 3.0 clause and
+#: was deliberately not backported to this branch.
+FIELD_DEFINITION_FIELDS = (
+    "field_type",
+    "nullable",
+    "flexible",
+    "value",
+    "default",
+    "assertion",
+    "readonly",
+    "comment",
+)
+
+
+def _previous_attr(name: str) -> str:
+    """
+    Name the ``previous_*`` slot holding *name*'s pre-change value.
+
+    All of them follow the ``previous_<field>`` pattern except the type, which
+    shipped as ``previous_type``. Generated migration files on disk spell it
+    that way, so it stays.
+
+    Args:
+        name: A field-definition attribute name
+
+    Returns:
+        The matching previous slot's attribute name
+    """
+    return "previous_type" if name == "field_type" else f"previous_{name}"
+
+
+def _render_default(default: Any) -> str:
+    """
+    Render a DEFAULT value as SurrealQL.
+
+    A bare Python ``repr`` is wrong three ways: ``True`` is not ``true``, a
+    function call must not be quoted or it becomes a string literal, and an
+    apostrophe inside a quoted literal has to be doubled or the statement will
+    not parse.
+
+    Args:
+        default: The default value, as the model or the database reports it
+
+    Returns:
+        The SurrealQL literal or expression
+    """
+    if isinstance(default, bool):
+        return str(default).lower()
+    if isinstance(default, str):
+        # `time::now()` and `$value` are expressions, not literals. This mirrors
+        # `_parse_default_value`, which returns them as bare strings.
+        if "::" in default or default.startswith("$"):
+            return default
+        return "'" + default.replace("'", "''") + "'"
+    return str(default)
+
+
+def _render_define_field(
+    table: str,
+    name: str,
+    *,
+    overwrite: bool,
+    field_type: "FieldType | str | None" = None,
+    nullable: bool = False,
+    flexible: bool = False,
+    value: str | None = None,
+    default: Any = None,
+    assertion: str | None = None,
+    readonly: bool = False,
+    comment: str | None = None,
+) -> str:
+    """
+    Render one ``DEFINE FIELD`` statement.
+
+    Shared by ``AddField`` and both directions of ``AlterField``, so a rollback
+    cannot render a clause differently from the statement it reverses.
+
+    Args:
+        table: Table the field belongs to
+        name: Field name
+        overwrite: Emit ``DEFINE FIELD OVERWRITE``
+        field_type: Field type; no TYPE clause when absent
+        nullable: Whether the column accepts NONE
+        flexible: FLEXIBLE TYPE
+        value: VALUE expression, already resolved for encrypted columns
+        default: DEFAULT value
+        assertion: ASSERT expression
+        readonly: READONLY
+        comment: COMMENT text
+
+    Returns:
+        The complete statement, semicolon included
+    """
+    keyword = "DEFINE FIELD OVERWRITE" if overwrite else "DEFINE FIELD"
+    parts = [f"{keyword} {name} ON {table}"]
+
+    if flexible:
+        parts.append("FLEXIBLE")
+
+    if field_type:
+        parts.append(f"TYPE {_apply_nullable(_normalize_field_type(field_type), nullable)}")
+
+    if value:
+        parts.append(f"VALUE {value}")
+
+    if default is not None:
+        parts.append(f"DEFAULT {_render_default(default)}")
+
+    if assertion:
+        parts.append(f"ASSERT {assertion}")
+
+    if readonly:
+        parts.append("READONLY")
+
+    if comment:
+        parts.append(f"COMMENT '{comment.replace(chr(39), chr(39) * 2)}'")
+
+    return " ".join(parts) + ";"
+
+
 #: The attributes a ``DEFINE TABLE`` statement carries. ``CreateTable``,
 #: ``AlterTable`` and the renderer are all driven off this one tuple: a clause
 #: added here reaches the forward statement, the rollback and the diff at once,
@@ -588,48 +716,17 @@ class AddField(Operation):
             flexible=state.flexible,
             readonly=state.readonly,
             value=state.value,
+            comment=state.comment,
         )
 
     def forwards(self) -> str:
-        keyword = "DEFINE FIELD OVERWRITE" if self.overwrite else "DEFINE FIELD"
-        parts = [f"{keyword} {self.name} ON {self.table}"]
-
-        if self.flexible:
-            parts.append("FLEXIBLE")
-
-        normalized_type = _apply_nullable(_normalize_field_type(self.field_type), self.nullable)
-        parts.append(f"TYPE {normalized_type}")
-
-        # For encrypted fields, use VALUE clause with crypto function
-        if self.encrypted:
-            parts.append("VALUE crypto::argon2::generate($value)")
-        elif self.value:
-            parts.append(f"VALUE {self.value}")
-
-        if self.default is not None:
-            if isinstance(self.default, str):
-                # Check if it's a function call or variable reference
-                if "::" in self.default or self.default.startswith("$"):
-                    # Server-side function call or variable reference
-                    parts.append(f"DEFAULT {self.default}")
-                else:
-                    parts.append(f"DEFAULT '{self.default.replace(chr(39), chr(39) + chr(39))}'")
-            elif isinstance(self.default, bool):
-                parts.append(f"DEFAULT {str(self.default).lower()}")
-            else:
-                parts.append(f"DEFAULT {self.default}")
-
-        if self.assertion:
-            parts.append(f"ASSERT {self.assertion}")
-
-        if self.readonly:
-            parts.append("READONLY")
-
-        if self.comment:
-            escaped_comment = self.comment.replace("'", "''")
-            parts.append(f"COMMENT '{escaped_comment}'")
-
-        return " ".join(parts) + ";"
+        return _render_define_field(
+            self.table,
+            self.name,
+            overwrite=self.overwrite,
+            **{f: getattr(self, f) for f in FIELD_DEFINITION_FIELDS if f != "value"},
+            value=ARGON2_VALUE if self.encrypted else self.value,
+        )
 
     def backwards(self) -> str:
         return f"REMOVE FIELD {self.name} ON {self.table};"
@@ -695,12 +792,15 @@ class AlterField(Operation):
     value: str | None = None
     # Store previous definition for rollback
     nullable: bool = False
+    comment: str | None = None
     previous_type: FieldType | str | None = None
     previous_default: Any = None
     previous_assertion: str | None = None
     previous_flexible: bool = False
     previous_readonly: bool = False
     previous_nullable: bool = False
+    previous_value: str | None = None
+    previous_comment: str | None = None
 
     @classmethod
     def from_field_states(cls, table: str, current: "FieldState", target: "FieldState") -> "AlterField":
@@ -731,12 +831,18 @@ class AlterField(Operation):
             flexible=target.flexible,
             readonly=target.readonly,
             value=target.value,
+            comment=target.comment,
             previous_type=current.field_type,
             previous_nullable=current.nullable,
             previous_default=current.default,
             previous_assertion=current.assertion,
             previous_flexible=current.flexible,
             previous_readonly=current.readonly,
+            # `encrypted` *is* "VALUE is the argon2 expression"; resolving it
+            # here leaves backwards() with a single VALUE branch instead of a
+            # precedence rule over a state no diff can emit.
+            previous_value=ARGON2_VALUE if current.encrypted else current.value,
+            previous_comment=current.comment,
         )
 
     def __post_init__(self) -> None:
@@ -754,68 +860,29 @@ class AlterField(Operation):
         # `The field 'x' already exists` and leaves the definition untouched, so
         # every AlterField was a no-op. OVERWRITE is create-or-redefine, so it is
         # still correct when the field happens to be missing.
-        parts = [f"DEFINE FIELD OVERWRITE {self.name} ON {self.table}"]
-
-        if self.flexible:
-            parts.append("FLEXIBLE")
-
-        if self.field_type:
-            normalized_type = _apply_nullable(_normalize_field_type(self.field_type), self.nullable)
-            parts.append(f"TYPE {normalized_type}")
-
-        if self.encrypted:
-            parts.append("VALUE crypto::argon2::generate($value)")
-        elif self.value:
-            parts.append(f"VALUE {self.value}")
-
-        if self.default is not None:
-            if isinstance(self.default, str):
-                # Check if it's a function call or variable reference
-                if "::" in self.default or self.default.startswith("$"):
-                    # Server-side function call or variable reference
-                    parts.append(f"DEFAULT {self.default}")
-                else:
-                    parts.append(f"DEFAULT '{self.default.replace(chr(39), chr(39) + chr(39))}'")
-            elif isinstance(self.default, bool):
-                parts.append(f"DEFAULT {str(self.default).lower()}")
-            else:
-                parts.append(f"DEFAULT {self.default}")
-
-        if self.assertion:
-            parts.append(f"ASSERT {self.assertion}")
-
-        if self.readonly:
-            parts.append("READONLY")
-
-        return " ".join(parts) + ";"
+        return _render_define_field(
+            self.table,
+            self.name,
+            overwrite=True,
+            **{f: getattr(self, f) for f in FIELD_DEFINITION_FIELDS if f != "value"},
+            value=ARGON2_VALUE if self.encrypted else self.value,
+        )
 
     def backwards(self) -> str:
         if not self.previous_type:
             return ""
 
-        normalized_prev_type = _apply_nullable(_normalize_field_type(self.previous_type), self.previous_nullable)
-        # OVERWRITE for the same reason as forwards(): a rollback re-defining the
-        # previous type is otherwise a silent no-op too.
-        parts = [f"DEFINE FIELD OVERWRITE {self.name} ON {self.table}"]
-
-        if self.previous_flexible:
-            parts.append("FLEXIBLE")
-
-        parts.append(f"TYPE {normalized_prev_type}")
-
-        if self.previous_default is not None:
-            if isinstance(self.previous_default, str):
-                parts.append(f"DEFAULT '{self.previous_default}'")
-            else:
-                parts.append(f"DEFAULT {self.previous_default}")
-
-        if self.previous_assertion:
-            parts.append(f"ASSERT {self.previous_assertion}")
-
-        if self.previous_readonly:
-            parts.append("READONLY")
-
-        return " ".join(parts) + ";"
+        # OVERWRITE for the same reason as forwards(): a rollback re-defining
+        # the previous type is otherwise a silent no-op too. It also replaces
+        # the *whole* definition, so a clause with no previous_* slot is
+        # dropped — losing VALUE is the dangerous one, an Encrypted column
+        # stops hashing and stores plaintext from then on.
+        return _render_define_field(
+            self.table,
+            self.name,
+            overwrite=True,
+            **{f: getattr(self, _previous_attr(f)) for f in FIELD_DEFINITION_FIELDS},
+        )
 
     def describe(self) -> str:
         return f"Alter field {self.name} on {self.table}"

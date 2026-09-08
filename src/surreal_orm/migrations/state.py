@@ -27,6 +27,7 @@ class FieldState:
         flexible: Whether the field accepts additional types
         readonly: Whether the field is read-only
         value: VALUE clause for computed fields
+        comment: COMMENT text attached to the field
     """
 
     name: str
@@ -38,6 +39,7 @@ class FieldState:
     flexible: bool = False
     readonly: bool = False
     value: str | None = None
+    comment: str | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, FieldState):
@@ -52,6 +54,7 @@ class FieldState:
             and self.flexible == other.flexible
             and self.readonly == other.readonly
             and self.value == other.value
+            and self.comment == other.comment
         )
 
     def has_changed(self, other: "FieldState") -> bool:
