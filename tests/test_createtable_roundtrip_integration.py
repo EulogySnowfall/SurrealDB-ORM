@@ -18,7 +18,7 @@ import pytest
 from src import surreal_orm
 from src.surreal_orm.migrations.db_introspector import DatabaseIntrospector
 from src.surreal_orm.migrations.introspector import introspect_models
-from src.surreal_orm.migrations.operations import AddField, CreateTable
+from src.surreal_orm.migrations.operations import AddField, AlterTable, CreateTable
 from src.surreal_orm.migrations.state import SchemaState, TableState
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
@@ -109,7 +109,7 @@ async def test_redefining_a_table_is_accepted_by_the_server() -> None:
     current.tables[TABLE] = TableState(name=TABLE, permissions={"select": "$auth.id = id"})
     target = SchemaState()
     target.tables[TABLE] = TableState(name=TABLE, permissions={"select": "true"})
-    op = next(o for o in current.diff(target) if isinstance(o, CreateTable))
+    op = next(o for o in current.diff(target) if isinstance(o, AlterTable))
 
     client = await surreal_orm.SurrealDBConnectionManager.get_client()
     response = await client.query(op.forwards())
@@ -129,7 +129,7 @@ async def test_rolling_back_a_redefinition_keeps_the_rows() -> None:
     current.tables[TABLE] = TableState(name=TABLE, permissions={"select": "$auth.id = id"})
     target = SchemaState()
     target.tables[TABLE] = TableState(name=TABLE, permissions={"select": "true"})
-    op = next(o for o in current.diff(target) if isinstance(o, CreateTable))
+    op = next(o for o in current.diff(target) if isinstance(o, AlterTable))
 
     await client.query(op.forwards())
     await client.query(op.backwards())
@@ -138,4 +138,76 @@ async def test_rolling_back_a_redefinition_keeps_the_rows() -> None:
     info = await client.query("INFO FOR DB;")
 
     assert len(rows.all_records) == 1, "the rollback destroyed the data"
+    assert "FOR select WHERE $auth.id = id" in info.first_result.result["tables"][TABLE]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_full_permission_is_stored_as_an_allow() -> None:
+    """``FOR select WHERE FULL`` is accepted, then denies every read."""
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    op = AlterTable(name=TABLE, schema_mode="SCHEMAFULL", permissions={"select": "FULL"})
+
+    response = await client.query(op.forwards())
+    assert [r.status.value for r in response.results] == ["OK"]
+
+    info = await client.query("INFO FOR DB;")
+    stored = info.first_result.result["tables"][TABLE]
+
+    assert "FOR select FULL" in stored, stored
+    assert "WHERE FULL" not in stored, stored
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_an_orm_table_type_does_not_reach_the_server() -> None:
+    """``TYPE USER`` is a parse error, so the whole migration aborts."""
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    current = TableState(name=TABLE, schema_mode="SCHEMALESS", table_type="user")
+    target = TableState(name=TABLE, schema_mode="SCHEMAFULL", table_type="user")
+
+    response = await client.query(AlterTable.from_table_states(current, target).forwards())
+
+    assert [r.status.value for r in response.results] == ["OK"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_redefining_a_view_keeps_the_view() -> None:
+    """An overwrite with no AS clause turns the view into a plain table."""
+    # SurrealDB rejects a view whose source table does not exist.
+    await _apply_model_schema()
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    view = f"{TABLE}_v"
+    await client.query(f"REMOVE TABLE IF EXISTS {view}; DEFINE TABLE {view} AS (SELECT n FROM {TABLE});")
+
+    current = TableState(name=view, schema_mode="SCHEMALESS", view_query=f"SELECT n FROM {TABLE}")
+    target = TableState(name=view, schema_mode="SCHEMAFULL", view_query=f"SELECT n FROM {TABLE}")
+    await client.query(AlterTable.from_table_states(current, target).forwards())
+
+    info = await client.query("INFO FOR DB;")
+    stored = info.first_result.result["tables"][view]
+    await client.query(f"REMOVE TABLE IF EXISTS {view};")
+
+    assert "AS SELECT" in stored, stored
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_reapplying_the_schema_is_not_an_error() -> None:
+    """A plain second DEFINE TABLE is rejected once the table exists.
+
+    ``define_table()`` is a main-only API; here the same invariant is that the
+    operations the executor emits can be applied twice, which is what a
+    re-``migrate`` does.
+    """
+    await _apply_model_schema()
+
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    state = introspect_models([Guarded]).tables[TABLE]
+    response = await client.query(AlterTable.from_table_state(state).forwards())
+
+    assert [r.status.value for r in response.results] == ["OK"]
+
+    info = await client.query("INFO FOR DB;")
     assert "FOR select WHERE $auth.id = id" in info.first_result.result["tables"][TABLE]

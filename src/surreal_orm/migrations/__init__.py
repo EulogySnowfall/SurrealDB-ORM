@@ -31,6 +31,7 @@ from .model_generator import ModelCodeGenerator
 from .operations import (
     AddField,
     AlterField,
+    AlterTable,
     CreateIndex,
     CreateTable,
     DataMigration,
@@ -57,6 +58,7 @@ __all__ = [
     # Migrations
     "Migration",
     "Operation",
+    "AlterTable",
     "CreateTable",
     "DropTable",
     "AddField",

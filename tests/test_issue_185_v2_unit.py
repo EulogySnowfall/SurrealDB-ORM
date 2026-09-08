@@ -12,14 +12,14 @@ a state that compares unequal to a model configuring nothing::
 
     db.permissions    = {'select': 'NONE', 'create': 'NONE', 'update': 'NONE', 'delete': 'NONE'}
     model.permissions = {}
-    -> ['CreateTable']
+    -> ['AlterTable']
 
 This lands after the #179 backport on purpose: diffing against the database while
 the model side still lost optionality would have proposed a phantom ``AlterField``
 on every run.
 """
 
-from src.surreal_orm.migrations.operations import CreateTable
+from src.surreal_orm.migrations.operations import AlterTable
 from src.surreal_orm.migrations.state import SchemaState, TableState
 
 #: What SurrealDB 2.6.x reports for a table defined with no PERMISSIONS clause.
@@ -41,22 +41,22 @@ class TestDefaultPermissionsAreNotAChange:
         """The database's default block equals a model that configures nothing."""
         current, target = _states(SURREAL_DEFAULT_PERMISSIONS, {})
 
-        assert [op for op in current.diff(target) if isinstance(op, CreateTable)] == []
+        assert [op for op in current.diff(target) if isinstance(op, AlterTable)] == []
 
     def test_explicitly_setting_none_is_also_the_default(self) -> None:
         """Spelling out NONE is the same schema, so it is not a change either."""
         current, target = _states(SURREAL_DEFAULT_PERMISSIONS, {"select": "NONE"})
 
-        assert [op for op in current.diff(target) if isinstance(op, CreateTable)] == []
+        assert [op for op in current.diff(target) if isinstance(op, AlterTable)] == []
 
     def test_a_real_permission_still_diffs(self) -> None:
         """A configured rule must still be detected against the default block."""
         current, target = _states(SURREAL_DEFAULT_PERMISSIONS, {"select": "$auth.id = id"})
 
-        assert [op for op in current.diff(target) if isinstance(op, CreateTable)]
+        assert [op for op in current.diff(target) if isinstance(op, AlterTable)]
 
     def test_removing_a_permission_still_diffs(self) -> None:
         """Dropping a configured rule is a change in the other direction."""
         current, target = _states({"select": "$auth.id = id"}, {})
 
-        assert [op for op in current.diff(target) if isinstance(op, CreateTable)]
+        assert [op for op in current.diff(target) if isinstance(op, AlterTable)]
