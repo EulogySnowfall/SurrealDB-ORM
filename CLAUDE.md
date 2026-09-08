@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: September 2026 (0.33.1)
+> Context document for Claude AI - Last updated: September 2026 (0.33.2)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.33.1 (Beta) — SurrealDB 3.2+ required
+## Current Version: 0.33.2 (Beta) — SurrealDB 3.2+ required
 
 ### Branch Strategy
 
@@ -18,6 +18,37 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.2.4**  | 0.33.x      | Active development              |
 | `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.33.2
+
+Three migration defects found reviewing 0.33.1 (#194, #196, #197). Two produce a
+*wrong answer* rather than an error, which is what makes them the dangerous kind.
+
+- **Permissions never reached the database** — the clause was a second
+  `DEFINE TABLE`, rejected once the table exists. **`FULL` was a silent deny**:
+  re-emitted as `FOR select WHERE FULL`, which the server accepts and evaluates
+  as a field reference resolving to `NONE`. A world-readable table became
+  unreadable. Both fixed; `FULL`/`NONE` render as keywords.
+- **Redefinition is `AlterTable`, not a flag on `CreateTable`.** The old path
+  rolled back with `REMOVE TABLE` — a permission change had a rollback that
+  destroyed every row, and reported `reversible = True`. An `AlterTable` built
+  without a previous definition is deliberately irreversible: a bare
+  `DEFINE TABLE OVERWRITE t;` resets the table to
+  `TYPE ANY SCHEMALESS PERMISSIONS NONE`.
+- **One renderer per statement kind.** `AddField.forwards`,
+  `AlterField.forwards` and `AlterField.backwards` were three hand-written
+  copies, and every clause added to one was eventually forgotten in another —
+  `REFERENCE` (#170), `VALUE` (#195) and `DEFAULT` (#196) are the same omission.
+  They share `_render_define_field` now, driven off `FIELD_DEFINITION_FIELDS`;
+  `CreateTable`/`AlterTable` likewise share `_render_define_table` off
+  `TABLE_DEFINITION_FIELDS`.
+- **`makemigrations` holds back irreversible removals** unless `--drop-missing`
+  is passed. `split_destructive()` partitions on `Operation.reversible` rather
+  than enumerating classes, so the next irreversible operation does not have to
+  be remembered there. `schemadiff` shares the partition — the two commands used
+  to disagree about the same database.
+- **Known limitation:** migrations generated between 0.32.6 and 0.33.1 carry no
+  `previous_value`, so their rollback still drops `VALUE`.
 
 ### What's New in 0.33.1
 

@@ -37,6 +37,63 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.33.2
+
+**Bug fix release** — three migration defects found reviewing what 0.33.1 shipped. Two are the
+dangerous kind: they produce a *wrong answer* rather than an error.
+
+- **Table permissions now reach the database.** The `PERMISSIONS` clause was emitted as a second
+  `DEFINE TABLE`, which SurrealDB rejects once the table exists, so a model declaring
+  `permissions={...}` either failed loudly (0.33.1) or silently stored `PERMISSIONS NONE`.
+
+- **`FULL` is no longer written as a silent deny.** Re-emitting a table defined with
+  `FOR select FULL` produced `FOR select WHERE FULL`, which SurrealDB accepts and then evaluates as
+  a field reference — it resolves to `NONE`, and a world-readable table becomes unreadable with no
+  error anywhere:
+
+  ```
+  DEFINE TABLE pw PERMISSIONS FOR select WHERE FULL;   -- status OK
+  RETURN !!FULL;                                       -- false
+  ```
+
+- **Rolling back a table change no longer drops the table.** The diff reused `CreateTable`, whose
+  rollback is `REMOVE TABLE`, so a migration that changed one permission had a rollback that
+  destroyed every row — and reported itself reversible. Redefinition is now `AlterTable`, which
+  carries the definition it replaced and restores it.
+
+- **A rollback renders a field exactly as the statement it reverses does.** `backwards()` quoted
+  every `DEFAULT`, so `time::now()` came back as the string `'time::now()'`, `True` as `True`
+  rather than `true`, and an apostrophe produced a parse error. It also dropped the `VALUE` clause
+  entirely, which stopped an `Encrypted` column hashing and stored plaintext from then on.
+
+- **Materialized views, `TYPE USER` tables, `COMMENT`s and relation lists** survive a redefinition
+  instead of being flattened, rejected as a parse error, silently dropped, or rendered as
+  `OUT ['a', 'b']`.
+
+### Behaviour change
+
+`makemigrations` no longer writes irreversible removals by default. A database object with no model
+is not necessarily obsolete — a `RELATE` edge table, an analyzer, the migration history, or a module
+that simply was not imported all look identical to a deleted model. Those operations are now
+reported and held back:
+
+```
+$ surreal-orm makemigrations
+Skipped 2 irreversible operation(s) with no model to justify them:
+  - Drop table has_player
+  - Remove analyzer english
+Pass --drop-missing to apply them (irreversible).
+```
+
+Use `--drop-missing` to opt in.
+
+### Known limitation
+
+Migration files generated between 0.32.6 and 0.33.1 carry no `previous_value`, so their rollback
+still drops the `VALUE` clause and nothing warns. Regenerate them before relying on it.
+
+---
+
 ## What's New in 0.33.1
 
 **Bug fix release (#171).** `makemigrations` regenerated the whole schema on every run,

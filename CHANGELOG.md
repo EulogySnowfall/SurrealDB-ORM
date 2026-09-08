@@ -6,6 +6,122 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.33.2] - 2026-09-07
+
+**Bug fix release.** Three migration defects, all found reviewing what 0.33.1
+shipped. Two of them are the dangerous kind: they produce a *wrong answer*
+rather than an error.
+
+### Fixed — Migrations
+
+- **Table permissions never reached the database (#194).** The `PERMISSIONS`
+  clause was emitted as a *second* `DEFINE TABLE`, which SurrealDB rejects once
+  the table exists (`The table 'x' already exists`). Since 0.33.1 started
+  surfacing statement errors, the first migration of any model declaring
+  `permissions={...}` aborted; before that it failed silently and the server
+  stored `PERMISSIONS NONE`.
+
+- **`FULL` was written as a silent deny (#194).** Reading a table defined with
+  `FOR select FULL` back and re-emitting it produced
+  `FOR select WHERE FULL`. SurrealDB accepts that, evaluates `FULL` as a field
+  reference, gets `NONE`, and denies — a world-readable table became unreadable
+  with no error anywhere:
+
+  ```
+  DEFINE TABLE pw PERMISSIONS FOR select WHERE FULL;   -- status OK
+  RETURN !!FULL;                                       -- false
+  ```
+
+  `FULL` and `NONE` are rendered as keywords now.
+
+- **Redefining a table is `AlterTable`, not `CreateTable(overwrite=True)`.** The
+  diff reused `CreateTable`, whose `backwards()` is `REMOVE TABLE`: a migration
+  that changed one permission had a rollback that dropped the table and every
+  row in it, and reported `reversible = True`. An `AlterTable` carries the
+  definition it replaced and restores it; built without one it is *not*
+  reversible, because a bare `DEFINE TABLE OVERWRITE t;` resets the table to
+  `TYPE ANY SCHEMALESS PERMISSIONS NONE` rather than restoring anything.
+
+- **`TYPE USER` reached the DDL (#194).** `USER`, `STREAM` and `HASH` classify a
+  model; SurrealDB accepts only `NORMAL`, `RELATION` and `ANY`, and answered
+  ``Parse error: Unexpected token `USER` ``. Any change to a USER table was
+  unmigratable through `makemigrations`.
+
+- **A materialized view was flattened into a plain table (#194).**
+  `ModelIntrospector` never populated `view_query`, so a view model diffed on
+  every run and the redefinition it emitted carried no `AS` clause.
+
+- **A rollback rendered `DEFAULT` differently from the statement it reverses
+  (#196).** `AlterField.backwards()` single-quoted every string with no function
+  detection, no quote escaping and Python `str()` for booleans:
+
+  ```
+  DEFAULT 'time::now()'   the function became a string literal
+  DEFAULT True            not a SurrealDB boolean
+  DEFAULT 'it's'          a parse error — the rollback fails
+  ```
+
+  `AddField.forwards`, `AlterField.forwards` and `AlterField.backwards` now
+  render through one shared function, so a clause cannot be added to one
+  direction and forgotten in another.
+
+- **`AlterField.backwards()` dropped the `VALUE` clause (#195, #196).**
+  `DEFINE FIELD OVERWRITE` replaces the whole definition, so rolling back an
+  alter on an `Encrypted` column stopped it hashing and stored plaintext from
+  then on. Computed fields lost their expression the same way.
+
+- **The permissions parser mis-read what the server reports (#194).** A
+  condition containing a quoted `FOR` (`label = 'FOR sale'`) truncated at the
+  quote; a keyword inside an expression ended the clause, so
+  `FOR select WHERE meta.type != NONE` left the condition as `meta.` and the
+  table type as `!= none`. Parsing an 80 KB clause also took 26 s; it takes
+  0.02 s.
+
+- **`COMMENT` and relation lists (#194, #196).** A table or field comment was
+  dropped in both directions of an alter, and `relation_out=["a", "b"]` — the
+  documented config form — rendered as `OUT ['a', 'b']` instead of
+  `OUT a | b`.
+
+- **`define_table()` was never idempotent (#194).** A second call failed with
+  `already exists` and the error was swallowed, so a changed `PERMISSIONS`
+  clause never reached an existing table. It emits the `OVERWRITE` form and
+  checks per-statement status now.
+
+### Changed — CLI
+
+- **`makemigrations` no longer writes irreversible removals by default
+  (#197).** Diffing against the live database, which became the default in
+  0.33.1, made `diff()`'s removal branches reachable — and they fire for every
+  database object no model can declare: `RELATE` edge tables (`Relation` fields
+  are deliberately skipped by the introspector), the migration history,
+  analyzers and APIs the model introspector never produces, and the `in`/`out`
+  columns SurrealDB defines on a `TYPE RELATION` table. Those operations are
+  reported and held back; `--drop-missing` opts in.
+
+  **This is a behaviour change**: since 0.33.1 removing a model produced a
+  `REMOVE TABLE`; it now needs the flag.
+
+- **`schemadiff` and `makemigrations` agree about the same database.**
+  `schemadiff` reported `Drop table has_player` while `makemigrations` said
+  `No changes detected`, so a CI gate on `schemadiff` failed permanently on
+  every RELATE edge table.
+
+### Known limitation
+
+Migration files generated between 0.32.6 and 0.33.1 carry no `previous_value`,
+so rolling one of them back still emits an `OVERWRITE` with no `VALUE` clause
+and nothing warns. An `Encrypted` column rolled back through such a file stops
+hashing. Regenerate those migrations, or add the clause by hand, before relying
+on their rollback.
+
+### Internal
+
+- `click` is a development dependency, so the CLI tests stop skipping in CI.
+- `MIGRATIONS_TABLE` moved to `constants.py`; `state.py` is pure data and was
+  importing the executor, and through it the connection manager, for one string.
+
+---
+
 ## [0.33.1] - 2026-09-05
 
 **Bug fix release.** `makemigrations` regenerated the whole schema on every run,
