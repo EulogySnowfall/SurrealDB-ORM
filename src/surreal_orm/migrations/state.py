@@ -27,6 +27,9 @@ class FieldState:
         flexible: Whether the field accepts additional types
         readonly: Whether the field is read-only
         value: VALUE clause for computed fields
+        reference: SurrealDB 3.0 REFERENCE clause
+        on_delete: ON DELETE strategy for a REFERENCE column
+        comment: COMMENT text attached to the field
     """
 
     name: str
@@ -40,6 +43,7 @@ class FieldState:
     value: str | None = None
     reference: bool = False
     on_delete: str | None = None
+    comment: str | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, FieldState):
@@ -56,6 +60,7 @@ class FieldState:
             and self.value == other.value
             and self.reference == other.reference
             and self.on_delete == other.on_delete
+            and self.comment == other.comment
         )
 
     def has_changed(self, other: "FieldState") -> bool:

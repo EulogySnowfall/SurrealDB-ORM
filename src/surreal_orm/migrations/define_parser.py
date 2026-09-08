@@ -211,6 +211,15 @@ def parse_define_field(statement: str) -> FieldState:
     # Parse ASSERT clause
     assertion = clauses.get("ASSERT") or None
 
+    # Parse COMMENT clause — echoed back single-quoted, with '' for a quote
+    comment: str | None = None
+    raw_comment = clauses.get("COMMENT")
+    if raw_comment:
+        raw_comment = raw_comment.strip()
+        if raw_comment.startswith("'") and raw_comment.endswith("'") and len(raw_comment) >= 2:
+            raw_comment = raw_comment[1:-1]
+        comment = raw_comment.replace("''", "'")
+
     # Parse REFERENCE clause (SurrealDB 3.0)
     reference = "REFERENCE" in clauses
     on_delete: str | None = None
@@ -233,6 +242,7 @@ def parse_define_field(statement: str) -> FieldState:
         value=value_expr,
         reference=reference,
         on_delete=on_delete,
+        comment=comment,
     )
 
 
