@@ -204,15 +204,13 @@ class LiveSelectStream:
 
     @staticmethod
     def _inline_params_static(sql: str, params: dict[str, Any]) -> str:
-        """Replace $param references with inline values in the SQL string.
+        r"""Replace $param references with inline values in the SQL string.
 
-        Substitution goes through :func:`substitute_params`, which inserts each
-        rendered value verbatim and in a single pass. Verbatim matters here
-        because ``_format_value`` deliberately doubles backslashes: the previous
-        ``re.sub`` collapsed them straight back, SurrealQL read ``\t`` as a tab,
-        and the live filter silently matched nothing. Sorting keys by length is
-        no longer needed — the reference pattern is greedy, so ``$_f1`` cannot
-        match inside ``$_f10``.
+        Verbatim insertion is what matters here: ``_format_value`` deliberately
+        doubles backslashes, and the previous ``re.sub`` replacement-string
+        parsing collapsed them straight back, so SurrealQL read ``\t`` as a tab
+        and the live filter silently matched nothing. See
+        :func:`~surreal_sdk.utils.substitute_params`.
         """
         rendered = {key: LiveSelectStream._format_value(value) for key, value in params.items()}
         return substitute_params(sql, rendered)

@@ -872,8 +872,13 @@ class TestInlineParams:
 
         assert result == "WHERE a = 'cost $b here' AND b = 'x'", result
 
-    def test_longer_key_first(self) -> None:
-        """$_f10 should be replaced before $_f1 to avoid partial replacement."""
+    def test_a_shorter_key_does_not_match_inside_a_longer_reference(self) -> None:
+        r"""``$_f1`` must not match the prefix of ``$_f10``.
+
+        This used to be guaranteed by sorting the keys longest-first. It now
+        falls out of the greedy ``\w+`` in the shared reference pattern, which
+        captures the whole identifier — do not reintroduce the sort.
+        """
         from src.surreal_sdk.streaming.live_select import LiveSelectStream
 
         sql = "WHERE x = $_f1 AND y = $_f10"

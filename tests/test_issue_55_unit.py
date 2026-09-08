@@ -374,16 +374,16 @@ class TestConnectionCacheInvalidation:
 
 
 @pytest.mark.parametrize(
-    ("label", "value"),
+    "value",
     [
-        ("bmp", {"joueur": {"nom": "café", "ville": "Montréal"}}),
-        ("astral", {"joueur": {"nom": "Zoé 🙂", "emoji": "👨‍👩‍👧"}}),
-        ("backslashes", {"cfg": {"path": "C:\\temp\\x"}}),
-        ("backreferences", {"tpl": {"group": "\\g<0>", "backref": "\\1"}}),
-        ("quotes", {"txt": {"q": 'he said "hi"', "a": "it's"}}),
+        pytest.param({"joueur": {"nom": "café", "ville": "Montréal"}}, id="bmp"),
+        pytest.param({"joueur": {"nom": "Zoé 🙂", "emoji": "👨‍👩‍👧"}}, id="astral"),
+        pytest.param({"cfg": {"path": "C:\\temp\\x"}}, id="backslashes"),
+        pytest.param({"tpl": {"group": "\\g<0>", "backref": "\\1"}}, id="backreferences"),
+        pytest.param({"txt": {"q": 'he said "hi"', "a": "it's"}}, id="quotes"),
     ],
 )
-def test_inlined_json_survives_re_sub_replacement_syntax(label: str, value: dict) -> None:
+def test_inlined_json_survives_re_sub_replacement_syntax(value: dict) -> None:
     """The JSON reaches the query verbatim, whatever it contains.
 
     Passing it to ``re.sub`` as a replacement *string* raised ``re.error`` on
@@ -427,17 +427,6 @@ def test_a_later_key_does_not_rewrite_earlier_inlined_json() -> None:
     assert '"cost $b here"' in new_query, new_query
 
 
-def test_a_longer_key_is_not_matched_by_a_shorter_one() -> None:
-    """``$state`` must not match inside ``$state_backup`` (pre-existing guarantee)."""
-    query = "UPDATE t:1 SET a = $state, b = $state_backup"
-    variables = {"state": {"x": {"y": 1}}, "state_backup": {"z": {"w": 2}}}
-
-    new_query, _ = inline_dict_variables(query, variables)
-
-    assert '"y": 1' in new_query
-    assert '"w": 2' in new_query
-
-
 def test_an_unknown_reference_is_left_alone() -> None:
     """A ``$name`` with no matching variable stays a binding reference."""
     new_query, remaining = inline_dict_variables(
@@ -446,3 +435,50 @@ def test_an_unknown_reference_is_left_alone() -> None:
 
     assert "$untouched" in new_query
     assert remaining == {"untouched": "simple"}
+
+
+def test_an_unreferenced_complex_variable_stays_a_binding() -> None:
+    """A complex value the query never mentions must not vanish.
+
+    It used to be serialized, matched against nothing, and then dropped from
+    both the query and the returned bindings — silently, and after paying for
+    the serialization.
+    """
+    query = "UPDATE t:1 SET a = 1"
+    variables = {"state": {"x": {"y": 1}}}
+
+    new_query, remaining = inline_dict_variables(query, variables)
+
+    assert new_query == query
+    assert remaining == variables
+
+
+def test_a_key_that_is_not_an_identifier_stays_a_binding() -> None:
+    """``$my-var`` is ``$my`` followed by ``-var`` to SurrealDB's lexer."""
+    new_query, remaining = inline_dict_variables("UPDATE t:1 SET a = $my-var", {"my-var": {"x": {"y": 1}}})
+
+    assert new_query == "UPDATE t:1 SET a = $my-var"
+    assert remaining == {"my-var": {"x": {"y": 1}}}
+
+
+def test_a_lone_surrogate_raises_the_documented_error() -> None:
+    """``ensure_ascii=False`` lets it past ``json.dumps``.
+
+    Without the explicit encode it surfaced much later, as a
+    ``UnicodeEncodeError`` from inside the CBOR encoder, instead of the
+    ``ValueError`` this function documents.
+    """
+    with pytest.raises(ValueError, match="Failed to serialize variable 'state'"):
+        inline_dict_variables("UPDATE t:1 SET state = $state", {"state": {"x": {"s": "ab\udcff"}}})
+
+
+def test_datetimes_become_surql_literals() -> None:
+    """Every marker is expanded, in one pass over the payload."""
+    from datetime import UTC, datetime
+
+    value = {"rows": [{"at": datetime(2026, 1, 2, 3, 4, tzinfo=UTC)} for _ in range(3)]}
+
+    new_query, _ = inline_dict_variables("UPDATE t:1 SET state = $state", {"state": value})
+
+    assert new_query.count('d"2026-01-02T03:04:00+00:00"') == 3
+    assert "__SURQL_DT_" not in new_query
