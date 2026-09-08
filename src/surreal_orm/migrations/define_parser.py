@@ -27,6 +27,10 @@ _FIELD_KEYWORDS = [
     "TYPE",
 ]
 
+# The four actions a table PERMISSIONS clause can govern, in the order
+# SurrealDB reports them.
+_PERMISSION_ACTIONS = ("select", "create", "update", "delete")
+
 # Keywords that delimit clauses in a DEFINE TABLE statement.
 _TABLE_KEYWORDS = [
     "SCHEMAFULL",
@@ -127,8 +131,12 @@ def _consume_until_keyword(text: str, keywords: list[str]) -> tuple[str, str]:
         elif ch == ">":
             depth_angle -= 1
 
-        # Only check for keyword boundaries at depth 0
-        if depth_paren == 0 and depth_angle == 0:
+        # Only check for keyword boundaries at depth 0, and only where a clause
+        # could actually start: after whitespace. Without the left-hand check a
+        # keyword appearing inside an expression ended the clause — `PERMISSIONS
+        # FOR select WHERE meta.type != NONE` was cut at `type`, leaving the
+        # condition as `meta.` and the table type as `!= none`.
+        if depth_paren == 0 and depth_angle == 0 and (i == 0 or text[i - 1] in (" ", "\t", "\n")):
             upper_rest = text[i:].upper()
             for kw in keywords:
                 if upper_rest.startswith(kw):
@@ -333,6 +341,15 @@ def parse_define_table(statement: str) -> dict[str, Any]:
     # Permissions
     permissions = _parse_permissions(clauses.get("PERMISSIONS"))
 
+    # Comment — the server echoes it back single-quoted, with '' for a quote
+    comment: str | None = None
+    raw_comment = clauses.get("COMMENT")
+    if raw_comment:
+        raw_comment = raw_comment.strip()
+        if raw_comment.startswith("'") and raw_comment.endswith("'") and len(raw_comment) >= 2:
+            raw_comment = raw_comment[1:-1]
+        comment = raw_comment.replace("''", "'")
+
     # Materialized view (AS SELECT ... or AS (SELECT ...))
     # We re-extract from the raw body because _extract_clauses may split on
     # ``AS`` tokens inside the view query itself (e.g. ``count() AS total``).
@@ -359,50 +376,112 @@ def parse_define_table(statement: str) -> dict[str, Any]:
         "relation_in": relation_in,
         "relation_out": relation_out,
         "enforced": enforced,
+        "comment": comment,
     }
 
 
+def _split_permission_groups(raw: str) -> list[str]:
+    """Split a PERMISSIONS clause into its ``FOR ...`` groups.
+
+    Scanning rather than matching a regex, so that a ``FOR`` inside a quoted
+    string or a parenthesised sub-expression does not start a new group. The
+    regex this replaces also backtracked quadratically on a long run of ``FOR``
+    tokens.
+
+    Args:
+        raw: The clause body, without the ``PERMISSIONS`` keyword
+
+    Returns:
+        One string per group, each still starting with ``FOR``
+    """
+    groups: list[str] = []
+    start: int | None = None
+    depth = 0
+    in_quote = False
+    i = 0
+
+    while i < len(raw):
+        ch = raw[i]
+
+        if ch == "'" and not (in_quote and i > 0 and raw[i - 1] == "\\"):
+            in_quote = not in_quote
+            i += 1
+            continue
+        if in_quote:
+            i += 1
+            continue
+
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+
+        # A group starts at a `FOR` token: at depth 0, preceded by nothing, a
+        # separator or whitespace, and followed by whitespace.
+        if (
+            depth == 0
+            and raw[i : i + 3].upper() == "FOR"
+            and (i == 0 or raw[i - 1] in " \t\n,")
+            and i + 3 < len(raw)
+            and raw[i + 3] in " \t\n"
+        ):
+            if start is not None:
+                groups.append(raw[start:i])
+            start = i
+
+        i += 1
+
+    if start is not None:
+        groups.append(raw[start:])
+
+    return groups
+
+
 def _parse_permissions(raw: str | None) -> dict[str, str]:
-    """Parse a PERMISSIONS clause into a dict of action → condition.
+    """Parse a PERMISSIONS clause into a dict of action → rule.
+
+    A rule is either a condition expression or one of the keywords ``FULL`` /
+    ``NONE``, kept uppercase so the renderer can tell them apart from an
+    expression — ``FOR select WHERE FULL`` is not the same statement as
+    ``FOR select FULL``: the first evaluates ``FULL`` as a field reference,
+    gets ``NONE``, and denies.
 
     Handles formats like:
-    - ``FULL`` → {}
+    - ``FULL`` → {"select": "FULL", "create": "FULL", ...}
     - ``NONE`` → {"select": "NONE", "create": "NONE", ...}
-    - ``FOR select WHERE $auth.id = id FOR update WHERE $auth.id = id``
+    - ``FOR select WHERE $auth.id = id, FOR create, update, delete NONE``
     """
     if raw is None or raw == "":
         return {}
 
     raw = raw.strip()
     if raw.upper() == "FULL":
-        return {}
+        return dict.fromkeys(_PERMISSION_ACTIONS, "FULL")
     if raw.upper() == "NONE":
-        return {
-            "select": "NONE",
-            "create": "NONE",
-            "update": "NONE",
-            "delete": "NONE",
-        }
+        return dict.fromkeys(_PERMISSION_ACTIONS, "NONE")
 
     permissions: dict[str, str] = {}
-    # Two group shapes, and the server mixes them in one clause:
-    #   FOR select WHERE $auth.id = id, FOR create, update, delete NONE
-    # The condition form needs the trailing comma stripped — it separates the
-    # groups, not part of the expression — and the keyword form has no WHERE at
-    # all, so a WHERE-only pattern dropped those actions entirely.
-    for m in re.finditer(
-        r"FOR\s+([\w\s,]+?)\s+(?:WHERE\s+(.+?)|(FULL|NONE))(?=\s*,?\s*FOR\s+|\s*$)",
-        raw,
-        re.IGNORECASE,
-    ):
-        actions_str = m.group(1).strip()
-        condition = (m.group(2) or m.group(3) or "").strip().rstrip(",").strip()
-        if m.group(3):
-            condition = condition.upper()
-        for action in re.split(r"[,\s]+", actions_str):
+    for group in _split_permission_groups(raw):
+        # Drop the leading FOR and the comma that separated this group from the
+        # next one — it belongs to the clause, not to the expression.
+        body = group[3:].strip().rstrip(",").strip()
+        if not body:
+            continue
+
+        # Either `<actions> WHERE <condition>` or `<actions> FULL|NONE`.
+        split = re.split(r"\s+WHERE\s+", body, maxsplit=1, flags=re.IGNORECASE)
+        if len(split) == 2:
+            actions_str, rule = split[0], split[1].strip()
+        else:
+            head, _, last = body.rpartition(" ")
+            if last.upper() not in ("FULL", "NONE"):
+                continue
+            actions_str, rule = head, last.upper()
+
+        for action in re.split(r"[,\s]+", actions_str.strip()):
             action = action.strip().lower()
             if action:
-                permissions[action] = condition
+                permissions[action] = rule
 
     return permissions
 

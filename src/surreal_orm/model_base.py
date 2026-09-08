@@ -327,6 +327,7 @@ class SurrealConfigDict(ConfigDict):
         relation_in: IN table(s) for TYPE RELATION constraint.
         relation_out: OUT table(s) for TYPE RELATION constraint.
         enforced: Whether the TYPE RELATION constraint is enforced.
+        comment: COMMENT text attached to the table definition.
         flexible_fields: List of field names that should use ``FLEXIBLE TYPE``
             in migrations.  FLEXIBLE allows nested structures (arrays inside
             objects, etc.) that would otherwise be stripped by SCHEMAFULL tables.
@@ -356,6 +357,7 @@ class SurrealConfigDict(ConfigDict):
     relation_in: str | list[str] | None
     relation_out: str | list[str] | None
     enforced: bool | None
+    comment: str | None
     flexible_fields: list[str] | None
     with_refresh: bool | None
     grant_duration: str | None
@@ -601,38 +603,20 @@ class BaseSurrealModel(BaseModel):
             #   DEFINE FIELD name ON users TYPE string;
             #   DEFINE FIELD password ON users TYPE string VALUE crypto::argon2::generate($value);
         """
+        from .migrations.executor import _check_statements
         from .migrations.introspector import ModelIntrospector
-        from .migrations.operations import AddField, CreateTable
+        from .migrations.operations import AddField, AlterTable
 
         introspector = ModelIntrospector([cls])
         table_state = introspector._introspect_model(cls)
 
-        # Build operations
-        config = getattr(cls, "model_config", {})
-        view_query = config.get("view_query")
-        relation_in = config.get("relation_in")
-        relation_out = config.get("relation_out")
-        enforced = config.get("enforced", False) or False
-
-        # Only RELATION and ANY are valid SurrealDB table types.
-        # NORMAL, USER, STREAM, HASH are ORM-only concepts.
-        table_type_str: str | None = table_state.table_type
-        if table_type_str and table_type_str.lower() not in ("relation", "any"):
-            table_type_str = None
-
-        create_table = CreateTable(
-            name=table_state.name,
-            schema_mode=table_state.schema_mode,
-            table_type=table_type_str,
-            changefeed=table_state.changefeed,
-            permissions=table_state.permissions or None,
-            view_query=view_query,
-            relation_in=relation_in,
-            relation_out=relation_out,
-            enforced=enforced,
-        )
-
-        statements = [create_table.forwards()]
+        # OVERWRITE, so that calling this twice is not an error: a plain
+        # DEFINE TABLE is rejected once the table exists ("The table 'x'
+        # already exists"), which meant a changed PERMISSIONS clause never
+        # reached an existing table.  The state carries every definition field,
+        # including the view and relation clauses, so there is nothing to spell
+        # out here a second time.
+        statements = [AlterTable.from_table_state(table_state).forwards()]
 
         # For USER tables, skip the VALUE clause on encrypted fields
         # because define_access() SIGNUP already handles password hashing.
@@ -641,6 +625,9 @@ class BaseSurrealModel(BaseModel):
 
         for _field_name, field_state in table_state.fields.items():
             add_field = AddField.from_field_state(table_state.name, field_state)
+            # Same reason as the table above: applying a model's schema twice
+            # must not fail with "The field 'x' already exists".
+            add_field.overwrite = True
             if is_user_table and add_field.encrypted:
                 add_field.encrypted = False
             statements.append(add_field.forwards())
@@ -649,7 +636,11 @@ class BaseSurrealModel(BaseModel):
 
         conn_name = cls.get_connection_name()
         client = await SurrealDBConnectionManager.get_client(conn_name)
-        await client.query(combined_sql)
+        response = await client.query(combined_sql)
+        # client.query() only raises on an RPC-level failure; a rejected
+        # statement comes back as a successful RPC carrying status: ERR, so
+        # without this the schema silently failed to apply.
+        _check_statements(response, combined_sql, f"define_table({cls.__name__})")
 
         return combined_sql
 

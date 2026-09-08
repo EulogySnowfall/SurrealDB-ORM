@@ -93,7 +93,7 @@ async def test_django_on_delete_vocabulary_is_translated_in_ddl() -> None:
     """``SET_NULL`` reaches SurrealDB as its own ``UNSET`` keyword."""
     sql = await I170Post.define_table()
 
-    assert "DEFINE FIELD reviewer ON i170_posts TYPE option<record<i170_authors>> REFERENCE ON DELETE UNSET" in sql
+    assert "DEFINE FIELD OVERWRITE reviewer ON i170_posts TYPE option<record<i170_authors>> REFERENCE ON DELETE UNSET" in sql
     assert "SET_NULL" not in sql
 
 
@@ -103,8 +103,8 @@ async def test_define_table_keeps_optional_scalars_optional() -> None:
     """A ``str | None`` column is still wrapped exactly once."""
     sql = await I170Post.define_table()
 
-    assert "DEFINE FIELD subtitle ON i170_posts TYPE option<string>" in sql
-    assert "DEFINE FIELD title ON i170_posts TYPE string" in sql
+    assert "DEFINE FIELD OVERWRITE subtitle ON i170_posts TYPE option<string>" in sql
+    assert "DEFINE FIELD OVERWRITE title ON i170_posts TYPE string" in sql
 
 
 @pytest.mark.integration

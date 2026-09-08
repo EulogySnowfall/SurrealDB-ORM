@@ -195,6 +195,7 @@ class DatabaseIntrospector:
             view_query=table_props.get("view_query"),
             relation_in=table_props.get("relation_in"),
             relation_out=table_props.get("relation_out"),
+            comment=table_props.get("comment"),
             enforced=table_props.get("enforced", False),
         )
 
