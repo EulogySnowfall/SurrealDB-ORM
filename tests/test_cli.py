@@ -294,22 +294,17 @@ class TestMakeMigrationsAgainstDatabase:
 
 
 class TestMakeMigrationsDropMissing:
-    """Which tables `makemigrations` is willing to write a REMOVE TABLE for.
+    """Which irreversible operations `makemigrations` is willing to write.
 
-    Diffing against the live database made `diff()`'s drop branch reachable, and
-    it fires for every table with no registered model — the migration history,
-    `RELATE` edge tables, anything whose module was not imported. `DropTable` is
-    irreversible, so it is opt-in now.
+    See ``split_destructive`` for why a database object with no model is not
+    necessarily obsolete.
     """
 
     @staticmethod
     def _db_state(*names: str):
-        from src.surreal_orm.migrations.state import SchemaState, TableState
+        from tests.test_makemigrations_drop_unit import _db_with
 
-        state = SchemaState()
-        for name in names:
-            state.tables[name] = TableState(name=name)
-        return state
+        return _db_with(*names)
 
     @patch("src.surreal_orm.cli.commands.run_async")
     def test_an_unmodelled_table_is_not_dropped_by_default(
@@ -333,7 +328,8 @@ class TestMakeMigrationsDropMissing:
 
         clear_model_registry()
         assert result.exit_code == 0, result.output
-        assert "Drop table" not in result.output
+        written = "".join(p.read_text() for p in temp_migrations_dir.glob("0001_*.py"))
+        assert "DropTable" not in written, written
 
     @patch("src.surreal_orm.cli.commands.run_async")
     def test_skipped_tables_are_reported_not_hidden(
@@ -356,6 +352,7 @@ class TestMakeMigrationsDropMissing:
         )
 
         clear_model_registry()
+        assert result.exit_code == 0, result.output
         assert "legacy_audit" in result.output
         assert "--drop-missing" in result.output
 
@@ -417,7 +414,10 @@ class TestMakeMigrationsDropMissing:
         )
 
         clear_model_registry()
+        assert result.exit_code == 0, result.output
         assert MIGRATIONS_TABLE not in result.output
+        written = "".join(p.read_text() for p in temp_migrations_dir.glob("0001_*.py"))
+        assert MIGRATIONS_TABLE not in written, written
 
 
 class TestMigrateCommand:

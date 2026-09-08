@@ -1613,6 +1613,7 @@ cli = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "click" },
     { name = "docker" },
     { name = "ipykernel" },
     { name = "mypy" },
@@ -1640,6 +1641,7 @@ provides-extras = ["cli", "all"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "click", specifier = ">=8.1.8" },
     { name = "docker", specifier = ">=7.1.0" },
     { name = "ipykernel", specifier = ">=7.2.0" },
     { name = "mypy", specifier = ">=1.14.0" },
