@@ -207,6 +207,15 @@ def parse_define_field(statement: str) -> FieldState:
     # Parse ASSERT clause
     assertion = clauses.get("ASSERT") or None
 
+    # Parse COMMENT clause — echoed back single-quoted, with '' for a quote
+    comment: str | None = None
+    raw_comment = clauses.get("COMMENT")
+    if raw_comment:
+        raw_comment = raw_comment.strip()
+        if raw_comment.startswith("'") and raw_comment.endswith("'") and len(raw_comment) >= 2:
+            raw_comment = raw_comment[1:-1]
+        comment = raw_comment.replace("''", "'")
+
     return FieldState(
         name=field_name,
         field_type=field_type,
@@ -217,6 +226,7 @@ def parse_define_field(statement: str) -> FieldState:
         flexible=flexible,
         readonly=readonly,
         value=value_expr,
+        comment=comment,
     )
 
 

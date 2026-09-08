@@ -47,46 +47,63 @@ async def clean_database():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_rolling_back_restores_password_hashing() -> None:
-    """The column must still hash after the rollback, not store plaintext."""
-    client = await surreal_orm.SurrealDBConnectionManager.get_client()
-    await client.query(CreateTable(name=TABLE).forwards())
-    await client.query(AddField(table=TABLE, name="password", field_type="string", encrypted=True).forwards())
+async def test_the_rollback_restores_password_hashing() -> None:
+    """The column must still hash after the rollback, not store plaintext.
 
-    encrypted = FieldState(name="password", field_type="string", encrypted=True)
-    plain = FieldState(name="password", field_type="string")
-    op = AlterField.from_field_states(TABLE, encrypted, plain)
-
-    await client.query(op.forwards())
-    await client.query(op.backwards())
-
-    await client.query(f"CREATE {TABLE}:alice SET password = 'hunter2';")
-    stored = (await client.query(f"SELECT password FROM {TABLE}:alice;")).all_records[0]["password"]
-
-    assert stored != "hunter2", "the rollback dropped the VALUE clause — plaintext stored"
-    assert stored.startswith("$argon2"), stored
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_the_forward_direction_really_drops_hashing() -> None:
-    """Guards the test above: it must be the rollback doing the restoring.
-
-    If ``forwards()`` also kept the VALUE clause, the assertion above would pass
-    for the wrong reason.
+    One sequential test rather than two: the ``forwards()`` half is what proves
+    the ``backwards()`` half is doing the restoring. Were the forward direction
+    to keep the VALUE clause too, a separate rollback test would pass for the
+    wrong reason.
     """
     client = await surreal_orm.SurrealDBConnectionManager.get_client()
     await client.query(CreateTable(name=TABLE).forwards())
     await client.query(AddField(table=TABLE, name="password", field_type="string", encrypted=True).forwards())
 
-    op = AlterField.from_field_states(
-        TABLE,
-        FieldState(name="password", field_type="string", encrypted=True),
-        FieldState(name="password", field_type="string"),
-    )
+    # nullable=False on both sides: the default leaves TYPE option<string> in
+    # each direction, which hides a regression in the type half of the rollback.
+    encrypted = FieldState(name="password", field_type="string", nullable=False, encrypted=True)
+    plain = FieldState(name="password", field_type="string", nullable=False)
+    op = AlterField.from_field_states(TABLE, encrypted, plain)
+
+    # Forward: hashing is dropped, so a write stores what it was given.
     await client.query(op.forwards())
-
     await client.query(f"CREATE {TABLE}:bob SET password = 'hunter2';")
-    stored = (await client.query(f"SELECT password FROM {TABLE}:bob;")).all_records[0]["password"]
+    forward_stored = (await client.query(f"SELECT password FROM {TABLE}:bob;")).all_records[0]["password"]
 
-    assert stored == "hunter2"
+    assert forward_stored == "hunter2", "forwards() kept the VALUE clause; the rollback assertion below would be vacuous"
+
+    # Rollback: hashing is back, and the type is the non-optional one.
+    await client.query(op.backwards())
+    await client.query(f"CREATE {TABLE}:alice SET password = 'hunter2';")
+    stored = (await client.query(f"SELECT password FROM {TABLE}:alice;")).all_records[0]["password"]
+
+    info = await client.query(f"INFO FOR TABLE {TABLE};")
+    definition = info.first_result.result["fields"]["password"]
+
+    assert stored != "hunter2", "the rollback dropped the VALUE clause — plaintext stored"
+    assert stored.startswith("$argon2"), stored
+    assert "TYPE string" in definition, definition
+    assert "option<string>" not in definition, definition
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_default_survives_the_rollback_unquoted() -> None:
+    """``backwards()`` single-quoted every DEFAULT, so a function became a string."""
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    await client.query(CreateTable(name=TABLE).forwards())
+
+    previous = FieldState(name="created", field_type="datetime", nullable=False, default="time::now()")
+    target = FieldState(name="created", field_type="datetime", nullable=False)
+    op = AlterField.from_field_states(TABLE, previous, target)
+
+    await client.query(op.forwards())
+    response = await client.query(op.backwards())
+
+    assert [r.status.value for r in response.results] == ["OK"]
+
+    info = await client.query(f"INFO FOR TABLE {TABLE};")
+    definition = info.first_result.result["fields"]["created"]
+
+    assert "DEFAULT time::now()" in definition, definition
+    assert "DEFAULT 'time::now()'" not in definition, definition
