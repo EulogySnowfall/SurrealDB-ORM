@@ -6,6 +6,103 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.6] - 2026-09-07
+
+**Bug-fix maintenance release (V2 LTS).** Three migration fixes ported from the
+3.x `main` line, plus the gaps left by 0.21.5's own ForeignKey backport. Every
+point was reproduced against a live SurrealDB 2.6.5 on this branch — none was
+carried over on the assumption that a fix which mattered on 3.x also matters
+here.
+
+### Fixed — Migrations
+
+- **Table permissions never reached the database (#199).** The `PERMISSIONS`
+  clause was emitted as a *second* `DEFINE TABLE`, which 2.6.x rejects once the
+  table exists (`The table 'x' already exists`). Since 0.21.5 started surfacing
+  statement errors, the first migration of any model declaring
+  `permissions={...}` aborted.
+
+- **`FULL` was written as a silent deny (#199).** Re-emitting a table defined
+  with `FOR select FULL` produced `FOR select WHERE FULL`. SurrealDB accepts
+  that, evaluates `FULL` as a field reference, gets `NONE`, and denies — a
+  world-readable table became unreadable with no error. `FULL` and `NONE` render
+  as keywords now.
+
+- **Redefining a table is `AlterTable`, not `CreateTable(overwrite=True)`
+  (#199).** The diff reused `CreateTable`, whose `backwards()` is
+  `REMOVE TABLE`: a migration that changed one permission had a rollback that
+  dropped the table and every row in it, and reported `reversible = True`. Built
+  without a previous definition an `AlterTable` is deliberately irreversible — a
+  bare `DEFINE TABLE OVERWRITE t;` resets the table to
+  `TYPE ANY SCHEMALESS PERMISSIONS NONE`.
+
+- **`TYPE USER` reached the DDL, and views were flattened (#199).** 2.6.5
+  answers ``Parse error: Unexpected token `USER` `` exactly as 3.2.4 does, so
+  any change to a USER table was unmigratable; and a materialized view diffed on
+  every run because `view_query` never reached the model state, with the
+  redefinition carrying no `AS` clause.
+
+- **A rollback rendered `DEFAULT` differently from the statement it reverses
+  (#200).** `AlterField.backwards()` single-quoted every string with no function
+  detection, no quote escaping and Python `str()` for booleans, so
+  `time::now()` came back as `'time::now()'`, `True` as `True`, and an
+  apostrophe as a parse error. The three renderers share one function now.
+
+- **`AlterField.backwards()` dropped the `VALUE` clause (#200).**
+  `DEFINE FIELD OVERWRITE` replaces the whole definition, so rolling back an
+  alter on an `Encrypted` column stopped it hashing and stored plaintext from
+  then on.
+
+- **The permissions parser mis-read what the server reports (#199).** A quoted
+  `FOR` inside a condition truncated at the quote, and a keyword inside an
+  expression ended the clause. Parsing an 80 KB clause went from 26 s to 0.02 s.
+
+### Fixed — ORM
+
+- **The gaps left by the #191 ForeignKey backport (#198).** The helpers were
+  carried over byte-identical but not what changed *around* them: the JSON
+  protocol raised on every foreign-key save, the related model instance was
+  rejected by the field validator, `merge()` assigned a `RecordId` onto a `str`
+  field *after* the write had committed, and `bulk_update()` bound its SET
+  values verbatim.
+
+- **The JSON protocol lost a record id's type (#198).** `str(RecordId)` renders
+  `t:123`, which the server reads as the *numeric* record, while CBOR wrote the
+  string one, `t:` + backtick + `123` + backtick. Two different rows, no error,
+  on the protocol the backport set out to repair. Escaping now happens in the
+  SDK, where the wire format needs it.
+
+- **`raw_query(inline_dicts=True)`** handles a record link, emitting it as an
+  unquoted thing reference rather than a JSON string, and no longer reads a
+  backslash in the inlined JSON as a regex group reference.
+
+### Changed — CLI
+
+- **`makemigrations` no longer writes irreversible removals by default
+  (#201).** A database object with no model is not necessarily obsolete: a
+  `RELATE` edge table, an analyzer, the migration history, or a module that
+  simply was not imported all look identical to a deleted model. Those
+  operations are reported and held back; `--drop-missing` opts in.
+
+  **This is a behaviour change**: since 0.21.5 removing a model produced a
+  `REMOVE TABLE`; it now needs the flag.
+
+- **`schemadiff` and `makemigrations` agree about the same database (#201).**
+
+### Known limitation
+
+Migration files generated before this release carry no `previous_value`, so
+rolling one of them back still emits an `OVERWRITE` with no `VALUE` clause and
+nothing warns. An `Encrypted` column rolled back through such a file stops
+hashing. Regenerate those migrations before relying on their rollback.
+
+### Not ported
+
+`REFERENCE` / `ON DELETE` remains absent: it is a SurrealDB 3.0 clause and
+`ReferencesField` does not exist on this branch.
+
+---
+
 ## [0.21.5] - 2026-09-05
 
 **Bug-fix maintenance release (V2 LTS).** Four correctness fixes backported from
