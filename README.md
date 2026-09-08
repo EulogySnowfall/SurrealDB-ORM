@@ -30,12 +30,63 @@
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.2.4**  | 0.32.x      | Active development              |
+| `main` | **3.2.4**  | 0.33.x      | Active development              |
 | `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
 
 ---
+
+## What's New in 0.33.3
+
+**Bug fix release** — one defect at the boundary where a value is written into a query
+string instead of being bound, with two call sites (#193).
+
+- **Inlined JSON was parsed as a regex replacement pattern.** `inline_dict_variables()`
+  handed the serialised JSON to `re.sub` as a replacement *string*, which `re.sub` reads as
+  a mini-pattern: `\1` is a backreference, `\g<0>` a group reference, an unknown escape an
+  error. `json.dumps` emits `\uXXXX` for every non-ASCII character, so
+  `raw_query(inline_dicts=True)` raised on **any accented value** — for most real data,
+  "always", not "in an edge case":
+
+  ```python
+  inline_dict_variables("UPDATE t SET a = $v;", {"v": {"meta": {"k": 1}, "p": "café"}})
+  # re.error: bad escape \u at position 28
+  ```
+
+  The backslash half failed *silently*, which is the worse one: `json.dumps` doubles every
+  literal backslash and the replacement parsing collapsed it back, so a Windows path reached
+  the database altered. Values are inserted verbatim now, through a callable replacement.
+
+- **Live-query filters shared the defect.** `LiveSelectStream._inline_params_static` passed a
+  rendered value to `re.sub` the same way. `_format_value` doubles backslashes on purpose and
+  the parsing undid it, so SurrealQL read `\t` as a tab and a `QuerySet.live()` filter
+  containing a backslash silently matched nothing.
+
+- **A later variable could rewrite text inside an earlier one.** Substituting key by key
+  re-scanned the JSON just inserted, so a `$b` inside a *string value* of `$a` was replaced
+  too, with the winner depending on dict insertion order. One pass over the original query now.
+
+- **Astral characters were rejected by the server.** The `ensure_ascii=True` default emits a
+  UTF-16 surrogate pair, which SurrealDB 3.x refuses at parse time. Invisible to a
+  `json.loads` round-trip assertion — surrogate pairs are valid JSON — so the test asserts on
+  the emitted text. `ensure_ascii=False` sends the character raw.
+
+- **An unreferenced complex variable was silently dropped**, and a lone surrogate raised a
+  `UnicodeEncodeError` from inside the CBOR encoder instead of the documented `ValueError`.
+  Both fixed.
+
+- **Datetime markers expand in one pass** — 5,000 datetimes in an 0.8 MB payload went from
+  2.80 s to 0.023 s.
+
+- **New public SDK API** — `substitute_params()` and `find_param_references()`, the shared
+  primitive both call sites use. It lives in `surreal_sdk` because the dependency only runs
+  one way.
+
+- **Known follow-ups** — #204 (`HTTPTransaction.commit()` renames `$auth` and every other
+  built-in whose name a bound key prefixes, on every `save(tx=)` over HTTP) and #205 (on
+  `main`, `LIVE SELECT` binds parameters correctly on 3.2.4, so the inline renderers are a
+  2.x workaround the branch no longer needs).
 
 ## What's New in 0.33.2
 

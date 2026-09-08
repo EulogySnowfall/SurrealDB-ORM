@@ -6,6 +6,83 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.33.3] - 2026-09-08
+
+**Bug fix release.** One defect, at the boundary where a value is written into a
+query string instead of bound — and it had two call sites, one of which crashed
+on any accented text.
+
+### Fixed — Query-string substitution
+
+- **Inlined JSON was parsed as a regex replacement pattern (#193).**
+  `inline_dict_variables()` handed the serialised JSON to `re.sub` as a
+  replacement *string*, which `re.sub` reads as a mini-pattern: `\1` is a
+  backreference, `\g<0>` a group reference, and an unknown escape an error.
+  `json.dumps` emits `\uXXXX` for every non-ASCII character, so
+  `raw_query(inline_dicts=True)` raised on any accented value:
+
+  ```python
+  inline_dict_variables("UPDATE t SET a = $v;", {"v": {"meta": {"k": 1}, "p": "café"}})
+  # re.error: bad escape \u at position 28
+  ```
+
+  The backslash half failed silently instead, which is worse: every literal
+  backslash was doubled by `json.dumps` and then collapsed back by the
+  replacement parsing, so a Windows path reached the database altered. Values
+  are now inserted verbatim through a callable replacement.
+
+- **Live-query filters went through the same defective path (#193).**
+  `LiveSelectStream._inline_params_static` also passed a rendered value to
+  `re.sub` as a replacement. `_format_value` doubles backslashes on purpose and
+  the parsing undid it, so SurrealQL read `\t` as a tab and a
+  `QuerySet.live()` filter containing a backslash silently matched nothing.
+
+- **A later variable could rewrite text inside an earlier one (#193).**
+  Substituting key by key re-scanned the JSON just inserted, so a `$b` occurring
+  inside a *string value* of `$a` was replaced too — and which one won depended
+  on dict insertion order. Substitution is a single pass over the original query
+  now.
+
+- **Astral characters were rejected by the server (#193).** `json.dumps` defaults
+  to `ensure_ascii=True`, emitting a UTF-16 surrogate pair, which SurrealDB 3.x
+  refuses at parse time (`String contains invalid escape sequence`). BMP text
+  such as `café` did decode, so this was narrower than the crash above but
+  invisible to a `json.loads` round-trip assertion — surrogate pairs are valid
+  JSON. `ensure_ascii=False` sends the character raw.
+
+- **An unreferenced complex variable was silently dropped (#193).** A value whose
+  `$name` never appeared in the query was serialised, matched nothing, and then
+  vanished from both the query and the returned bindings. It stays a binding now,
+  and is not serialised at all. This also covers a key that is not an ASCII
+  identifier, such as `$my-var`.
+
+- **A lone surrogate raised the wrong error (#193).** `ensure_ascii=False` lets
+  it past `json.dumps`, after which it surfaced as a `UnicodeEncodeError` from
+  inside the CBOR encoder rather than the `ValueError` the function documents.
+
+### Performance
+
+- **Datetime markers expand in one pass (#193).** Each `d"..."` literal was a
+  full `str.replace` over the entire JSON payload. 5,000 datetimes in an 0.8 MB
+  payload took 2.80 s; the same work now takes 0.023 s.
+
+### Added — SDK
+
+- **`surreal_sdk.substitute_params()`** and **`surreal_sdk.find_param_references()`**
+  — the shared primitive both call sites use. It lives in the SDK because the
+  dependency only runs one way: `surreal_orm` imports from `surreal_sdk`, never
+  the reverse.
+
+### Known follow-ups
+
+- **#204** — `HTTPTransaction.commit()` namespaces parameters with a boundary-less
+  `str.replace`, so `$auth.id` becomes `$tx_0_auth.id` and the `WHERE` compares
+  against `NONE`. Affects every `save(tx=)` / `merge(tx=)` over HTTP.
+- **#205** — on `main`, `LIVE SELECT` binds its parameters correctly on 3.2.4, so
+  the inline renderers are a 2.x workaround the branch no longer needs.
+
+---
+
 ## [0.33.2] - 2026-09-07
 
 **Bug fix release.** Three migration defects, all found reviewing what 0.33.1
