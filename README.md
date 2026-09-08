@@ -47,6 +47,53 @@ Tested with SurrealDB: v2.6.5
 
 ---
 
+## What's New in 0.21.6
+
+**Bug-fix maintenance release (V2 LTS)** — three migration fixes ported from the 3.x `main` line,
+plus the gaps left by 0.21.5's own ForeignKey backport. Each was reproduced against a live
+SurrealDB 2.6.5 on this branch before being ported.
+
+- **Table permissions now reach the database.** The clause was emitted as a second `DEFINE TABLE`,
+  which 2.6.x rejects once the table exists.
+
+- **`FULL` is no longer written as a silent deny.** Re-emitting a table defined with
+  `FOR select FULL` produced `FOR select WHERE FULL`, which the server accepts and then evaluates
+  as a field reference — it resolves to `NONE`, and a world-readable table becomes unreadable with
+  no error anywhere.
+
+- **Rolling back a table change no longer drops the table.** The diff reused `CreateTable`, whose
+  rollback is `REMOVE TABLE`, so a migration that changed one permission had a rollback that
+  destroyed every row — and reported itself reversible.
+
+- **A rollback renders a field exactly as the statement it reverses does.** `backwards()` quoted
+  every `DEFAULT` and dropped the `VALUE` clause entirely, which stopped an `Encrypted` column
+  hashing and stored plaintext from then on.
+
+- **The JSON protocol no longer loses a record id's type.** `str(RecordId)` renders `t:123`, the
+  *numeric* record, while CBOR wrote the string one — two different rows, no error, on the very
+  protocol 0.21.5's ForeignKey backport set out to repair.
+
+### Behaviour change
+
+`makemigrations` no longer writes irreversible removals by default. A `RELATE` edge table, an
+analyzer, the migration history, or a module that simply was not imported all look identical to a
+deleted model, so those operations are reported and held back:
+
+```
+$ surreal-orm makemigrations
+Skipped 2 irreversible operation(s) with no model to justify them:
+  - Drop table has_player
+  - Remove analyzer english
+Pass --drop-missing to apply them (irreversible).
+```
+
+### Known limitation
+
+Migration files generated before this release carry no `previous_value`, so their rollback still
+drops the `VALUE` clause and nothing warns. Regenerate them before relying on it.
+
+---
+
 ## What's New in 0.21.5
 
 **Bug-fix maintenance release (V2 LTS).** Four correctness fixes backported from the 3.x

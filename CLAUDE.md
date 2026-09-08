@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: September 2026 (0.21.5)
+> Context document for Claude AI - Last updated: September 2026 (0.21.6)
 
 <!-- -->
 
@@ -19,7 +19,31 @@
 
 ---
 
-## Current Version: 0.21.5 (Beta — V2 LTS, deprecated)
+## Current Version: 0.21.6 (Beta — V2 LTS, deprecated)
+
+### What's New in 0.21.6
+
+Three migration fixes ported from `main` (#199, #200, #201) plus the gaps left by
+0.21.5's own ForeignKey backport (#198). Every point was **reproduced against a
+live SurrealDB 2.6.5 on this branch** before porting — the divergence between the
+lines is large enough that "it mattered on main" is not evidence it matters here.
+
+- **Permissions never reached the database**, and **`FULL` was a silent deny** —
+  re-emitted as `FOR select WHERE FULL`, which 2.6.5 accepts and evaluates as a
+  field reference resolving to `NONE`. A world-readable table became unreadable.
+- **Redefinition is `AlterTable`, not a flag on `CreateTable`.** The old path
+  rolled back with `REMOVE TABLE`, so a permission change had a rollback that
+  destroyed every row while reporting `reversible = True`.
+- **One renderer per statement kind.** The three hand-written `DEFINE FIELD`
+  copies share `_render_define_field` now; `DEFAULT` was rendered three
+  different ways and `VALUE` was dropped on the rollback path.
+- **`makemigrations` holds back irreversible removals** unless `--drop-missing`
+  is passed; `split_destructive()` partitions on `Operation.reversible`.
+- **The JSON protocol lost a record id's type** — `str(RecordId)` gives `t:123`,
+  the numeric record, where CBOR wrote the string one. Escaping moved into the
+  SDK.
+- **Not ported:** `REFERENCE` / `ON DELETE` (a SurrealDB 3.0 clause;
+  `ReferencesField` does not exist here).
 
 ### What's New in 0.21.5
 
