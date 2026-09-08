@@ -236,7 +236,14 @@ class TestParseDefineTable:
 
     def test_table_with_permissions_full(self) -> None:
         result = parse_define_table("DEFINE TABLE users SCHEMAFULL PERMISSIONS FULL")
-        assert result["permissions"] == {}
+        # Bare FULL expands like bare NONE does: both spell out all four
+        # actions, so the two forms are comparable in a diff.
+        assert result["permissions"] == {
+            "select": "FULL",
+            "create": "FULL",
+            "update": "FULL",
+            "delete": "FULL",
+        }
 
     def test_table_with_permissions_none(self) -> None:
         result = parse_define_table("DEFINE TABLE users SCHEMAFULL PERMISSIONS NONE")

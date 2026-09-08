@@ -14,7 +14,7 @@ from ..fields.relation import on_delete_to_surql
 from ..types import FieldType
 
 if TYPE_CHECKING:
-    from .state import FieldState
+    from .state import FieldState, TableState
 
 
 def _normalize_field_type(field_type: FieldType | str) -> str:
@@ -90,6 +90,192 @@ def _apply_nullable(field_type: str, nullable: bool) -> str:
     return f"option<{field_type}>"
 
 
+#: The attributes a ``DEFINE TABLE`` statement carries. ``CreateTable``,
+#: ``AlterTable`` and the renderer are all driven off this one tuple: a clause
+#: added here reaches the forward statement, the rollback and the diff at once,
+#: instead of being spelled out in four places and forgotten in one of them.
+TABLE_DEFINITION_FIELDS = (
+    "schema_mode",
+    "table_type",
+    "changefeed",
+    "permissions",
+    "comment",
+    "view_query",
+    "relation_in",
+    "relation_out",
+    "enforced",
+)
+
+#: The only table types SurrealDB itself accepts. NORMAL, USER, STREAM and HASH
+#: are ORM-level concepts.
+_SURQL_TABLE_TYPES = ("relation", "any")
+
+
+def _surql_table_type(table_type: str | None) -> str | None:
+    """
+    Reduce an ORM table type to one SurrealDB will parse.
+
+    ``TableType`` carries ORM-only classifications — USER marks an auth table,
+    STREAM and HASH are hints — but ``DEFINE TABLE ... TYPE`` accepts only
+    ``NORMAL``, ``RELATION`` and ``ANY``. Passing USER through produced
+    ``Parse error: Unexpected token `USER``` and made any change to such a table
+    unmigratable.
+
+    Args:
+        table_type: The table type as the model or the database reports it
+
+    Returns:
+        The type when SurrealDB understands it, otherwise None
+    """
+    if table_type and table_type.lower() in _SURQL_TABLE_TYPES:
+        return table_type
+    return None
+
+
+def _render_permission_rule(action: str, rule: str) -> str:
+    """
+    Render one ``FOR <action>`` group of a PERMISSIONS clause.
+
+    ``FULL`` and ``NONE`` are keywords, not expressions: SurrealDB accepts
+    ``FOR select WHERE FULL`` but evaluates ``FULL`` as a field reference, gets
+    ``NONE`` and denies — turning a world-readable table into an unreadable one
+    with no error.
+
+    Args:
+        action: The action the rule governs (select, create, update, delete)
+        rule: A condition expression, or the keyword FULL / NONE
+
+    Returns:
+        The rendered group
+    """
+    keyword = str(rule).strip().upper()
+    if keyword in ("FULL", "NONE"):
+        return f"FOR {action} {keyword}"
+    return f"FOR {action} WHERE {rule}"
+
+
+def _effective_permissions(permissions: dict[str, str] | None) -> dict[str, str]:
+    """
+    Drop permission entries that only restate SurrealDB's default.
+
+    A table defined without a ``PERMISSIONS`` clause is reported back by
+    ``INFO FOR DB`` as ``{"select": "NONE", "create": "NONE", ...}`` — those are
+    the server's defaults, not a configured value. Comparing the raw dicts made a
+    database-read state differ from a model state that configures nothing, so the
+    diff re-emitted ``CreateTable`` for every table on every run (#171).
+
+    Normalising both sides also makes an explicit ``NONE`` equal to omitting the
+    clause, which is what it means, and keeps a generated rollback from carrying
+    the server's three default ``NONE`` entries as if they had been configured.
+
+    Args:
+        permissions: The permissions mapping, or None
+
+    Returns:
+        The mapping without its default-valued entries
+    """
+    if not permissions:
+        return {}
+    return {action: rule for action, rule in permissions.items() if str(rule).strip().upper() != "NONE"}
+
+
+def _relation_tables(value: "str | list[str] | None") -> str | None:
+    """
+    Render an IN/OUT target list as SurrealDB spells it.
+
+    ``SurrealConfigDict`` accepts a list — ``relation_out=["blog_post", "book"]``
+    is the documented form — but the clause takes pipe-separated names, so a
+    list reached the DDL as ``OUT ['blog_post', 'book']``.
+
+    Args:
+        value: One table name, several, or None
+
+    Returns:
+        The pipe-separated form, or None
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return " | ".join(str(v) for v in value)
+
+
+def _render_define_table(
+    name: str,
+    *,
+    overwrite: bool,
+    schema_mode: str | None = None,
+    table_type: str | None = None,
+    changefeed: str | None = None,
+    permissions: dict[str, str] | None = None,
+    comment: str | None = None,
+    view_query: str | None = None,
+    relation_in: str | None = None,
+    relation_out: str | None = None,
+    enforced: bool = False,
+) -> str:
+    """
+    Render one ``DEFINE TABLE`` statement.
+
+    Shared by ``CreateTable`` and both directions of ``AlterTable`` so a
+    rollback cannot drift from the definition it restores.
+
+    Args:
+        name: Table name
+        overwrite: Emit ``DEFINE TABLE OVERWRITE``, redefining an existing table
+        schema_mode: SCHEMAFULL or SCHEMALESS
+        table_type: ORM table type; sanitised to what SurrealDB accepts
+        changefeed: CHANGEFEED duration
+        permissions: Action → rule mapping
+        comment: COMMENT text
+        view_query: AS SELECT ... body for a materialized view
+        relation_in: IN table(s) for TYPE RELATION
+        relation_out: OUT table(s) for TYPE RELATION
+        enforced: Whether the relation constraint is enforced
+
+    Returns:
+        The complete statement, semicolon included
+    """
+    keyword = "DEFINE TABLE OVERWRITE" if overwrite else "DEFINE TABLE"
+
+    # Materialized view — different syntax
+    if view_query:
+        return f"{keyword} {name} AS ({view_query});"
+
+    parts = [f"{keyword} {name}"]
+
+    surql_type = _surql_table_type(table_type)
+    if surql_type and surql_type.upper() == "RELATION":
+        type_clause = "TYPE RELATION"
+        if relation_in:
+            type_clause += f" IN {_relation_tables(relation_in)}"
+        if relation_out:
+            type_clause += f" OUT {_relation_tables(relation_out)}"
+        if enforced:
+            type_clause += " ENFORCED"
+        parts.append(type_clause)
+    elif surql_type:
+        parts.append(f"TYPE {surql_type.upper()}")
+
+    if schema_mode:
+        parts.append(schema_mode)
+
+    if changefeed:
+        parts.append(f"CHANGEFEED {changefeed}")
+
+    if comment:
+        parts.append(f"COMMENT '{comment.replace(chr(39), chr(39) * 2)}'")
+
+    # PERMISSIONS is a clause of DEFINE TABLE. It used to be emitted as a
+    # second `DEFINE TABLE ... PERMISSIONS ...`, which SurrealDB rejects once
+    # the table exists ("The table 'x' already exists"), so declared table
+    # permissions never reached the database at all.
+    if permissions:
+        parts.append("PERMISSIONS " + " ".join(_render_permission_rule(a, r) for a, r in permissions.items()))
+
+    return " ".join(parts) + ";"
+
+
 @dataclass
 class Operation(ABC):
     """
@@ -124,6 +310,10 @@ class CreateTable(Operation):
     Supports materialized views (``view_query``) and TYPE RELATION
     constraints (``relation_in``, ``relation_out``, ``enforced``).
 
+    Redefining a table that already exists is :class:`AlterTable`, not this
+    operation: a plain ``DEFINE TABLE`` is rejected once the table exists, and
+    rolling back a creation means dropping the table.
+
     Example:
         CreateTable(name="users", schema_mode="SCHEMAFULL", changefeed="7d")
 
@@ -142,53 +332,159 @@ class CreateTable(Operation):
     relation_out: str | None = None
     enforced: bool = False
 
+    @classmethod
+    def from_table_state(cls, state: "TableState") -> "CreateTable":
+        """
+        Build the operation that creates *state*.
+
+        The single place that maps a ``TableState`` onto the definition fields,
+        so a new clause cannot reach the diff and miss table creation.
+
+        Args:
+            state: The table definition the models describe
+
+        Returns:
+            A ``CreateTable`` carrying every definition field of *state*
+        """
+        return cls(
+            name=state.name,
+            permissions=_effective_permissions(state.permissions) or None,
+            **{f: getattr(state, f) for f in TABLE_DEFINITION_FIELDS if f != "permissions"},
+        )
+
     def forwards(self) -> str:
-        # Materialized view — different syntax
-        if self.view_query:
-            return f"DEFINE TABLE {self.name} AS ({self.view_query});"
-
-        parts = [f"DEFINE TABLE {self.name}"]
-
-        # TYPE clause
-        if self.table_type and self.table_type.upper() == "RELATION":
-            type_clause = "TYPE RELATION"
-            if self.relation_in:
-                type_clause += f" IN {self.relation_in}"
-            if self.relation_out:
-                type_clause += f" OUT {self.relation_out}"
-            if self.enforced:
-                type_clause += " ENFORCED"
-            parts.append(type_clause)
-        elif self.table_type and self.table_type.lower() not in ("normal", ""):
-            parts.append(f"TYPE {self.table_type.upper()}")
-
-        if self.schema_mode:
-            parts.append(self.schema_mode)
-
-        if self.changefeed:
-            parts.append(f"CHANGEFEED {self.changefeed}")
-
-        if self.comment:
-            escaped_comment = self.comment.replace("'", "''")
-            parts.append(f"COMMENT '{escaped_comment}'")
-
-        sql = " ".join(parts) + ";"
-
-        # Add permissions if specified
-        if self.permissions:
-            perm_parts = []
-            for action, condition in self.permissions.items():
-                perm_parts.append(f"FOR {action} WHERE {condition}")
-            if perm_parts:
-                sql += f"\nDEFINE TABLE {self.name} PERMISSIONS {' '.join(perm_parts)};"
-
-        return sql
+        return _render_define_table(
+            self.name,
+            overwrite=False,
+            **{f: getattr(self, f) for f in TABLE_DEFINITION_FIELDS},
+        )
 
     def backwards(self) -> str:
         return f"REMOVE TABLE {self.name};"
 
     def describe(self) -> str:
         return f"Create table {self.name}"
+
+
+@dataclass
+class AlterTable(Operation):
+    """
+    Redefine a table that already exists.
+
+    Emitted by the diff when a table's definition changed. A plain
+    ``DEFINE TABLE`` is not idempotent — the server rejects it once the table
+    exists ("The table 'x' already exists") — so the statement is
+    ``DEFINE TABLE OVERWRITE``, which preserves the table's fields, indexes,
+    events and rows.
+
+    Rolling back restores the definition that was replaced rather than dropping
+    the table, which is why the previous values travel with the operation. An
+    ``AlterTable`` built without them is **not** reversible: a bare
+    ``DEFINE TABLE OVERWRITE t;`` resets the table to
+    ``TYPE ANY SCHEMALESS PERMISSIONS NONE``, silently discarding the very
+    definition a rollback is supposed to restore.
+
+    Example:
+        AlterTable(name="users", schema_mode="SCHEMAFULL",
+                   previous_schema_mode="SCHEMALESS")
+
+    Generates:
+        DEFINE TABLE OVERWRITE users SCHEMAFULL;
+    """
+
+    name: str
+    schema_mode: str | None = None
+    table_type: str | None = None
+    changefeed: str | None = None
+    permissions: dict[str, str] | None = None
+    comment: str | None = None
+    view_query: str | None = None
+    relation_in: str | None = None
+    relation_out: str | None = None
+    enforced: bool = False
+    # Previous definition, for a non-destructive rollback
+    previous_schema_mode: str | None = None
+    previous_table_type: str | None = None
+    previous_changefeed: str | None = None
+    previous_permissions: dict[str, str] | None = None
+    previous_comment: str | None = None
+    previous_view_query: str | None = None
+    previous_relation_in: str | None = None
+    previous_relation_out: str | None = None
+    previous_enforced: bool = False
+
+    def __post_init__(self) -> None:
+        # Mirrors AlterField: without the previous definition there is nothing
+        # to restore, and emitting a bare OVERWRITE would reset the table.
+        self.reversible = self.previous_schema_mode is not None
+
+    @classmethod
+    def from_table_state(cls, state: "TableState") -> "AlterTable":
+        """
+        Build the operation that redefines a table to match *state*.
+
+        For callers that apply a model's schema directly — ``define_table()`` —
+        rather than migrating between two known states. The result carries no
+        previous definition and is therefore not reversible.
+
+        Args:
+            state: The table definition the model describes
+
+        Returns:
+            An ``AlterTable`` carrying only the target definition
+        """
+        return cls(
+            name=state.name,
+            permissions=_effective_permissions(state.permissions) or None,
+            **{f: getattr(state, f) for f in TABLE_DEFINITION_FIELDS if f != "permissions"},
+        )
+
+    @classmethod
+    def from_table_states(cls, current: "TableState", target: "TableState") -> "AlterTable":
+        """
+        Build the operation that redefines *current* as *target*.
+
+        Both permission mappings go through :func:`_effective_permissions`, so
+        the server's default ``NONE`` entries do not travel into generated
+        migration files as though they had been configured.
+
+        Args:
+            current: The table definition the database holds
+            target: The definition the models describe
+
+        Returns:
+            An ``AlterTable`` carrying both definitions
+        """
+        return cls(
+            name=target.name,
+            permissions=_effective_permissions(target.permissions) or None,
+            previous_permissions=_effective_permissions(current.permissions) or None,
+            **{f: getattr(target, f) for f in TABLE_DEFINITION_FIELDS if f != "permissions"},
+            **{f"previous_{f}": getattr(current, f) for f in TABLE_DEFINITION_FIELDS if f != "permissions"},
+        )
+
+    def forwards(self) -> str:
+        return _render_define_table(
+            self.name,
+            overwrite=True,
+            **{f: getattr(self, f) for f in TABLE_DEFINITION_FIELDS},
+        )
+
+    def backwards(self) -> str:
+        if not self.reversible:
+            raise ValueError(
+                f"AlterTable({self.name!r}) carries no previous definition, so it cannot be "
+                f"rolled back: a bare DEFINE TABLE OVERWRITE would reset the table to "
+                f"TYPE ANY SCHEMALESS PERMISSIONS NONE. Build it with from_table_states()."
+            )
+        return _render_define_table(
+            self.name,
+            overwrite=True,
+            **{f: getattr(self, f"previous_{f}") for f in TABLE_DEFINITION_FIELDS},
+        )
+
+    def describe(self) -> str:
+        return f"Alter table {self.name}"
 
 
 @dataclass
@@ -256,6 +552,11 @@ class AddField(Operation):
     reference: bool = False
     on_delete: str | None = None
     nullable: bool = False
+    #: Emit ``DEFINE FIELD OVERWRITE``. A migration adds a field that is not
+    #: there yet, so the plain form is right there and a second run *should*
+    #: fail. ``define_table()`` applies a model's whole schema and has to be
+    #: callable twice, so it opts in.
+    overwrite: bool = False
 
     def __post_init__(self) -> None:
         """Validate field_type on initialization."""
@@ -294,7 +595,8 @@ class AddField(Operation):
         )
 
     def forwards(self) -> str:
-        parts = [f"DEFINE FIELD {self.name} ON {self.table}"]
+        keyword = "DEFINE FIELD OVERWRITE" if self.overwrite else "DEFINE FIELD"
+        parts = [f"{keyword} {self.name} ON {self.table}"]
 
         if self.flexible:
             parts.append("FLEXIBLE")
