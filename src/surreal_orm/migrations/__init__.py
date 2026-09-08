@@ -42,9 +42,11 @@ from .operations import (
     Operation,
     RawSQL,
     RemoveAccess,
+    split_destructive,
 )
 
 __all__ = [
+    "split_destructive",
     # Execution
     "MigrationExecutor",
     "MigrationStatementError",
