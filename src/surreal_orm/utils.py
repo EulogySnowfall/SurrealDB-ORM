@@ -44,64 +44,12 @@ def remove_quotes_for_variables(query: str) -> str:
     return re.sub(r"'(\$[a-zA-Z_]\w*)'", r"\1", query)
 
 
-def needs_id_escaping(record_id: str) -> bool:
-    """
-    Check if a record ID needs to be escaped in SurrealQL.
-
-    Record IDs that start with a digit or contain special characters
-    need to be wrapped in backticks or Unicode angle brackets.
-
-    Args:
-        record_id: The record ID string (without table prefix)
-
-    Returns:
-        True if the ID needs escaping, False otherwise
-
-    Examples:
-        needs_id_escaping("abc123")  # False - starts with letter
-        needs_id_escaping("7abc")    # True - starts with digit
-        needs_id_escaping("test-id") # True - contains hyphen
-        needs_id_escaping("test.id") # True - contains dot
-    """
-    if not record_id:
-        return False
-
-    # IDs starting with a digit need escaping
-    if record_id[0].isdigit():
-        return True
-
-    # IDs containing special characters need escaping
-    # Valid unescaped characters: letters, digits, underscore
-    # SurrealDB allows alphanumeric and underscore without escaping
-    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", record_id):
-        return True
-
-    return False
-
-
-def escape_record_id(record_id: str) -> str:
-    """
-    Escape a record ID for use in SurrealQL if needed.
-
-    Uses SurrealDB's backtick escaping format for IDs that contain
-    special characters or start with a digit.
-
-    Args:
-        record_id: The record ID string (without table prefix)
-
-    Returns:
-        The escaped record ID (with backticks if needed)
-
-    Examples:
-        escape_record_id("abc123")   # "abc123" - no escaping needed
-        escape_record_id("7abc")     # "`7abc`" - escaped
-        escape_record_id("test-id")  # "`test-id`" - escaped
-    """
-    if needs_id_escaping(record_id):
-        # Escape any backticks within the ID by doubling them
-        escaped = record_id.replace("`", "``")
-        return f"`{escaped}`"
-    return record_id
+# The SDK owns these: escaping is what the wire format needs, and the JSON
+# encoder there cannot import from the ORM. Re-exported — the `as` form marks
+# that explicitly for mypy strict — so the ORM's callers and the documented
+# public API keep working.
+from surreal_sdk.protocol.cbor import escape_record_id as escape_record_id  # noqa: E402
+from surreal_sdk.protocol.cbor import needs_id_escaping as needs_id_escaping  # noqa: E402
 
 
 def format_thing(table: str, record_id: str) -> str:
@@ -176,6 +124,13 @@ def _is_complex_value(value: Any) -> bool:
     return False
 
 
+#: Wraps an inlined record link through json.dumps so the quotes it adds can be
+#: stripped again — the link has to reach SurrealQL as a bare thing reference.
+#: Plain ASCII, like the datetime markers: json.dumps would escape a control
+#: character (\x00 becomes \u0000) and the marker would no longer match.
+_RECORD_LINK_SENTINEL = "__SURQL_LINK__"
+
+
 class _SurrealJSONEncoder(json.JSONEncoder):
     """JSON encoder that handles datetime, Decimal, UUID for SurrealQL inlining."""
 
@@ -184,6 +139,13 @@ class _SurrealJSONEncoder(json.JSONEncoder):
         from decimal import Decimal
         from uuid import UUID
 
+        from surreal_sdk.protocol.cbor import RecordId
+
+        if isinstance(obj, RecordId):
+            # Marked, then unquoted after dumps(): inlined into SurrealQL a
+            # record link is a thing reference, and "u:alice" as a JSON string
+            # would be stored as text rather than as a link.
+            return f"{_RECORD_LINK_SENTINEL}{obj.to_surql()}{_RECORD_LINK_SENTINEL}"
         if isinstance(obj, datetime):
             return obj.isoformat()
         if isinstance(obj, date):
@@ -270,8 +232,21 @@ def inline_dict_variables(
             for marker, literal in dt_markers.items():
                 json_str = json_str.replace(f'"{marker}"', literal)
 
+            # Same for record links: drop the quotes json.dumps put around the
+            # sentinel so the link is a thing reference, not a text field.
+            json_str = re.sub(
+                rf'"{re.escape(_RECORD_LINK_SENTINEL)}(.*?){re.escape(_RECORD_LINK_SENTINEL)}"',
+                lambda m: m.group(1),
+                json_str,
+            )
+
             # Replace $key with inline JSON (word-boundary to avoid partial matches)
-            query = re.sub(rf"\${re.escape(key)}\b", json_str, query)
+            def _literal(_match: "re.Match[str]", _replacement: str = json_str) -> str:
+                # A replacement *function*, not a template: a backslash in the
+                # JSON would otherwise be read as a group reference.
+                return _replacement
+
+            query = re.sub(rf"\${re.escape(key)}\b", _literal, query)
         else:
             remaining[key] = value
     return query, remaining

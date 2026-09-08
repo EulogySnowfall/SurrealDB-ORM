@@ -28,6 +28,7 @@ from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, core_schema
 
+from surreal_orm.model_base import record_link_to_str
 from surreal_orm.utils import escape_record_id
 
 if TYPE_CHECKING:
@@ -129,15 +130,22 @@ class _ForeignKeyMarker:
                 related_name = arg.related_name
                 break
 
+        # A before-validator renders the accepted forms — model instance,
+        # RecordId, "table:id" — down to the string the schema expects. Without
+        # it the "four interchangeable forms" are one, and merge()'s post-write
+        # setattr of a coerced value raises.
         return core_schema.nullable_schema(
-            core_schema.str_schema(
-                metadata={
-                    "relation_type": "foreign_key",
-                    "to_model": to_model,
-                    "on_delete": on_delete,
-                    "related_name": related_name,
-                    "surreal_type": "record",
-                }
+            core_schema.no_info_before_validator_function(
+                record_link_to_str,
+                core_schema.str_schema(
+                    metadata={
+                        "relation_type": "foreign_key",
+                        "to_model": to_model,
+                        "on_delete": on_delete,
+                        "related_name": related_name,
+                        "surreal_type": "record",
+                    }
+                ),
             )
         )
 
@@ -193,8 +201,12 @@ class _ManyToManyMarker:
                 break
 
         # ManyToMany is represented as a list of record IDs (virtual field)
+        # Each item accepts a model instance, RecordId, or "table:id" string.
         return core_schema.list_schema(
-            core_schema.str_schema(),
+            core_schema.no_info_before_validator_function(
+                record_link_to_str,
+                core_schema.str_schema(),
+            ),
             metadata={
                 "relation_type": "many_to_many",
                 "to_model": to_model,
