@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: September 2026 (0.33.2)
+> Context document for Claude AI - Last updated: September 2026 (0.33.3)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.33.2 (Beta) — SurrealDB 3.2+ required
+## Current Version: 0.33.3 (Beta) — SurrealDB 3.2+ required
 
 ### Branch Strategy
 
@@ -18,6 +18,60 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.2.4**  | 0.33.x      | Active development              |
 | `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.33.3
+
+One defect (#193), at the boundary where a value is *written into* a query string
+instead of bound — and it had two call sites.
+
+- **`re.sub` parsed the inlined JSON as a replacement pattern.** A replacement
+  *string* is a mini-pattern: `\1` is a backreference, `\g<0>` a group
+  reference, an unknown escape an error. `json.dumps` emits `\uXXXX` for every
+  non-ASCII character, so `raw_query(inline_dicts=True)` **raised on any accented
+  value** — for most real data that is "always", not "an edge case". The
+  backslash half was the dangerous one: `json.dumps` doubles every literal
+  backslash and the parsing collapsed it back, so a Windows path reached the
+  database altered, with no error. A *callable* replacement is exempt from that
+  parsing.
+- **The same line was live in the SDK.** `LiveSelectStream._inline_params_static`
+  fed `_format_value` output — which doubles backslashes on purpose — through the
+  same `re.sub`, so a `QuerySet.live()` filter containing a backslash silently
+  matched nothing. Both sites share **`surreal_sdk.utils.substitute_params()`**;
+  it lives in the SDK because the dependency only runs one way.
+- **One pass, not one per key.** Substituting key by key re-scanned the text just
+  inserted, so a `$b` inside a *string value* of `$a` was rewritten and the winner
+  depended on dict order. The single pass also removed the `B023` / "cannot infer
+  type of lambda" workarounds the per-key shape had needed.
+- **`ensure_ascii=False`.** The default emits astral characters as UTF-16
+  surrogate pairs, which SurrealDB 3.x rejects at parse time. **A `json.loads`
+  round-trip cannot see this** — surrogate pairs are valid JSON — so the test
+  asserts on the emitted text. BMP text like `café` did decode, which is why the
+  first diagnosis ("any non-ASCII") was too broad.
+- **An unreferenced complex variable was serialized, matched nothing, and then
+  dropped from the bindings** — silently. `find_param_references()` collects the
+  names the query uses first, so it stays a binding and is never serialized. The
+  reference pattern is `re.ASCII`, matching SurrealDB's identifier lexer: `$my-var`
+  is `$my` followed by `-var` to the server, and is now left alone rather than
+  dangling.
+- **A lone surrogate** passed `json.dumps` under `ensure_ascii=False` and failed
+  later as `UnicodeEncodeError` inside the CBOR encoder; encoding inside the same
+  `try` restores the documented `ValueError`.
+- **The datetime-marker loop was quadratic** — one full `str.replace` over the
+  payload per `d"..."` literal. Same callable-regex technique, applied once:
+  5,000 datetimes in an 0.8 MB payload, 2.80 s → 0.023 s.
+- **Two follow-ups filed, deliberately out of scope.** **#204** —
+  `HTTPTransaction.commit()` namespaces parameters with a boundary-less
+  `str.replace`, so a bound key that *prefixes* `auth`/`session`/`this`/`before`/
+  `after`/`value`/`input` renames the built-in: `$auth.id` → `$tx_0_auth.id`,
+  unbound, and the `WHERE` compares against `NONE`. That is every `save(tx=)` /
+  `merge(tx=)` over HTTP, and `substitute_params` is a drop-in fix. **#205** —
+  measured on both servers, 3.2.4 evaluates bound parameters in a `LIVE SELECT`
+  WHERE and 2.6.5 does not, so on `main` the inline renderers are a 2.x workaround
+  the branch no longer needs (and they render a dict filter value as a Python
+  repr, which never fires).
+- **Not backported yet** — the `v2` line already carries the
+  `inline_dict_variables` half via #198; the `live_select` site and the
+  single-pass/`find_param_references` work are still open there.
 
 ### What's New in 0.33.2
 
