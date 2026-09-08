@@ -8,6 +8,8 @@ and compute the differences between two states to generate migrations.
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from .constants import MIGRATIONS_TABLE
+
 if TYPE_CHECKING:
     from .operations import CreateIndex, Operation
 
@@ -352,9 +354,12 @@ class SchemaState:
                         )
                     )
 
-        # Tables to drop (in self but not in target)
+        # Tables to drop (in self but not in target). The ORM's own migration
+        # history is never a candidate: dropping it erases the record of what
+        # has been applied, and DropTable is irreversible. This is an invariant,
+        # not a policy — callers decide whether to *act* on the other drops.
         for table_name in self.tables:
-            if table_name not in target.tables:
+            if table_name not in target.tables and table_name != MIGRATIONS_TABLE:
                 operations.append(DropTable(name=table_name))
 
         # Tables to modify (in both)

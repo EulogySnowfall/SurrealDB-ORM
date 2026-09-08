@@ -93,6 +93,15 @@ warn_unused_configs = true
 module = ["aiohttp.*", "httpx.*", "click.*"]
 ignore_missing_imports = true
 
+# The CLI imports click conditionally: it is an optional extra for users and a
+# dev dependency here. Its decorators therefore type-check differently depending
+# on whether click is installed, so the `type: ignore` comments the module needs
+# when it is absent are reported as unused when it is present. Neither state is
+# wrong, and pinning either one breaks the other environment.
+[[tool.mypy.overrides]]
+module = ["surreal_orm.cli.*"]
+warn_unused_ignores = false
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
@@ -110,6 +119,10 @@ include = ["src"]
 
 [dependency-groups]
 dev = [
+    # CI runs `uv sync --frozen`, which does not install the `cli` extra, so
+    # every CLI test skipped there and the commands were only ever exercised
+    # locally. It is a dev dependency here and an optional extra for users.
+    "click>=8.1.8",
     "ipykernel>=7.2.0",
     "mypy>=1.14.0",
     "pytest>=8.3.4",

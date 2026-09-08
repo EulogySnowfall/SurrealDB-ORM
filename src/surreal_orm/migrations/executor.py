@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..connection_manager import SurrealDBConnectionManager
+from .constants import MIGRATIONS_TABLE
 from .migration import Migration, parse_migration_name
 from .operations import DataMigration
 
@@ -23,7 +24,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Table name for tracking migrations
-MIGRATIONS_TABLE = "_surreal_orm_migrations"
 
 
 class MigrationStatementError(RuntimeError):
