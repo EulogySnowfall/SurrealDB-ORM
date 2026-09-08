@@ -18,6 +18,7 @@ Custom CBOR Tags used by SurrealDB:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -41,6 +42,41 @@ TAG_DATETIME = 12
 TAG_STRING_DURATION = 14
 
 
+def needs_id_escaping(record_id: str) -> bool:
+    """
+    Check whether a record ID must be escaped in SurrealQL.
+
+    IDs that start with a digit, or hold anything but letters, digits and
+    underscores, are read as something else when written bare.
+
+    Args:
+        record_id: The record ID, without the table prefix
+
+    Returns:
+        True when the ID needs backticks
+    """
+    if not record_id:
+        return False
+    if record_id[0].isdigit():
+        return True
+    return not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", record_id)
+
+
+def escape_record_id(record_id: str) -> str:
+    """
+    Escape a record ID for SurrealQL when it needs it.
+
+    Args:
+        record_id: The record ID, without the table prefix
+
+    Returns:
+        The ID, backtick-wrapped when required
+    """
+    if needs_id_escaping(record_id):
+        return "`" + record_id.replace("`", "``") + "`"
+    return record_id
+
+
 @dataclass
 class RecordId:
     """
@@ -57,6 +93,20 @@ class RecordId:
     def __str__(self) -> str:
         """Return the full record ID string."""
         return f"{self.table}:{self.id}"
+
+    def to_surql(self) -> str:
+        """
+        Render the record as a SurrealQL thing reference.
+
+        Unlike ``str()``, which gives the plain ``table:id`` form the ORM stores
+        on a model, this escapes an id SurrealQL would otherwise read as
+        something else. ``t:123`` is the *numeric* record; the string one is
+        ``t:`123```, and they are two different rows.
+
+        Returns:
+            The escaped ``table:id`` reference
+        """
+        return f"{self.table}:{escape_record_id(str(self.id))}"
 
     @classmethod
     def parse(cls, value: str) -> RecordId:

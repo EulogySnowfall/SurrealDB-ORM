@@ -50,8 +50,11 @@ class SurrealJSONEncoder(json.JSONEncoder):
         """Encode non-standard types to JSON-serializable values."""
         # Foreign keys reach the wire as RecordId now, so the JSON protocol has
         # to know the type too — otherwise every FK save raises TypeError.
+        # to_surql(), not str(): the plain form loses the id's type, so a string
+        # id of "123" would be written as the numeric record t:123 over JSON
+        # while CBOR wrote the string one t:`123`. Two different rows, no error.
         if isinstance(obj, cbor_module.RecordId):
-            return str(obj)
+            return obj.to_surql()
         if isinstance(obj, datetime):
             return obj.isoformat()
         if isinstance(obj, date):

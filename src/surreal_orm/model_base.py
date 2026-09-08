@@ -193,13 +193,13 @@ def record_link_to_str(value: Any) -> Any:
         record_link_to_str(RecordId(table="users", id="a"))  # "users:a"
         record_link_to_str("users:alice")                    # "users:alice"
     """
-    # Duck-typed like _convert_record_id_to_string: avoids import path
-    # issues between src.surreal_orm and surreal_orm. The isinstance guard
-    # keeps unrelated objects with a plain `record_id` attribute untouched.
+    # `record_id` is checked first: a model instance carries one, and its own
+    # class is not a RecordId. The predicate keeps an unrelated object with a
+    # plain `record_id` attribute from being mistaken for a link.
     record_id = getattr(value, "record_id", None)
-    if isinstance(record_id, RecordId):
+    if is_record_link(record_id):
         return str(record_id)
-    if isinstance(value, RecordId):
+    if is_record_link(value):
         return str(value)
     if record_id is None and callable(getattr(value, "get_id", None)):
         raise ValueError(f"cannot reference an unsaved {type(value).__name__}; save it first")
@@ -221,14 +221,15 @@ def _to_record_link(value: Any, table: str | None) -> Any:
     Returns:
         A ``RecordId``, or the original value
     """
-    if isinstance(value, RecordId):
+    if is_record_link(value):
         return value
 
     value = record_link_to_str(value)
 
     # A bare ID is only resolvable against a known target table. "$var"
     # references stay untouched — they are user-supplied query variables.
-    if isinstance(value, str) and table and not value.startswith("$"):
+    # An empty string is not an id: qualifying it produces RecordId(table, "").
+    if isinstance(value, str) and value and table and not value.startswith("$"):
         value_table, id_part = parse_record_id(value)
         if value_table is None:
             return RecordId(table=table, id=id_part)
@@ -270,6 +271,32 @@ def _resolve_target_table(model_name: str) -> str | None:
     return None
 
 
+def is_record_link(value: Any) -> bool:
+    """
+    Tell whether *value* is a SurrealDB ``RecordId``.
+
+    One predicate rather than three: ``isinstance`` alone is wrong here because
+    the package is importable both as ``surreal_sdk`` and as
+    ``src.surreal_sdk``, which are two distinct classes at runtime, and a bare
+    duck-type check would match any object carrying ``table`` and ``id``.
+
+    Args:
+        value: Any value
+
+    Returns:
+        True when the value is a RecordId, under either import path
+    """
+    if isinstance(value, RecordId):
+        return True
+    cls = value.__class__
+    return (
+        cls.__name__ == "RecordId"
+        and "surreal" in getattr(cls, "__module__", "")
+        and hasattr(value, "table")
+        and hasattr(value, "id")
+    )
+
+
 def _convert_record_id_to_string(value: Any) -> Any:
     """
     Convert a RecordId object to its string representation.
@@ -283,14 +310,7 @@ def _convert_record_id_to_string(value: Any) -> Any:
     Returns:
         String "table:id" if value is a RecordId, otherwise the original value
     """
-    # Check if value is a RecordId from surreal_sdk (duck typing with module validation)
-    # This avoids import path issues between src.surreal_sdk and surreal_sdk
-    if (
-        hasattr(value, "table")
-        and hasattr(value, "id")
-        and value.__class__.__name__ == "RecordId"
-        and "surreal" in value.__class__.__module__
-    ):
+    if is_record_link(value):
         return str(value)  # Returns "table:id" format
     return value
 
@@ -1278,12 +1298,12 @@ class BaseSurrealModel(BaseModel):
             if tx is not None:
                 start = _start_timer()
                 await tx.merge(thing, wire_data)
-                _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
+                _log_query(f"UPDATE MERGE {thing}", wire_data, _elapsed_ms(start))
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
                 result = await client.merge(thing, wire_data)
-                _log_query(f"UPDATE MERGE {thing}", data, _elapsed_ms(start))
+                _log_query(f"UPDATE MERGE {thing}", wire_data, _elapsed_ms(start))
                 result_records = result.records
 
         # Send post_update signal
@@ -1342,7 +1362,7 @@ class BaseSurrealModel(BaseModel):
         # The caller's values drive the signals and the post-write setattr; only
         # the copy that goes on the wire is coerced. Coercing in place assigned a
         # RecordId back onto a str field, which raised *after* the write.
-        data_set = {key: value for key, value in data.items()}
+        data_set = data
         wire_data = self._coerce_foreign_keys(data_set)
 
         record_id = self.get_id()
@@ -1396,17 +1416,20 @@ class BaseSurrealModel(BaseModel):
             elif tx is not None:
                 start = _start_timer()
                 result = await tx.merge(thing, wire_data)
-                _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
+                _log_query(f"MERGE {thing}", wire_data, _elapsed_ms(start))
                 self._raise_if_no_record_affected(result, thing, tx)
-                # Update local instance with merged data
-                for key, value in data_set.items():
+                # From wire_data, not the caller's dict: the non-tx path
+                # refreshes from the database and comes back with the qualified
+                # link, so merge(author="alice", tx=tx) must not leave the
+                # instance holding the bare "alice".
+                for key, value in wire_data.items():
                     if hasattr(self, key):
                         setattr(self, key, value)
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
                 result = await client.merge(thing, wire_data)
-                _log_query(f"MERGE {thing}", data_set, _elapsed_ms(start))
+                _log_query(f"MERGE {thing}", wire_data, _elapsed_ms(start))
                 # A permission-denied (or missing-record) merge affects no
                 # records. Raise rather than silently returning self, so a
                 # denied write is never mistaken for a successful one.
