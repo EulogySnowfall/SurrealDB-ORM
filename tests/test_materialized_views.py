@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from surreal_orm.migrations.define_parser import parse_define_table
-from surreal_orm.migrations.operations import CreateTable
+from surreal_orm.migrations.operations import AlterTable, CreateTable
 from surreal_orm.migrations.state import SchemaState, TableState
 
 # ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ class TestViewStateDiff:
         )
         ops = current.diff(target)
 
-        create_ops = [op for op in ops if isinstance(op, CreateTable)]
+        create_ops = [op for op in ops if isinstance(op, AlterTable)]
         assert len(create_ops) == 1
         assert "WHERE status = 'paid'" in create_ops[0].view_query
 
@@ -195,7 +195,7 @@ class TestViewStateDiff:
         target = self._make_state({"stats": TableState(name="stats", view_query=vq)})
         ops = current.diff(target)
 
-        create_ops = [op for op in ops if isinstance(op, CreateTable)]
+        create_ops = [op for op in ops if isinstance(op, AlterTable)]
         assert len(create_ops) == 0
 
 

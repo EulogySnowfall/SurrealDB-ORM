@@ -12,31 +12,6 @@ if TYPE_CHECKING:
     from .operations import CreateIndex, Operation
 
 
-def _effective_permissions(permissions: dict[str, str] | None) -> dict[str, str]:
-    """
-    Drop permission entries that only restate SurrealDB's default.
-
-    A table defined without a ``PERMISSIONS`` clause is reported back as
-    ``PERMISSIONS NONE``, which the parser expands to
-    ``{"select": "NONE", "create": "NONE", ...}`` — the server's defaults, not a
-    configured value. Comparing the raw dicts made a database-read state differ
-    from a model state that configures nothing, so the diff re-emitted
-    ``CreateTable`` for every table on every run (#171).
-
-    Normalising both sides also makes an explicit ``NONE`` equal to omitting the
-    clause, which is what it means.
-
-    Args:
-        permissions: The permissions mapping, or None
-
-    Returns:
-        The mapping without its default-valued entries
-    """
-    if not permissions:
-        return {}
-    return {action: rule for action, rule in permissions.items() if str(rule).strip().upper() != "NONE"}
-
-
 @dataclass
 class FieldState:
     """
@@ -236,6 +211,7 @@ class TableState:
         relation_in: IN table(s) for TYPE RELATION (pipe-separated if multiple)
         relation_out: OUT table(s) for TYPE RELATION (pipe-separated if multiple)
         enforced: Whether the relation constraint is enforced
+        comment: COMMENT text attached to the table
     """
 
     name: str
@@ -251,6 +227,7 @@ class TableState:
     relation_in: str | None = None
     relation_out: str | None = None
     enforced: bool = False
+    comment: str | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, TableState):
@@ -269,6 +246,7 @@ class TableState:
             and self.relation_in == other.relation_in
             and self.relation_out == other.relation_out
             and self.enforced == other.enforced
+            and self.comment == other.comment
         )
 
 
@@ -302,6 +280,7 @@ class SchemaState:
         from .operations import (
             AddField,
             AlterField,
+            AlterTable,
             CreateTable,
             DefineAccess,
             DefineAnalyzer,
@@ -312,6 +291,7 @@ class SchemaState:
             RemoveAccess,
             RemoveAnalyzer,
             RemoveEvent,
+            _effective_permissions,
         )
 
         operations: list[Operation] = []
@@ -339,19 +319,7 @@ class SchemaState:
         for table_name, target_table in target.tables.items():
             if table_name not in self.tables:
                 # Create the table
-                operations.append(
-                    CreateTable(
-                        name=table_name,
-                        schema_mode=target_table.schema_mode,
-                        table_type=target_table.table_type,
-                        changefeed=target_table.changefeed,
-                        permissions=target_table.permissions or None,
-                        view_query=target_table.view_query,
-                        relation_in=target_table.relation_in,
-                        relation_out=target_table.relation_out,
-                        enforced=target_table.enforced,
-                    )
-                )
+                operations.append(CreateTable.from_table_state(target_table))
                 # Add all fields
                 for _field_name, field_state in target_table.fields.items():
                     operations.append(AddField.from_field_state(table_name, field_state))
@@ -396,25 +364,16 @@ class SchemaState:
                     current_table.schema_mode != target_table.schema_mode
                     or current_table.changefeed != target_table.changefeed
                     or _effective_permissions(current_table.permissions) != _effective_permissions(target_table.permissions)
+                    or current_table.comment != target_table.comment
                     or current_table.view_query != target_table.view_query
                     or current_table.relation_in != target_table.relation_in
                     or current_table.relation_out != target_table.relation_out
                     or current_table.enforced != target_table.enforced
                 ):
-                    # Recreate table definition (DEFINE TABLE is idempotent)
-                    operations.append(
-                        CreateTable(
-                            name=table_name,
-                            schema_mode=target_table.schema_mode,
-                            table_type=target_table.table_type,
-                            changefeed=target_table.changefeed,
-                            permissions=target_table.permissions or None,
-                            view_query=target_table.view_query,
-                            relation_in=target_table.relation_in,
-                            relation_out=target_table.relation_out,
-                            enforced=target_table.enforced,
-                        )
-                    )
+                    # Redefine the table. A plain DEFINE TABLE is NOT idempotent
+                    # — the server rejects it once the table exists — and its
+                    # rollback would be REMOVE TABLE, destroying every row.
+                    operations.append(AlterTable.from_table_states(current_table, target_table))
 
                 # Fields to add
                 for field_name, field_state in target_table.fields.items():

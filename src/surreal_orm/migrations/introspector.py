@@ -78,13 +78,23 @@ class ModelIntrospector:
         changefeed = model.get_changefeed()
         permissions = model.get_permissions()
 
-        # Build table state
+        # Build table state. The view and relation clauses live on the model
+        # config; leaving them off the state made a materialized view diff on
+        # every run and, worse, emit an overwrite with no AS clause — which
+        # turns the view into a plain table.
+        config = getattr(model, "model_config", {})
+
         table_state = TableState(
             name=table_name,
             schema_mode=str(schema_mode),
             table_type=str(table_type),
             changefeed=changefeed,
             permissions=permissions,
+            view_query=config.get("view_query"),
+            relation_in=config.get("relation_in"),
+            relation_out=config.get("relation_out"),
+            enforced=bool(config.get("enforced", False)),
+            comment=config.get("comment"),
         )
 
         # Introspect fields

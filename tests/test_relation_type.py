@@ -5,7 +5,7 @@ Tests for TYPE RELATION — CreateTable relation support, parser, diff, enum.
 from __future__ import annotations
 
 from surreal_orm.migrations.define_parser import parse_define_table
-from surreal_orm.migrations.operations import CreateTable
+from surreal_orm.migrations.operations import AlterTable, CreateTable
 from surreal_orm.migrations.state import SchemaState, TableState
 from surreal_orm.types import TableType
 
@@ -90,10 +90,13 @@ class TestCreateTableRelation:
         sql = op.forwards()
         assert "TYPE" not in sql
 
-    def test_user_type_emitted(self) -> None:
+    def test_user_type_not_emitted(self) -> None:
+        # USER is an ORM classification, not a SurrealDB table type: the server
+        # answers `Parse error: Unexpected token \`USER\`, expected \`NORMAL\`,
+        # \`RELATION\`, or \`ANY\``, which made every USER table unmigratable.
         op = CreateTable(name="users", table_type="user", schema_mode="SCHEMAFULL")
         sql = op.forwards()
-        assert "TYPE USER" in sql
+        assert "TYPE" not in sql
 
     def test_any_type_emitted(self) -> None:
         op = CreateTable(name="data", table_type="any", schema_mode="SCHEMAFULL")
@@ -211,7 +214,7 @@ class TestRelationStateDiff:
         )
         ops = current.diff(target)
 
-        create_ops = [op for op in ops if isinstance(op, CreateTable)]
+        create_ops = [op for op in ops if isinstance(op, AlterTable)]
         assert len(create_ops) == 1
         assert "book" in create_ops[0].relation_out
 
@@ -237,7 +240,7 @@ class TestRelationStateDiff:
         )
         ops = current.diff(target)
 
-        create_ops = [op for op in ops if isinstance(op, CreateTable)]
+        create_ops = [op for op in ops if isinstance(op, AlterTable)]
         assert len(create_ops) == 1
         assert create_ops[0].enforced is True
 
@@ -267,7 +270,7 @@ class TestRelationStateDiff:
         )
         ops = current.diff(target)
 
-        create_ops = [op for op in ops if isinstance(op, CreateTable)]
+        create_ops = [op for op in ops if isinstance(op, AlterTable)]
         assert len(create_ops) == 0
 
 

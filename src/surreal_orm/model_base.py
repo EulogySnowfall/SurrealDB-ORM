@@ -327,6 +327,7 @@ class SurrealConfigDict(ConfigDict):
         relation_in: IN table(s) for TYPE RELATION constraint.
         relation_out: OUT table(s) for TYPE RELATION constraint.
         enforced: Whether the TYPE RELATION constraint is enforced.
+        comment: COMMENT text attached to the table definition.
         flexible_fields: List of field names that should use ``FLEXIBLE TYPE``
             in migrations.  FLEXIBLE allows nested structures (arrays inside
             objects, etc.) that would otherwise be stripped by SCHEMAFULL tables.
@@ -349,6 +350,7 @@ class SurrealConfigDict(ConfigDict):
     relation_in: str | list[str] | None
     relation_out: str | list[str] | None
     enforced: bool | None
+    comment: str | None
     flexible_fields: list[str] | None
 
 
