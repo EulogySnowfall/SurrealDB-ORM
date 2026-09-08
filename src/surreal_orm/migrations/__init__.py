@@ -46,9 +46,11 @@ from .operations import (
     RebuildIndex,
     RemoveAccess,
     RemoveGraphQLConfig,
+    split_destructive,
 )
 
 __all__ = [
+    "split_destructive",
     # Introspection
     "DatabaseIntrospector",
     "ModelCodeGenerator",

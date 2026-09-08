@@ -11,8 +11,10 @@ from typing import Any
 
 try:
     import click
-except ImportError:
-    click = None
+except ImportError:  # pragma: no cover - depends on whether the `cli` extra is installed
+    # Annotated as Any so the fallback assignment type-checks in both
+    # environments: with click installed mypy infers Module and rejects None.
+    click = None  # type: ignore[assignment]
 
 
 def require_click() -> None:
@@ -122,6 +124,11 @@ if click is not None:
         default=True,
         help="Diff against the live database schema (default) instead of an empty schema",
     )
+    @click.option(  # type: ignore[untyped-decorator]
+        "--drop-missing",
+        is_flag=True,
+        help="Also emit the irreversible removals (REMOVE TABLE/FIELD/ANALYZER/...) for database objects that have no model",
+    )
     @click.pass_context  # type: ignore[untyped-decorator]
     def makemigrations(
         ctx: click.Context,
@@ -129,10 +136,12 @@ if click is not None:
         empty: bool,
         models: tuple[str, ...],
         from_db: bool,
+        drop_missing: bool,
     ) -> None:
         """Generate migration files from model changes."""
         from ..migrations.generator import MigrationGenerator, generate_empty_migration
         from ..migrations.introspector import introspect_models
+        from ..migrations.operations import split_destructive
         from ..migrations.state import SchemaState
 
         migrations_dir = ctx.obj["migrations_dir"]
@@ -178,6 +187,22 @@ if click is not None:
 
         # Compute differences
         operations = current_state.diff(desired_state)
+
+        # Irreversible removals are opt-in: see split_destructive for why a
+        # database object with no model is not necessarily obsolete. Say what
+        # was skipped, otherwise a genuinely obsolete one is invisible.
+        if not drop_missing:
+            operations, skipped = split_destructive(operations)
+            if skipped:
+                click.echo(f"Skipped {len(skipped)} irreversible operation(s) with no model to justify them:")
+                for op in skipped:
+                    click.echo(f"  - {op.describe()}")
+                click.echo("Pass --drop-missing to apply them (irreversible).")
+
+        if drop_missing and not from_db:
+            # Nothing was read from the database, so nothing can be missing from
+            # the models: the flag can only be a misunderstanding.
+            click.echo("--drop-missing has no effect with --no-from-db: the diff has no database state to compare.")
 
         if not operations:
             click.echo("No changes detected.")
@@ -389,6 +414,7 @@ if click is not None:
         """Compare Python models against the live database schema."""
         from ..connection_manager import SurrealDBConnectionManager
         from ..introspection import schema_diff
+        from ..migrations.operations import split_destructive
 
         async def run() -> list[Any]:
             SurrealDBConnectionManager.set_connection(
@@ -412,12 +438,24 @@ if click is not None:
 
         try:
             operations = run_async(run())
-            if operations:
-                click.echo(f"Found {len(operations)} difference(s):")
-                for op in operations:
+            # Same partition as makemigrations, so the two commands cannot
+            # disagree about one database. Reporting them separately is what
+            # lets a CI gate on `schemadiff` ignore the RELATE edge tables and
+            # analyzers that no model can ever declare.
+            reversible, destructive = split_destructive(operations)
+
+            if reversible:
+                click.echo(f"Found {len(reversible)} difference(s):")
+                for op in reversible:
                     click.echo(f"  - {op.describe()}")
-            else:
+            elif not destructive:
                 click.echo("Models and database are in sync.")
+
+            if destructive:
+                click.echo(f"{len(destructive)} irreversible operation(s) with no model to justify them:")
+                for op in destructive:
+                    click.echo(f"  - {op.describe()}")
+                click.echo("makemigrations writes these only with --drop-missing.")
         except Exception as e:
             click.echo(f"Schema diff failed: {e}", err=True)
             sys.exit(1)

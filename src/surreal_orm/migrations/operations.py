@@ -415,6 +415,34 @@ def _render_define_table(
     return " ".join(parts) + ";"
 
 
+def split_destructive(operations: "list[Operation]") -> "tuple[list[Operation], list[Operation]]":
+    """
+    Separate the operations that cannot be rolled back from the rest.
+
+    A table the database holds and no model declares is not necessarily
+    obsolete: it may be a RELATE edge table — ``ModelIntrospector`` skips
+    ``Relation`` fields, so those can only ever look unmodelled — or belong to a
+    module that simply was not imported. The same is true of an analyzer, an
+    API, a GraphQL config, and of the ``in``/``out`` fields SurrealDB defines on
+    a ``TYPE RELATION`` table itself: nothing a model can ever declare, so the
+    diff proposes removing them on every run.
+
+    Partitioning on ``reversible`` rather than on a list of operation classes is
+    what keeps the next irreversible operation from having to be remembered
+    here.
+
+    Args:
+        operations: The operations a diff produced
+
+    Returns:
+        ``(keep, destructive)`` — the reversible operations, and the ones a
+        caller must opt into
+    """
+    keep = [op for op in operations if op.reversible]
+    destructive = [op for op in operations if not op.reversible]
+    return keep, destructive
+
+
 @dataclass
 class Operation(ABC):
     """

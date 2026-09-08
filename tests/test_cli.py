@@ -293,6 +293,133 @@ class TestMakeMigrationsAgainstDatabase:
         assert "Created migration" not in result.output
 
 
+class TestMakeMigrationsDropMissing:
+    """Which irreversible operations `makemigrations` is willing to write.
+
+    See ``split_destructive`` for why a database object with no model is not
+    necessarily obsolete.
+    """
+
+    @staticmethod
+    def _db_state(*names: str):
+        from tests.test_makemigrations_drop_unit import _db_with
+
+        return _db_with(*names)
+
+    @patch("src.surreal_orm.cli.commands.run_async")
+    def test_an_unmodelled_table_is_not_dropped_by_default(
+        self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path
+    ) -> None:
+        """Silently writing an irreversible REMOVE TABLE is the wrong default."""
+        from src.surreal_orm.model_base import BaseSurrealModel, clear_model_registry
+
+        clear_model_registry()
+
+        class KeptModel(BaseSurrealModel):
+            id: str | None = None
+            name: str
+
+        mock_run_async.side_effect = mock_run_async_factory(self._db_state("legacy_audit"))
+
+        result = runner.invoke(
+            cli_command,
+            ["--migrations-dir", str(temp_migrations_dir), "makemigrations", "--name", "x"],
+        )
+
+        clear_model_registry()
+        assert result.exit_code == 0, result.output
+        written = "".join(p.read_text() for p in temp_migrations_dir.glob("0001_*.py"))
+        assert "DropTable" not in written, written
+
+    @patch("src.surreal_orm.cli.commands.run_async")
+    def test_skipped_tables_are_reported_not_hidden(
+        self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path
+    ) -> None:
+        """A genuinely obsolete table must not vanish from view."""
+        from src.surreal_orm.model_base import BaseSurrealModel, clear_model_registry
+
+        clear_model_registry()
+
+        class KeptModel2(BaseSurrealModel):
+            id: str | None = None
+            name: str
+
+        mock_run_async.side_effect = mock_run_async_factory(self._db_state("legacy_audit"))
+
+        result = runner.invoke(
+            cli_command,
+            ["--migrations-dir", str(temp_migrations_dir), "makemigrations", "--name", "x"],
+        )
+
+        clear_model_registry()
+        assert result.exit_code == 0, result.output
+        assert "legacy_audit" in result.output
+        assert "--drop-missing" in result.output
+
+    @patch("src.surreal_orm.cli.commands.run_async")
+    def test_drop_missing_opts_in(self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
+        """The flag is how you ask for the destructive operation."""
+        from src.surreal_orm.model_base import BaseSurrealModel, clear_model_registry
+
+        clear_model_registry()
+
+        class KeptModel3(BaseSurrealModel):
+            id: str | None = None
+            name: str
+
+        mock_run_async.side_effect = mock_run_async_factory(self._db_state("legacy_audit"))
+
+        result = runner.invoke(
+            cli_command,
+            [
+                "--migrations-dir",
+                str(temp_migrations_dir),
+                "makemigrations",
+                "--name",
+                "x",
+                "--drop-missing",
+            ],
+        )
+
+        clear_model_registry()
+        assert result.exit_code == 0, result.output
+        assert "Drop table legacy_audit" in result.output
+
+    @patch("src.surreal_orm.cli.commands.run_async")
+    def test_the_migrations_table_is_never_dropped_even_with_the_flag(
+        self, mock_run_async, runner: "CliRunner", cli_command, temp_migrations_dir: Path
+    ) -> None:
+        """No flag makes erasing the migration history a reasonable request."""
+        from src.surreal_orm.migrations.executor import MIGRATIONS_TABLE
+        from src.surreal_orm.model_base import BaseSurrealModel, clear_model_registry
+
+        clear_model_registry()
+
+        class KeptModel4(BaseSurrealModel):
+            id: str | None = None
+            name: str
+
+        mock_run_async.side_effect = mock_run_async_factory(self._db_state(MIGRATIONS_TABLE))
+
+        result = runner.invoke(
+            cli_command,
+            [
+                "--migrations-dir",
+                str(temp_migrations_dir),
+                "makemigrations",
+                "--name",
+                "x",
+                "--drop-missing",
+            ],
+        )
+
+        clear_model_registry()
+        assert result.exit_code == 0, result.output
+        assert MIGRATIONS_TABLE not in result.output
+        written = "".join(p.read_text() for p in temp_migrations_dir.glob("0001_*.py"))
+        assert MIGRATIONS_TABLE not in written, written
+
+
 class TestMigrateCommand:
     """Tests for migrate command."""
 
