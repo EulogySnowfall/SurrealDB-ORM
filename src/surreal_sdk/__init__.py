@@ -74,6 +74,7 @@ from .types import (
     RecordsResponse,
     ResponseStatus,
 )
+from .utils import find_param_references, substitute_params
 
 __version__ = "0.33.2"
 __all__ = [
@@ -135,6 +136,9 @@ __all__ = [
     "TimeoutError",
     "TransactionError",
     "TransactionConflictError",
+    # Query-string helpers
+    "find_param_references",
+    "substitute_params",
 ]
 
 

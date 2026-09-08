@@ -13,6 +13,7 @@ from typing import Any, Self
 
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
+from ..utils import substitute_params
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -203,17 +204,16 @@ class LiveSelectStream:
 
     @staticmethod
     def _inline_params_static(sql: str, params: dict[str, Any]) -> str:
-        """Replace $param references with inline values in the SQL string.
+        r"""Replace $param references with inline values in the SQL string.
 
-        Uses regex word-boundary matching to avoid substituting partial
-        tokens or occurrences inside string literals.
+        Verbatim insertion is what matters here: ``_format_value`` deliberately
+        doubles backslashes, and the previous ``re.sub`` replacement-string
+        parsing collapsed them straight back, so SurrealQL read ``\t`` as a tab
+        and the live filter silently matched nothing. See
+        :func:`~surreal_sdk.utils.substitute_params`.
         """
-        result = sql
-        for key in sorted(params, key=len, reverse=True):
-            # Match $key only when followed by a non-identifier character (or end of string)
-            pattern = re.escape(f"${key}") + r"(?![a-zA-Z0-9_])"
-            result = re.sub(pattern, LiveSelectStream._format_value(params[key]), result)
-        return result
+        rendered = {key: LiveSelectStream._format_value(value) for key, value in params.items()}
+        return substitute_params(sql, rendered)
 
     async def start(self) -> str:
         """

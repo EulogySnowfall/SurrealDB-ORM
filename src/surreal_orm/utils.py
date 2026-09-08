@@ -4,8 +4,10 @@ import json
 import logging
 import random
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
+
+from surreal_sdk.utils import find_param_references, substitute_params
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +199,10 @@ class _SurrealJSONEncoder(json.JSONEncoder):
         return super().default(o)
 
 
+#: A ``__SURQL_DT_N__`` placeholder, including the JSON quotes around it.
+_DATETIME_MARKER = re.compile(r'"(__SURQL_DT_\d+__)"')
+
+
 def _extract_datetime_values(
     value: Any,
     markers: dict[str, str],
@@ -227,6 +233,16 @@ def _extract_datetime_values(
     return value
 
 
+def _expand_datetime_markers(json_str: str, markers: Mapping[str, str]) -> str:
+    """Swap each quoted ``__SURQL_DT_N__`` placeholder for its ``d"..."`` literal.
+
+    Takes *markers* as a parameter rather than closing over the caller's loop
+    variable, which ruff flags (B023) and which would be a real bug if the
+    callable outlived the iteration.
+    """
+    return _DATETIME_MARKER.sub(lambda match: markers[match.group(1)], json_str)
+
+
 def inline_dict_variables(
     query: str,
     variables: dict[str, Any],
@@ -251,30 +267,53 @@ def inline_dict_variables(
 
     Returns:
         ``(modified_query, remaining_variables)`` tuple.
+
+    Raises:
+        ValueError: If a referenced complex value cannot be serialized.
     """
+    # Which names the query actually uses. Without this a complex value whose
+    # reference is absent — or not a valid identifier, such as ``$my-var`` —
+    # would be serialized for nothing and then dropped from both the query and
+    # the returned bindings, silently.
+    referenced = find_param_references(query)
+
+    inlined: dict[str, str] = {}
     remaining: dict[str, Any] = {}
     for key, value in variables.items():
-        if _is_complex_value(value):
-            # Extract datetime objects as markers so they become d"..." literals
-            dt_markers: dict[str, str] = {}
-            counter = [0]
-            processed = _extract_datetime_values(value, dt_markers, counter)
-
-            try:
-                json_str = json.dumps(processed, cls=_SurrealJSONEncoder)
-            except (TypeError, ValueError) as e:
-                raise ValueError(f"Failed to serialize variable '{key}' to JSON for inlining: {e}") from e
-
-            # Replace datetime marker strings (with JSON quotes) with
-            # unwrapped SurrealQL d"..." literals.
-            for marker, literal in dt_markers.items():
-                json_str = json_str.replace(f'"{marker}"', literal)
-
-            # Replace $key with inline JSON (word-boundary to avoid partial matches)
-            query = re.sub(rf"\${re.escape(key)}\b", json_str, query)
-        else:
+        if key not in referenced or not _is_complex_value(value):
             remaining[key] = value
-    return query, remaining
+            continue
+
+        # Extract datetime objects as markers so they become d"..." literals
+        dt_markers: dict[str, str] = {}
+        counter = [0]
+        processed = _extract_datetime_values(value, dt_markers, counter)
+
+        try:
+            # ensure_ascii=False keeps astral characters raw. The default emits
+            # them as UTF-16 surrogate pairs (\ud83d\ude42), which SurrealDB 3.x
+            # rejects at parse time: "String contains invalid escape sequence".
+            json_str = json.dumps(processed, cls=_SurrealJSONEncoder, ensure_ascii=False)
+            # ensure_ascii=False also lets a lone surrogate through json.dumps;
+            # encoding here keeps the failure inside the promised ValueError
+            # instead of surfacing as a UnicodeEncodeError in the CBOR encoder.
+            json_str.encode("utf-8")
+        except (TypeError, ValueError, UnicodeEncodeError) as e:
+            raise ValueError(f"Failed to serialize variable '{key}' to JSON for inlining: {e}") from e
+
+        # Replace datetime marker strings (with JSON quotes) with unwrapped
+        # SurrealQL d"..." literals — one pass, for the same reason the query
+        # substitution is one pass: a str.replace per marker rescans the whole
+        # payload, which is quadratic in the number of datetimes.
+        if dt_markers:
+            json_str = _expand_datetime_markers(json_str, dt_markers)
+
+        inlined[key] = json_str
+
+    # One pass over the original query: substituting key by key would re-scan
+    # the JSON just inserted, so a "$b" inside a string value of $a would be
+    # replaced too, with the outcome depending on dict order.
+    return substitute_params(query, inlined), remaining
 
 
 def retry_on_conflict(
