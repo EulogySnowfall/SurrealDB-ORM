@@ -1594,7 +1594,7 @@ wheels = [
 
 [[package]]
 name = "surrealdb-orm"
-version = "0.33.3"
+version = "0.33.4"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
