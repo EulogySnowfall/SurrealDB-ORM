@@ -31,7 +31,7 @@
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.2.4**  | 0.33.x      | Active development              |
-| `v2`   | **2.6.5**  | 0.21.x      | LTS (security & bug fixes only) |
+| `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
 
@@ -1405,15 +1405,15 @@ pip install surrealdb-orm[cli]
 
 ### SurrealDB Compatibility
 
-| ORM Version           | SurrealDB   | Branch | Status              |
-| --------------------- | ----------- | ------ | ------------------- |
-| **0.32.x**            | >= 3.2      | `main` | Active development  |
-| **0.30.x – 0.31.x**   | 3.0 – 3.1   | —      | Superseded          |
-| **0.21.x**            | 2.6.x       | `v2`   | Security fixes only |
+| ORM Version           | SurrealDB     | Branch | Status              |
+| --------------------- | ------------- | ------ | ------------------- |
+| **0.32.x – 0.33.x**   | >= 3.2        | `main` | Active development  |
+| **0.30.x – 0.31.x**   | 3.0 – 3.1     | —      | Superseded          |
+| **0.21.x**            | 2.6.x – 2.7.x | `v2`   | Security fixes only |
 
 - **SurrealDB 3.2+** — Use `surrealdb-orm >= 0.32.0` (this branch). Tested against SurrealDB **3.2.4**.
 - **SurrealDB 3.0 – 3.1** — Pin `surrealdb-orm<0.32`. 0.32.0 requires 3.2+ and is not tested against 3.1.x.
-- **SurrealDB 2.6.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`). This branch receives security patches but no new features.
+- **SurrealDB 2.6.x – 2.7.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`; 2.7.x from 0.21.8, tested against **2.7.0**). This branch receives security patches but no new features.
 
 ---
 
