@@ -104,3 +104,9 @@ jobs:
             *This release was automatically created after a version bump PR was merged.*
           prerelease: false
           generate_release_notes: true
+          # V2 is the deprecated LTS line — never claim the repo's "Latest"
+          # release. This step creates the release *before* publish.yml runs,
+          # and softprops defaults to make_latest=true; publish.yml's own
+          # make_latest=false on the later update does not take the label back
+          # (v0.21.7 and v0.21.8 both outranked the 3.x line this way).
+          make_latest: false
