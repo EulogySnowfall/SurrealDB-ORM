@@ -4,11 +4,15 @@
 
 Two release lines are maintained, one per SurrealDB major version:
 
-| Version     | SurrealDB   | Branch | Supported          |
-| ----------- | ----------- | ------ | ------------------ |
-| **0.30.x+** | >= 3.0      | `main` | :white_check_mark: |
-| **0.21.x**  | 2.6.x       | `v2`   | :warning:          |
-| < 0.21.x    | -           | -      | :x:                |
+| Version     | SurrealDB     | Branch | Supported          |
+| ----------- | ------------- | ------ | ------------------ |
+| **0.33.x**  | >= 3.2        | `main` | :white_check_mark: |
+| **0.21.x**  | 2.6.x – 2.7.x | `v2`   | :warning:          |
+| < 0.21.x    | -             | -      | :x:                |
+
+`main` requires **SurrealDB 3.2+** as of ORM 0.32.0. The `v2` line supports
+SurrealDB **2.6.x and 2.7.x** (tested against **v2.7.0** as of 0.21.8) and
+receives security and bug fixes only.
 
 > [!WARNING]
 > :warning: The `v2` branch is **deprecated** (security & bug fixes only) in favor of
