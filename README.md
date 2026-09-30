@@ -43,7 +43,38 @@
 
 ### SurrealDB Compatibility
 
-Tested with SurrealDB: v2.6.5
+| ORM version     | Supported SurrealDB     | Tested against |
+| --------------- | ----------------------- | -------------- |
+| 0.21.8+         | 2.6.x – 2.7.x (< 3.0)   | **v2.7.0**     |
+| 0.21.0 – 0.21.7 | 2.6.x                   | v2.6.5         |
+
+For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main) (0.3y.x).
+
+---
+
+## What's New in 0.21.8
+
+**Compatibility maintenance release (V2 LTS).** No library code changes vs 0.21.7.
+
+- **Tested against SurrealDB v2.7.0.** The pin (`.surrealdb-version`, `devops/docker-compose.yml`)
+  moves from v2.6.5 to v2.7.0, and the full unit and integration suites pass unchanged. 2.7.0 is
+  2.6.5 plus background reclamation of removed namespace/database data — nothing on the query,
+  CBOR or RPC surface the ORM depends on.
+- **Supported range is now SurrealDB 2.6.x – 2.7.x.** The minimum is unchanged; there is no need
+  to upgrade the server to take this release.
+
+### Maintenance releases 0.21.2 – 0.21.7
+
+| Version | Date       | Content                                                                                  |
+| ------- | ---------- | ---------------------------------------------------------------------------------------- |
+| 0.21.7  | 2026-09-18 | `anyio` 4.14.2 in the lock file (transitive, via `httpx`). No library changes.           |
+| 0.21.6  | 2026-09-07 | Migration fixes — see below.                                                             |
+| 0.21.5  | 2026-09-05 | `AlterField`, statement errors, `ForeignKey` coercion — see below.                       |
+| 0.21.4  | 2026-09-01 | `tornado` 6.5.8 in the lock file (dev-only). No library changes.                         |
+| 0.21.3  | 2026-08-11 | `aiohttp` 3.14.3 in the lock file; `tag-release` CI fix. No library changes.             |
+| 0.21.2  | 2026-07-20 | Denied/missing `UPDATE` and `merge()` raise instead of silently no-opping; `istartswith` / `iendswith` are case-insensitive. |
+
+Full details in the [CHANGELOG](CHANGELOG).
 
 ---
 
@@ -940,7 +971,7 @@ pip install surrealdb-orm
 pip install surrealdb-orm[cli]
 ```
 
-**Requirements:** Python 3.12+ | SurrealDB 2.6.0+
+**Requirements:** Python 3.12+ | SurrealDB 2.6.x – 2.7.x (< 3.0; tested against v2.7.0)
 
 **Included:** `pydantic`, `httpx`, `aiohttp`, `cbor2` (CBOR is the default protocol for WebSocket)
 

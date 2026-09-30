@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: September 2026 (0.21.6)
+> Context document for Claude AI - Last updated: September 2026 (0.21.8)
 
 <!-- -->
 
@@ -19,7 +19,32 @@
 
 ---
 
-## Current Version: 0.21.6 (Beta — V2 LTS, deprecated)
+## Current Version: 0.21.8 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+
+| Branch | SurrealDB tested | Supported range | ORM line | Status                          |
+| ------ | ---------------- | --------------- | -------- | ------------------------------- |
+| `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
+| `main` | 3.2.x            | >= 3.2          | 0.33.x   | Active development              |
+
+### What's New in 0.21.8
+
+Compatibility maintenance release — no library code changes vs 0.21.7.
+
+- **SurrealDB pin moved 2.6.5 → 2.7.0 (#213)**, opened by the 2.X version monitor
+  (which runs from `main`). The full unit + integration suite passes unchanged on
+  2.7.0. Upstream, 2.7.0 is only three commits over 2.6.5: background reclamation
+  of removed namespace/database data, a release-pipeline migration, and the
+  version bump itself — nothing on the query, CBOR or RPC surface.
+- **Supported range widened to 2.6.x – 2.7.x**, floor unchanged. Do not raise the
+  floor on a monitor bump: nothing here requires 2.7, and forcing a server upgrade
+  on a deprecated line is all cost.
+- **Docs backfilled.** 0.21.3, 0.21.4 and 0.21.7 had shipped with version files
+  only (automated bump PRs), so CHANGELOG/README/CLAUDE.md silently stopped at
+  0.21.6 — the same rot `SECURITY.md` showed on `main`. `SECURITY.md` here also
+  still listed `main` as `0.30.x / >= 3.0`; now `0.33.x / >= 3.2`.
+- **0.21.7** (2026-09-18) — `anyio` 4.14.2 lock sync (#209). **0.21.4** — `tornado`
+  6.5.8, dev-only (#182). **0.21.3** — `aiohttp` 3.14.3 lock sync (#151) and the
+  `tag-release` first-match fix (#141).
 
 ### What's New in 0.21.6
 
@@ -79,7 +104,8 @@ large enough that "it mattered on main" is not evidence it matters here.
   assumed.
 
 
-> Maintenance line `0.2y.x` for SurrealDB 2.6.x. Tested against SurrealDB **v2.6.5**.
+> Maintenance line `0.2y.x` for SurrealDB 2.6.x – 2.7.x. Tested against SurrealDB **v2.7.0**
+> (v2.6.5 up to 0.21.7).
 > See the deprecation notice above and the [CHANGELOG](CHANGELOG) for details.
 > The detailed "What's New" history below predates the LTS split and is retained for reference.
 >

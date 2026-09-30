@@ -1,6 +1,6 @@
 # SurrealDB-ORM Roadmap
 
-> Planning document for future ORM features - Last updated: June 2026
+> Planning document for future ORM features - Last updated: September 2026 (0.21.8)
 >
 > **Note:** This is the deprecated `v2` LTS branch (SurrealDB 2.x). New feature work happens on
 > [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite) and the `main` branch
@@ -35,6 +35,12 @@
 | 0.13.0  | Released | Events, Geospatial & Materialized Views                   |
 | 0.14.0  | Released | Testing & Developer Experience (Alpha → Beta)             |
 | 0.14.4  | Released | Datetime Fix, Typed QuerySet[T] & get_related, mypy strict|
+| 0.20.0  | Released | V2 LTS branch baseline (SurrealDB 2.x)                    |
+| 0.21.0  | Released | Deprecation notice, security upgrades, 401 clock-skew fix |
+| 0.21.1–0.21.4 | Released | Security & dependency maintenance, backported fixes |
+| 0.21.5–0.21.6 | Released | Migration & ForeignKey fixes backported from `main` |
+| 0.21.7  | Released | Dependency maintenance (`anyio`)                          |
+| 0.21.8  | Released | SurrealDB 2.7.0 tested; supported range 2.6.x – 2.7.x      |
 
 ---
 
@@ -1265,6 +1271,11 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 ---
 
 ## Future Versions (Planned)
+
+> **Not planned on `v2`.** The versions below were the pre-LTS plan. They shipped on `main`
+> (SurrealDB 3.x, under different version numbers) or moved to
+> [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite); the `v2` line takes
+> security and bug fixes only.
 
 | Version | Focus            | Key Features                                                |
 | ------- | ---------------- | ----------------------------------------------------------- |
