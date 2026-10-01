@@ -37,6 +37,17 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.2
+
+**CI maintenance release.** No library code changes vs 0.34.0.
+
+- **0.34.2** — Dependabot security updates on `main`, grouped ones included, are now synced to the `v2` LTS
+  branch automatically. A grouped update had been silently skipped, leaving `v2` on six advisories until a
+  manual audit (fixed in 0.21.9). Packages `v2`'s constraints hold back (such as `cbor2 <6`) now raise a
+  warning instead of passing as "up to date".
+- **0.34.1** — `tornado` 6.5.9 and `urllib3` 2.8.0 in the lock file (six advisories). Both are
+  development-only dependencies and are not part of the installed package.
+
 ## What's New in 0.34.0
 
 **SurrealDB 3.3 compatibility release.** No library code changes vs 0.33.5.

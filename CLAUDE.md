@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.0)
+> Context document for Claude AI - Last updated: October 2026 (0.34.2)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.0)
+## Current Version: 0.34.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.0)
 
 ### Branch Strategy
 
@@ -18,6 +18,29 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.0**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.2
+
+CI only (#220), no library code changes. **0.34.1** was the auto-release of
+Dependabot #217 (`tornado` 6.5.9, `urllib3` 2.8.0, dev-only), backfilled here.
+
+- **Sync to V2 dropped every grouped Dependabot update, green.** It looked the
+  group's name list (`tornado, urllib3`) up as one package. `v2` kept six
+  advisories until a manual `pip-audit` (0.21.9). The `v2` line has no alerts
+  API coverage, so the sync job is the only thing carrying security fixes there.
+- **The sync is gated on `package-ecosystem == uv`**, which on `main` means
+  "security update": `dependabot.yml` configures only `pip` version updates
+  (they never produce PRs for this uv project) and the `uv` security updates
+  arrive as `dependabot/uv/…`. Adding a `uv` version-update entry would make the
+  gate sync routine bumps to v2 and race v2's own Dependabot —
+  `tests/test_sync_v2_grouped.py::TestUvMeansSecurity` fails if it happens.
+- **Every path is explicit**: synced, skipped with a notice, warned (v2
+  constraint holds a package below main, e.g. `cbor2 <6`; lock moved but no
+  named package did), or failed (unreadable names, no ecosystem). Dedupe is on
+  an open PR, not on the branch.
+- **The sync PR carries `<!-- security-sync-packages: … -->`** in its body; the
+  automerge job reads that, not the title. The old greedy `bump (.*) from`
+  parse had mislabelled every single-package sync (#210).
 
 ### What's New in 0.34.0
 

@@ -6,6 +6,47 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.2] - 2026-10-01
+
+**CI maintenance release.** No library code changes vs 0.34.1.
+
+### Fixed — CI
+
+- **Dependabot security updates now reach the `v2` LTS branch, grouped ones
+  included (#220).** A grouped Dependabot PR reports its dependencies as one
+  comma-separated string; *Sync to V2* looked `tornado, urllib3` (#217) up as a
+  single package, found nothing and finished green. `v2` stayed on six
+  advisories until a manual audit (fixed in 0.21.9). The sync now:
+  - runs for `uv` updates only. On `main` those are Dependabot *security*
+    updates (no `uv` version-update config exists; a test keeps it so), while
+    routine updates reach `v2` through its own `target-branch: v2` entry.
+    GitHub Actions bumps are skipped with a notice instead of failing;
+  - splits the group, syncs the packages `v2` uses in one PR, and fails on
+    input it cannot read as package names;
+  - warns when `v2`'s constraints hold a package below `main` (e.g.
+    `cbor2 <6`) instead of reporting "already up to date";
+  - deduplicates on an open PR rather than on the branch, bounds the PR title
+    and branch name, and reads every lock entry of a package;
+  - passes the package list in a structured marker in the PR body; the title
+    is no longer parsed. The old greedy title parse had mislabelled every
+    single-package sync (#210: `anyio from 4.13.0 to 4.14.2 (security sync`).
+
+---
+
+## [0.34.1] - 2026-10-01
+
+**Dependency maintenance release.** No library code changes vs 0.34.0.
+
+### Security
+
+- **`tornado` 6.5.8 → 6.5.9 and `urllib3` 2.7.0 → 2.8.0 in `uv.lock` (#217)** —
+  GHSA-chx6-46f5-w4vp, GHSA-c2m8-h5v5-343r, GHSA-3hv7-mjh2-fv65;
+  PYSEC-2026-4175, PYSEC-2026-4176, PYSEC-2026-4177. Both are
+  development-only (Jupyter tooling; the Docker client used by the test
+  fixtures) and do not ship in the wheel, so installed users are not exposed.
+
+---
+
 ## [0.34.0] - 2026-10-01
 
 **SurrealDB 3.3 compatibility release.** SurrealDB **3.3.0** is the tested
