@@ -102,9 +102,12 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          DEP_NAME=$(echo "$PR_TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
-          NEW_VER=$(echo "$PR_TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
-          PREV_VER=$(echo "$PR_TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
+          # Drop the "(security sync from main)" suffix first: its own "from"
+          # made the greedy `bump (.*) from` capture run to the end of the title.
+          CORE="${PR_TITLE% (security sync*}"
+          DEP_NAME=$(echo "$CORE" | sed -n 's/.*bump \(.*\) from .* to .*/\1/p')
+          PREV_VER=$(echo "$CORE" | sed -n 's/.*bump .* from \(.*\) to .*/\1/p')
+          NEW_VER=$(echo "$CORE" | sed -n 's/.*bump .* from .* to \(.*\)$/\1/p')
           echo "dependency-names=$DEP_NAME" >> $GITHUB_OUTPUT
           echo "new-version=$NEW_VER" >> $GITHUB_OUTPUT
           echo "previous-version=$PREV_VER" >> $GITHUB_OUTPUT
@@ -340,53 +343,114 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Check if dependency exists in v2
+      - name: Check which dependencies exist in v2
         id: check
         env:
           DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
         run: |
-          echo "Checking for '$DEP_NAME' in v2 uv.lock..."
-          if grep -qi "name = \"${DEP_NAME}\"" uv.lock 2>/dev/null; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Found '$DEP_NAME' in v2"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "'$DEP_NAME' not found in v2 — skipping sync"
+          # A grouped Dependabot PR reports its dependencies as ONE comma-separated
+          # string ("tornado, urllib3"). Looking that string up as a single package
+          # name matched nothing, and every grouped update was silently skipped for
+          # v2 (#217). Split it, and check each package on its own.
+          #
+          # Anything that does not read as a list of package names fails the job:
+          # a format this step does not understand must turn red, never "skip" green.
+          IFS=',' read -r -a ITEMS <<< "$DEP_NAME"
+          if [[ ${#ITEMS[@]} -eq 0 ]]; then
+            echo "::error::No dependency names received from the automerge job (got '$DEP_NAME')"
+            exit 1
           fi
 
-      - name: Update dependency and create PR
+          PACKAGES=()
+          for ITEM in "${ITEMS[@]}"; do
+            NAME="${ITEM#"${ITEM%%[![:space:]]*}"}"
+            NAME="${NAME%"${NAME##*[![:space:]]}"}"
+            if [[ ! "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "::error::Cannot read '$ITEM' (from '$DEP_NAME') as a package name — refusing to guess"
+              exit 1
+            fi
+            # uv.lock stores normalised (PEP 503) names.
+            PKG=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[._-]+/-/g')
+            if grep -qx "name = \"$PKG\"" uv.lock 2>/dev/null; then
+              PACKAGES+=("$PKG")
+              echo "Found '$PKG' in v2"
+            else
+              echo "'$PKG' is not in v2's uv.lock — not synced"
+            fi
+          done
+
+          if [[ ${#PACKAGES[@]} -eq 0 ]]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "None of '$DEP_NAME' is used on v2 — nothing to sync"
+          else
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "packages=${PACKAGES[*]}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update dependencies and create PR
         if: steps.check.outputs.exists == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           # Job outputs derive from the PR title — bind to env, never expand into the script.
-          DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
-          NEW_VER: ${{ needs.automerge.outputs.new-version-dep }}
-          PREV_VER: ${{ needs.automerge.outputs.previous-version-dep }}
+          PACKAGES: ${{ steps.check.outputs.packages }}
           UPDATE_TYPE: ${{ needs.automerge.outputs.update-type }}
         run: |
-          SAFE_DEP=$(echo "$DEP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
-          BRANCH="chore/sync-${SAFE_DEP}-${NEW_VER}-v2"
+          read -r -a PKGS <<< "$PACKAGES"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          BEFORE=$(mktemp)
+          git show HEAD:uv.lock > "$BEFORE"
+
+          # One resolution for the whole group, within v2's own constraints
+          # (pyproject pins such as cbor2 <6 still hold).
+          UPGRADE_ARGS=()
+          for P in "${PKGS[@]}"; do UPGRADE_ARGS+=(--upgrade-package "$P"); done
+          uv lock "${UPGRADE_ARGS[@]}"
+
+          if git diff --quiet uv.lock; then
+            echo "No changes — v2 already up to date for ${PKGS[*]}"
+            exit 0
+          fi
+
+          # Versions come from v2's own lock diff: the Dependabot metadata
+          # describes main, and a group's metadata describes only one package.
+          version_in() {
+            awk -v name="name = \"$2\"" '$0 == name { getline; gsub(/^version = "|"$/, ""); print; exit }' "$1"
+          }
+          CHANGED=() OLD=() NEW=()
+          for P in "${PKGS[@]}"; do
+            O=$(version_in "$BEFORE" "$P")
+            N=$(version_in uv.lock "$P")
+            if [[ "$O" != "$N" ]]; then
+              CHANGED+=("$P") OLD+=("$O") NEW+=("$N")
+            fi
+          done
+          if [[ ${#CHANGED[@]} -eq 0 ]]; then
+            echo "Only transitive lock changes — nothing named in the PR moved; not syncing"
+            exit 0
+          fi
+          join() { local IFS=","; local s="$*"; echo "${s//,/, }"; }
+          DEPS=$(join "${CHANGED[@]}")
+          FROM=$(join "${OLD[@]}")
+          TO=$(join "${NEW[@]}")
+
+          SAFE=$(echo "${CHANGED[*]}-${NEW[*]}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9.]/-/g')
+          BRANCH="chore/sync-${SAFE}-v2"
+
           # Skip if branch already exists (avoid duplicate PRs)
-          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+          if git ls-remote --heads origin "$BRANCH" | grep -q .; then
             echo "Branch $BRANCH already exists — skipping"
             exit 0
           fi
 
           git checkout -b "$BRANCH"
-
-          uv lock --upgrade-package "$DEP_NAME"
-
-          if git diff --quiet uv.lock; then
-            echo "No changes — v2 already up to date for $DEP_NAME"
-            exit 0
-          fi
-
           git add uv.lock
-          git commit -m "chore(deps): bump $DEP_NAME from $PREV_VER to $NEW_VER in the uv group across 1 directory"
+          # Keep the "bump X from A to B (" shape: the automerge job parses it back
+          # out of the sync PR's title once that PR lands on v2.
+          TITLE="chore(deps): bump $DEPS from $FROM to $TO (security sync from main)"
+          git commit -m "$TITLE"
           git push origin "$BRANCH"
 
           PR_BODY="## Security Sync from Main
@@ -394,16 +458,16 @@ jobs:
           This PR syncs a dependency update that was already tested and merged on \`main\`.
 
           ### Updated Dependencies
-          - **Package:** $DEP_NAME
+          - **Packages:** $DEPS
           - **Update type:** $UPDATE_TYPE
-          - **From:** $PREV_VER
-          - **To:** $NEW_VER
+          - **From:** $FROM
+          - **To:** $TO
 
           ---
           *This PR was automatically created by the security sync workflow.*"
 
           gh pr create \
-            --title "chore(deps): bump $DEP_NAME from $PREV_VER to $NEW_VER (security sync from main)" \
+            --title "$TITLE" \
             --body "$PR_BODY" \
             --base v2 \
             --head "$BRANCH" \
