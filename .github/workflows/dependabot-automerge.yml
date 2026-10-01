@@ -72,8 +72,7 @@ jobs:
       merged: ${{ steps.wait-merge.outputs.merged }}
       dependency-names: ${{ steps.dep-info.outputs.dep-names }}
       update-type: ${{ steps.dep-info.outputs.update-type }}
-      previous-version-dep: ${{ steps.dep-info.outputs.prev-ver }}
-      new-version-dep: ${{ steps.dep-info.outputs.new-ver }}
+      package-ecosystem: ${{ steps.dep-info.outputs.ecosystem }}
 
     steps:
       # NOTE: do NOT add a `gh pr checks --watch` gate here. This job is itself
@@ -96,19 +95,26 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata from PR title (security sync)
+      - name: Extract metadata from PR body (security sync)
         if: needs.check-dependabot.outputs.is-security-sync == 'true'
         id: sync-metadata
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          DEP_NAME=$(echo "$PR_TITLE" | sed -n 's/.*bump \(.*\) from.*/\1/p')
-          NEW_VER=$(echo "$PR_TITLE" | sed -n 's/.*from .* to \(.*\) (.*/\1/p')
-          PREV_VER=$(echo "$PR_TITLE" | sed -n 's/.*from \(.*\) to.*/\1/p')
-          echo "dependency-names=$DEP_NAME" >> $GITHUB_OUTPUT
-          echo "new-version=$NEW_VER" >> $GITHUB_OUTPUT
-          echo "previous-version=$PREV_VER" >> $GITHUB_OUTPUT
-          echo "update-type=version-update:semver-patch" >> $GITHUB_OUTPUT
+          # The sync-v2 job below writes the package list into the PR body as a
+          # structured marker. The title is free text and is deliberately not
+          # parsed: a greedy `bump (.*) from` read once ran to the "from" in
+          # "(security sync from main)".
+          MARKER=$(printf '%s\n' "$PR_BODY" | grep -o '<!-- security-sync-packages: [^>]* -->' | head -n1 || true)
+          LIST="${MARKER#<!-- security-sync-packages: }"
+          LIST="${LIST% -->}"
+          if [[ -n "$MARKER" && "$LIST" =~ ^[a-z0-9._-]+(\ [a-z0-9._-]+)*$ ]]; then
+            DEP_NAME="${LIST// /, }"
+          else
+            DEP_NAME="(see PR)"
+          fi
+          echo "dependency-names=$DEP_NAME" >> "$GITHUB_OUTPUT"
+          echo "update-type=version-update:semver-patch" >> "$GITHUB_OUTPUT"
 
       - name: Resolve dependency info
         id: dep-info
@@ -119,23 +125,17 @@ jobs:
           IS_DEPENDABOT: ${{ needs.check-dependabot.outputs.is-dependabot }}
           DBM_DEP_NAMES: ${{ steps.dependabot-metadata.outputs.dependency-names }}
           DBM_UPDATE_TYPE: ${{ steps.dependabot-metadata.outputs.update-type }}
-          DBM_PREV_VER: ${{ steps.dependabot-metadata.outputs.previous-version }}
-          DBM_NEW_VER: ${{ steps.dependabot-metadata.outputs.new-version }}
+          DBM_ECOSYSTEM: ${{ steps.dependabot-metadata.outputs.package-ecosystem }}
           SYNC_DEP_NAMES: ${{ steps.sync-metadata.outputs.dependency-names }}
           SYNC_UPDATE_TYPE: ${{ steps.sync-metadata.outputs.update-type }}
-          SYNC_PREV_VER: ${{ steps.sync-metadata.outputs.previous-version }}
-          SYNC_NEW_VER: ${{ steps.sync-metadata.outputs.new-version }}
         run: |
           if [[ "$IS_DEPENDABOT" == "true" ]]; then
             echo "dep-names=$DBM_DEP_NAMES" >> "$GITHUB_OUTPUT"
             echo "update-type=$DBM_UPDATE_TYPE" >> "$GITHUB_OUTPUT"
-            echo "prev-ver=$DBM_PREV_VER" >> "$GITHUB_OUTPUT"
-            echo "new-ver=$DBM_NEW_VER" >> "$GITHUB_OUTPUT"
+            echo "ecosystem=$DBM_ECOSYSTEM" >> "$GITHUB_OUTPUT"
           else
             echo "dep-names=$SYNC_DEP_NAMES" >> "$GITHUB_OUTPUT"
             echo "update-type=$SYNC_UPDATE_TYPE" >> "$GITHUB_OUTPUT"
-            echo "prev-ver=$SYNC_PREV_VER" >> "$GITHUB_OUTPUT"
-            echo "new-ver=$SYNC_NEW_VER" >> "$GITHUB_OUTPUT"
           fi
 
       # Written to $RUNNER_TEMP rather than committed as .github/scripts/*.sh:
@@ -326,84 +326,222 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Decide whether this update is synced
+        id: gate
+        env:
+          ECOSYSTEM: ${{ needs.automerge.outputs.package-ecosystem }}
+        run: |
+          # Only `uv` updates are synced. main configures no `uv` *version*
+          # updates (dependabot.yml has `pip` only), so a `uv` PR on main is a
+          # Dependabot *security* update, which Dependabot opens on the default
+          # branch only. Routine version updates reach v2 through its own
+          # `target-branch: v2` entry; syncing them too would race it on the same
+          # uv.lock lines and ship a v2 release for a ruff bump. GitHub Actions
+          # bumps have nothing to sync into v2's uv.lock.
+          # Guarded by tests/test_sync_v2_grouped.py::TestUvMeansSecurity.
+          if [[ -z "$ECOSYSTEM" ]]; then
+            echo "::error::No package ecosystem in the Dependabot metadata — cannot tell whether this update belongs on v2"
+            exit 1
+          fi
+          if [[ "$ECOSYSTEM" == "uv" ]]; then
+            echo "sync=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sync=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not syncing a '$ECOSYSTEM' update to v2 — only uv security updates are synced"
+          fi
+
       - name: Checkout v2 branch
+        if: steps.gate.outputs.sync == 'true'
         uses: actions/checkout@v7
         with:
           ref: v2
           token: ${{ secrets.PAT_TOKEN }}
 
       - name: Set up Python
+        if: steps.gate.outputs.sync == 'true'
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
       - name: Install uv
+        if: steps.gate.outputs.sync == 'true'
         uses: astral-sh/setup-uv@v7
 
-      - name: Check if dependency exists in v2
+      - name: Check which dependencies exist in v2
+        if: steps.gate.outputs.sync == 'true'
         id: check
         env:
           DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
         run: |
-          echo "Checking for '$DEP_NAME' in v2 uv.lock..."
-          if grep -qi "name = \"${DEP_NAME}\"" uv.lock 2>/dev/null; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Found '$DEP_NAME' in v2"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "'$DEP_NAME' not found in v2 — skipping sync"
+          # A grouped Dependabot PR reports its dependencies as ONE comma-separated
+          # string ("tornado, urllib3"). Looking that string up as a single package
+          # name matched nothing, and every grouped update was silently skipped for
+          # v2 (#217). Split it, and check each package on its own.
+          #
+          # Anything that does not read as a list of package names fails the job:
+          # a format this step does not understand must turn red, never "skip" green.
+          IFS=',' read -r -a ITEMS <<< "$DEP_NAME"
+          if [[ ${#ITEMS[@]} -eq 0 ]]; then
+            echo "::error::No dependency names received from the automerge job (got '$DEP_NAME')"
+            exit 1
           fi
 
-      - name: Update dependency and create PR
-        if: steps.check.outputs.exists == 'true'
+          PACKAGES=()
+          for ITEM in "${ITEMS[@]}"; do
+            NAME="${ITEM#"${ITEM%%[![:space:]]*}"}"
+            NAME="${NAME%"${NAME##*[![:space:]]}"}"
+            if [[ ! "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+              echo "::error::Cannot read '$ITEM' (from '$DEP_NAME') as a package name — refusing to guess"
+              exit 1
+            fi
+            # uv.lock stores normalised (PEP 503) names.
+            PKG=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[._-]+/-/g')
+            if grep -qx "name = \"$PKG\"" uv.lock 2>/dev/null; then
+              PACKAGES+=("$PKG")
+              echo "Found '$PKG' in v2"
+            else
+              echo "'$PKG' is not in v2's uv.lock — not synced"
+            fi
+          done
+
+          if [[ ${#PACKAGES[@]} -eq 0 ]]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "None of '$DEP_NAME' is used on v2 — nothing to sync"
+          else
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "packages=${PACKAGES[*]}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update dependencies and create PR
+        if: steps.gate.outputs.sync == 'true' && steps.check.outputs.exists == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
-          # Job outputs derive from the PR title — bind to env, never expand into the script.
-          DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
-          NEW_VER: ${{ needs.automerge.outputs.new-version-dep }}
-          PREV_VER: ${{ needs.automerge.outputs.previous-version-dep }}
+          # Bind every ${{ }} expression to env, never expand it into the script.
+          PACKAGES: ${{ steps.check.outputs.packages }}
           UPDATE_TYPE: ${{ needs.automerge.outputs.update-type }}
+          SOURCE_PR: ${{ github.event.pull_request.number }}
         run: |
-          SAFE_DEP=$(echo "$DEP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
-          BRANCH="chore/sync-${SAFE_DEP}-${NEW_VER}-v2"
+          read -r -a PKGS <<< "$PACKAGES"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Skip if branch already exists (avoid duplicate PRs)
-          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
-            echo "Branch $BRANCH already exists — skipping"
+          BEFORE=$(mktemp)
+          git show HEAD:uv.lock > "$BEFORE"
+          # main's lock is the reference for "did the fix reach v2?".
+          MAIN_LOCK=$(mktemp)
+          git fetch -q --depth=1 origin main
+          git show FETCH_HEAD:uv.lock > "$MAIN_LOCK"
+
+          # One resolution for the whole group, within v2's own constraints
+          # (pyproject pins such as cbor2 <6 still hold).
+          UPGRADE_ARGS=()
+          for P in "${PKGS[@]}"; do UPGRADE_ARGS+=(--upgrade-package "$P"); done
+          uv lock "${UPGRADE_ARGS[@]}"
+
+          # Every version a lock holds for a name: forked resolutions (per-python
+          # markers) give one name several [[package]] entries.
+          versions_in() {
+            awk -v name="name = \"$2\"" '$0 == name { getline; gsub(/^version = "|"$/, ""); print }' "$1" \
+              | sort -uV | paste -sd' ' -
+          }
+          newest() { tr ' ' '\n' <<< "$1" | sort -V | tail -n1; }
+          only_in() {  # versions in $1 that are not in $2
+            local out
+            out=$(comm -23 <(tr ' ' '\n' <<< "$1" | sort) <(tr ' ' '\n' <<< "$2" | sort) | sort -V | paste -sd' ' -)
+            echo "${out// /, }"
+          }
+
+          CHANGED=() ROWS=() HELD=()
+          for P in "${PKGS[@]}"; do
+            OLD=$(versions_in "$BEFORE" "$P")
+            NEW=$(versions_in uv.lock "$P")
+            ON_MAIN=$(versions_in "$MAIN_LOCK" "$P")
+            if [[ "$OLD" != "$NEW" ]]; then
+              CHANGED+=("$P")
+              ROWS+=("| \`$P\` | $(only_in "$OLD" "$NEW") → $(only_in "$NEW" "$OLD") |")
+            fi
+            V2_TOP=$(newest "$NEW")
+            MAIN_TOP=$(newest "$ON_MAIN")
+            if [[ -n "$MAIN_TOP" && "$V2_TOP" != "$MAIN_TOP" && "$(printf '%s\n%s\n' "$V2_TOP" "$MAIN_TOP" | sort -V | tail -n1)" == "$MAIN_TOP" ]]; then
+              HELD+=("| \`$P\` | $V2_TOP | $MAIN_TOP |")
+              # A fix that cannot reach v2 must not look like "already up to date".
+              echo "::warning::$P stays at $V2_TOP on v2 while main has $MAIN_TOP — v2's constraints hold it back; check whether the advisory affects v2"
+            fi
+          done
+
+          if [[ ${#HELD[@]} -gt 0 && -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+            {
+              echo "### Held back on v2"
+              echo "| Package | v2 | main |"
+              echo "|---|---|---|"
+              printf '%s\n' "${HELD[@]}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [[ ${#CHANGED[@]} -eq 0 ]]; then
+            if git diff --quiet uv.lock; then
+              echo "No named package moved — v2 already has ${PKGS[*]} at the resolvable version"
+            else
+              echo "::warning::uv.lock changed but none of ${PKGS[*]} moved — not syncing transitive-only changes"
+            fi
             exit 0
           fi
 
-          git checkout -b "$BRANCH"
+          # Title: bounded (GitHub caps it at 256), the full list goes in the body.
+          SHOWN=("${CHANGED[@]:0:3}")
+          LIST=$(IFS=,; echo "${SHOWN[*]}")
+          LIST="${LIST//,/, }"
+          if [[ ${#CHANGED[@]} -gt 3 ]]; then
+            LIST="$LIST and $(( ${#CHANGED[@]} - 3 )) more"
+          fi
+          TITLE="chore(deps): bump $LIST (security sync from main)"
 
-          uv lock --upgrade-package "$DEP_NAME"
+          # Branch: deterministic for the same update, bounded in length.
+          KEY=$(for P in "${CHANGED[@]}"; do echo "$P=$(versions_in uv.lock "$P")"; done | sort)
+          BRANCH="chore/sync-v2-$(printf '%s' "$KEY" | sha256sum | cut -c1-10)"
 
-          if git diff --quiet uv.lock; then
-            echo "No changes — v2 already up to date for $DEP_NAME"
+          # Dedupe on an OPEN PR, not on the branch: a branch left behind by a
+          # failed `gh pr create`, or by a closed PR, must not turn re-runs green.
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          OPEN=$(gh api "repos/$GITHUB_REPOSITORY/pulls?head=$OWNER:$BRANCH&base=v2&state=open" --jq length)
+          if [[ "$OPEN" != "0" ]]; then
+            echo "::notice::An open sync PR already carries this update ($BRANCH) — nothing to do"
             exit 0
           fi
 
+          git checkout -B "$BRANCH"
           git add uv.lock
-          git commit -m "chore(deps): bump $DEP_NAME from $PREV_VER to $NEW_VER in the uv group across 1 directory"
-          git push origin "$BRANCH"
+          git commit -m "$TITLE"
+          git push --force origin "$BRANCH"
 
-          PR_BODY="## Security Sync from Main
+          HELD_SECTION=""
+          if [[ ${#HELD[@]} -gt 0 ]]; then
+            HELD_SECTION="
+          ### Held back by v2's constraints
+          | Package | v2 | main |
+          |---|---|---|
+          $(printf '%s\n' "${HELD[@]}")
+          "
+          fi
 
-          This PR syncs a dependency update that was already tested and merged on \`main\`.
+          PR_BODY="## Security sync from \`main\`
 
-          ### Updated Dependencies
-          - **Package:** $DEP_NAME
+          Dependabot security update #$SOURCE_PR, already merged on \`main\`, applied to v2's own lock (v2's constraints still apply).
+
+          | Package | v2 |
+          |---|---|
+          $(printf '%s\n' "${ROWS[@]}")
+          $HELD_SECTION
           - **Update type:** $UPDATE_TYPE
-          - **From:** $PREV_VER
-          - **To:** $NEW_VER
+
+          <!-- security-sync-packages: ${CHANGED[*]} -->
 
           ---
           *This PR was automatically created by the security sync workflow.*"
 
           gh pr create \
-            --title "chore(deps): bump $DEP_NAME from $PREV_VER to $NEW_VER (security sync from main)" \
+            --title "$TITLE" \
             --body "$PR_BODY" \
             --base v2 \
             --head "$BRANCH" \
