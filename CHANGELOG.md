@@ -6,6 +6,61 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.0] - 2026-10-01
+
+**SurrealDB 3.3 compatibility release.** SurrealDB **3.3.0** is the tested
+target of `main`. No library code changes vs 0.33.5; the minimum stays 3.2.
+
+### Changed
+
+- **Supported range is SurrealDB 3.2.x – 3.3.x, tested against 3.3.0.** The
+  full suite passes unchanged on both ends of the range — 2,128 unit tests, and
+  469 integration tests each against a live 3.3.0 and a live 3.2.4 (0 failures;
+  the same 2 expected skips on both). The floor is not raised: nothing in the
+  ORM needs 3.3, so taking 0.34.0 does not force a server upgrade.
+- **Upgrading the server to 3.3 is still recommended.** 3.3.0 carries several
+  upstream security fixes (computed-field and field-permission bypasses, tenant
+  boundary enforcement on `USE`, record-auth scope checks) that 3.2.4 does not.
+- **`Subquery` keeps its `LET` prelude.** The upstream behaviour behind #147 —
+  an inline uncorrelated sub-SELECT with `ORDER BY` + `LIMIT` sharing its
+  `LIMIT` budget across outer rows — still reproduces on 3.3.0
+  (`test_inline_subquery_order_by_and_limit_is_row_stable_upstream` remains an
+  expected failure), so the 0.32.0 workaround stays.
+- **Docs.** README, `SECURITY.md`, `CLAUDE.md` and `docs/roadmap.md` state the
+  3.2.x – 3.3.x range; the roadmap's planned versions move up one slot (Graph
+  Power is now 0.35.0). 0.33.4 and 0.33.5, which shipped without entries, are
+  backfilled below.
+- **Version bump to 0.34.0** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
+## [0.33.5] - 2026-09-28
+
+**SurrealDB pin release.** No library code changes vs 0.33.4.
+
+### Changed
+
+- **SurrealDB pin 3.2.4 → 3.3.0 (#211).** `.surrealdb-version` and every image
+  in `devops/docker-compose.yml`. Opened and auto-merged by the 3.X version
+  monitor after its own integration run passed against 3.3.0, which in turn
+  triggered this release with no documentation. The documented support
+  statement for 3.3 lands in 0.34.0.
+
+---
+
+## [0.33.4] - 2026-09-18
+
+**Dependency maintenance release.** No library code changes vs 0.33.3.
+
+### Changed
+
+- **`anyio` 4.13.0 → 4.14.2 in `uv.lock` (#207).** `anyio` is a transitive
+  dependency of `httpx`; the lock file does not ship in the wheel, so installed
+  environments resolve it independently.
+
+---
+
 ## [0.33.3] - 2026-09-08
 
 **Bug fix release.** One defect, at the boundary where a value is written into a
