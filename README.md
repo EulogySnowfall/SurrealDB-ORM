@@ -52,6 +52,15 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.9
+
+**Security maintenance release (V2 LTS).** No library code changes vs 0.21.8.
+
+- **`tornado` 6.5.9 and `urllib3` 2.8.0** in the lock file, clearing 6 advisories (GHSA-chx6-46f5-w4vp,
+  GHSA-c2m8-h5v5-343r, GHSA-3hv7-mjh2-fv65; PYSEC-2026-4175/4176/4177). Both are **development-only**
+  dependencies (Jupyter tooling, the Docker client used by the test fixtures): they are not part of the
+  installed package, so users are not exposed. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.8
 
 **Compatibility maintenance release (V2 LTS).** No library code changes vs 0.21.7.

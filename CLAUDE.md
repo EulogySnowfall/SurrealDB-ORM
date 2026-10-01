@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: September 2026 (0.21.8)
+> Context document for Claude AI - Last updated: October 2026 (0.21.9)
 
 <!-- -->
 
@@ -19,12 +19,24 @@
 
 ---
 
-## Current Version: 0.21.8 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.9 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.2.x            | >= 3.2          | 0.33.x   | Active development              |
+
+### What's New in 0.21.9
+
+Security maintenance — `tornado` 6.5.9 and `urllib3` 2.8.0 in `uv.lock` (6 advisories),
+both dev-only, no library code changes.
+
+- **Why it lagged:** `main` got both via Dependabot #217 (a *grouped* PR), and the
+  automerge workflow's "Sync to V2" job checks the PR's dependency name against
+  `v2`'s `uv.lock`. For a group that name is `tornado, urllib3`, which matches no
+  package, so the job logs "not found in v2 — skipping sync" and reports success.
+  Every grouped Dependabot PR is silently dropped for `v2` this way; audit `v2`
+  locally (`uv export` + `pip-audit`) after any grouped bump on `main`.
 
 ### What's New in 0.21.8
 

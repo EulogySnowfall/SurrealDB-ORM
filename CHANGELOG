@@ -6,6 +6,39 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.9] - 2026-10-01
+
+**Security maintenance release (V2 LTS).** No library code changes vs 0.21.8.
+
+### Security
+
+Both packages are **development-only** dependencies — neither ships in the
+wheel nor is required at runtime, so installed users are not exposed. The fix
+protects CI and contributors.
+
+- **`tornado` 6.5.8 → 6.5.9** (via Jupyter `ipykernel` / `jupyter-client`) —
+  GHSA-chx6-46f5-w4vp, GHSA-c2m8-h5v5-343r, GHSA-3hv7-mjh2-fv65.
+- **`urllib3` 2.7.0 → 2.8.0** (via `docker` → `requests`, used by the test
+  container fixtures) — PYSEC-2026-4175, PYSEC-2026-4176, PYSEC-2026-4177.
+
+Both were already fixed on `main` by Dependabot #217 (0.34.1). The automatic
+sync to `v2` skipped them: it looks up a Dependabot PR's dependency name in
+`v2`'s `uv.lock`, and a *grouped* PR's name is the list `tornado, urllib3`,
+which matches no package — reported as "not found in v2", in green.
+
+### Verification
+
+Against a live SurrealDB 2.7.0: 1815 unit and 384 integration tests pass;
+`ruff` and `mypy` clean; `pip-audit` over the full lock (all groups and extras)
+reports no known vulnerabilities.
+
+### Changed
+
+- **Version bump to 0.21.9** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
 ## [0.21.8] - 2026-09-30
 
 **Compatibility maintenance release (V2 LTS).** SurrealDB **2.7.0** is now the
