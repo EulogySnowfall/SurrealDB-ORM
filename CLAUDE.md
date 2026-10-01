@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: September 2026 (0.33.3)
+> Context document for Claude AI - Last updated: October 2026 (0.34.0)
 
 ## Project Vision
 
@@ -10,14 +10,39 @@
 
 ---
 
-## Current Version: 0.33.3 (Beta) — SurrealDB 3.2+ required
+## Current Version: 0.34.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.0)
 
 ### Branch Strategy
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.2.4**  | 0.33.x      | Active development              |
+| `main` | **3.3.0**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.0
+
+SurrealDB 3.3 compatibility — no library code changes vs 0.33.5, floor unchanged.
+
+- **Tested against 3.3.0 and 3.2.4, both green**: 2,128 unit, 469 integration per
+  server, 0 failures, the same 2 expected skips (refresh token not returned by the
+  test instance; the #147 upstream `xfail`). Supported range is 3.2.x – 3.3.x. The
+  floor stays 3.2 because nothing needs 3.3 — raising it would be a 0.32.0-style
+  breaking release with no code reason behind it.
+- **#147 is still live upstream on 3.3.0.** The non-strict `xfail`
+  `test_inline_subquery_order_by_and_limit_is_row_stable_upstream` still fails, so
+  `Subquery` keeps the `LET` prelude. Re-check on each new server line: an XPASS is
+  the signal the workaround can go.
+- **0.33.4 / 0.33.5 shipped undocumented** — an anyio lock sync and the monitor's
+  3.2.4 → 3.3.0 pin (#211), each auto-released with version files only. Same rot
+  as v2's 0.21.3/0.21.4/0.21.7, backfilled here. An auto-merged pin bump publishes
+  a release before anyone writes the support statement, so the release PR that
+  follows a server-line change is where the docs actually move.
+- **Unit tests need the server up on WSL2.** Some unit tests touch port 8000; with
+  nothing listening, connections hang on a stale forwarder instead of failing, and
+  `pytest -m "not integration"` stalls indefinitely. Start the container before the
+  unit suite, not just before integration.
+- **Roadmap shifted one slot**: Graph Power → 0.35.0, ML & Data → 0.36.0, Advanced
+  Queries → 0.37.0, File Storage → 0.38.0.
 
 ### What's New in 0.33.3
 

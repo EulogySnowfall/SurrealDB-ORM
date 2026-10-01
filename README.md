@@ -12,7 +12,7 @@
 >
 > | Your SurrealDB | Install |
 > | -------------- | ------- |
-> | **3.2+** | `pip install surrealdb-orm` (0.32.x) |
+> | **3.2+** (3.2.x – 3.3.x) | `pip install surrealdb-orm` (0.32.x and later; 3.3 tested from 0.34.0) |
 > | 3.0 – 3.1 | `pip install "surrealdb-orm<0.32"` |
 > | 2.x | `pip install "surrealdb-orm<0.30"` — or the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`0.21.x`, security + critical fixes only) |
 >
@@ -30,10 +30,32 @@
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.2.4**  | 0.33.x      | Active development              |
+| `main` | **3.3.0**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
+
+---
+
+## What's New in 0.34.0
+
+**SurrealDB 3.3 compatibility release.** No library code changes vs 0.33.5.
+
+- **Tested against SurrealDB 3.3.0; supported range 3.2.x – 3.3.x.** The full suite passes unchanged
+  against a live 3.3.0 *and* a live 3.2.4 — 2,128 unit tests, 469 integration tests per server, no
+  failures. The minimum stays 3.2, so this release does not force a server upgrade.
+- **Upgrading the server is still worth it**: 3.3.0 carries upstream security fixes (computed-field
+  and field-permission bypasses, tenant-boundary checks on `USE`, record-auth scope) absent from 3.2.4.
+- **`Subquery` keeps its `LET` prelude.** The upstream sub-SELECT `ORDER BY` + `LIMIT` defect behind
+  [#147](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/147) still reproduces on 3.3.0, so the
+  0.32.0 workaround stays in place.
+
+### Maintenance releases 0.33.4 – 0.33.5
+
+| Version | Date       | Content                                                                                          |
+| ------- | ---------- | ------------------------------------------------------------------------------------------------ |
+| 0.33.5  | 2026-09-28 | SurrealDB pin moved to 3.3.0 by the version monitor (#211). No library changes.                  |
+| 0.33.4  | 2026-09-18 | `anyio` 4.14.2 in the lock file (transitive, via `httpx`). No library changes.                   |
 
 ---
 
@@ -1399,7 +1421,7 @@ pip install surrealdb-orm
 pip install surrealdb-orm[cli]
 ```
 
-**Requirements:** Python 3.12+ | SurrealDB 3.2+ (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
+**Requirements:** Python 3.12+ | SurrealDB 3.2.x – 3.3.x, tested against 3.3.0 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
 
 **Included:** `pydantic`, `httpx`, `aiohttp`, `cbor2` (CBOR is the default protocol for WebSocket)
 
@@ -1407,11 +1429,12 @@ pip install surrealdb-orm[cli]
 
 | ORM Version           | SurrealDB     | Branch | Status              |
 | --------------------- | ------------- | ------ | ------------------- |
-| **0.32.x – 0.33.x**   | >= 3.2        | `main` | Active development  |
+| **0.34.x**            | 3.2.x – 3.3.x | `main` | Active development  |
+| **0.32.x – 0.33.x**   | >= 3.2        | —      | Superseded          |
 | **0.30.x – 0.31.x**   | 3.0 – 3.1     | —      | Superseded          |
 | **0.21.x**            | 2.6.x – 2.7.x | `v2`   | Security fixes only |
 
-- **SurrealDB 3.2+** — Use `surrealdb-orm >= 0.32.0` (this branch). Tested against SurrealDB **3.2.4**.
+- **SurrealDB 3.2.x – 3.3.x** — Use `surrealdb-orm >= 0.34.0` (this branch). Tested against SurrealDB **3.3.0**, and against 3.2.4 to keep the floor honest.
 - **SurrealDB 3.0 – 3.1** — Pin `surrealdb-orm<0.32`. 0.32.0 requires 3.2+ and is not tested against 3.1.x.
 - **SurrealDB 2.6.x – 2.7.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`; 2.7.x from 0.21.8, tested against **2.7.0**). This branch receives security patches but no new features.
 

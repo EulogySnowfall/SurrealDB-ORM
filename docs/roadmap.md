@@ -1,6 +1,6 @@
 # SurrealDB-ORM Roadmap
 
-> Planning document for future ORM features - Last updated: March 2026
+> Planning document for future ORM features - Last updated: October 2026 (0.34.0)
 
 ---
 
@@ -35,6 +35,7 @@
 | 0.31.0  | Released | Phase 2b: GraphQL, Bearer, UPSERT, REBUILD INDEX           |
 | 0.32.0  | Released | SurrealDB 3.2+ required; `Subquery` `LET` prelude          |
 | 0.33.0  | Released | Migration introspection: relations, virtual fields, null   |
+| 0.34.0  | Released | SurrealDB 3.3.0 tested; supported range 3.2.x – 3.3.x      |
 
 ---
 
@@ -1853,10 +1854,11 @@ await User.objects().bulk_upsert(
 | 0.31.0  | SurrealDB 3.0    | Bearer access, GraphQL config, REBUILD INDEX, UPSERT ON DUPLICATE (Done)      |
 | 0.32.0  | SurrealDB 3.2    | **Breaking:** requires 3.2+; `Subquery` hoisted into a `LET` prelude (Done)   |
 | 0.33.0  | Migrations       | Relation markers, virtual fields, nullability in introspection (Done)         |
-| 0.34.0  | Graph Power      | Recursive traversal, shortest path, path collection                           |
-| 0.35.0  | ML & Data        | SurrealML inference, JSONL import/export, DB dump/restore                     |
-| 0.36.0  | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring                      |
-| 0.37.0  | File Storage     | DEFINE BUCKET, FileField/ImageField, SDK bucket CRUD, upload/download helpers |
+| 0.34.0  | SurrealDB 3.3    | Tested against 3.3.0; supported range 3.2.x – 3.3.x (Done)                    |
+| 0.35.0  | Graph Power      | Recursive traversal, shortest path, path collection                           |
+| 0.36.0  | ML & Data        | SurrealML inference, JSONL import/export, DB dump/restore                     |
+| 0.37.0  | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring                      |
+| 0.38.0  | File Storage     | DEFINE BUCKET, FileField/ImageField, SDK bucket CRUD, upload/download helpers |
 
 ---
 
@@ -1945,12 +1947,12 @@ await User.objects().bulk_upsert(
 | DEFINE CONFIG GRAPHQL         | 0.31.0  | Medium   | Done    | Migrations           |
 | Bearer access (TYPE BEARER)   | 0.31.0  | High     | Done    | Auth + SDK           |
 | UPSERT ON DUPLICATE KEY       | 0.31.0  | Medium   | Done    | QuerySet             |
-| DEFINE BUCKET (migrations)    | 0.37.0  | High     | Planned | Migrations           |
-| BucketBackend enum + parser   | 0.37.0  | High     | Planned | DEFINE BUCKET        |
-| FileField / ImageField        | 0.37.0  | High     | Planned | DEFINE BUCKET        |
-| SDK bucket CRUD methods       | 0.37.0  | High     | Planned | SDK                  |
-| ORM upload/download helpers   | 0.37.0  | Medium   | Planned | FileField + SDK      |
-| Bucket introspection          | 0.37.0  | Medium   | Planned | DatabaseIntrospector |
+| DEFINE BUCKET (migrations)    | 0.38.0  | High     | Planned | Migrations           |
+| BucketBackend enum + parser   | 0.38.0  | High     | Planned | DEFINE BUCKET        |
+| FileField / ImageField        | 0.38.0  | High     | Planned | DEFINE BUCKET        |
+| SDK bucket CRUD methods       | 0.38.0  | High     | Planned | SDK                  |
+| ORM upload/download helpers   | 0.38.0  | Medium   | Planned | FileField + SDK      |
+| Bucket introspection          | 0.38.0  | Medium   | Planned | DatabaseIntrospector |
 
 ---
 
