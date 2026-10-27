@@ -168,3 +168,57 @@ async def test_queryset_live_receives_events_after_reconnect() -> None:
     assert new_id not in conn._live_callbacks
     assert new_id not in conn._live_subscriptions
     assert new_id not in await _server_live_ids()
+
+
+@pytest.mark.integration
+async def test_stop_during_the_resubscribe_leaves_no_live_query_behind() -> None:
+    """stop() issued while the re-created LIVE SELECT is in flight ends that query too.
+
+    The stream must count as stopped from the start of ``stop()``: its kill
+    targets the old id, which ended with the socket, so if the stream adopted
+    the re-created id meanwhile, that query kept running on the server.
+    """
+    conn = WebSocketConnection(SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE, reconnect_interval=0.05)
+    await conn.connect()
+    try:
+        await conn.signin(SURREALDB_USER, SURREALDB_PASS)
+        reconnects = _Reconnects()
+        stream = LiveSelectStream(
+            conn, "i255_items", where="tag = $t", params={"t": "wanted"}, auto_resubscribe=True, on_reconnect=reconnects
+        )
+        await stream.start()
+
+        original_query = conn.query
+        original_resubscribe_all = conn._resubscribe_all
+        stoppers: list[asyncio.Task[None]] = []
+        recreated: list[str] = []
+        resubscribed = asyncio.Event()
+
+        async def query(sql: str, vars: dict[str, Any] | None = None) -> Any:
+            if sql.startswith("LIVE SELECT") and not stoppers:
+                # Another task stops the stream while this LIVE SELECT is in flight.
+                stoppers.append(asyncio.create_task(stream.stop()))
+                response = await original_query(sql, vars)
+                recreated.append(str(response.results[0].result))
+                return response
+            return await original_query(sql, vars)
+
+        async def resubscribe_all() -> None:
+            await original_resubscribe_all()
+            resubscribed.set()
+
+        conn.query = query  # type: ignore[method-assign]
+        conn._resubscribe_all = resubscribe_all  # type: ignore[method-assign]
+        await _drop_socket(conn)
+        await asyncio.wait_for(resubscribed.wait(), timeout=RECONNECT_TIMEOUT)
+        await asyncio.wait_for(stoppers[0], timeout=EVENT_TIMEOUT)
+        conn.query = original_query  # type: ignore[method-assign]
+
+        assert len(recreated) == 1
+        assert stream.live_id is None
+        assert conn._live_subscriptions == {}
+        assert conn._live_callbacks == {}
+        assert recreated[0] not in await _server_live_ids()
+        assert reconnects.calls == []
+    finally:
+        await conn.close()

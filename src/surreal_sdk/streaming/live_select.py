@@ -236,19 +236,26 @@ class LiveSelectStream:
 
     async def stop(self) -> None:
         """Stop the live query subscription."""
-        if self._live_id:
+        # Marked stopped before the first await. A resubscribe whose re-created
+        # LIVE SELECT is answered while the kill below is in flight must find
+        # the stream stopped: ``_update_live_id`` then refuses the new id and
+        # the connection kills that query. Marked only after the kill, the
+        # stream adopted it while this kill reached the old id, which had
+        # ended with the socket, and the new query kept running.
+        self._closed = True
+        live_id = self._live_id
+        if live_id:
             try:
                 # Unregister from auto-resubscribe
-                self.connection._unregister_live_subscription(self._live_id)
-                await self.connection.kill(self._live_id)
+                self.connection._unregister_live_subscription(live_id)
+                await self.connection.kill(live_id)
             except Exception:
                 pass
             finally:
-                self.connection._live_callbacks.pop(self._live_id, None)
+                self.connection._live_callbacks.pop(live_id, None)
                 self._live_id = None
                 self._active = False
 
-        self._closed = True
         # Signal end of stream
         await self._queue.put(None)  # type: ignore
 
@@ -268,8 +275,9 @@ class LiveSelectStream:
         which ended with the socket.
 
         Returns:
-            False if the stream was stopped meanwhile: it does not take the new
-            id, and the connection kills that live query instead of keeping it.
+            False once ``stop()`` has begun, even with its kill of the old id
+            still in flight: the stream does not take the new id, and the
+            connection kills that live query instead of keeping it.
         """
         if self._closed:
             return False

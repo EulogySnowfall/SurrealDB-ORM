@@ -21,6 +21,8 @@ import asyncio
 import dataclasses
 from typing import Any
 
+import pytest
+
 from surreal_sdk.connection.websocket import WebSocketConnection
 from surreal_sdk.streaming.live_select import LiveSelectStream, LiveSubscriptionParams
 from surreal_sdk.types import QueryResponse
@@ -37,6 +39,10 @@ class _FakeServer:
         self.queries: list[tuple[str, dict[str, Any] | None]] = []
         self.killed: list[str] = []
         self.before_reply: Any = None
+        # Held replies: the LIVE SELECT reply waits for ``query_gate``, and the
+        # reply to ``kill(id)`` waits for ``kill_gates[id]``.
+        self.query_gate: asyncio.Event | None = None
+        self.kill_gates: dict[str, asyncio.Event] = {}
         conn.query = self.query  # type: ignore[method-assign]
         conn.kill = self.kill  # type: ignore[method-assign]
         self._conn = conn
@@ -47,10 +53,16 @@ class _FakeServer:
         if self.before_reply is not None:
             hook, self.before_reply = self.before_reply, None
             await hook()
+        if self.query_gate is not None:
+            gate, self.query_gate = self.query_gate, None
+            await gate.wait()
         return QueryResponse.from_rpc_result([{"status": "OK", "result": live_id, "time": "1ms"}])
 
     async def kill(self, live_id: str) -> None:
         self.killed.append(live_id)
+        gate = self.kill_gates.get(live_id)
+        if gate is not None:
+            await gate.wait()
         self._conn._live_callbacks.pop(live_id, None)
 
 
@@ -62,6 +74,16 @@ async def _stream(conn: WebSocketConnection, **kwargs: Any) -> LiveSelectStream:
     stream = LiveSelectStream(conn, "u255_items", where=WHERE, params=PARAMS, auto_resubscribe=True, **kwargs)
     await stream.start()
     return stream
+
+
+async def _until(predicate: Any) -> None:
+    """Yield to the event loop until ``predicate()`` holds (bounded, no timed sleep)."""
+
+    async def _poll() -> None:
+        while not predicate():
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(_poll(), timeout=1.0)
 
 
 async def _drain_callback_tasks(conn: WebSocketConnection) -> None:
@@ -163,7 +185,7 @@ class TestStopAfterReconnect:
         assert conn._live_subscriptions == {}
 
     async def test_stop_while_the_query_is_being_recreated(self) -> None:
-        """A stream stopped mid-resubscribe does not adopt the new id; that query is killed."""
+        """A stream stopped (stop() done) mid-resubscribe does not adopt the new id; that query is killed."""
         conn = WebSocketConnection("ws://localhost:8000", "ns", "db")
         server = _FakeServer(conn, "live-1", "live-2")
         calls: list[tuple[str, str]] = []
@@ -182,6 +204,44 @@ class TestStopAfterReconnect:
         assert conn._live_callbacks == {}
         assert conn._live_subscriptions == {}
         assert calls == []
+
+    async def test_stop_whose_kill_is_pending_when_the_query_is_recreated(self) -> None:
+        """stop() is mid-kill of the old id when the re-created LIVE SELECT is answered.
+
+        The stream must already count as stopped while that kill is in flight:
+        otherwise it adopts the new id, the kill only reaches the old (dead) id,
+        and the re-created live query keeps running on the server.
+        """
+        conn = WebSocketConnection("ws://localhost:8000", "ns", "db")
+        server = _FakeServer(conn, "live-1", "live-2")
+        calls: list[tuple[str, str]] = []
+
+        async def on_reconnect(old_id: str, new_id: str) -> None:
+            calls.append((old_id, new_id))
+
+        stream = await _stream(conn, on_reconnect=on_reconnect)
+        live_reply = asyncio.Event()
+        kill_reply = asyncio.Event()
+        server.query_gate = live_reply
+        server.kill_gates["live-1"] = kill_reply
+
+        resubscribe = asyncio.create_task(conn._resubscribe_all())
+        await _until(lambda: len(server.queries) == 2)  # the re-created LIVE SELECT is in flight
+        stopper = asyncio.create_task(stream.stop())
+        await _until(lambda: server.killed == ["live-1"])  # stop()'s kill of the old id is in flight
+        live_reply.set()  # the LIVE SELECT is answered first...
+        await asyncio.wait_for(resubscribe, timeout=1.0)
+        kill_reply.set()  # ...then the kill of the old id
+        await asyncio.wait_for(stopper, timeout=1.0)
+        await _drain_callback_tasks(conn)
+
+        assert server.killed == ["live-1", "live-2"]
+        assert conn._live_subscriptions == {}
+        assert conn._live_callbacks == {}
+        assert stream.live_id is None
+        assert calls == []
+        with pytest.raises(StopAsyncIteration):
+            await asyncio.wait_for(anext(stream), timeout=1.0)
 
 
 class TestCallbackSubscriptionsUnchanged:

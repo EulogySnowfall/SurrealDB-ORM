@@ -367,8 +367,9 @@ class WebSocketConnection(BaseSurrealConnection):
                 # handler right here, with no await in between, as start() does
                 # for the first id. From the on_reconnect task it would be too
                 # late: notifications would be dropped and a stop() would kill
-                # the old id meanwhile. A stream stopped while this query was
-                # being re-created refuses it, and the query is ended here.
+                # the old id meanwhile. A stream whose stop() began while this
+                # query was being re-created refuses it (even if that stop() is
+                # still waiting on its own kill), and the query is ended here.
                 if params._on_resubscribed is not None and not params._on_resubscribed(new_id):
                     try:
                         await self.kill(new_id)
