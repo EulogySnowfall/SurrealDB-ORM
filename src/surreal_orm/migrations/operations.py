@@ -315,22 +315,38 @@ def _union_members(field_type: str) -> list[str]:
     return members
 
 
+def _is_union(field_type: str) -> bool:
+    """
+    Whether a type, as written, is a union.
+
+    Read on the raw text, before :func:`_union_members` drops ``none`` and
+    ``null``: several top-level ``|`` members, or ``option<T>`` — ``none | T``
+    — even when ``T`` is a single member.
+
+    Args:
+        field_type: The type text
+
+    Returns:
+        True for ``a | b``, ``none | T`` and ``option<T>``
+    """
+    return len(_split_top_level(field_type, "|")) > 1 or field_type.lower().startswith("option<")
+
+
 def _element_type(field_type: str) -> str | None:
     """
-    The type the ``name.*`` field of an array or set column must have.
+    The type of the ``name.*`` level of an array or set column.
 
     Defining a field whose type has an ``array<T>`` or ``set<T>`` member also
     defines ``name.*`` with type ``T`` — the union of every such member's
     element, ``array<int> | set<string>`` giving ``int | string``.
 
     An untyped ``array``/``set`` member, or an element with an ``any`` member
-    (``any``, ``option<any>``, ``int | any``), makes the element ``any`` — for
-    the whole union, since ``any`` absorbs the other members. It is not "nothing": ``option<array<any>>`` derives ``name.*`` as
-    ``any``, and a column widened from ``array<int>`` to ``array<any>`` has to
-    widen ``name.*`` too, or it keeps refusing every non-``int`` element.
-    ``any`` is also what a redefinition amounts to for such a union: the
-    server derives ``int | any`` for ``array<int> | array<any>``, which
+    (``array<any>``, ``set<any>``), makes the element ``any`` — for the whole
+    union, since ``any`` absorbs the other members. A redefinition of
+    ``array<int> | array<any>`` makes the server derive ``int | any``, which
     SurrealDB 3.3 then fails to parse back, leaving ``INFO FOR TABLE`` broken.
+    Whether an ``any`` level exists at all is for
+    :func:`_render_element_types` to decide.
 
     Args:
         field_type: The column's type, as rendered
@@ -356,23 +372,36 @@ def _element_type(field_type: str) -> str | None:
 
 def _render_element_types(table: str, name: str, field_type: str) -> list[str]:
     """
-    Align the element sub-fields SurrealDB derived for an array or set column.
+    Align the element sub-fields SurrealDB derives for an array or set column.
 
     ``DEFINE FIELD tags ON t TYPE array<string>`` also defines ``tags.*`` as
     ``string`` (and ``n.*.*`` for ``array<array<…>>``); a redefinition
     re-derives them. ``ALTER FIELD tags ON t TYPE array<int>`` does not: it
     leaves ``tags.*`` at ``string`` and the column then refuses every
-    non-empty value. Each derived level is therefore altered too, its TYPE
-    only — the field is the server's, and a clause set on it by hand stays.
+    non-empty value. Each element level SurrealDB derives itself for the new
+    type is therefore aligned, its TYPE only — the field is the server's, and
+    a clause set on it by hand stays. That is exactly what the redefinition
+    did, and nothing more.
 
-    An ``any`` element is a level like the others: widening ``array<int>`` to
-    ``array<any>`` (or to an untyped ``array``) sets ``tags.*`` to ``any``,
-    and the walk stops there, ``any`` having no element of its own.
+    A typed element is always derived. An ``any`` element — ``array<any>``, an
+    untyped ``array`` or ``set`` — only under an optional column or a union, a
+    union anywhere on the path above that level (:func:`_is_union`):
+    ``option<array<any>>`` derives ``tags.*`` as ``any``, and widening
+    ``option<array<int>>`` to it has to widen ``tags.*`` too. Under a
+    non-optional ``array``/``array<any>`` the server derives nothing, so a
+    ``tags.*`` defined there by hand is left as it is, and the walk stops.
+    It also stops after an ``any`` level, ``any`` having no element of its
+    own.
+
+    Known limitation, the same as with the redefinition: a non-optional
+    column taken from ``array<T>`` to ``array<any>``, to ``array`` or to
+    ``any`` keeps ``tags.*`` at ``T``. A ``RawSQL`` operation with
+    ``ALTER FIELD tags.* ON <table> TYPE any;`` or
+    ``REMOVE FIELD tags.* ON <table>;`` lifts it.
 
     ``IF EXISTS`` because whether the server derived a level depends on the
-    previous definition — none for a column that was not an array before, nor
-    for a non-optional ``array<any>`` — and where it derived none, the
-    parent's TYPE alone checks the elements.
+    previous definition — none for a column that was not an array before —
+    and where it derived none, the parent's TYPE alone checks the elements.
 
     Args:
         table: Table the column belongs to
@@ -380,15 +409,19 @@ def _render_element_types(table: str, name: str, field_type: str) -> list[str]:
         field_type: The column's new type, as rendered
 
     Returns:
-        One statement per element level, outermost first; none for a column
-        with no array or set member
+        One statement per derived element level, outermost first; none for a
+        column with no array or set member
     """
     statements: list[str] = []
     path = name
+    union_seen = _is_union(field_type)
     element = _element_type(field_type)
     while element:
+        if element.lower() == "any" and not union_seen:
+            break
         path += ".*"
         statements.append(f"ALTER FIELD IF EXISTS {path} ON {table} TYPE {element};")
+        union_seen = union_seen or _is_union(element)
         element = _element_type(element)
     return statements
 
@@ -427,9 +460,12 @@ def _render_alter_field(
     statement it reverses.
 
     For an array or set column, the statement is followed by one per element
-    sub-field SurrealDB derives (``tags.*``, ``n.*.*``), an ``any`` element
-    included: a redefinition re-derived them, ``ALTER FIELD`` does not
-    (:func:`_render_element_types`).
+    sub-field SurrealDB derives itself for the new type (``tags.*``,
+    ``n.*.*``), TYPE only: a redefinition re-derived them, ``ALTER FIELD`` does
+    not. A typed element is aligned always, an ``any`` element only under an
+    optional column or a union; under a non-optional ``array``/``array<any>``
+    the server derives nothing, and a hand-defined ``tags.*`` is left as it
+    is (:func:`_render_element_types`).
 
     Args:
         table: Table the field belongs to

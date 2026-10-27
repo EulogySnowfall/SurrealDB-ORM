@@ -307,10 +307,19 @@ For an array or set column, SurrealDB also keeps a field per element level
 (`tags.*` for `array<string>`, `n.*.*` for `array<array<int>>`), which `ALTER FIELD`
 on the column does not update. The alteration is therefore followed by one
 `ALTER FIELD IF EXISTS tags.* ON users TYPE int;` per level, so changing a list's
-element type leaves the column writable. An `any` element counts as a level too:
-widening `array<int>` to `array<any>`, or to an untyped `array` or `set`, emits
-`ALTER FIELD IF EXISTS tags.* ON users TYPE any;` and nothing below it — otherwise
-`tags.*` would stay `int` and refuse every other value.
+element type leaves the column writable. Each element level SurrealDB derives itself
+for the new type is aligned, its `TYPE` only: a typed element always, an `any`
+element (`array<any>`, an untyped `array` or `set`) only under an optional column or
+a union — widening `option<array<int>>` to `option<array<any>>` emits
+`ALTER FIELD IF EXISTS tags.* ON users TYPE any;` and nothing below it. Under a
+non-optional `array` or `array<any>` column the server derives nothing, and a
+`tags.*` defined there by hand is left as it is.
+
+Known limitation, the same as with `DEFINE FIELD OVERWRITE` before: taking a
+non-optional column from `array<T>` to `array<any>`, to `array` or to `any` leaves
+`tags.*` at `T`, so the column still refuses non-`T` elements. Add a `RawSQL`
+operation with `ALTER FIELD tags.* ON users TYPE any;` (or
+`REMOVE FIELD tags.* ON users;`) to lift it.
 
 The field must exist: altering a missing one fails the migration with
 `MigrationStatementError: ... The field 'email' does not exist`. Use `AddField` to

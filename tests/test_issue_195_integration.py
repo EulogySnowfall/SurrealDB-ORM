@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from src import surreal_orm
 from src.surreal_orm.introspection import schema_diff
@@ -587,3 +588,127 @@ async def test_define_table_again_after_widening_a_list_to_any() -> None:
     saved = I195TaggedOptAny(tags=["x", 1])
     await saved.save()
     assert (await I195TaggedOptAny.objects().get(saved.get_id())).tags == ["x", 1]
+
+
+# ------------------------------------- a hand-defined element under an untyped array
+
+
+class I195Item(BaseModel):
+    """An element type the ORM maps to ``any``: ``list[I195Item]`` is ``array<any>``."""
+
+    label: str
+
+
+def _untyped_list_model(kind: str) -> type[BaseSurrealModel]:
+    """A model whose ``tags`` column is a non-optional array with no element type."""
+    clear_model_registry()
+    if kind == "list":
+
+        class I195TagsList(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name=TAGGED)
+            id: str | None = None
+            tags: list = []  # type: ignore[type-arg]
+
+        return I195TagsList
+    if kind == "list[Any]":
+
+        class I195TagsAny(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name=TAGGED)
+            id: str | None = None
+            tags: list[Any] = []
+
+        return I195TagsAny
+
+    class I195TagsItems(BaseSurrealModel):
+        model_config = SurrealConfigDict(table_name=TAGGED)
+        id: str | None = None
+        tags: list[I195Item] = []
+
+    return I195TagsItems
+
+
+UNTYPED_LISTS = [
+    pytest.param("list", "array", id="list"),
+    pytest.param("list[Any]", "array<any>", id="list-of-any"),
+    pytest.param("list[I195Item]", "array<any>", id="list-of-model"),
+]
+
+#: ``tags.*`` as defined by hand under the untyped column, outside the ORM.
+HANDMADE_ELEMENT = "TYPE string ASSERT string::len($value) > 0"
+
+
+async def _handmade_element(kind: str, column: str) -> tuple[type[BaseSurrealModel], str]:
+    """Apply the model, then define ``tags.*`` by hand; return the model and that definition.
+
+    The server derives no ``tags.*`` for a non-optional ``array`` or
+    ``array<any>``, so the one defined here is the user's alone.
+    """
+    model = _untyped_list_model(kind)
+    sql = await model.define_table()
+    assert f"ALTER FIELD tags ON {TAGGED} TYPE {column} " in sql, sql
+    assert "tags.*" not in await _fields(TAGGED), "precondition: the server derives no tags.* here"
+
+    await _query(f"DEFINE FIELD tags.* ON {TAGGED} {HANDMADE_ELEMENT};")
+    handmade = (await _fields(TAGGED))["tags.*"]
+    assert HANDMADE_ELEMENT in handmade, handmade
+    return model, handmade
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("kind", "column"), UNTYPED_LISTS)
+async def test_a_hand_defined_element_survives_define_table_and_an_unrelated_alteration(
+    migrations_dir: Path, kind: str, column: str
+) -> None:
+    """``define_table()`` again, then a COMMENT-only AlterField and its rollback: ``tags.*`` is untouched.
+
+    DEFINE FIELD OVERWRITE on ``tags`` left a hand-defined ``tags.*`` alone. The
+    element alignment forced it to ``TYPE any`` instead, dropping the type and
+    accepting ``[1]`` — values it was defined to refuse.
+    """
+    model, handmade = await _handmade_element(kind, column)
+
+    await model.define_table()
+
+    assert (await _fields(TAGGED))["tags.*"] == handmade
+
+    op = AlterField.from_field_states(
+        TAGGED,
+        FieldState(name="tags", field_type=column, nullable=False),
+        FieldState(name="tags", field_type=column, nullable=False, comment="labels"),
+    )
+    MigrationGenerator(migrations_dir).generate(name="comment_tags", operations=[op])
+    executor = MigrationExecutor(migrations_dir)
+    await executor.migrate()
+
+    assert "COMMENT 'labels'" in (await _fields(TAGGED))["tags"], "the alteration itself did not happen"
+    assert (await _fields(TAGGED))["tags.*"] == handmade
+
+    await executor.rollback("")
+
+    assert (await _fields(TAGGED))["tags.*"] == handmade
+    assert await _write_errors(f"CREATE {TAGGED}:refused SET tags = [1];") != []
+    assert await _write_errors(f"CREATE {TAGGED}:accepted SET tags = ['a'];") == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("kind", "column"), UNTYPED_LISTS)
+async def test_rolling_back_a_narrowing_keeps_a_hand_defined_element(migrations_dir: Path, kind: str, column: str) -> None:
+    """``array<any>`` → ``array<string>`` and back: ``tags.*`` stays ``string``.
+
+    Restoring an untyped non-optional column must not widen ``tags.*``: the
+    server would not have derived one, so the one there is the user's.
+    """
+    _, handmade = await _handmade_element(kind, column)
+
+    MigrationGenerator(migrations_dir).generate(name="narrow_tags", operations=[_retype_tags(column, "array<string>")])
+    executor = MigrationExecutor(migrations_dir)
+    await executor.migrate()
+
+    assert (await _fields(TAGGED))["tags.*"] == handmade
+
+    await executor.rollback("")
+
+    assert (await _fields(TAGGED))["tags.*"] == handmade
+    assert await _write_errors(f"CREATE {TAGGED}:refused SET tags = [1];") != []
