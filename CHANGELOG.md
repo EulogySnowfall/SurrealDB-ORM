@@ -6,6 +6,106 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.7] - 2026-10-27
+
+**Fix release.** `SurrealDBConnectionManager.reconnect()` no longer breaks
+requests and transactions that are still running, and a failed close no longer
+leaves a dead client registered (#232, #260). No new public API, but
+`reconnect()` changes behaviour: read *Behaviour change*. The SurrealDB pin is
+unchanged (tested against 3.3.4, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`reconnect()` broke requests already running (#232, #260).** It closed the
+  shared HTTP client before the new one existed, so any request that
+  overlapped the call failed with `ConnectionError: Request failed`. It now
+  connects and signs in the new client first and swaps it in under the
+  connection lock, so concurrent `get_client()` callers always get a connected
+  client. The previous client is closed once its in-flight RPC requests (every
+  request the ORM sends) and its open HTTP transactions have finished, or
+  after 30 s at most, for a call that is not cancelled (see *Behaviour
+  change*).
+- **An HTTP transaction opened before `reconnect()` lost its writes (#232,
+  #260).** `HTTPTransaction` buffers its statements until commit, and the
+  commit ran on the closed client: it failed with `Not connected`, and none of
+  the writes reached the database. A transaction opened by another task, or
+  inside its own body, now commits on the client it was opened on.
+- **`close_connection()` / `remove_connection()` kept a dead client
+  registered when closing it failed (#232, #260)**, for example with
+  `RuntimeError: Event loop is closed`. The error escaped before the registry
+  was cleared, so `get_client()` kept handing back the dead client. The failure
+  is now logged as a warning with its traceback, and the entry is always
+  removed.
+- **SDK: `HTTPConnection.close()` left a client whose close raised reporting
+  itself as connected (#232, #260).** It now marks the connection as
+  disconnected before closing the underlying pool; the exception still
+  propagates.
+
+### Behaviour change
+
+- For a call that runs to completion, `reconnect()` returns only after the
+  previous client is closed. That can take up to 30 s while other tasks finish
+  RPC requests or transactions on it; whatever still uses it after that is cut
+  off by the close. Transactions opened by the task calling `reconnect()` are
+  not waited for: the previous client closes when the last of them commits or
+  rolls back. The default WebSocket client is still closed at once, as before.
+- If the new client cannot connect or authenticate, `reconnect()` raises
+  `SurrealDbConnectionError` and leaves the current clients in place. The
+  previous client used to be closed and removed already.
+  `validate_connection()` and `set_url()` / `set_user()` / `set_password()` /
+  `set_namespace()` / `set_database()` with `reconnect=True` go through
+  `reconnect()`.
+- Cancelling `reconnect()` (for example `asyncio.wait_for(reconnect(), 5)`
+  timing out, or a task running `validate_connection()` being cancelled) does
+  not cut off what is still running on the previous client. Cancelled before
+  the new client is swapped in, the current clients stay in place. Cancelled
+  after the swap, the new client stays installed and the previous one is
+  closed by the last RPC request or HTTP transaction to finish on it (at once
+  if none is left), with no time limit. The cancellation then propagates as
+  usual.
+
+### Known limitations
+
+- `sql()`, `health()`, `status()` and `rest_*()` called directly on a client
+  from `get_client()` do not go through the RPC path, so the drain does not
+  wait for them: such a call that spans `reconnect()` can still be cut off.
+  The ORM never calls them on the shared client.
+- After a cancelled `reconnect()`, the previous client has no time limit: an
+  HTTP transaction on it that is never committed or rolled back keeps it, and
+  its connection pool, open.
+- `reconnect()` awaited from a child task of a task holding an open HTTP
+  transaction (`asyncio.gather()`, a `TaskGroup`) waits for that transaction
+  until the 30 s bound, then closes the client, and the commit fails with
+  `Not connected`. It used to fail at once.
+- Pre-existing: a client still being built when `reconnect()` is cancelled
+  (for example during sign-in) is not closed; and `QuerySet.changes()` keeps
+  its client across polls, so after any `reconnect()` the stream silently
+  stops delivering changes. Both were already the case in 0.34.6.
+
+### Changed
+
+- **Tests.** The suites of this release pass on SurrealDB 3.3.4 (pin) and
+  3.2.6 (3.2 floor line): 2,401 unit tests on Python 3.12, 3.13 and 3.14, and
+  540 integration tests passed, 1 skipped, 1 expected failure, 0 failed, on
+  each server. The skip is the refresh token the test server does not
+  return; the expected failure is the upstream #147 check, still failing, so
+  `Subquery` keeps its `LET` prelude.
+
+### Upgrading
+
+- No change required. Calling `reconnect()` periodically only to renew an
+  expired token is unnecessary: SurrealDB answers an expired token with HTTP
+  401, and the HTTP client already signs in again with its stored credentials
+  and retries (checked on SurrealDB 3.3.4).
+- Do not keep a client from `get_client()` across an `await`: one kept past a
+  `reconnect()` is closed (`Not connected`), so call `get_client()` again.
+- Workarounds that swapped the manager's private client registry or
+  connection lock by hand, or delayed closing the old client, can be replaced
+  by `reconnect()`.
+- The `v2` line has the same defects; the backport is tracked in #266.
+
+---
+
 ## [0.34.6] - 2026-10-27
 
 **Fix release.** Migrations no longer reset field permissions set outside the

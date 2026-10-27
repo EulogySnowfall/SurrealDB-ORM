@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.6)
+> Context document for Claude AI - Last updated: October 2026 (0.34.7)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.6 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.7 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,49 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.7
+
+One fix with a behaviour change: `reconnect()` stops cutting off requests and
+transactions still running on the shared HTTP client (#232, #260). Pin
+unchanged (3.3.4). `v2` has the same defects: backport #266.
+Integration at 0.34.7: 3.3.4 and 3.2.6 both 540 passed, 1 skipped, 1 xfailed
+(#147 still XFAIL); unit 2,401 on 3.12/3.13/3.14.
+
+- **Close-then-reopen is the bug shape.** The old `reconnect()` was
+  `close_connection()` followed by `get_client()`: every coroutine holding the
+  shared client between the two got `Request failed`, and an
+  `HTTPTransaction` — which buffers its statements and sends them at commit —
+  committed on a closed client (`Not connected`, every write lost). Now
+  `_build_client()` connects and signs in first, the swap happens under the
+  connection lock, and the previous client is retired outside it.
+- **Drain, then close.** `HTTPConnection._send_rpc` counts in-flight RPC
+  requests and an `HTTPTransaction` holds its connection from begin to
+  commit/rollback. `_drain_and_close(timeout)` waits for both (30 s,
+  `_reconnect_drain_timeout`). Transactions opened by the draining task are
+  not waited for — they cannot end while it waits — so the last of them closes
+  the connection. `sql()`, `health()`, `status()` and `rest_*()` bypass
+  `_send_rpc` and are not counted.
+- **Cancellation must not close under users.** A cancelled drain (e.g.
+  `wait_for(reconnect(), 5)`) calls `_close_when_idle()` instead of closing:
+  the last `_send_rpc` or `_transaction_ended` to finish closes the
+  connection, with no background task and no time limit. A close error in
+  that path goes through `_close_quietly()` and is only logged, so it can
+  neither fail the last request nor replace the cancellation. The PR's
+  intermediate commits got both wrong; neither shipped.
+- **A failed close used to keep the client registered.** `_close_single()`
+  caught only `NotImplementedError`, and `close_connection()` /
+  `remove_connection()` unregistered after it; `HTTPConnection.close()` reset
+  `_connected` only after `aclose()`, so a client whose close raised still
+  read as connected and `get_client()` handed it back. Unregistering is in a
+  `finally` now, and `close()` resets its state first.
+- **Open follow-ups, not regressions:** `QuerySet.changes()` keeps its client
+  across polls (`ChangeModelStream._ensure_feed()`), and
+  `ChangeFeedStream.stream()` swallows the `Not connected` it then gets, so the
+  stream goes silent after any `reconnect()` — same as before, since the old
+  `reconnect()` closed the client at once. `reconnect()` from a child task of a
+  task holding a transaction waits the full 30 s for it, keyed as it is on
+  `asyncio.current_task()`.
 
 ### What's New in 0.34.6
 
