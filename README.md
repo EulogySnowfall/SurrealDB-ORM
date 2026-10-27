@@ -52,6 +52,22 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.12
+
+**Security maintenance release (V2 LTS).** No library code changes vs 0.21.11.
+
+- **`certifi` 2026.10.23** in the lock file, clearing GHSA-6q48-6c7w-9gw2 / PYSEC-2026-4320: the
+  previous bundle (2026.5.20) still trusted `emSign ECC Root CA - G3`, under which eight
+  intermediate CA keys were compromised (and revoked); 2026.10.23 no longer carries that root.
+  `certifi` is a transitive dependency (through `httpx`) and this package does not declare it, so
+  upgrading `surrealdb-orm` keeps the `certifi` you already have: run `pip install -U certifi` to
+  get `>= 2026.10.19`.
+- **Backfilled:** 0.21.10 and 0.21.11 (2026-10-20) were auto-released with version files only.
+  **0.21.10** — `aiohttp` 3.14.5 (with `yarl` 1.25.1) in the lock file, GHSA-2g87-pp6c-29x5,
+  GHSA-494j-54xm-rwp3, GHSA-5wr8-gcqf-gqf3. `aiohttp` is a runtime dependency whose declared floor
+  stays `>=3.14.0`: run `pip install -U aiohttp`. **0.21.11** — `multidict` 7.1.0 in the lock file,
+  GHSA-54p9-h82j-f925 (transitive, through `aiohttp`). See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.9
 
 **Security maintenance release (V2 LTS).** No library code changes vs 0.21.8.

@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.9)
+> Context document for Claude AI - Last updated: October 2026 (0.21.12)
 
 <!-- -->
 
@@ -19,12 +19,32 @@
 
 ---
 
-## Current Version: 0.21.9 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.12 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
-| `main` | 3.2.x            | >= 3.2          | 0.33.x   | Active development              |
+| `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.12
+
+Security maintenance — `certifi` 2026.10.23 in `uv.lock` (GHSA-6q48-6c7w-9gw2 /
+PYSEC-2026-4320: `emSign ECC Root CA - G3`, eight intermediate CA keys compromised),
+no library code changes. 0.21.10 and 0.21.11 backfilled.
+
+- **Why it lagged:** `certifi` is transitive (`httpx`, `httpcore`, `requests`), so
+  nothing in `pyproject.toml` moves it, and `v2`'s lock only gets security updates
+  through the sync of `main`'s Dependabot security updates. No `certifi` update had
+  gone through `main`, so the sync had nothing to carry; a manual
+  `uv lock --upgrade-package certifi` (#237) fixed it. Transitive advisories that
+  `main` has not seen yet are invisible to the sync — audit `v2` with `pip-audit`.
+- **The wheel does not pin `certifi`**, so users must upgrade it themselves; the
+  release notes say so.
+- **0.21.10** (2026-10-20) — `aiohttp` 3.14.5 + `yarl` 1.25.1 lock sync (#225,
+  from `main`'s #223), three aiohttp advisories. **0.21.11** (2026-10-20) —
+  `multidict` 7.1.0 lock sync (#229, from `main`'s #227); `v2` resolved to the 7.x
+  line where `main` took 6.9.1, and the suites pass on it. Both were auto-released
+  with version files only.
 
 ### What's New in 0.21.9
 
