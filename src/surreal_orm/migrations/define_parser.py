@@ -29,10 +29,17 @@ _FIELD_KEYWORDS = [
     "TYPE",
 ]
 
-# Where a field's PERMISSIONS clause starts: the keyword, then FULL, NONE or
-# FOR — the only three ways the clause can begin. A field *named*
-# ``permissions`` in a VALUE or ASSERT expression is not followed by one.
-_FIELD_PERMISSIONS_START = re.compile(r"PERMISSIONS\s+(?:FULL|NONE|FOR)\b", re.IGNORECASE)
+# Where a field's PERMISSIONS clause starts: the keyword, at the start of the
+# body or after whitespace, then FULL, NONE or FOR — the only three ways the
+# clause can begin. A field *named* ``permissions`` in a VALUE or ASSERT
+# expression is not followed by one.
+_FIELD_PERMISSIONS_START = re.compile(r"(?:^|(?<=\s))PERMISSIONS\s+(?:FULL|NONE|FOR)\b", re.IGNORECASE)
+
+# What a ``/`` followed by whitespace must come after to open a regex literal
+# rather than divide: an operator or an opening bracket, where an operand is
+# expected. A division has an operand on its left — a name, a number, a
+# closing bracket or quote — never one of these.
+_REGEX_AFTER = frozenset("=([{,:!<>+-|&?")
 
 # The four actions a table PERMISSIONS clause can govern, in the order
 # SurrealDB reports them.
@@ -156,6 +163,53 @@ def _consume_until_keyword(text: str, keywords: list[str]) -> tuple[str, str]:
     return text, ""
 
 
+def _opens_regex_literal(text: str, i: int, previous: str) -> bool:
+    """Whether the ``/`` at *i* opens a regex literal (``/pattern/``).
+
+    SurrealDB renders a division as `` / ``, with whitespace on both sides,
+    so a ``/`` followed by anything else opens a regex. A pattern may itself
+    start with a space (``/ x/``); that one is told apart by what precedes it.
+
+    Args:
+        text: The text being scanned
+        i: The index of the ``/``
+        previous: The last non-whitespace character before it, outside any
+            quoted token (empty at the start of the text)
+
+    Returns:
+        True for a regex literal, False for a division
+    """
+    following = text[i + 1 : i + 2]
+    if following and not following.isspace():
+        return True
+    return previous in _REGEX_AFTER
+
+
+def _regex_literal_end(text: str, start: int) -> int:
+    """Return the index just past the regex literal opening at *start*.
+
+    Read as SurrealDB's lexer reads it: ``\\/`` is an escaped slash, while a
+    backslash before anything else escapes nothing — 2.7.0 rejects ``/a\\\\/``
+    as unterminated.
+
+    Args:
+        text: The text being scanned
+        start: The index of the opening ``/``
+
+    Returns:
+        The index after the closing ``/``, or -1 when the literal never closes
+    """
+    i = start + 1
+    while i < len(text):
+        if text[i] == "\\" and text.startswith("/", i + 1):
+            i += 2
+        elif text[i] == "/":
+            return i + 1
+        else:
+            i += 1
+    return -1
+
+
 def _split_field_permissions(body: str) -> tuple[str, str]:
     """Split a DEFINE FIELD body at its PERMISSIONS clause.
 
@@ -165,10 +219,16 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     TYPE clause, and the ``>`` of a preceding ``ASSERT $value > 0`` hid the
     PERMISSIONS keyword so the whole clause ended up in the assertion (#259).
 
-    Quotes (``'``, ``"`` and backticks, with backslash escapes), parentheses,
-    brackets and braces are respected. Angle brackets are not tracked: they
+    Quotes (``'``, ``"`` and backticks, with backslash escapes), regex
+    literals, parentheses, brackets and braces are respected. A pattern is
+    not SurrealQL: ``/^[A-Za-z' -]+$/`` or ``/^\\(x/`` would otherwise open a
+    quote or a bracket that never closes. Angle brackets are not tracked: they
     only nest inside a type, where the keyword cannot appear, while
     ``ASSERT $value > 0`` would never close.
+
+    When the scan still ends inside a token it could not close, the clause is
+    taken from the last place it could start, since that is where the server
+    reports it. A balanced body with no clause has none.
 
     Args:
         body: The statement body after ``DEFINE FIELD name ON table``
@@ -180,7 +240,11 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     depth = 0
     quote: str | None = None
     escaped = False
-    for i, ch in enumerate(body):
+    unterminated = False
+    previous = ""
+    i = 0
+    while i < len(body):
+        ch = body[i]
         if quote:
             if escaped:
                 escaped = False
@@ -188,6 +252,16 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
                 escaped = True
             elif ch == quote:
                 quote = None
+                previous = ch
+            i += 1
+            continue
+        if ch == "/" and _opens_regex_literal(body, i, previous):
+            end = _regex_literal_end(body, i)
+            if end == -1:
+                unterminated = True
+                break
+            previous = "/"
+            i = end
             continue
         if ch in "'\"`":
             quote = ch
@@ -195,9 +269,18 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
             depth += 1
         elif ch in ")]}":
             depth -= 1
-        elif depth == 0 and (i == 0 or body[i - 1] in (" ", "\t", "\n")) and _FIELD_PERMISSIONS_START.match(body, i):
+        elif depth == 0 and ch in "Pp" and _FIELD_PERMISSIONS_START.match(body, i):
             return body[:i], body[i + len("PERMISSIONS") :].strip()
-    return body, ""
+        if not ch.isspace():
+            previous = ch
+        i += 1
+
+    if not unterminated and quote is None and depth == 0:
+        return body, ""
+    starts = [m.start() for m in _FIELD_PERMISSIONS_START.finditer(body)]
+    if not starts:
+        return body, ""
+    return body[: starts[-1]], body[starts[-1] + len("PERMISSIONS") :].strip()
 
 
 def parse_define_field(statement: str) -> FieldState:
