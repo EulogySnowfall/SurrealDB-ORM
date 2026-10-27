@@ -76,6 +76,13 @@ class HTTPConnection(BaseSurrealConnection):
         # Last successful signin arguments, retained so a transient auth failure
         # (see ``_send_rpc``) can transparently re-mint a token.
         self._signin_args: dict[str, Any] | None = None
+        # RPC requests currently in flight through ``_send_rpc``, and an event
+        # set whenever that count is zero. ``_drain_and_close`` waits on them so
+        # a client being retired is not closed under a request still reading
+        # its response.
+        self._inflight_rpcs = 0
+        self._rpcs_idle = asyncio.Event()
+        self._rpcs_idle.set()
 
     @property
     def headers(self) -> dict[str, str]:
@@ -130,12 +137,47 @@ class HTTPConnection(BaseSurrealConnection):
         return self
 
     async def close(self) -> None:
-        """Close HTTP client."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        """Close HTTP client.
+
+        The connection reads as closed afterwards even when closing the
+        underlying ``httpx`` client raises (for example ``RuntimeError: Event
+        loop is closed`` when it was bound to a loop that has since been
+        closed); the exception still propagates.
+        """
+        client, self._client = self._client, None
         self._connected = False
         self._authenticated = False
+        if client:
+            await client.aclose()
+
+    async def _drain_and_close(self, timeout: float) -> bool:
+        """Close this connection once no RPC request is in flight on it.
+
+        Used to retire a client that has just been replaced: requests already
+        running on it finish normally instead of failing when the ``httpx``
+        client is closed under them. The wait is bounded; a request still
+        running after *timeout* seconds is cut off by the close. Nothing is
+        left running in the background: the wait happens in the caller's task.
+
+        Args:
+            timeout: Maximum number of seconds to wait for in-flight requests.
+
+        Returns:
+            ``True`` if every in-flight request finished before the close,
+            ``False`` if the timeout expired first.
+        """
+        drained = True
+        try:
+            async with asyncio.timeout(timeout):
+                # Re-check the count after each wake-up: a request can start
+                # between the event being set and this task resuming.
+                while self._inflight_rpcs:
+                    await self._rpcs_idle.wait()
+        except TimeoutError:
+            drained = False
+        finally:
+            await self.close()
+        return drained
 
     async def _send_rpc(self, request: RPCRequest) -> RPCResponse:
         """
@@ -154,10 +196,24 @@ class HTTPConnection(BaseSurrealConnection):
         Raises:
             ConnectionError: If not connected
             QueryError: If request fails
+
+        The request counts as in flight until it returns or raises, so
+        ``_drain_and_close`` does not close the client under it.
         """
         if not self._client:
             raise ConnectionError("Not connected. Call connect() first.")
 
+        self._inflight_rpcs += 1
+        self._rpcs_idle.clear()
+        try:
+            return await self._post_rpc(self._client, request)
+        finally:
+            self._inflight_rpcs -= 1
+            if not self._inflight_rpcs:
+                self._rpcs_idle.set()
+
+    async def _post_rpc(self, client: httpx.AsyncClient, request: RPCRequest) -> RPCResponse:
+        """POST *request* to ``/rpc`` on *client*, re-minting the token on a transient 401."""
         request.id = self._next_request_id()
 
         # A freshly-minted SurrealDB JWT carries ``iat == nbf == now``. If the
@@ -182,7 +238,7 @@ class HTTPConnection(BaseSurrealConnection):
                         "Content-Type": "application/cbor",
                         "Accept": "application/cbor",
                     }
-                    response = await self._client.post(
+                    response = await client.post(
                         "/rpc",
                         content=request.to_cbor(),
                         headers=headers,
@@ -192,7 +248,7 @@ class HTTPConnection(BaseSurrealConnection):
                 else:
                     # Use JSON encoding
                     headers = {**self.headers, "Content-Type": "application/json"}
-                    response = await self._client.post(
+                    response = await client.post(
                         "/rpc",
                         content=request.to_json(),
                         headers=headers,
