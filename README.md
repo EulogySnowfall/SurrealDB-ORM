@@ -52,6 +52,24 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.15
+
+**Bug fix release (V2 LTS).** One SDK fix, the `v2` port of #166 from `main`; no public API change.
+
+- **Datetimes read from SurrealDB 2.x decode to `datetime` (#231).** Over CBOR, the default
+  protocol, SurrealDB 2.x sends every datetime as a compact `[seconds, nanoseconds]` pair, and the
+  SDK only decoded the ISO string form. A `datetime`-annotated model field was converted by the ORM,
+  but `raw_query()` / `query()` results, datetimes nested in object or `dict` fields, and live-query
+  payloads came back as a list of two ints. A `date` field could not load a datetime stored at
+  midnight UTC, and a `dict` field loaded and saved back stored those lists on the server in place
+  of its datetimes. They now decode to timezone-aware UTC `datetime` objects, to the microsecond.
+- **One undecodable datetime no longer loses the whole message.** An ISO datetime string Python
+  cannot parse used to fail the request (`ValueError` over HTTP; over WebSocket the message was
+  dropped and the request timed out). It is now returned as sent, and the rest of the message
+  decodes. A datetime outside Python's years 1-9999 stays the raw `[seconds, nanoseconds]` list.
+- **Behaviour change:** code that read the raw list now receives a `datetime`; remove any
+  workaround that converted it yourself. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.14
 
 **Bug fix release (V2 LTS).** One SDK fix, the `v2` port of #239 from `main`; no ORM API change.

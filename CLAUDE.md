@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.14)
+> Context document for Claude AI - Last updated: October 2026 (0.21.15)
 
 <!-- -->
 
@@ -19,12 +19,33 @@
 
 ---
 
-## Current Version: 0.21.14 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.15 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.15
+
+Bug fix, the `v2` port of #166 (#231, #254). No public API change.
+
+- **The defect:** over CBOR, SurrealDB 2.x sends every datetime as tag 12 holding a
+  compact `[seconds, nanoseconds]` pair (HTTP and WebSocket alike), and
+  `_cbor_tag_decoder` only handled the ISO 8601 string form — the form the SDK's own
+  encoder emits. `_parse_datetime()` in `model_base.py` already converted the pair for
+  a `datetime`-annotated field, which is what hid it; everything else (`raw_query()`,
+  values nested in object/`dict` fields, live payloads, `date` fields) saw two ints.
+- **The fix:** tag 12 with a pair of ints decodes to an aware UTC `datetime` via
+  `datetime.fromtimestamp(seconds, tz=UTC)`, truncated to the microsecond; the server
+  floors the seconds (`[-1, 500000000]` is `1969-12-31T23:59:59.5Z`), which
+  `fromtimestamp()` matches. Ported by hand, not cherry-picked: `v2` pins
+  `cbor2 >=5.9.0,<6`, whose hook is `(decoder, tag)` and hands the pair over as a list.
+- **Fallback, never raise:** a pair outside years 1-9999 (2.7.0 accepts year -1) or an
+  ISO string `fromisoformat()` rejects is returned raw. On cbor2 5.x an exception in the
+  tag hook propagates out of `cbor2.loads()` unwrapped (not as `CBORDecodeError`, which
+  is 6.x): over HTTP the request raised it, and over WebSocket `_handle_message_cbor`
+  swallowed it and dropped the message, so the pending request timed out.
 
 ### What's New in 0.21.14
 
