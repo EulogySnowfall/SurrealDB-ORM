@@ -721,21 +721,25 @@ class BaseSurrealModel(BaseModel):
         the target model is not registered, in which case only fully-qualified
         ``"table:id"`` values can be resolved.
 
+        An optional foreign key — ``ForeignKey("User") | None`` or
+        ``Optional[ForeignKey("User")]`` — is included: the marker is looked up
+        through the union as well, the same way the migrations introspector
+        finds it.
+
         Returns:
             Dict mapping foreign-key field name to target table name.
         """
         # Local import: fields.relation imports record_link_to_str from this
         # module at load time, so importing it at the top would be circular.
-        from .fields.relation import _ForeignKeyMarker
+        from .fields.relation import _find_marker, _ForeignKeyMarker
 
-        # Pydantic strips Annotated metadata off `annotation`, so the marker
-        # is read from FieldInfo.metadata instead.
+        # A bare ForeignKey's marker is in FieldInfo.metadata; one wrapped in a
+        # union stays on FieldInfo.annotation, which _find_marker searches too.
         targets: dict[str, str | None] = {}
         for name, field_info in cls.model_fields.items():
-            for meta in field_info.metadata:
-                if isinstance(meta, _ForeignKeyMarker):
-                    targets[name] = _resolve_target_table(meta.to)
-                    break
+            marker = _find_marker(field_info.annotation, field_info.metadata, _ForeignKeyMarker)
+            if marker is not None:
+                targets[name] = _resolve_target_table(marker.to)
         return targets
 
     @classmethod

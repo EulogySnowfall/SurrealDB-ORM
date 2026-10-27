@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional, get_type_hints
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,7 +27,17 @@ from pydantic import Field
 from pydantic_core import ValidationError
 
 from src.surreal_orm import signals as model_signals
-from src.surreal_orm.fields.relation import ForeignKey, ManyToMany
+from src.surreal_orm.fields.references import ReferencesField, _ReferencesMarker
+from src.surreal_orm.fields.relation import (
+    ForeignKey,
+    ManyToMany,
+    Relation,
+    _ForeignKeyMarker,
+    _ManyToManyMarker,
+    _RelationMarker,
+)
+from src.surreal_orm.migrations.introspector import ModelIntrospector, _get_relation_marker
+from src.surreal_orm.migrations.operations import AddField
 from src.surreal_orm.model_base import (
     BaseSurrealModel,
     SurrealConfigDict,
@@ -657,3 +667,355 @@ class TestUnsavedReference:
 
     def test_none_is_still_accepted(self) -> None:
         assert FkComment(body="Nice", post_id=None).post is None
+
+
+# ==================== Optional foreign keys (#268) ====================
+#
+# ``ForeignKey("X") | None`` and ``Optional[ForeignKey("X")]`` make the field's
+# annotation a union whose member is the ``Annotated`` type.  Pydantic does not
+# lift a union member's metadata into ``FieldInfo.metadata``, so a lookup that
+# reads only the metadata never sees the marker: the field was neither written
+# as a record link nor filtered as one.  ``FieldInfo.annotation`` still carries
+# the marker, which is where the migrations introspector already looked.
+
+
+class Fk268User(BaseSurrealModel):
+    """Target of the optional foreign keys below."""
+
+    model_config = SurrealConfigDict(table_name="fk268_users")
+
+    id: str | None = None
+    name: str = Field(default="")
+
+
+class Fk268PipePost(BaseSurrealModel):
+    """ForeignKey wrapped in a redundant ``| None``."""
+
+    model_config = SurrealConfigDict(table_name="fk268_posts")
+
+    id: str | None = None
+    title: str = Field(default="")
+    author: ForeignKey("Fk268User") | None = None  # type: ignore[valid-type]
+
+
+class Fk268OptionalPost(BaseSurrealModel):
+    """ForeignKey wrapped in ``Optional[...]``."""
+
+    model_config = SurrealConfigDict(table_name="fk268_posts")
+
+    id: str | None = None
+    title: str = Field(default="")
+    author: Optional[ForeignKey("Fk268User")] = None  # type: ignore[valid-type]
+
+
+class Fk268PipeAliasedPost(BaseSurrealModel):
+    """Optional ForeignKey stored under a different column name."""
+
+    model_config = SurrealConfigDict(table_name="fk268_posts")
+
+    id: str | None = None
+    title: str = Field(default="")
+    author: ForeignKey("Fk268User") | None = Field(default=None, alias="author_id")  # type: ignore[valid-type]
+
+
+class Fk268OptionalAliasedPost(BaseSurrealModel):
+    """``Optional[ForeignKey(...)]`` stored under a different column name."""
+
+    model_config = SurrealConfigDict(table_name="fk268_posts")
+
+    id: str | None = None
+    title: str = Field(default="")
+    author: Optional[ForeignKey("Fk268User")] = Field(default=None, alias="author_id")  # type: ignore[valid-type]
+
+
+_OPTIONAL_FK_MODELS = pytest.mark.parametrize(
+    "model",
+    [Fk268PipePost, Fk268OptionalPost],
+    ids=["pipe-none", "optional"],
+)
+_ALIASED_OPTIONAL_FK_MODELS = pytest.mark.parametrize(
+    "model",
+    [Fk268PipeAliasedPost, Fk268OptionalAliasedPost],
+    ids=["pipe-none", "optional"],
+)
+
+
+class TestOptionalForeignKeyDiscovery:
+    """An optional ForeignKey is discovered like a required one."""
+
+    @_OPTIONAL_FK_MODELS
+    def test_targets(self, model: type[BaseSurrealModel]) -> None:
+        assert model.get_foreign_key_targets() == {"author": "fk268_users"}
+
+    @_OPTIONAL_FK_MODELS
+    def test_columns(self, model: type[BaseSurrealModel]) -> None:
+        assert model.get_foreign_key_columns() == {"author": "fk268_users"}
+
+    @_ALIASED_OPTIONAL_FK_MODELS
+    def test_aliased_targets(self, model: type[BaseSurrealModel]) -> None:
+        assert model.get_foreign_key_targets() == {"author": "fk268_users"}
+
+    @_ALIASED_OPTIONAL_FK_MODELS
+    def test_aliased_columns_cover_both_spellings(self, model: type[BaseSurrealModel]) -> None:
+        assert model.get_foreign_key_columns() == {
+            "author": "fk268_users",
+            "author_id": "fk268_users",
+        }
+
+    @_OPTIONAL_FK_MODELS
+    def test_instance_is_stored_as_string(self, model: type[BaseSurrealModel]) -> None:
+        """Assignment already went through the marker's validator."""
+        post = model(title="Hello", author=Fk268User(id="alice"))
+        assert post.author == "fk268_users:alice"  # type: ignore[attr-defined]
+
+
+class TestOptionalForeignKeyOnWrite:
+    """An optional ForeignKey leaves the ORM as a record link."""
+
+    @_OPTIONAL_FK_MODELS
+    def test_full_id_is_wrapped(self, model: type[BaseSurrealModel]) -> None:
+        data = model(title="Hello")._coerce_foreign_keys({"author": "fk268_users:alice"})
+        assert data["author"] == RecordId(table="fk268_users", id="alice")
+
+    @_OPTIONAL_FK_MODELS
+    def test_bare_id_is_qualified(self, model: type[BaseSurrealModel]) -> None:
+        data = model(title="Hello")._coerce_foreign_keys({"author": "alice"})
+        assert data["author"] == RecordId(table="fk268_users", id="alice")
+
+    @_OPTIONAL_FK_MODELS
+    def test_instance_is_wrapped(self, model: type[BaseSurrealModel]) -> None:
+        data = model(title="Hello")._coerce_foreign_keys({"author": Fk268User(id="alice")})
+        assert data["author"] == RecordId(table="fk268_users", id="alice")
+
+    @_OPTIONAL_FK_MODELS
+    def test_none_is_preserved(self, model: type[BaseSurrealModel]) -> None:
+        data = model(title="Hello")._coerce_foreign_keys({"author": None, "title": "Hello"})
+        assert data == {"author": None, "title": "Hello"}
+
+    @_ALIASED_OPTIONAL_FK_MODELS
+    def test_aliased_key_is_wrapped(self, model: type[BaseSurrealModel]) -> None:
+        data = model(title="Hello")._coerce_foreign_keys({"author_id": "alice"})
+        assert data["author_id"] == RecordId(table="fk268_users", id="alice")
+
+    @pytest.mark.asyncio
+    @_OPTIONAL_FK_MODELS
+    async def test_save_sends_record_id(self, model: type[BaseSurrealModel]) -> None:
+        mock_client = AsyncMock()
+        mock_client.create = AsyncMock(
+            return_value=MagicMock(exists=True, record={"id": "fk268_posts:1", "title": "Hello"}),
+        )
+
+        post = model(title="Hello", author="fk268_users:alice")
+        with patch(
+            "src.surreal_orm.model_base.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=mock_client)),
+        ):
+            await post.save()
+
+        _table, data = mock_client.create.call_args[0]
+        assert data["author"] == RecordId(table="fk268_users", id="alice")
+
+    @pytest.mark.asyncio
+    @_OPTIONAL_FK_MODELS
+    async def test_merge_accepts_an_instance(self, model: type[BaseSurrealModel]) -> None:
+        mock_client = AsyncMock()
+        mock_client.merge = AsyncMock(return_value=MagicMock(is_empty=False))
+
+        post = model(id="1", title="Hello")
+        post._db_persisted = True
+        with patch(
+            "src.surreal_orm.model_base.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=mock_client)),
+        ):
+            await post.merge(refresh=False, author=Fk268User(id="bob"))
+
+        _thing, data = mock_client.merge.call_args[0]
+        assert data["author"] == RecordId(table="fk268_users", id="bob")
+
+    @pytest.mark.asyncio
+    @_OPTIONAL_FK_MODELS
+    async def test_bulk_update_binds_record_id(self, model: type[BaseSurrealModel]) -> None:
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock(return_value=MagicMock(all_records=[{}]))
+
+        with patch(
+            "src.surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=mock_client)),
+        ):
+            await model.objects().filter(title="Hello").bulk_update({"author": "bob"})
+
+        _query, variables = mock_client.query.call_args[0]
+        assert RecordId(table="fk268_users", id="bob") in variables.values()
+
+
+class TestOptionalForeignKeyInFilters:
+    """An optional ForeignKey filter binds a record link, not a string."""
+
+    @_OPTIONAL_FK_MODELS
+    @pytest.mark.parametrize(
+        "value",
+        ["fk268_users:alice", "alice", Fk268User(id="alice")],
+        ids=["full-id", "bare-id", "instance"],
+    )
+    def test_exact(self, model: type[BaseSurrealModel], value: Any) -> None:
+        qs = model.objects().filter(author=value)
+        qs._compile_where_clause()
+        assert qs._variables["_f0"] == RecordId(table="fk268_users", id="alice")
+
+    @_OPTIONAL_FK_MODELS
+    def test_in_converts_each_element(self, model: type[BaseSurrealModel]) -> None:
+        qs = model.objects().filter(author__in=[Fk268User(id="alice"), "fk268_users:bob", "carol"])
+        qs._compile_where_clause()
+        assert qs._variables["_f0"] == [
+            RecordId(table="fk268_users", id="alice"),
+            RecordId(table="fk268_users", id="bob"),
+            RecordId(table="fk268_users", id="carol"),
+        ]
+
+    @_OPTIONAL_FK_MODELS
+    def test_not_in_converts_each_element(self, model: type[BaseSurrealModel]) -> None:
+        qs = model.objects().filter(author__not_in=("spam", "fk268_users:ham"))
+        query = qs._compile_query()
+        assert "author NOT IN $_f0" in query
+        assert qs._variables["_f0"] == [
+            RecordId(table="fk268_users", id="spam"),
+            RecordId(table="fk268_users", id="ham"),
+        ]
+
+    @_OPTIONAL_FK_MODELS
+    def test_q_object(self, model: type[BaseSurrealModel]) -> None:
+        qs = model.objects().filter(Q(author="alice") | ~Q(author__in=["fk268_users:bob"]))
+        qs._compile_where_clause()
+        assert qs._variables["_f0"] == RecordId(table="fk268_users", id="alice")
+        assert qs._variables["_f1"] == [RecordId(table="fk268_users", id="bob")]
+
+    @_ALIASED_OPTIONAL_FK_MODELS
+    def test_filter_by_alias(self, model: type[BaseSurrealModel]) -> None:
+        qs = model.objects().filter(Q(author_id="alice"), author_id__in=["fk268_users:bob"])
+        qs._compile_where_clause()
+        assert RecordId(table="fk268_users", id="alice") in qs._variables.values()
+        assert [RecordId(table="fk268_users", id="bob")] in qs._variables.values()
+
+    @_OPTIONAL_FK_MODELS
+    def test_isnull_is_untouched(self, model: type[BaseSurrealModel]) -> None:
+        qs = model.objects().filter(author__isnull=True)
+        assert "author IS NULL" in qs._compile_query()
+
+    @_OPTIONAL_FK_MODELS
+    def test_variable_reference_is_untouched(self, model: type[BaseSurrealModel]) -> None:
+        qs = model.objects().filter(author="$who").variables(who="fk268_users:alice")
+        assert "author = $who" in qs._compile_query()
+        assert qs._variables["who"] == "fk268_users:alice"
+
+    @_OPTIONAL_FK_MODELS
+    def test_string_lookups_are_untouched(self, model: type[BaseSurrealModel]) -> None:
+        qs = model.objects().filter(author__startswith="fk268_users:a")
+        qs._compile_where_clause()
+        assert qs._variables["_f0"] == "fk268_users:a"
+
+
+# ==================== Shared marker lookup (#268) ====================
+#
+# The migrations introspector and get_foreign_key_targets() read the same
+# relation markers.  They used two lookups, and only one of them searched union
+# members.  These tests pin what the introspector finds — and the DDL it emits —
+# for every marker, bare and wrapped in a union, so moving both readers onto one
+# helper changes nothing on the migrations side.
+
+
+class Fk268Shelf(BaseSurrealModel):
+    """Every relation marker, bare."""
+
+    model_config = SurrealConfigDict(table_name="fk268_shelves")
+
+    id: str | None = None
+    owner: ForeignKey("Fk268User", on_delete="SET_NULL")  # type: ignore[valid-type]
+    readers: ManyToMany("Fk268User")  # type: ignore[valid-type]
+    likes: Relation("fk268_likes", "Fk268User")  # type: ignore[valid-type]
+    books: ReferencesField["fk268_books"]  # noqa: F821, UP037
+
+
+class Fk268PipeShelf(BaseSurrealModel):
+    """Every relation marker, wrapped in a redundant ``| None``."""
+
+    model_config = SurrealConfigDict(table_name="fk268_shelves")
+
+    id: str | None = None
+    owner: ForeignKey("Fk268User", on_delete="SET_NULL") | None = None  # type: ignore[valid-type]
+    readers: ManyToMany("Fk268User") | None = None  # type: ignore[valid-type]
+    likes: Relation("fk268_likes", "Fk268User") | None = None  # type: ignore[valid-type]
+    books: ReferencesField["fk268_books"] | None = None  # noqa: F821, UP037
+
+
+class Fk268OptionalShelf(BaseSurrealModel):
+    """Every relation marker, wrapped in ``Optional[...]``."""
+
+    model_config = SurrealConfigDict(table_name="fk268_shelves")
+
+    id: str | None = None
+    owner: Optional[ForeignKey("Fk268User", on_delete="SET_NULL")] = None  # type: ignore[valid-type]
+    readers: Optional[ManyToMany("Fk268User")] = None  # type: ignore[valid-type]
+    likes: Optional[Relation("fk268_likes", "Fk268User")] = None  # type: ignore[valid-type]
+    books: Optional[ReferencesField["fk268_books"]] = None  # noqa: F821, UP037
+
+
+_SHELF_MODELS = pytest.mark.parametrize(
+    "model",
+    [Fk268Shelf, Fk268PipeShelf, Fk268OptionalShelf],
+    ids=["bare", "pipe-none", "optional"],
+)
+
+#: What the introspector emitted for these fields before the lookup was shared.
+_SHELF_DDL = {
+    "owner": "DEFINE FIELD owner ON fk268_shelves TYPE option<record<fk268_users>> REFERENCE ON DELETE UNSET;",
+    "books": "DEFINE FIELD books ON fk268_shelves TYPE option<array<record<fk268_books>>> REFERENCE;",
+}
+
+
+class TestSharedMarkerLookup:
+    """The introspector finds the same markers through the shared lookup."""
+
+    @_SHELF_MODELS
+    @pytest.mark.parametrize(
+        ("field", "marker_type"),
+        [
+            ("owner", _ForeignKeyMarker),
+            ("readers", _ManyToManyMarker),
+            ("likes", _RelationMarker),
+            ("books", _ReferencesMarker),
+        ],
+    )
+    def test_introspector_finds_the_marker(
+        self,
+        model: type[BaseSurrealModel],
+        field: str,
+        marker_type: type,
+    ) -> None:
+        field_info = model.model_fields[field]
+        # The introspector passes the get_type_hints() annotation, which keeps
+        # Annotated, and falls back to FieldInfo.annotation, which does not.
+        hints = get_type_hints(model, include_extras=True)
+        for annotation in (hints[field], field_info.annotation):
+            assert isinstance(_get_relation_marker(annotation, field_info), marker_type)
+
+    @_SHELF_MODELS
+    def test_virtual_fields_define_no_column(self, model: type[BaseSurrealModel]) -> None:
+        fields = ModelIntrospector([model]).introspect().tables["fk268_shelves"].fields
+        assert set(fields) == {"owner", "books"}
+
+    @_SHELF_MODELS
+    def test_define_field_is_unchanged(self, model: type[BaseSurrealModel]) -> None:
+        fields = ModelIntrospector([model]).introspect().tables["fk268_shelves"].fields
+        ddl = {name: AddField.from_field_state("fk268_shelves", state).forwards() for name, state in fields.items()}
+        assert ddl == _SHELF_DDL
+
+    @_SHELF_MODELS
+    def test_both_readers_agree(self, model: type[BaseSurrealModel]) -> None:
+        """Record-link coercion sees exactly the foreign keys migrations see."""
+        hints = get_type_hints(model, include_extras=True)
+        introspected = {
+            name
+            for name, field_info in model.model_fields.items()
+            if isinstance(_get_relation_marker(hints[name], field_info), _ForeignKeyMarker)
+        }
+        assert set(model.get_foreign_key_targets()) == introspected == {"owner"}

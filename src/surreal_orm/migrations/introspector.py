@@ -6,7 +6,7 @@ a SchemaState that can be compared against the current database state.
 """
 
 import types
-from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
@@ -14,7 +14,13 @@ from pydantic_core import PydanticUndefined
 from ..fields.computed import _ComputedMarker, get_computed_expression, is_computed_field
 from ..fields.encrypted import is_encrypted_field
 from ..fields.references import _ReferencesMarker
-from ..fields.relation import _ForeignKeyMarker, _ManyToManyMarker, _RelationMarker, on_delete_to_surql
+from ..fields.relation import (
+    _find_marker,
+    _ForeignKeyMarker,
+    _ManyToManyMarker,
+    _RelationMarker,
+    on_delete_to_surql,
+)
 from ..types import PYTHON_TO_SURREAL_TYPE, FieldType, TableType
 from .state import AccessState, FieldState, SchemaState, TableState
 
@@ -23,7 +29,12 @@ if TYPE_CHECKING:
 
 
 #: Markers that carry schema information the plain type annotation cannot.
-_RELATION_MARKERS = (_ForeignKeyMarker, _ManyToManyMarker, _RelationMarker, _ReferencesMarker)
+_RELATION_MARKERS: tuple[type[_ForeignKeyMarker | _ManyToManyMarker | _RelationMarker | _ReferencesMarker], ...] = (
+    _ForeignKeyMarker,
+    _ManyToManyMarker,
+    _RelationMarker,
+    _ReferencesMarker,
+)
 
 #: Markers for fields that exist only in Python.  Graph edges live in their own
 #: edge tables, so a ``ManyToMany`` or ``Relation`` attribute has no column to
@@ -41,13 +52,12 @@ def _get_relation_marker(
     Read from the ``Annotated`` type hint when one is available, and from
     ``FieldInfo.metadata`` otherwise — ``_introspect_model`` falls back to
     ``FieldInfo.annotation`` when ``get_type_hints`` fails, and Pydantic strips
-    the ``Annotated`` metadata off that attribute.
+    the ``Annotated`` metadata off that attribute.  Union members are searched
+    too, so ``ForeignKey("User") | None`` is still a record link.
 
-    A redundant outer union — ``ForeignKey("User") | None``, which mypy accepts
-    silently because ``ForeignKey(...)`` is ``Any`` — hides the marker from both
-    lookups: the origin is a union rather than ``Annotated``, and Pydantic does
-    not lift metadata out of a union member into ``FieldInfo.metadata``.  Union
-    members are therefore searched too.
+    The lookup is :func:`~surreal_orm.fields.relation._find_marker`, shared with
+    the record-link coercion (``get_foreign_key_targets()``) so the two cannot
+    disagree about which fields are relations.
 
     Args:
         type_hint: The field's type annotation
@@ -56,32 +66,7 @@ def _get_relation_marker(
     Returns:
         The marker instance, or None when the field carries none
     """
-    for candidate in _unwrap_union(type_hint):
-        if get_origin(candidate) is Annotated:
-            for arg in get_args(candidate):
-                if isinstance(arg, _RELATION_MARKERS):
-                    return arg
-
-    for meta in field_info.metadata:
-        if isinstance(meta, _RELATION_MARKERS):
-            return meta
-
-    return None
-
-
-def _unwrap_union(type_hint: Any) -> list[Any]:
-    """
-    Expand a union annotation into its members, dropping ``None``.
-
-    Args:
-        type_hint: The field's type annotation
-
-    Returns:
-        The union's non-None members, or the annotation itself when not a union
-    """
-    if get_origin(type_hint) in (types.UnionType, Union):
-        return [arg for arg in get_args(type_hint) if arg is not type(None)]
-    return [type_hint]
+    return _find_marker(type_hint, field_info.metadata, _RELATION_MARKERS)
 
 
 class ModelIntrospector:
