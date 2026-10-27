@@ -62,6 +62,11 @@ class SurrealDBConnectionManager:
     _ws_clients: dict[str, WebSocketConnection] = {}
     _connection_lock: asyncio.Lock | None = None
 
+    # Upper bound, in seconds, that ``reconnect()`` waits for requests still in
+    # flight on the client it replaces before closing that client anyway. It
+    # matches ``HTTPConnection``'s default request timeout.
+    _reconnect_drain_timeout: float = 30.0
+
     # --- legacy class-level getters (kept in sync for backward compat) -----
     # These mirror the "default" config so that code like
     # ``SurrealDBConnectionManager.get_url()`` keeps working.
@@ -143,13 +148,16 @@ class SurrealDBConnectionManager:
     @classmethod
     async def remove_connection(cls, name: str) -> None:
         """Remove a named connection and properly close its clients."""
-        await cls._close_single(name)
-        cls._configs.pop(name, None)
-        cls._clients.pop(name, None)
-        cls._ws_clients.pop(name, None)
+        try:
+            await cls._close_single(name)
+        finally:
+            # Unregister even if closing failed, so a dead client is never reused.
+            cls._configs.pop(name, None)
+            cls._clients.pop(name, None)
+            cls._ws_clients.pop(name, None)
 
-        if name == "default":
-            cls._clear_legacy_vars()
+            if name == "default":
+                cls._clear_legacy_vars()
 
     @classmethod
     def get_config(cls, name: str = "default") -> ConnectionConfig | None:
@@ -298,66 +306,16 @@ class SurrealDBConnectionManager:
         if existing is not None and existing.is_connected:
             return existing
 
-        if cls._connection_lock is None:
-            cls._connection_lock = asyncio.Lock()
-        async with cls._connection_lock:
+        async with cls._get_connection_lock():
             # Double-check after acquiring the lock (another coroutine may
             # have created the connection while we were waiting).
             existing = cls._clients.get(name)
             if existing is not None and existing.is_connected:
                 return existing
 
-            config = cls._configs.get(name)
-            if config is None:
-                raise ValueError(f"Connection {name!r} not configured. Call set_connection() or add_connection() first.")
-
-            _client: HTTPConnection | None = None
-            try:
-                _client = HTTPConnection(
-                    config.url,
-                    config.namespace,
-                    config.database,
-                    protocol=config.protocol,
-                )
-                await _client.connect()
-                await _client.signin(config.user, config.password)
-
-                # SurrealDB 3.0: namespaces/databases must exist before use.
-                # Ensure they are created after root signin.
-                try:
-                    await _client.query(
-                        f"DEFINE NAMESPACE IF NOT EXISTS `{config.namespace}`; "
-                        f"DEFINE DATABASE IF NOT EXISTS `{config.database}`;"
-                    )
-                except SurrealDBError:
-                    logger.debug(
-                        "Could not auto-create namespace/database for '%s' (may lack root privileges).",
-                        name,
-                    )
-
-                cls._clients[name] = _client
-
-                # Keep legacy alias in sync
-                if name == "default":
-                    cls.__client = _client
-
-                return _client
-            except SurrealDBError as e:
-                logger.warning("Can't get connection '%s': %s", name, e)
-                if _client is not None:
-                    try:
-                        await _client.close()
-                    except Exception:
-                        pass  # Best-effort cleanup; original error is re-raised below
-                raise SurrealDbConnectionError(f"Can't connect to the database: {e}")
-            except Exception as e:
-                logger.warning("Can't get connection '%s': %s", name, e)
-                if _client is not None:
-                    try:
-                        await _client.close()
-                    except Exception:
-                        pass  # Best-effort cleanup; original error is re-raised below
-                raise SurrealDbConnectionError("Can't connect to the database.")
+            _client = await cls._build_client(name)
+            cls._register_client(name, _client)
+            return _client
 
     @classmethod
     async def get_ws_client(cls, name: str | None = None) -> WebSocketConnection:
@@ -443,22 +401,28 @@ class SurrealDBConnectionManager:
         Args:
             name: Connection name to close.  ``None`` closes **all** connections.
         """
+        # The registry is cleared in ``finally`` so that a client whose close
+        # failed is never handed out again by ``get_client()``.
         if name is None:
             # Close all connections
             names = list(cls._clients.keys()) + list(cls._ws_clients.keys())
-            for n in set(names):
-                await cls._close_single(n)
-            cls._clients.clear()
-            cls._ws_clients.clear()
-            cls.__client = None
-            cls.__ws_client = None
-        else:
-            await cls._close_single(name)
-            cls._clients.pop(name, None)
-            cls._ws_clients.pop(name, None)
-            if name == "default":
+            try:
+                for n in set(names):
+                    await cls._close_single(n)
+            finally:
+                cls._clients.clear()
+                cls._ws_clients.clear()
                 cls.__client = None
                 cls.__ws_client = None
+        else:
+            try:
+                await cls._close_single(name)
+            finally:
+                cls._clients.pop(name, None)
+                cls._ws_clients.pop(name, None)
+                if name == "default":
+                    cls.__client = None
+                    cls.__ws_client = None
 
     # -----------------------------------------------------------------------
     # Convenience helpers (unchanged public API)
@@ -467,10 +431,65 @@ class SurrealDBConnectionManager:
     @classmethod
     async def reconnect(cls) -> HTTPConnection | None:
         """
-        Reconnect to the SurrealDB instance.
+        Replace the default HTTP client with a newly connected and authenticated one.
+
+        The new client is built and signed in first, then swapped in under the
+        connection lock, so concurrent callers of ``get_client()`` always get a
+        connected client. Requests already running on the previous client, and
+        transactions already open on it (from ``transaction()``, which send
+        their statements at commit), are allowed to finish: it is closed once
+        none is left, or after ``_reconnect_drain_timeout`` seconds (30 by
+        default), whichever comes first, and this call returns after that
+        close. Transactions opened by the task calling ``reconnect()`` are not
+        waited for (they cannot end while it waits): the previous client is
+        then closed when the last of them commits or rolls back. The default
+        WebSocket client, if any, is closed as before and recreated on the next
+        ``get_ws_client()``.
+
+        Code that keeps a client from ``get_client()`` across an ``await``
+        and uses it after a ``reconnect()`` gets ``Not connected`` once that
+        client is closed: call ``get_client()`` again instead of holding it.
+
+        If the new client cannot be connected or authenticated,
+        ``SurrealDbConnectionError`` is raised and the current clients are
+        left in place.
+
+        Cancelling the call (for example ``asyncio.wait_for(reconnect(), 5)``
+        timing out) does not close the previous client under the requests and
+        transactions still using it. Cancelled before the swap, it leaves the
+        current clients in place. Cancelled after it, the new client stays
+        installed and the previous one is closed by the last request or
+        transaction to finish on it (at once if none is left); the
+        cancellation then propagates as usual.
+
+        Token renewal does not need this method: SurrealDB answers a request
+        made with an expired token with HTTP 401, and the HTTP client signs in
+        again with its stored credentials and retries the request.
+
+        :return: The new default HTTP client.
+        :raises ValueError: If the default connection is not configured.
+        :raises SurrealDbConnectionError: If the new client cannot connect.
         """
-        await cls.close_connection("default")
-        return await cls.get_client("default")
+        name = "default"
+        async with cls._get_connection_lock():
+            new_client = await cls._build_client(name)
+            old_client = cls._clients.get(name)
+            old_ws = cls._ws_clients.pop(name, None)
+            cls.__ws_client = None
+            cls._register_client(name, new_client)
+
+        # Retire the previous clients outside the lock, so that callers needing
+        # a client are not held up while in-flight requests drain.
+        try:
+            await cls._close_clients(name, old_client, old_ws, drain_timeout=cls._reconnect_drain_timeout)
+        except asyncio.CancelledError:
+            # Cancelled before the previous HTTP client was retired (e.g. while
+            # the WebSocket client closed): its last user closes it instead.
+            # A cancelled drain has already done this; doing it again is a no-op.
+            if old_client is not None:
+                await old_client._close_when_idle()
+            raise
+        return new_client
 
     @classmethod
     async def validate_connection(cls) -> bool:
@@ -801,20 +820,122 @@ class SurrealDBConnectionManager:
         cls.__ws_client = None
 
     @classmethod
+    def _get_connection_lock(cls) -> asyncio.Lock:
+        """Return the lock that serialises creating and swapping HTTP clients."""
+        if cls._connection_lock is None:
+            cls._connection_lock = asyncio.Lock()
+        return cls._connection_lock
+
+    @classmethod
+    async def _build_client(cls, name: str) -> HTTPConnection:
+        """Create, connect and authenticate a new HTTP client for connection *name*.
+
+        The registry is not modified: the caller installs the client with
+        ``_register_client()``.
+
+        :raises ValueError: If *name* is not configured.
+        :raises SurrealDbConnectionError: If the client cannot connect or
+            authenticate. The partly built client is closed first.
+        """
+        config = cls._configs.get(name)
+        if config is None:
+            raise ValueError(f"Connection {name!r} not configured. Call set_connection() or add_connection() first.")
+
+        _client: HTTPConnection | None = None
+        try:
+            _client = HTTPConnection(
+                config.url,
+                config.namespace,
+                config.database,
+                protocol=config.protocol,
+            )
+            await _client.connect()
+            await _client.signin(config.user, config.password)
+
+            # SurrealDB 3.0: namespaces/databases must exist before use.
+            # Ensure they are created after root signin.
+            try:
+                await _client.query(
+                    f"DEFINE NAMESPACE IF NOT EXISTS `{config.namespace}`; DEFINE DATABASE IF NOT EXISTS `{config.database}`;"
+                )
+            except SurrealDBError:
+                logger.debug(
+                    "Could not auto-create namespace/database for '%s' (may lack root privileges).",
+                    name,
+                )
+
+            return _client
+        except SurrealDBError as e:
+            logger.warning("Can't get connection '%s': %s", name, e)
+            if _client is not None:
+                try:
+                    await _client.close()
+                except Exception:
+                    pass  # Best-effort cleanup; original error is re-raised below
+            raise SurrealDbConnectionError(f"Can't connect to the database: {e}")
+        except Exception as e:
+            logger.warning("Can't get connection '%s': %s", name, e)
+            if _client is not None:
+                try:
+                    await _client.close()
+                except Exception:
+                    pass  # Best-effort cleanup; original error is re-raised below
+            raise SurrealDbConnectionError("Can't connect to the database.")
+
+    @classmethod
+    def _register_client(cls, name: str, client: HTTPConnection) -> None:
+        """Install *client* as the HTTP client of connection *name*."""
+        cls._clients[name] = client
+        # Keep legacy alias in sync
+        if name == "default":
+            cls.__client = client
+
+    @classmethod
     async def _close_single(cls, name: str) -> None:
         """Close HTTP and WS clients for a single named connection."""
-        ws = cls._ws_clients.get(name)
+        await cls._close_clients(name, cls._clients.get(name), cls._ws_clients.get(name))
+
+    @classmethod
+    async def _close_clients(
+        cls,
+        name: str,
+        http: HTTPConnection | None,
+        ws: WebSocketConnection | None,
+        *,
+        drain_timeout: float | None = None,
+    ) -> None:
+        """Close the given clients of connection *name*, logging failures instead of raising.
+
+        Args:
+            name: Connection name, for log messages.
+            http: HTTP client to close, if any.
+            ws: WebSocket client to close, if any.
+            drain_timeout: When set, the HTTP client is closed only once no
+                request or transaction is in flight on it, or after this many
+                seconds (see ``HTTPConnection._drain_and_close``).
+        """
         if ws is not None:
             try:
                 await ws.close()
             except Exception:
                 logger.warning("Failed to close WebSocket connection '%s' cleanly.", name, exc_info=True)
 
-        http = cls._clients.get(name)
         if http is not None:
             try:
-                await http.close()
+                if drain_timeout is None:
+                    await http.close()
+                elif not await http._drain_and_close(drain_timeout):
+                    logger.warning(
+                        "Retired the previous HTTP client for connection '%s' with requests or transactions "
+                        "still in flight after %.1f s.",
+                        name,
+                        drain_timeout,
+                    )
             except NotImplementedError:
                 # Some HTTP client implementations may not support close();
                 # ignore to maintain compatibility.
                 logger.debug("HTTP client for connection '%s' does not implement close().", name)
+            except Exception:
+                # E.g. ``RuntimeError: Event loop is closed`` for a client bound
+                # to a loop that no longer runs. The caller still unregisters it.
+                logger.warning("Failed to close HTTP connection '%s' cleanly.", name, exc_info=True)
