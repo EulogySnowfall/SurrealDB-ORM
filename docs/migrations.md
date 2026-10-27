@@ -295,13 +295,29 @@ AlterField(
 )
 ```
 
-Generates `DEFINE FIELD OVERWRITE email ON users ...`. `OVERWRITE` is required, not
-cosmetic: on SurrealDB 3.x a plain `DEFINE FIELD` over an existing field is rejected
-(`The field 'email' already exists`) and leaves the definition untouched, so the
-alteration silently does not happen (#162). The same applies to the rollback.
+Generates `ALTER FIELD email ON users TYPE string ... ASSERT is::email($value) ...;`,
+and the rollback the same statement over the `previous_*` values. Every clause the
+ORM models (`TYPE`, `FLEXIBLE`, `VALUE`, `DEFAULT`, `ASSERT`, `READONLY`,
+`REFERENCE`/`ON DELETE`, `COMMENT`) is stated each time: set when the operation
+carries it, `DROP`-ped when it does not, so removing a clause from a model removes it
+from the database. Anything else on the field — a field-level `PERMISSIONS` clause
+set by hand, for instance — is left as the database has it (#195).
 
-`AddField` deliberately does **not** use `OVERWRITE` — adding a field that already
+The field must exist: altering a missing one fails the migration with
+`MigrationStatementError: ... The field 'email' does not exist`. Use `AddField` to
+create a field.
+
+Neither form of `DEFINE FIELD` works here. A plain `DEFINE FIELD` over an existing
+field is rejected (`The field 'email' already exists`) and leaves the definition
+untouched (#162); `DEFINE FIELD OVERWRITE` replaces the whole definition, which
+resets every clause the ORM does not model to its default — field permissions
+included (#195).
+
+`AddField` deliberately keeps the plain `DEFINE FIELD` — adding a field that already
 exists is a genuine conflict, and the migration author should see it fail.
+`Model.define_table()` applies a model's whole schema and must be callable twice, so
+it emits `DEFINE FIELD IF NOT EXISTS` followed by the same `ALTER FIELD` for each
+field.
 
 ### CreateIndex
 
