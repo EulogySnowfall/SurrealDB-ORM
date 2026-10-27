@@ -226,9 +226,9 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     only nest inside a type, where the keyword cannot appear, while
     ``ASSERT $value > 0`` would never close.
 
-    When the scan still ends inside a token it could not close, the clause is
-    taken from the last place it could start, since that is where the server
-    reports it. A balanced body with no clause has none.
+    When the scan finds no clause, it is taken from the last place one can
+    start: the server reports a PERMISSIONS clause for every field, and always
+    last. A body where the keyword never follows whitespace has none.
 
     Args:
         body: The statement body after ``DEFINE FIELD name ON table``
@@ -240,7 +240,6 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     depth = 0
     quote: str | None = None
     escaped = False
-    unterminated = False
     previous = ""
     i = 0
     while i < len(body):
@@ -258,7 +257,6 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
         if ch == "/" and _opens_regex_literal(body, i, previous):
             end = _regex_literal_end(body, i)
             if end == -1:
-                unterminated = True
                 break
             previous = "/"
             i = end
@@ -275,8 +273,6 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
             previous = ch
         i += 1
 
-    if not unterminated and quote is None and depth == 0:
-        return body, ""
     starts = [m.start() for m in _FIELD_PERMISSIONS_START.finditer(body)]
     if not starts:
         return body, ""
