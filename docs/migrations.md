@@ -295,13 +295,70 @@ AlterField(
 )
 ```
 
-Generates `DEFINE FIELD OVERWRITE email ON users ...`. `OVERWRITE` is required, not
-cosmetic: on SurrealDB 3.x a plain `DEFINE FIELD` over an existing field is rejected
-(`The field 'email' already exists`) and leaves the definition untouched, so the
-alteration silently does not happen (#162). The same applies to the rollback.
+Generates `ALTER FIELD email ON users TYPE string ... ASSERT is::email($value) ...;`,
+and the rollback the same statement over the `previous_*` values. Every clause the
+ORM models (`TYPE`, `FLEXIBLE`, `VALUE`, `DEFAULT`, `ASSERT`, `READONLY`,
+`REFERENCE`/`ON DELETE`, `COMMENT`) is stated each time: set when the operation
+carries it, `DROP`-ped when it does not, so removing a clause from a model removes it
+from the database. Anything else on the field — a field-level `PERMISSIONS` clause
+set by hand, for instance — is left as the database has it (#195).
 
-`AddField` deliberately does **not** use `OVERWRITE` — adding a field that already
+For an array or set column, SurrealDB also keeps a field per element level
+(`tags.*` for `array<string>`, `n.*.*` for `array<array<int>>`), which `ALTER FIELD`
+on the column does not update. The alteration is therefore followed by one
+`ALTER FIELD IF EXISTS tags.* ON users TYPE int DROP FLEXIBLE;` per level, so changing
+a list's element type leaves the column writable. Each element level SurrealDB derives
+itself for the new type is aligned, its `TYPE`, plus `FLEXIBLE` on the levels that hold
+an object when the column is `FLEXIBLE`, as the redefinition did: a typed element
+always, an `any` element (`array<any>`, an untyped `array` or `set`) only under an
+optional column or a union — widening `option<array<int>>` to `option<array<any>>` emits
+`ALTER FIELD IF EXISTS tags.* ON users TYPE any DROP FLEXIBLE;` and nothing below it.
+Under a non-optional `array` or `array<any>` column the server derives nothing, and a
+`tags.*` defined there by hand is left as it is.
+
+A level whose type holds no object always gets `DROP FLEXIBLE`. `FLEXIBLE` does
+nothing on such a type, but the server can leave it there — it derives `int FLEXIBLE`
+for the inner level of a `FLEXIBLE` `array<array<int> | object>`, and a `FLEXIBLE`
+`array<object>` retyped to `array<string>` keeps `items.*` `FLEXIBLE` — and then
+refuses any `TYPE` on that level that does not also drop it (`FLEXIBLE can only be
+used with types containing object`). An object level keeps whatever `FLEXIBLE` it has
+unless the column is `FLEXIBLE`, which sets it.
+
+Known limitation, the same as with `DEFINE FIELD OVERWRITE` before: taking a
+non-optional column from `array<T>` to `array<any>`, to `array` or to `any` leaves
+`tags.*` at `T`, so the column still refuses non-`T` elements. Add a `RawSQL`
+operation with `ALTER FIELD tags.* ON users TYPE any;` (or
+`REMOVE FIELD tags.* ON users;`) to lift it. Likewise, removing `FLEXIBLE` from an
+array column leaves its object element levels `FLEXIBLE`, the same as with
+`DEFINE FIELD OVERWRITE` before: `items.*` still accepts undeclared keys. A `RawSQL`
+operation with `ALTER FIELD items.* ON users DROP FLEXIBLE;` removes it.
+
+The field must exist: altering a missing one fails the migration with
+`MigrationStatementError: ... The field 'email' does not exist`. Use `AddField` to
+create a field.
+
+This holds for every pending `AlterField`, generated ones included. `makemigrations`
+diffs against the live database, so a database whose fields came from
+`define_table()` or from hand-written DDL, rather than from a migration, yields
+`AlterField` operations for fields that no earlier migration creates. Replaying that
+chain onto a fresh database (CI, a new deployment) stops at the first such
+`AlterField`, and the statements applied before it stay applied: migrations are not
+transactional. `DEFINE FIELD OVERWRITE` used to create the field silently at that
+step. Give the chain an `AddField` that creates the field before it is altered,
+preceded by a `CreateTable` if the table should be defined explicitly (for example
+`SCHEMAFULL`). A `CreateTable` alone defines no field.
+
+Neither form of `DEFINE FIELD` works here. A plain `DEFINE FIELD` over an existing
+field is rejected (`The field 'email' already exists`) and leaves the definition
+untouched (#162); `DEFINE FIELD OVERWRITE` replaces the whole definition, which
+resets every clause the ORM does not model to its default — field permissions
+included (#195).
+
+`AddField` deliberately keeps the plain `DEFINE FIELD` — adding a field that already
 exists is a genuine conflict, and the migration author should see it fail.
+`Model.define_table()` applies a model's whole schema and must be callable twice, so
+it emits `DEFINE FIELD IF NOT EXISTS` followed by the same `ALTER FIELD` for each
+field.
 
 ### CreateIndex
 

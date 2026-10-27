@@ -1,14 +1,19 @@
 """
 Unit tests for what ``AlterField.backwards()`` restores.
 
-``backwards()`` re-emits ``DEFINE FIELD OVERWRITE``, which replaces the whole
-definition — so every clause it has no ``previous_*`` slot for, or renders
-differently from ``forwards()``, is silently lost. Losing ``VALUE`` is the
-severe one: an Encrypted column stops hashing and stores plaintext from then
+``backwards()`` used to re-emit ``DEFINE FIELD OVERWRITE``, which replaces the
+whole definition — so every clause it had no ``previous_*`` slot for, or
+rendered differently from ``forwards()``, was silently lost. Losing ``VALUE`` is
+the severe one: an Encrypted column stops hashing and stores plaintext from then
 on. This was latent while a rollback was a silent no-op; #162's ``OVERWRITE``
-fix made it actively destructive.
+fix made it actively destructive (#196).
+
+Both directions now emit ``ALTER FIELD`` (#195), which states every modelled
+clause — set, or ``DROP``-ped — so "no clause" reads ``DROP VALUE`` here rather
+than the clause being absent from the statement.
 """
 
+import re
 from dataclasses import fields
 
 import pytest
@@ -21,6 +26,11 @@ from src.surreal_orm.migrations.operations import (
     _previous_attr,
 )
 from src.surreal_orm.migrations.state import FieldState, SchemaState, TableState
+
+
+def _sets_value(sql: str) -> bool:
+    """Whether the statement sets a VALUE clause, as opposed to dropping it."""
+    return re.search(r"(?<!DROP) VALUE ", sql) is not None
 
 
 class TestRollbackRestoresTheValueClause:
@@ -62,7 +72,8 @@ class TestRollbackRestoresTheValueClause:
         """No clause invented where there was none."""
         op = AlterField(table="users", name="age", field_type="int", previous_type="string")
 
-        assert "VALUE" not in op.backwards()
+        assert not _sets_value(op.backwards())
+        assert "DROP VALUE" in op.backwards()
 
     def test_the_value_clause_precedes_default(self) -> None:
         """Clause order the server accepts, same as ``forwards()``."""
@@ -90,7 +101,7 @@ class TestTheDiffCarriesThem:
         op = AlterField.from_field_states("users", current, target)
 
         assert "VALUE crypto::argon2::generate($value)" in op.backwards()
-        assert "VALUE" not in op.forwards()
+        assert not _sets_value(op.forwards())
 
     def test_a_real_diff_produces_a_restoring_rollback(self) -> None:
         """End to end: dropping encryption must be reversible."""
@@ -115,10 +126,13 @@ class TestTheRollbackRendersLikeTheStatementItReverses:
 
     ``AddField.forwards``, ``AlterField.forwards`` and ``AlterField.backwards``
     were three hand-written renderers of the same statement. Every clause added
-    to one was eventually forgotten in another: REFERENCE (#170), VALUE (#195),
+    to one was eventually forgotten in another: REFERENCE (#170), VALUE (#196),
     and DEFAULT, which ``backwards()`` single-quoted unconditionally — so
     ``time::now()`` came back as the string ``'time::now()'``, ``True`` as
     ``True`` rather than ``true``, and an apostrophe produced a parse error.
+
+    Rolling back ``previous -> target`` must be exactly the alteration
+    ``target -> previous``: one renderer, the same clauses, both directions.
     """
 
     @pytest.mark.parametrize(
@@ -138,18 +152,33 @@ class TestTheRollbackRendersLikeTheStatementItReverses:
             ("comment", "why this column exists"),
             ("comment", "o'brien"),
             ("nullable", True),
+            ("reference", True),
         ],
     )
-    def test_backwards_matches_the_add_that_would_recreate_it(self, attribute: str, value: object) -> None:
-        """Restoring a state must render it exactly as creating it would."""
+    def test_backwards_matches_the_alteration_back_to_it(self, attribute: str, value: object) -> None:
+        """Restoring a state must render it exactly as altering a field to it would."""
         base = {"nullable": False} | {attribute: value}
         previous = FieldState(name="f", field_type="string", **base)
         target = FieldState(name="f", field_type="int", nullable=False)
 
         rollback = AlterField.from_field_states("t", previous, target).backwards()
-        recreate = AddField.from_field_state("t", previous).forwards()
+        reverse = AlterField.from_field_states("t", target, previous).forwards()
 
-        assert rollback == recreate.replace("DEFINE FIELD ", "DEFINE FIELD OVERWRITE ", 1)
+        assert rollback == reverse
+
+    def test_backwards_carries_the_clauses_add_field_would_create(self) -> None:
+        """The two field renderers agree on every clause they both set."""
+        previous = FieldState(
+            name="f", field_type="string", nullable=True, default="time::now()", assertion="$value != ''", comment="c"
+        )
+        target = FieldState(name="f", field_type="int", nullable=False)
+
+        rollback = AlterField.from_field_states("t", previous, target).backwards()
+        create = AddField.from_field_state("t", previous).forwards()
+
+        for clause in ("TYPE option<string>", "DEFAULT time::now()", "ASSERT $value != ''", "COMMENT 'c'"):
+            assert clause in create
+            assert clause in rollback
 
     def test_every_field_state_attribute_has_a_previous_slot(self) -> None:
         """A new clause on FieldState must not be able to reach only one direction."""
