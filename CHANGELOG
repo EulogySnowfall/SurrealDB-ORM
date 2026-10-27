@@ -29,13 +29,14 @@ No public API change.
     `SurrealFunc`/`server_values` expression on `save(tx=)`/`merge(tx=)`, and
     `QuerySet.variables()` in `bulk_update(atomic=True)` /
     `bulk_delete(atomic=True)`;
-  - a key `t`, `tx` or `tx_<i>` (`i` being the statement's position in the
-    transaction), which rewrote the references already renamed for the keys
-    bound before it (`$tx_0_amount` → `$tx_0_tx_0_amount`). The SDK builders
-    `tx.create/update/upsert/merge/relate` bind each field under its own name,
-    so `save(tx=)`, `update(tx=)`, `merge(tx=)`, `relate(tx=)` (edge data) and
-    `bulk_create(atomic=True)` of a model with a field named `t`, `tx` or
-    `tx_<i>` lost the fields bound before it.
+  - a key that is a prefix of `tx_<i>_<an earlier key>` (`t`, `tx`, `tx_`,
+    `tx_<i>`, ...; `i` being the statement's position in the transaction,
+    so `tx_1` also counts from position 10), which rewrote the references
+    already renamed for the keys bound before it (`$tx_0_amount` →
+    `$tx_0_tx_0_amount`). The SDK builders `tx.create/update/upsert/relate`
+    bind each field under its own name, so `save(tx=)` of a new record,
+    `relate(tx=)` (edge data) and `bulk_create(atomic=True)` of a model with
+    such a field lost the fields bound before it.
 
   Only whole `$key` references to a key the statement binds are renamed now,
   in a single pass. `v2` has no `surreal_sdk.utils.substitute_params()`, so the
@@ -46,6 +47,17 @@ No public API change.
   `tx.insert()` prefixes its own keys, and WebSocket transactions do not
   rename. A bound `$k` written inside a quoted string literal is still renamed,
   as before.
+
+### Known limitation
+
+`tx.merge()` over HTTP is still broken, for an unrelated reason this release
+does not touch (#251): it emits `MERGE { k = $k, ... }`, which SurrealDB 2.x
+does not read as an object. With two or more fields the commit fails with a
+parse error; with one field `commit()` returns without an error, but the
+server rolls the whole transaction back, its other statements included. That
+covers `update(tx=)`, `merge(tx=)` without a `SurrealFunc`, and `save(tx=)` of
+a record that is already saved, on an HTTP connection. WebSocket transactions
+are not affected.
 
 ### Verification
 
