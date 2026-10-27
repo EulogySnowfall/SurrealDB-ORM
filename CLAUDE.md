@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.8)
+> Context document for Claude AI - Last updated: October 2026 (0.34.9)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.8 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.9 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,38 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.9
+
+Python 3.15 support (#235, #288); no library code changes, floors and
+`requires-python` unchanged. Pin unchanged (3.3.4). `v2`: not backported (LTS,
+no new platform support). Integration at 0.34.9: 3.3.4 and 3.2.6 both 553
+passed, 1 skipped, 1 xfailed (#147 still XFAIL); unit 2,454 on
+3.12/3.13/3.14/3.15.
+
+- **The tested Python range is stated in six places** — the `ci.yml` unit
+  matrix (the source of truth), the classifiers of both `pyproject.toml`
+  files, the Makefile `test-all-python` helper, the ruff/mypy floor and the
+  README Requirements line ("tested on 3.12 – 3.15").
+  `tests/test_python_support.py` ties the first five together: classifiers
+  equal to the matrix, the matrix starting at the `requires-python` floor with
+  no gap, ruff/mypy on the floor, the helper running every Python. It does not
+  read `README.md`, so the Requirements line is kept by hand. `tox.ini` still
+  says py312–py314; nothing runs it and the guard does not read it either.
+- **A new CPython minor breaks the lock before the code.** A package locked
+  before its maintainers shipped wheels for that Python is built from source
+  by `uv sync --frozen` (Rust for pydantic-core and cbor2, a C compiler for
+  librt), so the CI job fails or tests a local build no user installs. The
+  guard walks `uv.lock` as `uv sync --frozen` does (project dependencies plus
+  the dev group, markers for Linux x86_64) and requires a wheel for every
+  package on every tested Python; only pyyaml is exempt
+  (`SOURCE_BUILD_ALLOWED`, pure-Python sdist fallback). Its manylinux check
+  is capped at glibc 2.35, older than the ubuntu-24.04 runners. The fix is a
+  targeted `uv lock --upgrade-package <name>`, never a blanket upgrade.
+- **Adding the next Python** = add it to the `ci.yml` unit matrix, let the
+  guard name the classifiers, the Makefile helper and every package to
+  refresh, and update the README Requirements line by hand: the guard stays
+  green while that line is stale.
 
 ### What's New in 0.34.8
 
