@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
 from .exceptions import TransactionError
+from .utils import substitute_params
 
 _SAFE_THING_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(:[a-zA-Z0-9_`]+)?$")
 
@@ -200,7 +201,14 @@ class HTTPTransaction(BaseTransaction):
         self._statements = []
 
     async def commit(self) -> "QueryResponse":
-        """Execute all queued statements atomically."""
+        """Execute all queued statements atomically.
+
+        Every statement's bindings are renamed ``$k`` → ``$tx_<i>_k`` (``i`` being its
+        position) and sent together in one query. Only references to a key the
+        statement binds are renamed; built-ins such as ``$auth`` or ``$session`` and
+        unbound references stay as written. The scan is textual, so a bound ``$k``
+        written inside a quoted string literal is renamed too.
+        """
         from .types import QueryResponse
 
         if not self.is_active:
@@ -217,14 +225,13 @@ class HTTPTransaction(BaseTransaction):
         all_vars: dict[str, Any] = {}
 
         for i, stmt in enumerate(self._statements):
-            # Work on a copy to avoid mutating the original statement
-            namespaced_sql = stmt.sql
-            # Namespace variables to avoid conflicts between statements
+            # Namespace each statement's bindings ($k -> $tx_<i>_k) so two statements
+            # can bind the same name to different values in the one batched query.
+            # substitute_params() renames whole identifiers only: a key that prefixes
+            # another reference ($a vs $auth, $session, $tenant…) leaves it alone.
             for key, val in stmt.vars.items():
-                namespaced_key = f"tx_{i}_{key}"
-                all_vars[namespaced_key] = val
-                namespaced_sql = namespaced_sql.replace(f"${key}", f"${namespaced_key}")
-            sql_parts.append(namespaced_sql)
+                all_vars[f"tx_{i}_{key}"] = val
+            sql_parts.append(substitute_params(stmt.sql, {key: f"$tx_{i}_{key}" for key in stmt.vars}))
 
         sql_parts.append("COMMIT TRANSACTION;")
         full_sql = "\n".join(sql_parts)

@@ -202,6 +202,103 @@ class TestHTTPTransaction:
         assert "RELATE users:1->follows->users:2" in sql
 
 
+class TestHTTPTransactionParamNamespacing:
+    """``commit()`` renames each statement's bound keys, and nothing else (#204).
+
+    Every statement's keys are namespaced (``$k`` → ``$tx_<i>_k``) so two statements
+    can bind the same name to different values in one batched query. The rename must
+    match whole identifiers: a key that is a *prefix* of another reference — a built-in
+    such as ``$auth`` or an unbound ``$tenant`` — must leave that reference alone.
+    """
+
+    @pytest.fixture
+    def mock_connection(self) -> MagicMock:
+        """Create a mock HTTP connection that records the batched query."""
+        conn = MagicMock()
+        conn.query = AsyncMock(return_value=QueryResponse(results=[], raw=[]))
+        return conn
+
+    @staticmethod
+    async def _commit(conn: MagicMock, statements: list[tuple[str, dict[str, object]]]) -> tuple[list[str], dict[str, object]]:
+        """Queue *statements*, commit, and return (sent statements, sent variables)."""
+        tx = HTTPTransaction(conn)
+        await tx._begin()
+        for sql, variables in statements:
+            await tx.query(sql, variables)
+        await tx.commit()
+
+        sent_sql, sent_vars = conn.query.call_args[0]
+        lines = sent_sql.split("\n")
+        assert lines[0] == "BEGIN TRANSACTION;"
+        assert lines[-1] == "COMMIT TRANSACTION;"
+        return lines[1:-1], sent_vars
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("key", "reference"),
+        [
+            ("a", "$auth.id"),
+            ("sess", "$session.ns"),
+            ("th", "$this.id"),
+            ("b", "$before.score"),
+            ("af", "$after.score"),
+            ("val", "$value"),
+            ("in", "$input.name"),
+            # Not a built-in: a reference nobody binds is left for the server too.
+            ("t", "$tenant"),
+        ],
+    )
+    async def test_key_prefixing_another_reference_leaves_it_untouched(
+        self, mock_connection: MagicMock, key: str, reference: str
+    ) -> None:
+        sql = f"UPDATE i204_users SET f = ${key} WHERE g = {reference};"
+
+        statements, variables = await self._commit(mock_connection, [(sql, {key: "x"})])
+
+        assert statements == [f"UPDATE i204_users SET f = $tx_0_{key} WHERE g = {reference};"]
+        assert variables == {f"tx_0_{key}": "x"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bindings",
+        [{"a": 1, "ab": 2}, {"ab": 2, "a": 1}],
+        ids=["short-first", "long-first"],
+    )
+    async def test_key_prefixing_another_key_binds_both(self, mock_connection: MagicMock, bindings: dict[str, object]) -> None:
+        sql = "UPDATE i204_users SET x = $a, y = $ab;"
+
+        statements, variables = await self._commit(mock_connection, [(sql, bindings)])
+
+        assert statements == ["UPDATE i204_users SET x = $tx_0_a, y = $tx_0_ab;"]
+        assert variables == {"tx_0_a": 1, "tx_0_ab": 2}
+
+    @pytest.mark.asyncio
+    async def test_same_key_in_two_statements_gets_distinct_bindings(self, mock_connection: MagicMock) -> None:
+        statements, variables = await self._commit(
+            mock_connection,
+            [
+                ("UPDATE i204_users:1 SET k = $k;", {"k": "first"}),
+                ("UPDATE i204_users:2 SET k = $k;", {"k": "second"}),
+            ],
+        )
+
+        assert statements == [
+            "UPDATE i204_users:1 SET k = $tx_0_k;",
+            "UPDATE i204_users:2 SET k = $tx_1_k;",
+        ]
+        assert variables == {"tx_0_k": "first", "tx_1_k": "second"}
+
+    @pytest.mark.asyncio
+    async def test_queued_statement_is_not_mutated(self, mock_connection: MagicMock) -> None:
+        tx = HTTPTransaction(mock_connection)
+        await tx._begin()
+        await tx.query("UPDATE i204_users:1 SET k = $k;", {"k": 1})
+
+        await tx.commit()
+
+        assert tx._statements[0] == TransactionStatement(sql="UPDATE i204_users:1 SET k = $k;", vars={"k": 1})
+
+
 class TestWebSocketTransaction:
     """Tests for WebSocketTransaction class."""
 
@@ -415,6 +512,43 @@ class TestHTTPTransactionIntegration:
 
         # Clean up
         await connection.query("DELETE tx_update_test")
+
+
+class TestHTTPTransactionBuiltinParamsIntegration:
+    """A bound key that prefixes a built-in keeps the built-in bound on the server (#204)."""
+
+    NAMESPACE = "test"
+    DATABASE = "i204_transactions"
+
+    @pytest.fixture
+    async def connection(self):
+        """HTTP connection on a database of this test's own, removed afterwards."""
+        from src.surreal_sdk.connection.http import HTTPConnection
+
+        conn = HTTPConnection("http://localhost:8000", self.NAMESPACE, self.DATABASE)
+        await conn.connect()
+        await conn.signin("root", "root")
+        await conn.query(f"DEFINE NAMESPACE IF NOT EXISTS `{self.NAMESPACE}`; DEFINE DATABASE IF NOT EXISTS `{self.DATABASE}`;")
+        yield conn
+        await conn.query(f"REMOVE DATABASE IF EXISTS `{self.DATABASE}`;")
+        await conn.close()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    async def test_key_prefixing_session_keeps_session_bound(self, connection) -> None:
+        async with connection.transaction() as tx:
+            await tx.query(
+                "CREATE i204_tx_record:1 SET s = $s, ns = $session.ns, db = $session.db;",
+                {"s": "kept"},
+            )
+
+        result = await connection.query("SELECT * FROM i204_tx_record:1;")
+        assert result.is_ok
+        records = result.all_records
+        assert len(records) == 1
+        assert records[0]["s"] == "kept"
+        assert records[0].get("ns") == self.NAMESPACE
+        assert records[0].get("db") == self.DATABASE
 
 
 class TestFunctionIntegrationWithSurrealDB:
