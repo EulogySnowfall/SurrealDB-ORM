@@ -91,6 +91,9 @@ class HTTPConnection(BaseSurrealConnection):
         # transactions open on it: the close then happens when they end.
         self._close_after_transactions_of: asyncio.Task[Any] | None = None
         self._close_pending = False
+        # Set by ``_close_when_idle`` (a cancelled drain): the last request or
+        # transaction to end closes the connection.
+        self._close_when_idle_pending = False
 
     @property
     def headers(self) -> dict[str, str]:
@@ -157,6 +160,7 @@ class HTTPConnection(BaseSurrealConnection):
         self._authenticated = False
         self._close_pending = False
         self._close_after_transactions_of = None
+        self._close_when_idle_pending = False
         if client:
             await client.aclose()
 
@@ -174,6 +178,11 @@ class HTTPConnection(BaseSurrealConnection):
         Transactions opened by the calling task itself are not waited for, as
         they cannot end while this task waits: the connection is then closed
         when the last of them commits or rolls back, instead of here.
+
+        If the calling task is cancelled during the wait, the connection is
+        not closed under what still uses it: it is closed by the last request
+        or transaction to end (see ``_close_when_idle``), and the cancellation
+        propagates.
 
         Args:
             timeout: Maximum number of seconds to wait for in-flight requests
@@ -197,13 +206,46 @@ class HTTPConnection(BaseSurrealConnection):
                     await self._released.wait()
         except TimeoutError:
             drained = False
-        finally:
-            if self._open_transactions.get(me):
-                self._close_after_transactions_of = me
-                self._close_pending = True
-            else:
-                await self.close()
+        except asyncio.CancelledError:
+            # Only an outside cancellation gets here: the timeout's own is
+            # turned into ``TimeoutError`` above.
+            await self._close_when_idle()
+            raise
+
+        if self._open_transactions.get(me):
+            self._close_after_transactions_of = me
+            self._close_pending = True
+        else:
+            await self.close()
         return drained
+
+    async def _close_when_idle(self) -> None:
+        """Close this connection now if nothing uses it, otherwise when the last user is done.
+
+        The close is then performed by the last RPC request to return (in
+        ``_send_rpc``) or the last transaction to commit or roll back (in
+        ``_transaction_ended``), so no task is left waiting for it. Used when
+        retiring the connection is cancelled: what still uses it finishes
+        normally, and the connection does not stay open for good. A failure to
+        close is logged, not raised. Does nothing on a closed connection.
+        """
+        if self._client is None:
+            return
+        if self._in_use():
+            self._close_when_idle_pending = True
+        else:
+            await self._close_quietly()
+
+    def _in_use(self) -> bool:
+        """Whether an RPC request or an open transaction uses this connection."""
+        return bool(self._inflight_rpcs or self._open_transactions)
+
+    async def _close_quietly(self) -> None:
+        """Close this connection, logging a failure instead of raising it."""
+        try:
+            await self.close()
+        except Exception:
+            logger.warning("Failed to close a retired HTTP connection cleanly.", exc_info=True)
 
     def _in_use_by_others(self, task: asyncio.Task[Any] | None) -> bool:
         """Whether an RPC request, or a transaction opened by another task than *task*, uses this connection."""
@@ -223,9 +265,9 @@ class HTTPConnection(BaseSurrealConnection):
         """Stop counting a transaction of *owner* that committed or rolled back.
 
         Performs the close that ``_drain_and_close`` deferred if this was the
-        last open transaction of the task that retired this connection. A
-        failure to close is logged, not raised: the transaction itself has
-        already ended.
+        last open transaction of the task that retired this connection, or the
+        last use of a connection marked by ``_close_when_idle``. A failure to
+        close is logged, not raised: the transaction itself has already ended.
         """
         remaining = self._open_transactions.get(owner, 0) - 1
         if remaining > 0:
@@ -234,11 +276,9 @@ class HTTPConnection(BaseSurrealConnection):
             self._open_transactions.pop(owner, None)
         self._released.set()
 
-        if self._close_pending and remaining <= 0 and owner is self._close_after_transactions_of:
-            try:
-                await self.close()
-            except Exception:
-                logger.warning("Failed to close a retired HTTP connection cleanly.", exc_info=True)
+        retiring_task_done = self._close_pending and remaining <= 0 and owner is self._close_after_transactions_of
+        if retiring_task_done or (self._close_when_idle_pending and not self._in_use()):
+            await self._close_quietly()
 
     async def _send_rpc(self, request: RPCRequest) -> RPCResponse:
         """
@@ -259,7 +299,10 @@ class HTTPConnection(BaseSurrealConnection):
             QueryError: If request fails
 
         The request counts as in flight until it returns or raises, so
-        ``_drain_and_close`` does not close the client under it.
+        ``_drain_and_close`` does not close the client under it. If it was the
+        last use of a connection marked by ``_close_when_idle``, the
+        connection is closed before returning (a failure to close is logged,
+        not raised).
         """
         if not self._client:
             raise ConnectionError("Not connected. Call connect() first.")
@@ -270,6 +313,8 @@ class HTTPConnection(BaseSurrealConnection):
         finally:
             self._inflight_rpcs -= 1
             self._released.set()
+            if self._close_when_idle_pending and not self._in_use():
+                await self._close_quietly()
 
     async def _post_rpc(self, client: httpx.AsyncClient, request: RPCRequest) -> RPCResponse:
         """POST *request* to ``/rpc`` on *client*, re-minting the token on a transient 401."""

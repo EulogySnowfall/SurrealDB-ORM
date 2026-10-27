@@ -454,6 +454,14 @@ class SurrealDBConnectionManager:
         ``SurrealDbConnectionError`` is raised and the current clients are
         left in place.
 
+        Cancelling the call (for example ``asyncio.wait_for(reconnect(), 5)``
+        timing out) does not close the previous client under the requests and
+        transactions still using it. Cancelled before the swap, it leaves the
+        current clients in place. Cancelled after it, the new client stays
+        installed and the previous one is closed by the last request or
+        transaction to finish on it (at once if none is left); the
+        cancellation then propagates as usual.
+
         Token renewal does not need this method: SurrealDB answers a request
         made with an expired token with HTTP 401, and the HTTP client signs in
         again with its stored credentials and retries the request.
@@ -472,7 +480,15 @@ class SurrealDBConnectionManager:
 
         # Retire the previous clients outside the lock, so that callers needing
         # a client are not held up while in-flight requests drain.
-        await cls._close_clients(name, old_client, old_ws, drain_timeout=cls._reconnect_drain_timeout)
+        try:
+            await cls._close_clients(name, old_client, old_ws, drain_timeout=cls._reconnect_drain_timeout)
+        except asyncio.CancelledError:
+            # Cancelled before the previous HTTP client was retired (e.g. while
+            # the WebSocket client closed): its last user closes it instead.
+            # A cancelled drain has already done this; doing it again is a no-op.
+            if old_client is not None:
+                await old_client._close_when_idle()
+            raise
         return new_client
 
     @classmethod

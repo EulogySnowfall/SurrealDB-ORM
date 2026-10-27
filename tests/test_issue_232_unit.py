@@ -474,3 +474,128 @@ async def test_an_ended_transaction_no_longer_holds_the_client(
     assert client._open_transactions == {}
     assert await asyncio.wait_for(client._drain_and_close(1), 0.5) is True
     assert not client.is_connected
+
+
+# ==================== cancelled reconnect() ====================
+
+
+async def test_cancelled_reconnect_closes_the_old_client_only_after_its_request(server: I232Server) -> None:
+    """Cancelling reconnect() during the drain keeps the old client open until its request finishes."""
+    old = await Manager.get_client()
+    in_flight = asyncio.create_task(old.query(HOLD))
+    await asyncio.wait_for(_transport(old).held.wait(), 1)
+    before = _other_tasks() - {in_flight}
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(Manager.reconnect(), 0.1)
+
+    new = Manager._clients["default"]
+    assert new is not old and new.is_connected
+    assert Manager._SurrealDBConnectionManager__client is new  # type: ignore[attr-defined]
+    assert old.is_connected, "the cancelled reconnect() closed the old client under its request"
+
+    _transport(old).release.set()
+    response = await asyncio.wait_for(in_flight, 1)
+    assert response.is_ok
+    assert not old.is_connected, "the old client was not closed once its last request finished"
+    assert _transport(old).closed.is_set()
+    await asyncio.sleep(0)
+    assert _other_tasks() - before == set()
+
+
+async def test_cancelled_reconnect_closes_the_old_client_only_after_its_transaction(server: I232Server) -> None:
+    """Cancelling reconnect() during the drain keeps the old client open until an open transaction commits."""
+    old = await Manager.get_client()
+    opened = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def body() -> Any:
+        async with await Manager.transaction() as tx:
+            await tx.query("CREATE i232_item:a;")
+            opened.set()
+            await finish.wait()
+        return tx
+
+    work = asyncio.create_task(body())
+    await asyncio.wait_for(opened.wait(), 1)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(Manager.reconnect(), 0.1)
+
+    assert Manager._clients["default"] is not old
+    assert old.is_connected, "the cancelled reconnect() closed the old client under an open transaction"
+
+    finish.set()
+    tx = await asyncio.wait_for(work, 1)
+    assert tx.is_committed
+    assert not old.is_connected
+    [sql] = _committed_sql(old)
+    assert "CREATE i232_item:a;" in sql
+
+
+async def test_reconnect_cancelled_while_closing_the_websocket_still_retires_the_old_client(server: I232Server) -> None:
+    """A cancellation before the drain starts does not leave the old HTTP client open for good."""
+    old = await Manager.get_client()
+    in_flight = asyncio.create_task(old.query(HOLD))
+    await asyncio.wait_for(_transport(old).held.wait(), 1)
+
+    async def close_forever() -> None:
+        await asyncio.Event().wait()
+
+    ws = AsyncMock()
+    ws.close.side_effect = close_forever
+    Manager._ws_clients["default"] = ws
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(Manager.reconnect(), 0.1)
+
+    ws.close.assert_awaited_once()
+    assert "default" not in Manager._ws_clients
+    assert old.is_connected
+
+    _transport(old).release.set()
+    assert (await asyncio.wait_for(in_flight, 1)).is_ok
+    assert not old.is_connected, "the old client stayed open after the cancelled reconnect()"
+
+
+async def test_cancelled_drain_closes_at_once_when_nothing_is_left(server: I232Server) -> None:
+    """A drain cancelled after its last request ended, but before it resumed, closes the client itself."""
+    client = await Manager.get_client()
+    client._inflight_rpcs = 1  # a request in flight, ended by hand below
+    drain = asyncio.create_task(client._drain_and_close(1))
+    await asyncio.sleep(0.01)
+    assert not drain.done()
+
+    # The request ends and the drain is cancelled in the same step, so the
+    # cancellation reaches the drain with nothing left using the client.
+    client._inflight_rpcs = 0
+    client._released.set()
+    drain.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await drain
+
+    assert not client.is_connected
+    assert _transport(client).closed.is_set()
+
+
+async def test_failed_close_after_a_cancelled_reconnect_does_not_fail_the_last_request(
+    server: I232Server, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The last request closes the retired client; a close error is logged, the request still succeeds."""
+    server.close_error = RuntimeError("Event loop is closed")
+    old = await Manager.get_client()
+    server.close_error = None
+    in_flight = asyncio.create_task(old.query(HOLD))
+    await asyncio.wait_for(_transport(old).held.wait(), 1)
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(Manager.reconnect(), 0.1)
+
+    _transport(old).release.set()
+    with caplog.at_level(logging.WARNING):
+        response = await asyncio.wait_for(in_flight, 1)
+
+    assert response.is_ok
+    assert not old.is_connected
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and r.exc_info is not None]
+    assert warnings and isinstance(warnings[0].exc_info[1], RuntimeError)  # type: ignore[index]
