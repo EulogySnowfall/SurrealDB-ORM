@@ -97,6 +97,9 @@ async def test_a_default_survives_the_rollback_unquoted() -> None:
     target = FieldState(name="created", field_type="datetime", nullable=False)
     op = AlterField.from_field_states(TABLE, previous, target)
 
+    # The field exists before it is altered: ALTER FIELD does not create one
+    # (#195), where the DEFINE FIELD OVERWRITE it replaced did.
+    await client.query(AddField.from_field_state(TABLE, previous).forwards())
     await client.query(op.forwards())
     response = await client.query(op.backwards())
 

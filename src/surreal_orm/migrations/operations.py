@@ -93,12 +93,14 @@ def _apply_nullable(field_type: str, nullable: bool) -> str:
 #: The VALUE expression that makes a column an ``Encrypted`` one.
 ARGON2_VALUE = "crypto::argon2::generate($value)"
 
-#: The attributes a ``DEFINE FIELD`` statement carries, in clause order.
-#: ``AddField.forwards``, ``AlterField.forwards`` and ``AlterField.backwards``
-#: are all driven off this one tuple. They used to be three hand-written
-#: renderers, and every clause added to one of them was eventually forgotten in
-#: another — that is #170 (REFERENCE), #195 (VALUE) and the DEFAULT divergence
-#: below, all the same omission.
+#: The attributes a field definition carries, in clause order — the clauses the
+#: ORM *models*. ``AddField.forwards``, ``AlterField.forwards`` and
+#: ``AlterField.backwards`` are all driven off this one tuple, through
+#: ``_render_define_field`` and ``_render_alter_field``. They used to be three
+#: hand-written renderers, and every clause added to one of them was eventually
+#: forgotten in another — that is #170 (REFERENCE), #196 (VALUE) and the DEFAULT
+#: divergence below, all the same omission. A clause that is *not* here, field
+#: ``PERMISSIONS`` first, is one ``ALTER FIELD`` leaves as the database has it.
 FIELD_DEFINITION_FIELDS = (
     "field_type",
     "nullable",
@@ -156,11 +158,28 @@ def _render_default(default: Any) -> str:
     return str(default)
 
 
+def _render_comment(comment: str) -> str:
+    """
+    Render a COMMENT text as a SurrealQL string literal.
+
+    Shared by both field renderers so a comment is quoted the same way whether
+    the field is being defined or altered.
+
+    Args:
+        comment: The comment text
+
+    Returns:
+        The quoted literal
+    """
+    return "'" + comment.replace("'", "''") + "'"
+
+
 def _render_define_field(
     table: str,
     name: str,
     *,
-    overwrite: bool,
+    overwrite: bool = False,
+    if_not_exists: bool = False,
     field_type: "FieldType | str | None" = None,
     nullable: bool = False,
     flexible: bool = False,
@@ -175,13 +194,16 @@ def _render_define_field(
     """
     Render one ``DEFINE FIELD`` statement.
 
-    Shared by ``AddField`` and both directions of ``AlterField``, so a rollback
-    cannot render a clause differently from the statement it reverses.
+    Used by ``AddField`` and, with ``if_not_exists``, by the create half of
+    :func:`_render_create_or_alter_field`. An existing field is changed with
+    :func:`_render_alter_field` instead: a redefinition replaces clauses the
+    ORM does not model, field ``PERMISSIONS`` among them (#195).
 
     Args:
         table: Table the field belongs to
         name: Field name
         overwrite: Emit ``DEFINE FIELD OVERWRITE``
+        if_not_exists: Emit ``DEFINE FIELD IF NOT EXISTS``
         field_type: Field type; no TYPE clause when absent
         nullable: Whether the column accepts NONE
         flexible: FLEXIBLE TYPE
@@ -195,8 +217,13 @@ def _render_define_field(
 
     Returns:
         The complete statement, semicolon included
+
+    Raises:
+        ValueError: If both ``overwrite`` and ``if_not_exists`` are set
     """
-    keyword = "DEFINE FIELD OVERWRITE" if overwrite else "DEFINE FIELD"
+    if overwrite and if_not_exists:
+        raise ValueError("DEFINE FIELD takes OVERWRITE or IF NOT EXISTS, not both")
+    keyword = "DEFINE FIELD OVERWRITE" if overwrite else "DEFINE FIELD IF NOT EXISTS" if if_not_exists else "DEFINE FIELD"
     parts = [f"{keyword} {name} ON {table}"]
 
     if flexible:
@@ -224,9 +251,137 @@ def _render_define_field(
             parts.append(f"ON DELETE {on_delete_to_surql(on_delete)}")
 
     if comment:
-        parts.append(f"COMMENT '{comment.replace(chr(39), chr(39) * 2)}'")
+        parts.append(f"COMMENT {_render_comment(comment)}")
 
     return " ".join(parts) + ";"
+
+
+def _render_alter_field(
+    table: str,
+    name: str,
+    *,
+    field_type: "FieldType | str | None" = None,
+    nullable: bool = False,
+    flexible: bool = False,
+    value: str | None = None,
+    default: Any = None,
+    assertion: str | None = None,
+    readonly: bool = False,
+    reference: bool = False,
+    on_delete: str | None = None,
+    comment: str | None = None,
+) -> str:
+    """
+    Render one ``ALTER FIELD`` statement setting every modelled clause.
+
+    ``DEFINE FIELD OVERWRITE`` replaces the whole definition, so a clause the
+    ORM does not model was reset to the server default: a field restricted
+    with ``PERMISSIONS FOR select NONE`` came back ``PERMISSIONS FULL`` after
+    the next alteration (#195). ``ALTER FIELD`` changes only the clauses it
+    names. Each clause of :data:`FIELD_DEFINITION_FIELDS` is therefore named
+    every time — set when present, ``DROP``-ped when absent — so the modelled
+    semantics stay those of a full redefinition (removing a clause from the
+    model removes it from the database) while every other clause is left
+    untouched by construction.
+
+    ``ALTER FIELD`` requires the field to exist: on a missing one SurrealDB
+    answers ``The field 'x' does not exist``. Shared by both directions of
+    ``AlterField``, so a rollback cannot render a clause differently from the
+    statement it reverses.
+
+    Args:
+        table: Table the field belongs to
+        name: Field name
+        field_type: Field type; ``DROP TYPE`` when absent
+        nullable: Whether the column accepts NONE
+        flexible: FLEXIBLE (object types only)
+        value: VALUE expression, already resolved for encrypted columns
+        default: DEFAULT value
+        assertion: ASSERT expression
+        readonly: READONLY
+        reference: SurrealDB 3.0 REFERENCE clause
+        on_delete: ON DELETE strategy, in Django or SurrealDB vocabulary;
+            rendered only with ``reference``
+        comment: COMMENT text
+
+    Returns:
+        The complete statement, semicolon included
+    """
+    parts = [f"ALTER FIELD {name} ON {table}"]
+
+    if field_type:
+        parts.append(f"TYPE {_apply_nullable(_normalize_field_type(field_type), nullable)}")
+    else:
+        parts.append("DROP TYPE")
+
+    # FLEXIBLE is only valid on a type containing object. The server checks the
+    # field once every clause is applied, so a statement that changes the type
+    # and FLEXIBLE together is accepted in either direction.
+    parts.append("FLEXIBLE" if flexible else "DROP FLEXIBLE")
+
+    parts.append(f"VALUE {value}" if value else "DROP VALUE")
+
+    parts.append(f"DEFAULT {_render_default(default)}" if default is not None else "DROP DEFAULT")
+
+    parts.append(f"ASSERT {assertion}" if assertion else "DROP ASSERT")
+
+    parts.append("READONLY" if readonly else "DROP READONLY")
+
+    if reference:
+        # A bare REFERENCE resets ON DELETE to the server default, so the
+        # strategy is always restated with it.
+        parts.append(f"REFERENCE ON DELETE {on_delete_to_surql(on_delete)}" if on_delete else "REFERENCE")
+    else:
+        parts.append("DROP REFERENCE")
+
+    parts.append(f"COMMENT {_render_comment(comment)}" if comment else "DROP COMMENT")
+
+    return " ".join(parts) + ";"
+
+
+def _field_clauses(op: "AddField | AlterField") -> dict[str, Any]:
+    """
+    Collect the modelled clauses of a field operation, ready for a renderer.
+
+    ``encrypted`` *is* "VALUE is the argon2 expression", so it is resolved here
+    rather than in each renderer.
+
+    Args:
+        op: The operation whose target definition to render
+
+    Returns:
+        One entry per :data:`FIELD_DEFINITION_FIELDS` attribute
+    """
+    clauses = {f: getattr(op, f) for f in FIELD_DEFINITION_FIELDS}
+    if op.encrypted:
+        clauses["value"] = ARGON2_VALUE
+    return clauses
+
+
+def _render_create_or_alter_field(op: "AddField") -> str:
+    """
+    Render a field as a create-or-update pair.
+
+    ``DEFINE FIELD IF NOT EXISTS`` creates the field with its whole definition
+    when it is missing and is a no-op otherwise; the ``ALTER FIELD`` that
+    follows then brings an existing field's modelled clauses in line, leaving
+    the clauses the ORM does not model — field ``PERMISSIONS`` — as they are.
+    ``DEFINE FIELD OVERWRITE`` was create-or-redefine in one statement, but it
+    reset those clauses (#195).
+
+    Args:
+        op: The field to apply
+
+    Returns:
+        The two statements, newline-separated
+    """
+    clauses = _field_clauses(op)
+    return "\n".join(
+        (
+            _render_define_field(op.table, op.name, if_not_exists=True, **clauses),
+            _render_alter_field(op.table, op.name, **clauses),
+        )
+    )
 
 
 #: The attributes a ``DEFINE TABLE`` statement carries. ``CreateTable``,
@@ -721,8 +876,9 @@ class AddField(Operation):
     nullable: bool = False
     #: Emit ``DEFINE FIELD OVERWRITE``. A migration adds a field that is not
     #: there yet, so the plain form is right there and a second run *should*
-    #: fail. ``define_table()`` applies a model's whole schema and has to be
-    #: callable twice, so it opts in.
+    #: fail. OVERWRITE replaces the whole definition, including clauses the ORM
+    #: does not model such as field ``PERMISSIONS``, so ``define_table()`` no
+    #: longer uses it (#195); it is kept for code that opts in explicitly.
     overwrite: bool = False
 
     def __post_init__(self) -> None:
@@ -763,13 +919,7 @@ class AddField(Operation):
         )
 
     def forwards(self) -> str:
-        return _render_define_field(
-            self.table,
-            self.name,
-            overwrite=self.overwrite,
-            **{f: getattr(self, f) for f in FIELD_DEFINITION_FIELDS if f != "value"},
-            value=ARGON2_VALUE if self.encrypted else self.value,
-        )
+        return _render_define_field(self.table, self.name, overwrite=self.overwrite, **_field_clauses(self))
 
     def backwards(self) -> str:
         return f"REMOVE FIELD {self.name} ON {self.table};"
@@ -812,6 +962,13 @@ class AlterField(Operation):
     """
     Alter an existing field's definition.
 
+    Every modelled clause is stated: set when the operation carries it,
+    ``DROP``-ped when it does not. Clauses the ORM does not model, such as a
+    field-level ``PERMISSIONS`` set by hand, are left as the database has them.
+    The field must exist — altering a missing one fails the migration with
+    ``The field 'x' does not exist``; ``AddField`` is the operation that
+    creates a field.
+
     Example:
         AlterField(
             table="users",
@@ -821,7 +978,8 @@ class AlterField(Operation):
         )
 
     Generates:
-        DEFINE FIELD OVERWRITE email ON users TYPE string ASSERT is::email($value);
+        ALTER FIELD email ON users TYPE string DROP FLEXIBLE DROP VALUE DROP DEFAULT
+        ASSERT is::email($value) DROP READONLY DROP REFERENCE DROP COMMENT;
     """
 
     table: str
@@ -906,32 +1064,28 @@ class AlterField(Operation):
         object.__setattr__(self, "reversible", self.previous_type is not None)
 
     def forwards(self) -> str:
-        # OVERWRITE is required, not optional (#162). A plain `DEFINE FIELD` over
-        # an existing field does NOT update it — SurrealDB answers
-        # `The field 'x' already exists` and leaves the definition untouched, so
-        # every AlterField was a no-op. OVERWRITE is create-or-redefine, so it is
-        # still correct when the field happens to be missing.
-        return _render_define_field(
-            self.table,
-            self.name,
-            overwrite=True,
-            **{f: getattr(self, f) for f in FIELD_DEFINITION_FIELDS if f != "value"},
-            value=ARGON2_VALUE if self.encrypted else self.value,
-        )
+        # ALTER FIELD, not DEFINE FIELD. A plain `DEFINE FIELD` over an existing
+        # field does not update it — SurrealDB answers `The field 'x' already
+        # exists` — so every AlterField was a no-op (#162). `DEFINE FIELD
+        # OVERWRITE` fixed that but replaces the whole definition, resetting
+        # every clause the ORM does not model: a field restricted with
+        # `PERMISSIONS FOR select NONE` came back `PERMISSIONS FULL` (#195).
+        # ALTER FIELD changes only what it names, and a missing field is an
+        # error the executor raises as MigrationStatementError rather than a
+        # field silently created under a mistyped name.
+        return _render_alter_field(self.table, self.name, **_field_clauses(self))
 
     def backwards(self) -> str:
         if not self.previous_type:
             return ""
 
-        # OVERWRITE for the same reason as forwards(): a rollback re-defining
-        # the previous type is otherwise a silent no-op too. It also replaces
-        # the *whole* definition, so a clause with no previous_* slot is
-        # dropped — losing VALUE is the dangerous one, an Encrypted column
-        # stops hashing and stores plaintext from then on.
-        return _render_define_field(
+        # The same renderer as forwards(), over the previous_* slots: every
+        # modelled clause is restored — VALUE included, or an Encrypted column
+        # stops hashing and stores plaintext (#196) — and nothing else is
+        # touched.
+        return _render_alter_field(
             self.table,
             self.name,
-            overwrite=True,
             **{f: getattr(self, _previous_attr(f)) for f in FIELD_DEFINITION_FIELDS},
         )
 

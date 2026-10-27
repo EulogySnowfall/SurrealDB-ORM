@@ -183,7 +183,7 @@ class TestAlterField:
             previous_type="string",
         )
         sql = op.forwards()
-        assert "DEFINE FIELD OVERWRITE age ON users TYPE int" in sql
+        assert sql.startswith("ALTER FIELD age ON users TYPE int ")
 
     def test_alter_field_maps_on_delete_keyword(self) -> None:
         """Test Django's on_delete vocabulary is translated for SurrealDB."""
@@ -208,20 +208,24 @@ class TestAlterField:
         sql = op.backwards()
         assert "TYPE string" in sql
 
-    def test_alter_field_uses_overwrite(self) -> None:
-        """Regression for #162: a plain DEFINE FIELD never alters anything.
+    def test_alter_field_alters_the_existing_field(self) -> None:
+        """Regression for #162 and #195: neither a plain nor an OVERWRITE redefinition.
 
         On SurrealDB 3.x, re-defining an existing field without OVERWRITE is
         rejected with "The field 'x' already exists" and the definition is left
-        untouched — so every AlterField was a no-op that reported success.
+        untouched — so every AlterField was a no-op that reported success
+        (#162). OVERWRITE replaced the whole definition and reset the clauses
+        the ORM does not model, field PERMISSIONS included (#195).
         """
         op = AlterField(table="users", name="age", field_type="int", previous_type="string")
-        assert op.forwards().startswith("DEFINE FIELD OVERWRITE ")
+        assert op.forwards().startswith("ALTER FIELD age ON users ")
+        assert "DEFINE FIELD" not in op.forwards()
 
-    def test_alter_field_backwards_uses_overwrite(self) -> None:
-        """A rollback re-defining the previous type is a silent no-op too (#162)."""
+    def test_alter_field_backwards_alters_the_existing_field(self) -> None:
+        """A rollback is an alteration too, for the same two reasons (#162, #195)."""
         op = AlterField(table="users", name="age", field_type="int", previous_type="string")
-        assert op.backwards().startswith("DEFINE FIELD OVERWRITE ")
+        assert op.backwards().startswith("ALTER FIELD age ON users ")
+        assert "DEFINE FIELD" not in op.backwards()
 
     def test_add_field_does_not_use_overwrite(self) -> None:
         """AddField must keep failing loudly on an existing field (#162).
