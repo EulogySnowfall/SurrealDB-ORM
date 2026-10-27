@@ -363,6 +363,19 @@ class WebSocketConnection(BaseSurrealConnection):
                 else:
                     raise LiveQueryError("Invalid live query response")
 
+                # A LiveSelectStream adopts the new id and re-registers its own
+                # handler right here, with no await in between, as start() does
+                # for the first id. From the on_reconnect task it would be too
+                # late: notifications would be dropped and a stop() would kill
+                # the old id meanwhile. A stream stopped while this query was
+                # being re-created refuses it, and the query is ended here.
+                if params._on_resubscribed is not None and not params._on_resubscribed(new_id):
+                    try:
+                        await self.kill(new_id)
+                    except Exception:
+                        pass  # The query ends with the session if the socket is gone again
+                    raise LiveQueryError("Live subscription was stopped while it was being re-created")
+
                 # Re-register callback if provided
                 if params.callback:
                     self._live_callbacks[new_id] = params.callback  # type: ignore[assignment]
