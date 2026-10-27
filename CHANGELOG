@@ -6,6 +6,61 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.13] - 2026-10-27
+
+**Bug fix release (V2 LTS).** One SDK fix, backported from `main`.
+No public API change.
+
+### Fixed
+
+- **`HTTPTransaction.commit()` renamed parameters a statement did not bind
+  (#247, #249; backport of #243).** Over an HTTP connection, `commit()` sends
+  every queued statement as one query and namespaces each statement's keys
+  (`$k` → `$tx_<i>_k`). It did so with a plain text replace, one key at a
+  time, so a key also rewrote every longer `$name` it was a prefix of. The
+  renamed name is unbound, and SurrealDB 2.x evaluates it as `NONE` inside the
+  transaction without an error: a `WHERE` on it silently matched nothing and a
+  `SET` from it silently wrote nothing. Two ways in:
+  - a key that prefixes a built-in (`$auth`, `$session`, `$this`, `$before`,
+    `$after`, `$value`, `$input`) or another unbound parameter: with key `a`,
+    `$auth.id` became `$tx_0_auth.id`, and with key `s`, `$session.ns` became
+    `$tx_0_session.ns`. Only names the caller chooses can do this:
+    `tx.query()` variables, `extra_vars` used with a
+    `SurrealFunc`/`server_values` expression on `save(tx=)`/`merge(tx=)`, and
+    `QuerySet.variables()` in `bulk_update(atomic=True)` /
+    `bulk_delete(atomic=True)`;
+  - a key `t`, `tx` or `tx_<i>` (`i` being the statement's position in the
+    transaction), which rewrote the references already renamed for the keys
+    bound before it (`$tx_0_amount` → `$tx_0_tx_0_amount`). The SDK builders
+    `tx.create/update/upsert/merge/relate` bind each field under its own name,
+    so `save(tx=)`, `update(tx=)`, `merge(tx=)`, `relate(tx=)` (edge data) and
+    `bulk_create(atomic=True)` of a model with a field named `t`, `tx` or
+    `tx_<i>` lost the fields bound before it.
+
+  Only whole `$key` references to a key the statement binds are renamed now,
+  in a single pass. `v2` has no `surreal_sdk.utils.substitute_params()`, so the
+  fix is a private helper in `surreal_sdk/transaction.py`. Bindings keep their
+  `tx_<i>_<key>` names, and a statement the bug did not hit sends the same SQL
+  as before. The names the ORM generates for its own bindings (`_sv_*`, `_f*`,
+  `_bu*`) could not trigger either case, `delete(tx=)` binds nothing,
+  `tx.insert()` prefixes its own keys, and WebSocket transactions do not
+  rename. A bound `$k` written inside a quoted string literal is still renamed,
+  as before.
+
+### Verification
+
+Against a live SurrealDB 2.7.0 (#249): 1840 unit tests on each of Python 3.12,
+3.13 and 3.14, and 385 integration tests, pass; `ruff` and `mypy` clean. Of the
+26 new tests, 21 fail on 0.21.12, including the integration test, which
+reproduces `$session.ns` evaluating to `NONE` on SurrealDB 2.7.0.
+
+### Changed
+
+- **Version bump to 0.21.13** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
 ## [0.21.12] - 2026-10-27
 
 **Security maintenance release (V2 LTS).** No library code changes vs 0.21.11.

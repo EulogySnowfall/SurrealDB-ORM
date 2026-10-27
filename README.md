@@ -52,6 +52,22 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.13
+
+**Bug fix release (V2 LTS).** One SDK fix, backported from `main`; no public API change.
+
+- **HTTP transactions no longer rename parameters a statement did not bind (#247).**
+  `HTTPTransaction.commit()` namespaces each statement's keys (`$k` → `$tx_<i>_k`) with a plain
+  text replace, so a key also rewrote every longer `$name` it was a prefix of: binding `a` turned
+  `$auth.id` into `$tx_0_auth.id`, binding `s` turned `$session.ns` into `$tx_0_session.ns`, and a
+  model field named `t`, `tx` or `tx_<i>` broke the references of the fields bound before it. On
+  SurrealDB 2.x the renamed parameter evaluates to `NONE` without an error, so a `WHERE` silently
+  matched nothing and a `SET` silently wrote nothing. Exposed over HTTP: `tx.query()` variables,
+  `extra_vars` on `save(tx=)` / `merge(tx=)`, `QuerySet.variables()` in atomic `bulk_update()` /
+  `bulk_delete()`, and `save(tx=)` / `update(tx=)` / `merge(tx=)` / `relate(tx=)` /
+  `bulk_create(atomic=True)` for a model with such a field. Only whole bound `$key` references are
+  renamed now. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.12
 
 **Security maintenance release (V2 LTS).** No library code changes vs 0.21.11.

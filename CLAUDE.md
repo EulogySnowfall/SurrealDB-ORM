@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.12)
+> Context document for Claude AI - Last updated: October 2026 (0.21.13)
 
 <!-- -->
 
@@ -19,12 +19,32 @@
 
 ---
 
-## Current Version: 0.21.12 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.13 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.13
+
+Bug fix, backported from `main` (#243): `HTTPTransaction.commit()` namespaced only
+whole bound keys (#247, #249). No public API change.
+
+- **The defect:** `commit()` renamed each binding with `str.replace("$k", "$tx_<i>_k")`,
+  one key at a time, no identifier boundary. A key prefixing a built-in (`$auth`,
+  `$session`, `$this`, `$before`, `$after`, `$value`, `$input`) or an unbound
+  parameter renamed it out of reach, and a field named `t`, `tx` or `tx_<i>` rewrote
+  the `$tx_<i>_…` references already emitted for earlier keys. SurrealDB 2.7.0
+  evaluates the unbound result as `NONE` inside `BEGIN … COMMIT`, with no error.
+- **The fix:** private `_namespace_params()` in `surreal_sdk/transaction.py` — one
+  regex pass (`re.ASCII`, like SurrealDB's identifier lexer) with a callable
+  replacement, renaming only names the statement binds. `v2` has no
+  `surreal_sdk.utils.substitute_params()`, hence the hand port. A bound `$k`
+  inside a quoted string literal is still renamed.
+- **Not affected:** WebSocket transactions (no renaming), `delete(tx=)` (binds
+  nothing), `tx.insert()` (`r<i>_<field>` keys), and the ORM's generated names
+  (`_sv_*`, `_f*`, `_bu*`).
 
 ### What's New in 0.21.12
 
