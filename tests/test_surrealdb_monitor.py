@@ -297,6 +297,11 @@ GH_STUB_PAGE_SIZE  releases per page (default 30, the API's)
 GH_STUB_FAIL       "1" makes every call fail, like an outage or a rate limit
 GH_STUB_LOG        each call is appended as one JSON line
 
+The list endpoint accepts `?per_page=N`, but page boundaries always come from
+GH_STUB_PAGE_SIZE, so a test can put a release on a later page. A missing
+release answers as gh does: the 404 body on stdout, unfiltered by `--jq`, and
+exit status 1.
+
 `--jq` is evaluated for the few filter shapes the workflows use; anything else
 is refused (exit 3) rather than guessed, so a filter edited into a shape this
 stub does not understand fails the tests instead of being misread. As with gh,
@@ -306,11 +311,21 @@ page is served.
 import json, os, re, sys
 
 BASE = "repos/surrealdb/surrealdb/releases"
+NOT_FOUND = (
+    '{"message":"Not Found","documentation_url":'
+    '"https://docs.github.com/rest/releases/releases#get-a-release-by-tag-name","status":"404"}'
+)
 
 
 def refuse(msg):
     sys.stderr.write("gh stub: " + msg + "\n")
     sys.exit(3)
+
+
+def not_found():
+    print(NOT_FOUND)
+    sys.stderr.write("gh: Not Found (HTTP 404)\n")
+    return 1
 
 
 def emit(value):
@@ -395,6 +410,9 @@ def main(argv):
         return 1
     with open(os.environ["GH_STUB_RELEASES"], encoding="utf-8") as fh:
         releases = json.load(fh)
+    endpoint, _, query = (endpoint or "").partition("?")
+    if query and not re.fullmatch(r"per_page=[0-9]+", query):
+        refuse("unsupported query: %r" % query)
     if endpoint == BASE:
         size = int(os.environ.get("GH_STUB_PAGE_SIZE", "30"))
         pages = [releases[i : i + size] for i in range(0, len(releases), size)] or [[]]
@@ -404,16 +422,14 @@ def main(argv):
     if endpoint == BASE + "/latest":
         stable = [r for r in releases if not r["prerelease"] and not r["draft"]]
         if not stable:
-            sys.stderr.write("gh: Not Found (HTTP 404)\n")
-            return 1
+            return not_found()
         run_object(jq, stable[0])
         return 0
-    if endpoint is not None and endpoint.startswith(BASE + "/tags/"):
+    if endpoint.startswith(BASE + "/tags/"):
         tag = endpoint[len(BASE + "/tags/") :]
         found = [r for r in releases if r["tag_name"] == tag and not r["draft"]]
         if not found:
-            sys.stderr.write("gh: Not Found (HTTP 404)\n")
-            return 1
+            return not_found()
         run_object(jq, found[0])
         return 0
     refuse("unsupported endpoint: %r" % endpoint)
@@ -464,6 +480,7 @@ REAL_API_ORDER: list[dict[str, object]] = [
 
 V3 = "surrealdb-security.yml"
 V2 = "surrealdb-v2-security.yml"
+RELEASES = "repos/surrealdb/surrealdb/releases"
 
 _EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 
@@ -670,7 +687,7 @@ class TestNewestReleaseIsSelected:
             f"`releases/latest` is the newest release of any line, here 4.0.0\n{run.log}"
         )
         assert run.latest in (None, ""), run.log
-        assert not any(call[1:2] == ["repos/surrealdb/surrealdb/releases/latest"] for call in run.calls), run.calls
+        assert not any(arg.partition("?")[0].endswith("/releases/latest") for call in run.calls for arg in call), run.calls
 
     @pytest.mark.parametrize("workflow", [V3, V2])
     def test_an_unreachable_api_fails_the_run(self, tmp_path: Path, workflow: str) -> None:
@@ -678,6 +695,15 @@ class TestNewestReleaseIsSelected:
         run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin="3.3.0" if workflow == V3 else "2.6.5", fail=True)
         assert run.returncode != 0, f"{workflow}: an API failure ended green\n{run.log}"
         assert run.outputs.get("has-update") != "true", run.log
+
+    @pytest.mark.parametrize("workflow", [V3, V2])
+    def test_the_list_is_read_100_releases_per_page(self, tmp_path: Path, workflow: str) -> None:
+        """The API's default page is 30 releases: six requests per run in 2026, and growing."""
+        run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin="3.3.4" if workflow == V3 else "2.7.0")
+        assert run.returncode == 0, run.log
+        list_calls = [call for call in run.calls if any(arg.partition("?")[0] == RELEASES for arg in call)]
+        assert list_calls, run.calls
+        assert all(f"{RELEASES}?per_page=100" in call for call in list_calls), list_calls
 
 
 class TestSecurityDetectionFollowsTheChosenRelease:
@@ -716,6 +742,8 @@ class TestSecurityDetectionFollowsTheChosenRelease:
         assert run.latest == version, run.log
         assert run.outputs["has-update"] == "true", run.log
         assert run.outputs["is-security-patch"] == "false", run.log
+        # gh prints the 404 body on stdout: it must not be taken for the notes.
+        assert run.outputs["release-notes"] == "", run.log
 
 
 def test_v3_dispatched_version_of_another_major_is_refused(tmp_path: Path) -> None:
@@ -810,3 +838,15 @@ class TestCanaryPicksTheNewestPrerelease:
         run = _canary(tmp_path, releases=REAL_API_ORDER, pin="3.3.4")
         assert run.returncode == 0, run.log
         assert run.outputs["found"] == "false", run.log
+
+    def test_an_unreachable_api_fails_the_run(self, tmp_path: Path) -> None:
+        """An outage must not read as "No open v3.x pre-release": the run goes red."""
+        run = _canary(tmp_path, releases=REAL_API_ORDER, pin="3.3.4", fail=True)
+        assert run.returncode != 0, f"an API failure ended green\n{run.log}"
+        assert run.outputs.get("found") != "true", run.log
+
+    def test_the_list_is_read_100_releases_per_page(self, tmp_path: Path) -> None:
+        run = _canary(tmp_path, releases=REAL_API_ORDER, pin="3.3.4")
+        assert run.returncode == 0, run.log
+        assert run.calls, run.log
+        assert all(f"{RELEASES}?per_page=100" in call for call in run.calls), run.calls

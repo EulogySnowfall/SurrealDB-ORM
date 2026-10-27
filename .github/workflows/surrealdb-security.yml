@@ -97,7 +97,7 @@ jobs:
             # `sed` also drops any tag that is not a plain 3.X.Y: `sort -V` would
             # rank a mislabelled 3.4.0-rc.1 above every 3.3.x.
             # An API failure fails the step here: it is not "nothing to do".
-            RELEASE_TAGS=$(gh api --paginate repos/surrealdb/surrealdb/releases \
+            RELEASE_TAGS=$(gh api --paginate "repos/surrealdb/surrealdb/releases?per_page=100" \
               --jq '.[] | select(.tag_name | startswith("v3.")) | select(.prerelease == false) | select(.draft == false) | .tag_name')
             LATEST_VERSION=$(printf '%s\n' "$RELEASE_TAGS" \
               | sed -nE 's/^v(3\.[0-9]+\.[0-9]+)$/\1/p' | sort -V | tail -1)
@@ -167,17 +167,19 @@ jobs:
             # Look the release up by its tag. Scanning the first page of the list
             # missed any release beyond it, and a security release read as
             # "no notes" would be pinned without the version bump that ships it.
-            # A version with no release entry (an image-only tag, #155) simply
-            # has no notes, which must not abort the run.
+            # A version with no release entry (an image-only tag, #155) has no
+            # notes, which must not abort the run. `gh` then exits 1 and prints
+            # the 404 body on stdout, unfiltered by `--jq`: discard it.
             RELEASE_NOTES=$(gh api "repos/surrealdb/surrealdb/releases/tags/v${LATEST_VERSION}" \
-              --jq '.body' 2>/dev/null | head -c 5000 || true)
+              --jq '.body' 2>/dev/null) || RELEASE_NOTES=""
+            RELEASE_NOTES=${RELEASE_NOTES:0:5000}
 
             if echo "$RELEASE_NOTES" | grep -iE "(security|vulnerability|CVE-[0-9]|critical.*(fix|patch)|exploit|injection|xss|csrf)" > /dev/null 2>&1; then
               IS_SECURITY_PATCH="true"
             fi
 
             RELEASE_TITLE=$(gh api "repos/surrealdb/surrealdb/releases/tags/v${LATEST_VERSION}" \
-              --jq '.name' 2>/dev/null || true)
+              --jq '.name' 2>/dev/null) || RELEASE_TITLE=""
             if echo "$RELEASE_TITLE" | grep -iE "(security|hotfix|CVE)" > /dev/null 2>&1; then
               IS_SECURITY_PATCH="true"
             fi
