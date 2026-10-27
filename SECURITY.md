@@ -6,7 +6,7 @@ Two release lines are maintained, one per SurrealDB major version:
 
 | Version     | SurrealDB     | Branch | Supported          |
 | ----------- | ------------- | ------ | ------------------ |
-| **0.33.x**  | >= 3.2        | `main` | :white_check_mark: |
+| **0.34.x**  | 3.2.x – 3.3.x | `main` | :white_check_mark: |
 | **0.21.x**  | 2.6.x – 2.7.x | `v2`   | :warning:          |
 | < 0.21.x    | -             | -      | :x:                |
 

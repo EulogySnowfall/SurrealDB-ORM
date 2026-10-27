@@ -1,6 +1,6 @@
 # SurrealDB-ORM Roadmap
 
-> Planning document for future ORM features - Last updated: September 2026 (0.21.8)
+> Planning document for future ORM features - Last updated: October 2026 (0.21.12)
 >
 > **Note:** This is the deprecated `v2` LTS branch (SurrealDB 2.x). New feature work happens on
 > [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite) and the `main` branch
@@ -41,6 +41,7 @@
 | 0.21.5–0.21.6 | Released | Migration & ForeignKey fixes backported from `main` |
 | 0.21.7  | Released | Dependency maintenance (`anyio`)                          |
 | 0.21.8  | Released | SurrealDB 2.7.0 tested; supported range 2.6.x – 2.7.x      |
+| 0.21.9–0.21.12 | Released | Security dependency maintenance (lock file)         |
 
 ---
 
