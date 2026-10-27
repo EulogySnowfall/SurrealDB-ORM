@@ -1,5 +1,6 @@
 """Tests for transaction module."""
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -273,6 +274,28 @@ class TestHTTPTransactionParamNamespacing:
         assert variables == {"tx_0_a": 1, "tx_0_ab": 2}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["t", "tx", "tx_0"])
+    @pytest.mark.parametrize("builder", ["create", "update", "upsert", "merge"])
+    async def test_field_named_like_the_namespace_keeps_earlier_fields_bound(
+        self, mock_connection: MagicMock, builder: str, key: str
+    ) -> None:
+        """A field such as ``tx`` must not rename the ``$tx_0_<field>`` already emitted.
+
+        The builders bind each field under its own name, so this is what a plain
+        ORM ``save(tx=)`` / ``merge(tx=)`` queues for a model with such a field.
+        """
+        tx = HTTPTransaction(mock_connection)
+        await tx._begin()
+        await getattr(tx, builder)("i204_payment:1", {"amount": 1.5, key: "x"})
+        await tx.commit()
+
+        sent_sql, sent_vars = mock_connection.query.call_args[0]
+        assert sent_vars == {"tx_0_amount": 1.5, f"tx_0_{key}": "x"}
+        assert "amount = $tx_0_amount" in sent_sql
+        assert f"{key} = $tx_0_{key}" in sent_sql
+        assert set(re.findall(r"\$(\w+)", sent_sql)) == set(sent_vars)
+
+    @pytest.mark.asyncio
     async def test_same_key_in_two_statements_gets_distinct_bindings(self, mock_connection: MagicMock) -> None:
         statements, variables = await self._commit(
             mock_connection,
@@ -528,7 +551,13 @@ class TestHTTPTransactionBuiltinParamsIntegration:
         conn = HTTPConnection("http://localhost:8000", self.NAMESPACE, self.DATABASE)
         await conn.connect()
         await conn.signin("root", "root")
-        await conn.query(f"DEFINE NAMESPACE IF NOT EXISTS `{self.NAMESPACE}`; DEFINE DATABASE IF NOT EXISTS `{self.DATABASE}`;")
+        # Start from an empty database: a row left by an interrupted run would
+        # make the CREATE fail and the SELECT read that stale row instead.
+        await conn.query(
+            f"DEFINE NAMESPACE IF NOT EXISTS `{self.NAMESPACE}`; "
+            f"REMOVE DATABASE IF EXISTS `{self.DATABASE}`; "
+            f"DEFINE DATABASE `{self.DATABASE}`;"
+        )
         yield conn
         await conn.query(f"REMOVE DATABASE IF EXISTS `{self.DATABASE}`;")
         await conn.close()

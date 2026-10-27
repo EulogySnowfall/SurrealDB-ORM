@@ -229,6 +229,8 @@ class HTTPTransaction(BaseTransaction):
             # can bind the same name to different values in the one batched query.
             # substitute_params() renames whole identifiers only: a key that prefixes
             # another reference ($a vs $auth, $session, $tenant…) leaves it alone.
+            # It is also a single pass, so a renamed reference is never scanned
+            # again: a field named `tx` cannot reach into `$tx_0_amount`.
             for key, val in stmt.vars.items():
                 all_vars[f"tx_{i}_{key}"] = val
             sql_parts.append(substitute_params(stmt.sql, {key: f"$tx_{i}_{key}" for key in stmt.vars}))
