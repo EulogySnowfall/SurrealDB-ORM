@@ -23,6 +23,7 @@ import pytest
 
 from src.surreal_orm.fields import Encrypted
 from src.surreal_orm.migrations import operations
+from src.surreal_orm.migrations.define_parser import parse_define_field
 from src.surreal_orm.migrations.operations import (
     FIELD_DEFINITION_FIELDS,
     AddField,
@@ -428,3 +429,90 @@ class TestDefineTableAlignsElementSubFields:
             "ALTER FIELD tags ON i195_unit_tagged TYPE array<int> " + " ".join(ALL_DROPS[1:]) + ";",
             "ALTER FIELD IF EXISTS tags.* ON i195_unit_tagged TYPE int;",
         ]
+
+
+class TestTheParserStopsAtPermissions:
+    """A field PERMISSIONS clause is not modelled, and must not leak into the modelled ones.
+
+    The clause splitter cut on any field keyword after whitespace, and
+    SurrealDB reports a ``WHERE`` condition with field names unescaped
+    (``type``, ``comment``, ``default``…). ``FOR select WHERE type = 'public'``
+    therefore read as a TYPE clause of ``= 'public', …``: every schema_diff
+    emitted an AlterField for the field, and its rollback did not parse.
+    SurrealDB always reports PERMISSIONS last.
+    """
+
+    def test_a_where_naming_type_does_not_become_the_type(self) -> None:
+        state = parse_define_field(
+            "DEFINE FIELD secret ON pw TYPE string PERMISSIONS FOR select WHERE type = 'public', FOR create, update FULL"
+        )
+
+        assert state == FieldState(name="secret", field_type="string", nullable=False)
+
+    def test_a_where_naming_other_clause_keywords_sets_none_of_them(self) -> None:
+        state = parse_define_field(
+            "DEFINE FIELD s ON t TYPE string PERMISSIONS FOR select WHERE comment = 'x' OR default = 1 "
+            "OR readonly = true OR reference = 2 OR flexible = 3 OR assert = 4 OR `value` = 5 "
+            "OR permissions = 6, FOR create FULL, FOR update NONE"
+        )
+
+        assert state == FieldState(name="s", field_type="string", nullable=False)
+
+    def test_every_modelled_clause_survives_a_where_permission(self) -> None:
+        """The clauses before PERMISSIONS parse exactly as without it."""
+        head = (
+            "DEFINE FIELD author ON posts TYPE none | record<users> DEFAULT users:root READONLY "
+            "VALUE $value ASSERT $value != NONE REFERENCE ON DELETE CASCADE COMMENT 'who'"
+        )
+
+        restricted = parse_define_field(head + " PERMISSIONS FOR select WHERE type = 'public' OR comment = 'x'")
+
+        assert restricted == parse_define_field(head + " PERMISSIONS FULL")
+        assert restricted.comment == "who"
+        assert restricted.on_delete == "CASCADE"
+
+    def test_an_identifier_named_permissions_before_the_clause(self) -> None:
+        """Only ``PERMISSIONS FULL|NONE|FOR`` starts the clause; a field called ``permissions`` does not."""
+        state = parse_define_field(
+            "DEFINE FIELD s ON t TYPE int VALUE permissions ASSERT permissions > 0 "
+            "PERMISSIONS FOR select WHERE PERMISSIONS = 1, FOR create, update FULL"
+        )
+
+        assert state.value == "permissions"
+        assert state.assertion == "permissions > 0"
+
+    def test_the_keyword_inside_a_string_is_not_the_clause(self) -> None:
+        state = parse_define_field(
+            "DEFINE FIELD s ON t TYPE string DEFAULT 'a PERMISSIONS FULL b' COMMENT 'PERMISSIONS NONE here' "
+            "PERMISSIONS FOR select, create, update NONE"
+        )
+
+        assert state.default == "a PERMISSIONS FULL b"
+        assert state.comment == "PERMISSIONS NONE here"
+
+    @pytest.mark.parametrize(
+        ("default", "parsed"),
+        [
+            # SurrealDB escapes a quote inside a string with a backslash.
+            (r"'a\'b PERMISSIONS FULL'", r"a\'b PERMISSIONS FULL"),
+            ('"a\'b\\"c PERMISSIONS FULL"', "a'b\\\"c PERMISSIONS FULL"),
+        ],
+    )
+    def test_an_escaped_quote_does_not_end_the_string(self, default: str, parsed: str) -> None:
+        state = parse_define_field(f"DEFINE FIELD c ON t TYPE string DEFAULT {default} PERMISSIONS FOR select WHERE type = 'x'")
+
+        assert state.field_type == "string"
+        assert state.default == parsed
+
+    def test_a_comparison_in_the_assertion_does_not_swallow_the_clause(self) -> None:
+        """An unbalanced ``>`` kept the splitter from ever seeing PERMISSIONS, so it joined ASSERT."""
+        state = parse_define_field(
+            "DEFINE FIELD n ON t TYPE int ASSERT $value > 0 PERMISSIONS FOR select WHERE type = 'public', "
+            "FOR create, update FULL"
+        )
+
+        assert state.assertion == "$value > 0"
+
+    def test_a_statement_without_permissions_still_parses(self) -> None:
+        """Hand-written statements need not carry the clause."""
+        assert parse_define_field("DEFINE FIELD f ON t TYPE int ASSERT $value > 0").assertion == "$value > 0"

@@ -96,9 +96,9 @@ def _permissions(definition: str) -> str:
     return definition[definition.index("PERMISSIONS") :]
 
 
-async def _restrict(table: str, field: str) -> str:
+async def _restrict(table: str, field: str, permission: str = "FOR select NONE") -> str:
     """Restrict a field by hand, outside the ORM, and return its PERMISSIONS clause."""
-    await _query(f"ALTER FIELD {field} ON {table} PERMISSIONS FOR select NONE;")
+    await _query(f"ALTER FIELD {field} ON {table} PERMISSIONS {permission};")
     permissions = _permissions((await _fields(table))[field])
     assert permissions != "PERMISSIONS FULL", "precondition: the field should be restricted"
     return permissions
@@ -253,15 +253,26 @@ class I195Note(BaseSurrealModel):
 
     id: str | None = None
     title: str
+    type: str = "public"
     secret: str
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_an_unrelated_model_change_leaves_the_permission_alone(migrations_dir: Path) -> None:
+@pytest.mark.parametrize(
+    "permission",
+    [
+        "FOR select NONE",
+        # The usual shape of a field permission. SurrealDB reports the condition
+        # with field names unescaped, and `type` is also a clause keyword.
+        "FOR select WHERE type = 'public'",
+        "FOR select WHERE comment = 'x' OR default = 1 OR readonly = true",
+    ],
+)
+async def test_an_unrelated_model_change_leaves_the_permission_alone(migrations_dir: Path, permission: str) -> None:
     """Criterion 3: a diff that touches other fields does not reset this one, and converges."""
     await I195Note.define_table()
-    restricted = await _restrict(NOTES, "secret")
+    restricted = await _restrict(NOTES, "secret", permission)
 
     clear_model_registry()
 
@@ -269,6 +280,7 @@ async def test_an_unrelated_model_change_leaves_the_permission_alone(migrations_
         model_config = SurrealConfigDict(table_name=NOTES)
         id: str | None = None
         title: str | None = None  # altered
+        type: str = "public"
         secret: str
         views: int = 0  # added
 
@@ -299,6 +311,7 @@ async def test_a_generated_alteration_of_the_field_keeps_its_permission(migratio
         model_config = SurrealConfigDict(table_name=NOTES)
         id: str | None = None
         title: str
+        type: str = "public"
         secret: str | None = None  # altered
 
     operations = _operations_for(await schema_diff(models=[I195NoteOptional]), NOTES)
