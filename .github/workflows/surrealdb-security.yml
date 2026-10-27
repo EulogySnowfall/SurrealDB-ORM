@@ -2,7 +2,8 @@
 # Checks daily for new SurrealDB 3.x releases, runs tests, and auto-updates.
 #
 # Flow:
-#   1. Compare .surrealdb-version against latest v3.x GitHub release
+#   1. Compare .surrealdb-version against the newest stable v3.x GitHub release
+#      (by version, across every page — not the first one listed: #234)
 #   2. If same version → skip (no wasted CI minutes)
 #   3. If new version → run unit + integration tests against it
 #   4. If tests pass → create PR with .surrealdb-version + docker-compose.yml update
@@ -67,20 +68,40 @@ jobs:
           # --- Determine latest v3.x version ---
           if [[ -n "${{ inputs.surrealdb_version }}" ]]; then
             LATEST_VERSION="${{ inputs.surrealdb_version }}"
-          else
-            # Get latest *stable* v3.x release. Pre-releases are excluded on
-            # purpose: this pin is the SurrealDB version the library declares
-            # support for and runs CI against, and a bump to it cascades into a
-            # published PyPI release. #163 pinned 3.3.0-beta.3 and burned three
-            # such releases (0.32.3-0.32.5). The v2 monitor has always filtered.
-            LATEST_VERSION=$(gh api repos/surrealdb/surrealdb/releases \
-              --jq '[.[] | select(.tag_name | startswith("v3.")) | select(.prerelease == false) | select(.draft == false) | .tag_name][0]' \
-              | sed 's/^v//')
 
-            # Fallback to latest stable if no v3.x found
-            if [[ -z "$LATEST_VERSION" || "$LATEST_VERSION" == "null" ]]; then
-              LATEST_VERSION=$(gh api repos/surrealdb/surrealdb/releases/latest \
-                -q '.tag_name' | sed 's/^v//')
+            # This monitor owns the 3.X line only. A new major is prepared
+            # deliberately, never through a pin PR that auto-merges and releases.
+            MAJOR=$(echo "$LATEST_VERSION" | cut -d. -f1)
+            if [[ "$MAJOR" != "3" ]]; then
+              echo "ERROR: Version $LATEST_VERSION is not a 3.X release."
+              echo "This workflow only supports SurrealDB 3.X."
+              exit 1
+            fi
+          else
+            # The newest *stable* v3.x release, by version — not by position.
+            # The API lists releases by tag creation date, so a backport on an
+            # older line hides the newest one: v3.2.6 was listed above v3.3.4,
+            # `[...][0]` picked it, the no-downgrade guard below refused it, and
+            # the run ended green with the pin stuck at 3.3.0 (#234). Hence every
+            # page (`--paginate` applies `--jq` to each one) and `sort -V`.
+            # Pre-releases are excluded on purpose: this pin is the SurrealDB
+            # version the library declares support for and runs CI against, and
+            # a bump to it cascades into a published PyPI release. #163 pinned
+            # 3.3.0-beta.3 and burned three such releases (0.32.3-0.32.5). The
+            # `sed` also drops any tag that is not a plain 3.X.Y: `sort -V` would
+            # rank a mislabelled 3.4.0-rc.1 above every 3.3.x.
+            # An API failure fails the step here: it is not "nothing to do".
+            RELEASE_TAGS=$(gh api --paginate repos/surrealdb/surrealdb/releases \
+              --jq '.[] | select(.tag_name | startswith("v3.")) | select(.prerelease == false) | select(.draft == false) | .tag_name')
+            LATEST_VERSION=$(printf '%s\n' "$RELEASE_TAGS" \
+              | sed -nE 's/^v(3\.[0-9]+\.[0-9]+)$/\1/p' | sort -V | tail -1)
+
+            # No fallback to `releases/latest`: that is the newest release of
+            # *any* line, so it would propose 4.0.0 the day it ships.
+            if [[ -z "$LATEST_VERSION" ]]; then
+              echo "No stable SurrealDB 3.X release found — nothing to do."
+              echo "has-update=false" >> $GITHUB_OUTPUT
+              exit 0
             fi
           fi
 
@@ -137,16 +158,20 @@ jobs:
           # --- Check if security patch ---
           IS_SECURITY_PATCH="false"
           if [[ "$HAS_UPDATE" == "true" ]]; then
-            RELEASE_NOTES=$(gh api repos/surrealdb/surrealdb/releases \
-              --jq "[.[] | select(.tag_name == \"v${LATEST_VERSION}\")][0].body" \
-              2>/dev/null | head -c 5000)
+            # Look the release up by its tag. Scanning the first page of the list
+            # missed any release beyond it, and a security release read as
+            # "no notes" would be pinned without the version bump that ships it.
+            # A version with no release entry (an image-only tag, #155) simply
+            # has no notes, which must not abort the run.
+            RELEASE_NOTES=$(gh api "repos/surrealdb/surrealdb/releases/tags/v${LATEST_VERSION}" \
+              --jq '.body' 2>/dev/null | head -c 5000 || true)
 
             if echo "$RELEASE_NOTES" | grep -iE "(security|vulnerability|CVE-[0-9]|critical.*(fix|patch)|exploit|injection|xss|csrf)" > /dev/null 2>&1; then
               IS_SECURITY_PATCH="true"
             fi
 
-            RELEASE_TITLE=$(gh api repos/surrealdb/surrealdb/releases \
-              --jq "[.[] | select(.tag_name == \"v${LATEST_VERSION}\")][0].name" 2>/dev/null)
+            RELEASE_TITLE=$(gh api "repos/surrealdb/surrealdb/releases/tags/v${LATEST_VERSION}" \
+              --jq '.name' 2>/dev/null || true)
             if echo "$RELEASE_TITLE" | grep -iE "(security|hotfix|CVE)" > /dev/null 2>&1; then
               IS_SECURITY_PATCH="true"
             fi

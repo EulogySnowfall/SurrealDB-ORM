@@ -65,9 +65,11 @@ jobs:
           if [[ -n "$INPUT_VERSION" ]]; then
             VERSION="$INPUT_VERSION"
           else
-            VERSION=$(gh api repos/surrealdb/surrealdb/releases \
-              --jq '[.[] | select(.tag_name | startswith("v3.")) | select(.prerelease == true) | select(.draft == false) | .tag_name][0]' \
-              | sed 's/^v//')
+            # The newest pre-release by version, across every page — not the
+            # first one listed, which is the most recently *created* (#234).
+            PRERELEASE_TAGS=$(gh api --paginate repos/surrealdb/surrealdb/releases \
+              --jq '.[] | select(.tag_name | startswith("v3.")) | select(.prerelease == true) | select(.draft == false) | .tag_name')
+            VERSION=$(printf '%s\n' "$PRERELEASE_TAGS" | sed -n 's/^v//p' | sort -V | tail -1)
           fi
 
           PIN=$(cat .surrealdb-version | tr -d '[:space:]')

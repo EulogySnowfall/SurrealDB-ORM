@@ -6,7 +6,8 @@
 #   It checks out the `v2` branch for testing and creates PRs targeting `v2`.
 #
 # Flow:
-#   1. Compare v2 branch's .surrealdb-version against latest v2.x GitHub release
+#   1. Compare v2 branch's .surrealdb-version against the newest stable v2.x
+#      GitHub release (by version, across every page: #234)
 #   2. If same version -> skip (no wasted CI minutes)
 #   3. If new version -> run unit + integration tests against it (using v2 code)
 #   4. If tests pass -> create PR targeting v2 branch
@@ -83,12 +84,17 @@ jobs:
               exit 1
             fi
           else
-            # Get latest v2.x release (stable only, no pre-releases)
-            LATEST_VERSION=$(gh api repos/surrealdb/surrealdb/releases \
-              --jq '[.[] | select(.tag_name | startswith("v2.")) | select(.prerelease == false) | select(.draft == false) | .tag_name][0]' \
-              | sed 's/^v//')
+            # The newest *stable* v2.x release, by version — not the first one
+            # listed. The API lists by tag creation date, so a backport on an
+            # older line hides the newest one (#234; see surrealdb-security.yml).
+            # Every page is read, and the `sed` keeps plain 2.X.Y tags only.
+            # An API failure fails the step here: it is not "nothing to do".
+            RELEASE_TAGS=$(gh api --paginate repos/surrealdb/surrealdb/releases \
+              --jq '.[] | select(.tag_name | startswith("v2.")) | select(.prerelease == false) | select(.draft == false) | .tag_name')
+            LATEST_VERSION=$(printf '%s\n' "$RELEASE_TAGS" \
+              | sed -nE 's/^v(2\.[0-9]+\.[0-9]+)$/\1/p' | sort -V | tail -1)
 
-            if [[ -z "$LATEST_VERSION" || "$LATEST_VERSION" == "null" ]]; then
+            if [[ -z "$LATEST_VERSION" ]]; then
               echo "No SurrealDB 2.X release found — nothing to do."
               echo "has-update=false" >> $GITHUB_OUTPUT
               exit 0
@@ -145,16 +151,18 @@ jobs:
           # --- Check if security patch ---
           IS_SECURITY_PATCH="false"
           if [[ "$HAS_UPDATE" == "true" ]]; then
-            RELEASE_NOTES=$(gh api repos/surrealdb/surrealdb/releases \
-              --jq "[.[] | select(.tag_name == \"v${LATEST_VERSION}\")][0].body" \
-              2>/dev/null | head -c 5000)
+            # By tag, not by scanning the first page of the list (#234): a 2.x
+            # release sits pages deep behind the 3.x ones. A version with no
+            # release entry (#155) has no notes, which must not abort the run.
+            RELEASE_NOTES=$(gh api "repos/surrealdb/surrealdb/releases/tags/v${LATEST_VERSION}" \
+              --jq '.body' 2>/dev/null | head -c 5000 || true)
 
             if echo "$RELEASE_NOTES" | grep -iE "(security|vulnerability|CVE-[0-9]|critical.*(fix|patch)|exploit|injection|xss|csrf)" > /dev/null 2>&1; then
               IS_SECURITY_PATCH="true"
             fi
 
-            RELEASE_TITLE=$(gh api repos/surrealdb/surrealdb/releases \
-              --jq "[.[] | select(.tag_name == \"v${LATEST_VERSION}\")][0].name" 2>/dev/null)
+            RELEASE_TITLE=$(gh api "repos/surrealdb/surrealdb/releases/tags/v${LATEST_VERSION}" \
+              --jq '.name' 2>/dev/null || true)
             if echo "$RELEASE_TITLE" | grep -iE "(security|hotfix|CVE)" > /dev/null 2>&1; then
               IS_SECURITY_PATCH="true"
             fi
