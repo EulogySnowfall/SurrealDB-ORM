@@ -6,6 +6,104 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.8] - 2026-10-27
+
+**Fix release.** `QuerySet.live()` keeps receiving events after a WebSocket
+reconnect, and a naive `datetime` can be sent over CBOR (#255, #276). No new
+public API, but naive datetimes change behaviour: read *Behaviour change*. The
+0.34.5 entry below is corrected (see *Documentation*). The SurrealDB pin is
+unchanged (tested against 3.3.4, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`QuerySet.live()` stopped receiving events after its first WebSocket
+  reconnect (#255, #276).** This covered every `LiveSelectStream` with
+  `auto_resubscribe=True`, the default. The live query was re-created on the
+  server with the right filter, but the stream's handler was not registered
+  again and the stream kept the old id. The stream now moves to the re-created
+  live query during the resubscribe itself, `live_id` is the new id, and a
+  user `on_reconnect` still fires with `(old_id, new_id)`. Subscriptions
+  created with their own `LiveSubscriptionParams.callback` were not affected.
+- **`stop()` after a reconnect left the re-created live query running (#255,
+  #276).** It killed the old, already dead live query id, so the re-created
+  query kept running and was re-created again on every later reconnect, even
+  after the stream had been stopped. `stop()` now ends the current query and
+  removes it from the connection's bookkeeping. This also holds when `stop()`
+  begins while the re-created `LIVE SELECT` is still in flight, for example an
+  `async with ...live()` block that ends during a server restart: the new
+  query is killed instead of being left behind.
+- **`datetime` subclasses were sent in a form SurrealDB rejects (#255, #276)**
+  (`pandas.Timestamp`, `pendulum.DateTime`, …), aware or not: an HTTP 400 parse
+  error, and over WebSocket the request timed out. They are now sent like a
+  `datetime`, without digits below the microsecond.
+
+### Behaviour change
+
+- **A naive `datetime` sent over CBOR, the default protocol, is now read as
+  UTC (#255, #276).** It used to be rejected before the request left, with
+  `CBOREncodeError` over HTTP and `ConnectionError` over WebSocket. This
+  covered query variables, model fields on `save()` / `merge()` / `update()`,
+  and `filter()` and `live()` values. It is now stored as that wall-clock time
+  in UTC, as `raw_query(inline_dicts=True)` already did, and a `RuntimeWarning`
+  says so ("A naive datetime was sent to SurrealDB and read as UTC. …"). The
+  message names no value, so the default warning filter shows it once per
+  process for each path; `raw_query(inline_dicts=True)` now emits the same
+  warning. Aware datetimes encode byte for byte as before. On a host whose
+  clock is not on UTC, `datetime.now()` is therefore stored as local wall-clock
+  time read as UTC: use `datetime.now(UTC)`.
+- After a reconnect, `stream.live_id` / `LiveModelStream.live_id` report the
+  re-created live query's id instead of the stale one. `LiveSubscriptionParams`
+  keeps its constructor, repr and equality.
+
+### Known limitations
+
+- `LiveSelectManager` still keys each stream by the id `watch()` returned.
+  After a reconnect, `active_streams` lists that original id and
+  `manager.stop()` must be given it: `stop()` with the new id (the one
+  `on_reconnect` receives, and the stream's `live_id`) does nothing, and the
+  stream and its re-created live query keep running. `stop_all()` is not
+  affected. Before this release the stream was silent after a reconnect, so
+  the mismatch had no visible effect.
+- Pre-existing, unchanged in this release: the callback API
+  (`WebSocketConnection.live(table, callback)` and `LiveQuery.subscribe()`)
+  only registers a handler, so after a reconnect its live query is not
+  re-created and the callback receives nothing more. A subscription whose
+  `LIVE SELECT` fails during the resubscribe (the socket drops again, a
+  timeout, a server error) is dropped for good: the next reconnect does not
+  retry it, and its stream neither ends nor raises.
+
+### Documentation
+
+- **The 0.34.5 entry is corrected (#255).** The #204 fix concerned more keys
+  than the entry said: any key that is a prefix of `tx_<i>_<an earlier key>`,
+  not only `t`, `tx` or `tx_<i>`, and `relate(tx=)` is reached through its
+  edge-data keywords, not through model fields. The `certifi` note now says
+  which connections use that bundle: the `https://` connections of the HTTP
+  transport, the ORM's default; the WebSocket transport does not use `certifi`.
+  The same corrections are made in the README and `CLAUDE.md`.
+
+### Changed
+
+- **Tests.** The suites of this release pass on SurrealDB 3.3.4 (pin) and
+  3.2.6 (3.2 floor line): 2,436 unit tests on Python 3.12, 3.13 and 3.14, and
+  553 integration tests passed, 1 skipped, 1 expected failure, 0 failed, on
+  each server. The skip is the refresh token the test server does not return;
+  the expected failure is the upstream #147 check, still failing, so
+  `Subquery` keeps its `LET` prelude.
+
+### Upgrading
+
+- Attach a `tzinfo` to every `datetime` you send (`datetime.now(UTC)`). Values
+  meant as local time must be converted to aware datetimes first, or they are
+  stored as that wall-clock time in UTC.
+- To keep failing on naive values, turn the warning into an error:
+  `warnings.filterwarnings("error", message="A naive datetime was sent to SurrealDB", category=RuntimeWarning)`.
+  The request then fails before it is sent.
+- The `v2` line has the live-stream defects; the backport is tracked in #277.
+  The naive-`datetime` change is tracked for `v2` in #258.
+
+---
+
 ## [0.34.7] - 2026-10-27
 
 **Fix release.** `SurrealDBConnectionManager.reconnect()` no longer breaks
@@ -294,13 +392,17 @@ entries, are backfilled below.
     `extra_vars` used with a `SurrealFunc`/`server_values` expression on
     `save(tx=)`/`merge(tx=)`, and `QuerySet.variables()` in the atomic bulk
     operations;
-  - a key `t`, `tx` or `tx_<i>` (`i` being the statement's position in the
-    transaction), which rewrote the references already renamed for the keys
-    bound before it (`$tx_0_amount` → `$tx_0_tx_0_amount`). The SDK builders
-    `tx.create`, `tx.upsert` and `tx.relate` bind each field under its own
-    name, so `save(tx=)` of a new record and `bulk_create(atomic=True)` of a
-    model with a field named `t`, `tx` or `tx_<i>`, and `relate(tx=)` with such
-    a key in its edge data, lost the fields bound before it.
+  - a key that is a prefix of `tx_<i>_<an earlier key>` (`i` being the
+    statement's position in the transaction): `t`, `tx`, `tx_`, `tx_<i>`,
+    `tx_<i>_`, …, and `tx_1` also hits positions 10–19, 100–199, …. It
+    rewrote the references already renamed for the keys bound before it
+    (`$tx_0_amount` → `$tx_0_tx_0_amount`). The SDK builders `tx.create`,
+    `tx.upsert` and `tx.relate` bind each field under its own name, so this
+    was reached through a model field with such a name on `save(tx=)` of a
+    new record and `bulk_create(atomic=True)`, and through an edge-data
+    keyword such as `t` or `tx_<i>` on `relate(tx=)`, which binds its
+    `**edge_data` keywords, not model fields (`tx` cannot be one of them).
+    Each lost the fields bound before it.
 
   Only whole `$key` references to a key the statement binds are renamed now,
   in a single pass through `surreal_sdk.utils.substitute_params()` (0.33.3).
@@ -384,7 +486,10 @@ transactions are not affected.
 - No migration. Upgrading `surrealdb-orm` does not upgrade `certifi`: this
   package does not declare it, so `pip install -U surrealdb-orm` and existing
   lockfiles keep the installed bundle. Run `pip install -U certifi` (or bump it
-  in your lockfile) to `>= 2026.10.19`.
+  in your lockfile) to `>= 2026.10.19`. The bundle is used by `https://`
+  connections made through the HTTP transport, the ORM's default: httpx 0.28
+  trusts `certifi.where()` unless `SSL_CERT_FILE` or `SSL_CERT_DIR` is set.
+  The WebSocket transport (aiohttp) does not use `certifi`.
 
 ---
 
