@@ -17,7 +17,7 @@ from uuid import UUID
 
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
-from ..protocol.cbor import RecordId
+from ..protocol.cbor import RecordId, format_decimal
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -229,8 +229,10 @@ class LiveSelectStream:
 
         - ``None`` → ``NONE``; ``bool`` → ``true`` / ``false``; ``int`` → its digits
         - ``float`` → its ``repr`` (finite values only)
-        - ``Decimal`` → positional digits with the ``dec`` suffix, e.g. ``1.50dec``
-          (finite values only)
+        - ``Decimal`` → positional digits with the ``dec`` suffix, e.g. ``1.50dec``,
+          written by :func:`~surreal_sdk.protocol.cbor.format_decimal` like a
+          bound ``Decimal`` (finite and in range only; places beyond the 28th
+          rounded off as SurrealDB rounds them)
         - ``str`` → a single-quoted string with the same characters
         - ``UUID`` → ``u'...'``
         - ``datetime`` → ``d'...'`` in UTC; a naive datetime is read as UTC
@@ -250,6 +252,8 @@ class LiveSelectStream:
                 ``Duration``, ``Table``, arbitrary objects...), is a NaN or
                 infinite ``float``/``Decimal``, or holds a dict key that is not
                 a ``str`` or a record id of an unsupported type.
+            ValueError: A ``Decimal`` is above the largest SurrealDB decimal
+                in magnitude.
         """
         if value is None:
             return "NONE"
@@ -264,7 +268,7 @@ class LiveSelectStream:
         if isinstance(value, Decimal):
             if not value.is_finite():
                 raise TypeError(f"live() filter values must be finite numbers, got {value!r}")
-            return f"{value:f}dec"
+            return f"{format_decimal(value)}dec"
         if isinstance(value, str):
             return _string_literal(value)
         if isinstance(value, UUID):
@@ -308,6 +312,8 @@ class LiveSelectStream:
 
         Raises:
             TypeError: A referenced value has no SurrealQL literal
+                (see :meth:`_format_value`).
+            ValueError: A referenced ``Decimal`` is out of range
                 (see :meth:`_format_value`).
         """
 

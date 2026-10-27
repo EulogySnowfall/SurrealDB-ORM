@@ -862,6 +862,56 @@ class TestFormatValue:
         with pytest.raises(TypeError, match="finite"):
             _render(Decimal(digits))
 
+    @pytest.mark.parametrize(
+        ("digits", "literal"),
+        [
+            ("79228162514264337593543950335", "79228162514264337593543950335dec"),
+            ("-79228162514264337593543950335", "-79228162514264337593543950335dec"),
+            ("1E-28", "0.0000000000000000000000000001dec"),
+            ("0.1234567890123456789012345678", "0.1234567890123456789012345678dec"),
+        ],
+        ids=["max", "min", "smallest-step", "28-places"],
+    )
+    def test_decimal_at_the_range_bounds(self, digits: str, literal: str) -> None:
+        from decimal import Decimal
+
+        assert _render(Decimal(digits)) == literal
+
+    @pytest.mark.parametrize(
+        "digits",
+        ["1e1000000000", "-1e1000000000", "79228162514264337593543950336", "1E+29"],
+        ids=["huge", "huge-negative", "max-plus-one", "1E+29"],
+    )
+    def test_out_of_range_decimal_raises(self, digits: str) -> None:
+        """Out-of-range Decimal values raise instead of being expanded."""
+        from decimal import Decimal
+
+        with pytest.raises(ValueError, match="out of range"):
+            _render({"price": [Decimal(digits)]})
+
+    def test_extreme_decimal_exponents_never_write_their_digits(self) -> None:
+        import tracemalloc
+        from decimal import Decimal
+
+        tracemalloc.start()
+        try:
+            with pytest.raises(ValueError):
+                _render(Decimal("1e1000000000"))
+            tiny = _render(Decimal("1e-1000000000"))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < 1_000_000
+        assert tiny == "0.0000000000000000000000000000dec"
+
+    def test_decimal_places_beyond_28_are_rounded_like_a_bound_decimal(self) -> None:
+        """Half away from zero at 28 places, as SurrealDB reads a longer value."""
+        from decimal import Decimal
+
+        assert _render(Decimal("0.00000000000000000000000000025")) == "0.0000000000000000000000000003dec"
+        assert _render(Decimal("-0.00000000000000000000000000025")) == "-0.0000000000000000000000000003dec"
+        assert _render(Decimal(1) / Decimal(30)) == "0.0333333333333333333333333333dec"
+
     def test_uuid(self) -> None:
         from uuid import UUID
 

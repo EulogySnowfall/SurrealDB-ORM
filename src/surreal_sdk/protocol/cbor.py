@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Context, Decimal
 from typing import Any
 from uuid import UUID
 
@@ -137,6 +137,55 @@ class Duration:
         return self.value
 
 
+#: The largest magnitude a SurrealDB decimal holds: its digits are a 96-bit integer.
+_DECIMAL_MAX = Decimal(2**96 - 1)
+#: The most places a SurrealDB decimal keeps after the point.
+_DECIMAL_MAX_SCALE = 28
+_DECIMAL_QUANTUM = Decimal(1).scaleb(-_DECIMAL_MAX_SCALE)
+#: Enough precision for any in-range value at 28 places (29 + 28 digits).
+_DECIMAL_CONTEXT = Context(prec=2 * _DECIMAL_MAX_SCALE + 4, rounding=ROUND_HALF_UP)
+
+
+def format_decimal(value: Decimal) -> str:
+    """
+    Write a finite ``Decimal`` as the digits of the SurrealDB decimal it binds to.
+
+    The text is positional (``"100"``, ``"0.00001"``), never scientific:
+    SurrealDB 2.7.0 refuses ``"1E+2"`` as a bound decimal. A SurrealDB decimal
+    holds at most 79228162514264337593543950335 in magnitude, and at most 28
+    places after the point. Both limits are applied from the exponent, before
+    any digit is written, so the length of the text never grows with the
+    exponent:
+
+    - a magnitude above the maximum raises ``ValueError``; SurrealDB rejects
+      the whole request for such a value;
+    - places beyond the 28th are rounded off, half away from zero, the way
+      SurrealDB rounds them when it reads a longer value (checked on 2.7.0,
+      for a bound value and a literal alike). ``Decimal(1) / 30`` is therefore
+      sent as the value SurrealDB would store for it, and a tiny value such as
+      ``Decimal("1E-40")`` as ``0.0000000000000000000000000000``.
+
+    Args:
+        value: The value to write
+
+    Returns:
+        The digits, e.g. ``"1.50"``, ``"-0.00001"``
+
+    Raises:
+        ValueError: The value is NaN or infinite, or its magnitude is above
+            the largest SurrealDB decimal.
+    """
+    if not value.is_finite():
+        raise ValueError(f"{value!r} has no SurrealDB decimal form")
+    # adjusted() is the exponent of the leading digit: > 28 means at least 1E+29.
+    if not value.is_zero() and (value.adjusted() > _DECIMAL_MAX_SCALE or value.copy_abs() > _DECIMAL_MAX):
+        raise ValueError(f"Decimal value out of range for SurrealDB: {value!r} (largest magnitude {_DECIMAL_MAX})")
+    exponent = value.as_tuple().exponent
+    if isinstance(exponent, int) and exponent < -_DECIMAL_MAX_SCALE:
+        value = value.quantize(_DECIMAL_QUANTUM, context=_DECIMAL_CONTEXT)
+    return format(value, "f")
+
+
 def _preprocess_for_cbor(data: Any) -> Any:
     """
     Pre-process data before CBOR encoding to handle None → NONE correctly.
@@ -150,13 +199,14 @@ def _preprocess_for_cbor(data: Any) -> Any:
     tuples, sets), replacing Python ``None`` with ``CBORTag(TAG_NONE, None)``
     so that SurrealDB receives the correct NONE value instead of NULL.
 
-    ``Decimal`` is tagged here too, as ``TAG_STRING_DECIMAL`` with the exact
-    digits in positional notation. cbor2 has a native ``Decimal`` encoder
+    ``Decimal`` is tagged here too, as ``TAG_STRING_DECIMAL`` with the digits
+    written by :func:`format_decimal`. cbor2 has a native ``Decimal`` encoder
     (tag 4, a decimal fraction), so ``_cbor_default_encoder`` is never called
     for one, and SurrealDB 2.x does not read tag 4: it rejects the whole
-    request. It also refuses scientific notation in tag 10 (``"1E+2"``), hence
-    ``format(d, "f")`` rather than ``str(d)``. NaN and infinities have no
-    SurrealDB decimal form and keep cbor2's float encoding.
+    request. It also refuses scientific notation in tag 10 (``"1E+2"``), so the
+    digits are positional; an out-of-range value raises ``ValueError`` instead
+    of being written out. NaN and infinities have no SurrealDB decimal form and
+    keep cbor2's float encoding.
 
     A ``date`` (not a ``datetime``) has the same problem: cbor2 encodes it
     natively as tag 1004, which SurrealDB rejects. SurrealDB has no date-only
@@ -167,7 +217,7 @@ def _preprocess_for_cbor(data: Any) -> Any:
     if data is None:
         return CBORTag(TAG_NONE, None)
     if isinstance(data, Decimal) and data.is_finite():
-        return CBORTag(TAG_STRING_DECIMAL, format(data, "f"))
+        return CBORTag(TAG_STRING_DECIMAL, format_decimal(data))
     if isinstance(data, date) and not isinstance(data, datetime):
         return datetime(data.year, data.month, data.day, tzinfo=UTC)
     if isinstance(data, dict):
@@ -257,6 +307,10 @@ def encode(data: Any) -> bytes:
 
     Returns:
         CBOR-encoded bytes
+
+    Raises:
+        ValueError: A ``Decimal`` is above the largest SurrealDB decimal in
+            magnitude (see :func:`format_decimal`).
     """
     processed = _preprocess_for_cbor(data)
     result: bytes = cbor2.dumps(processed, default=_cbor_default_encoder)

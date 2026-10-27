@@ -47,6 +47,10 @@ WHEN = datetime(2026, 2, 1, 12, 30, tzinfo=UTC)
 OTHER_WHEN = datetime(2025, 1, 1, tzinfo=UTC)
 UID = UUID("12345678-1234-5678-1234-567812345678")
 OTHER_UID = UUID("87654321-4321-8765-4321-876543218765")
+#: The largest magnitude of a SurrealDB decimal.
+DECIMAL_MAX = Decimal("79228162514264337593543950335")
+#: Written out: ``-DECIMAL_MAX`` would round to the 28-digit default context.
+DECIMAL_MIN = Decimal("-79228162514264337593543950335")
 
 #: Characters a record id or table name may hold that a bare identifier cannot.
 SPECIAL_NAMES: list[tuple[str, str]] = [
@@ -175,6 +179,11 @@ _LITERALS: list[tuple[str, Any, Any]] = [
     ("decimal-long", Decimal("123.4567890123456789012345"), Decimal("123.4567890123456789012345")),
     ("decimal-exponent", Decimal("1E+2"), Decimal("1E+2")),
     ("decimal-small", Decimal("1E-5"), Decimal("1E-5")),
+    ("decimal-max", DECIMAL_MAX, DECIMAL_MAX),
+    ("decimal-min", DECIMAL_MIN, DECIMAL_MIN),
+    ("decimal-smallest-step", Decimal("1E-28"), Decimal("1E-28")),
+    ("decimal-28-places", Decimal("0.1234567890123456789012345678"), Decimal("0.1234567890123456789012345678")),
+    ("decimal-rounded", Decimal("0.00000000000000000000000000025"), Decimal("0.00000000000000000000000000025")),
     ("string", "plain", "plain"),
     ("string-quote", "it's", "it's"),
     ("string-double-quote", 'say "hi"', 'say "hi"'),
@@ -326,6 +335,63 @@ async def test_decimal_binds_as_a_surrealdb_decimal() -> None:
     await _write("CREATE i246_items:match SET price = 9.99dec; CREATE i246_items:decoy SET price = 1.50dec")
     found = await I246Item.objects().filter(price=Decimal("9.99")).exec()
     assert [item.id for item in found] == ["match"]
+
+
+@pytest.mark.integration
+async def test_decimal_binds_at_the_range_bounds() -> None:
+    """The largest magnitude and 28 places reach the server unchanged."""
+    client = await SurrealDBConnectionManager.get_client()
+    response = await client.query(
+        "RETURN [$max = 79228162514264337593543950335dec, $min = -79228162514264337593543950335dec, "
+        "$step = 0.0000000000000000000000000001dec, $places = 0.1234567890123456789012345678dec, $max, $places]",
+        {
+            "max": DECIMAL_MAX,
+            "min": DECIMAL_MIN,
+            "step": Decimal("1E-28"),
+            "places": Decimal("0.1234567890123456789012345678"),
+        },
+    )
+    assert response.is_ok, response.raw
+    assert response.results[0].result == [True, True, True, True, DECIMAL_MAX, Decimal("0.1234567890123456789012345678")]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "digits",
+    [
+        "0.00000000000000000000000000025",
+        "-0.00000000000000000000000000025",
+        "0.00000000000000000000000000035",
+        "0.00000000000000000000000000024",
+        "0.033333333333333333333333333333",
+        "1e-40",
+    ],
+)
+async def test_decimal_rounded_to_28_places_is_what_surrealdb_stores(digits: str) -> None:
+    """The client rounds extra places exactly as the server does with the full digits.
+
+    ``$full`` carries every digit in the decimal tag (positional, as 2.7.0
+    requires); ``$ours`` is the ``Decimal`` the encoder rounds to 28 places.
+    """
+    from cbor2 import CBORTag
+
+    full = format(Decimal(digits), "f")
+    client = await SurrealDBConnectionManager.get_client()
+    response = await client.query("RETURN [$full = $ours, $ours]", {"full": CBORTag(10, full), "ours": Decimal(digits)})
+    assert response.is_ok, response.raw
+    equal, stored = response.results[0].result
+    assert equal is True, f"{digits}: server stored something else than {stored}"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("digits", ["1e1000000000", "79228162514264337593543950336", "1E+29"])
+async def test_out_of_range_decimal_raises_before_the_request(digits: str) -> None:
+    """Out-of-range Decimal values raise instead of being expanded or sent."""
+    client = await SurrealDBConnectionManager.get_client()
+    with pytest.raises(ValueError, match="out of range"):
+        await client.query("RETURN $p", {"p": Decimal(digits)})
+    with pytest.raises(ValueError, match="out of range"):
+        await I246Item.objects().filter(price=Decimal(digits)).exec()
 
 
 @pytest.mark.integration

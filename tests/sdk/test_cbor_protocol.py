@@ -180,6 +180,85 @@ class TestCBOREncodeDecode:
         assert cbor2.loads(encode(Decimal("1E+2"))) == cbor2.CBORTag(TAG_STRING_DECIMAL, "100")
         assert cbor2.loads(encode(Decimal("1E-5"))) == cbor2.CBORTag(TAG_STRING_DECIMAL, "0.00001")
 
+    @pytest.mark.parametrize(
+        "digits",
+        [
+            "79228162514264337593543950335",
+            "-79228162514264337593543950335",
+            "0.0000000000000000000000000001",
+            "0.1234567890123456789012345678",
+            "1E+28",
+        ],
+        ids=["max", "min", "smallest-step", "28-places", "1E+28"],
+    )
+    def test_decimal_at_the_range_bounds_keeps_its_value(self, digits: str) -> None:
+        """The largest magnitude and 28 places are what a SurrealDB decimal holds."""
+        import cbor2
+
+        tagged = cbor2.loads(encode(Decimal(digits)))
+        assert tagged.tag == TAG_STRING_DECIMAL
+        assert Decimal(tagged.value) == Decimal(digits)
+        assert "E" not in tagged.value
+
+    @pytest.mark.parametrize(
+        "digits",
+        ["1e1000000000", "-1e1000000000", "79228162514264337593543950336", "1E+29", "79228162514264337593543950335.4"],
+        ids=["huge", "huge-negative", "max-plus-one", "1E+29", "max-plus-fraction"],
+    )
+    def test_out_of_range_decimal_raises(self, digits: str) -> None:
+        """Out-of-range Decimal values raise instead of being expanded.
+
+        SurrealDB 2.7.0 rejects the whole request for a magnitude above
+        79228162514264337593543950335. The check is made on the exponent, so
+        ``1e1000000000`` raises without its billion digits ever being written.
+        """
+        with pytest.raises(ValueError, match="out of range"):
+            encode({"p": [Decimal(digits)]})
+
+    def test_extreme_exponents_never_write_their_digits(self) -> None:
+        """Neither a huge nor a tiny exponent allocates digits in proportion to it."""
+        import tracemalloc
+
+        import cbor2
+
+        tracemalloc.start()
+        try:
+            with pytest.raises(ValueError):
+                encode(Decimal("1e1000000000"))
+            tiny = encode(Decimal("1e-1000000000"))
+            zero = encode(Decimal("0E+1000000000"))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < 1_000_000
+        assert cbor2.loads(tiny) == cbor2.CBORTag(TAG_STRING_DECIMAL, "0.0000000000000000000000000000")
+        assert cbor2.loads(zero) == cbor2.CBORTag(TAG_STRING_DECIMAL, "0")
+
+    @pytest.mark.parametrize(
+        ("digits", "sent"),
+        [
+            ("0.00000000000000000000000000025", "0.0000000000000000000000000003"),
+            ("-0.00000000000000000000000000025", "-0.0000000000000000000000000003"),
+            ("0.00000000000000000000000000035", "0.0000000000000000000000000004"),
+            ("0.00000000000000000000000000024", "0.0000000000000000000000000002"),
+            ("1e-40", "0.0000000000000000000000000000"),
+        ],
+        ids=["half-up", "half-up-negative", "half-odd", "below-half", "tiny"],
+    )
+    def test_places_beyond_28_are_rounded_like_surrealdb(self, digits: str, sent: str) -> None:
+        """SurrealDB keeps 28 places and rounds the rest half away from zero (2.7.0)."""
+        import cbor2
+
+        assert cbor2.loads(encode(Decimal(digits))) == cbor2.CBORTag(TAG_STRING_DECIMAL, sent)
+
+    def test_computed_decimal_is_sent_rounded_to_28_places(self) -> None:
+        """A quotient at the default 28-digit precision can carry 29 places or more."""
+        import cbor2
+
+        quotient = Decimal(1) / Decimal(30)
+        assert quotient.as_tuple().exponent == -29
+        assert cbor2.loads(encode(quotient)) == cbor2.CBORTag(TAG_STRING_DECIMAL, "0.0333333333333333333333333333")
+
     def test_non_finite_decimal_is_left_to_cbor2(self) -> None:
         """SurrealDB decimals have no NaN/infinity; those keep cbor2's float encoding."""
         import math
