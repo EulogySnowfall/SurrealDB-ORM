@@ -93,7 +93,12 @@ async def test_django_on_delete_vocabulary_is_translated_in_ddl() -> None:
     """``SET_NULL`` reaches SurrealDB as its own ``UNSET`` keyword."""
     sql = await I170Post.define_table()
 
-    assert "DEFINE FIELD OVERWRITE reviewer ON i170_posts TYPE option<record<i170_authors>> REFERENCE ON DELETE UNSET" in sql
+    # Both halves of define_table()'s create-or-alter pair (#195) carry it.
+    assert (
+        "DEFINE FIELD IF NOT EXISTS reviewer ON i170_posts TYPE option<record<i170_authors>> REFERENCE ON DELETE UNSET" in sql
+    )
+    assert "ALTER FIELD reviewer ON i170_posts TYPE option<record<i170_authors>> " in sql
+    assert "DROP READONLY REFERENCE ON DELETE UNSET DROP COMMENT;" in sql
     assert "SET_NULL" not in sql
 
 
@@ -103,8 +108,10 @@ async def test_define_table_keeps_optional_scalars_optional() -> None:
     """A ``str | None`` column is still wrapped exactly once."""
     sql = await I170Post.define_table()
 
-    assert "DEFINE FIELD OVERWRITE subtitle ON i170_posts TYPE option<string>" in sql
-    assert "DEFINE FIELD OVERWRITE title ON i170_posts TYPE string" in sql
+    assert "DEFINE FIELD IF NOT EXISTS subtitle ON i170_posts TYPE option<string>;" in sql
+    assert "ALTER FIELD subtitle ON i170_posts TYPE option<string> " in sql
+    assert "DEFINE FIELD IF NOT EXISTS title ON i170_posts TYPE string;" in sql
+    assert "ALTER FIELD title ON i170_posts TYPE string " in sql
 
 
 @pytest.mark.integration

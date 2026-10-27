@@ -542,9 +542,9 @@ class TestDefineTableMethod:
         sql = await DefAccessUser.define_table()
 
         assert "DEFINE TABLE OVERWRITE DefAccessUser" in sql
-        assert "DEFINE FIELD OVERWRITE email ON DefAccessUser" in sql
-        assert "DEFINE FIELD OVERWRITE name ON DefAccessUser" in sql
-        assert "DEFINE FIELD OVERWRITE age ON DefAccessUser" in sql
+        for field in ("email", "name", "age"):
+            assert f"DEFINE FIELD IF NOT EXISTS {field} ON DefAccessUser" in sql
+            assert f"ALTER FIELD {field} ON DefAccessUser" in sql
 
         # Verify we can save a record
         user = DefAccessUser(email="test@example.com", name="Test", age=25)

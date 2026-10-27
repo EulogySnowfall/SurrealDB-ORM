@@ -15,8 +15,9 @@ from .state import ApiState, EventState, FieldState, GraphQLConfigState, IndexSt
 
 # Keywords that delimit clauses in a DEFINE FIELD statement.
 # Order matters: longer keywords first to avoid partial matches.
+# PERMISSIONS is not one: the clause is cut off first (_cut_field_permissions),
+# so an expression naming a field ``permissions`` is not cut short either.
 _FIELD_KEYWORDS = [
-    "PERMISSIONS",
     "REFERENCE",
     "FLEXIBLE",
     "READONLY",
@@ -26,6 +27,11 @@ _FIELD_KEYWORDS = [
     "VALUE",
     "TYPE",
 ]
+
+# Where a field's PERMISSIONS clause starts: the keyword, then FULL, NONE or
+# FOR — the only three ways the clause can begin. A field *named*
+# ``permissions`` in a VALUE or ASSERT expression is not followed by one.
+_FIELD_PERMISSIONS_START = re.compile(r"PERMISSIONS\s+(?:FULL|NONE|FOR)\b", re.IGNORECASE)
 
 # The four actions a table PERMISSIONS clause can govern, in the order
 # SurrealDB reports them.
@@ -149,6 +155,49 @@ def _consume_until_keyword(text: str, keywords: list[str]) -> tuple[str, str]:
     return text, ""
 
 
+def _cut_field_permissions(body: str) -> str:
+    """Cut a DEFINE FIELD body before its PERMISSIONS clause.
+
+    ``FieldState`` does not model field permissions, and SurrealDB always
+    reports the clause last. Its ``WHERE`` conditions name fields unescaped —
+    ``FOR select WHERE type = 'public'`` — and the clause splitter cuts on any
+    field keyword, so ``type`` there was read as a TYPE clause of
+    ``= 'public', …``. The diff then saw a changed field on every run (#195).
+
+    Quotes (with the backslash escapes SurrealDB reports them with),
+    parentheses, brackets and braces are respected. Angle brackets are not
+    tracked: they only nest inside a type, where the keyword cannot appear,
+    while ``ASSERT $value > 0`` would never close.
+
+    Args:
+        body: The statement body after ``DEFINE FIELD name ON table``
+
+    Returns:
+        The body up to the PERMISSIONS clause; all of it when there is none
+    """
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for i, ch in enumerate(body):
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "'\"`":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0 and (i == 0 or body[i - 1] in (" ", "\t", "\n")) and _FIELD_PERMISSIONS_START.match(body, i):
+            return body[:i]
+    return body
+
+
 def parse_define_field(statement: str) -> FieldState:
     """Parse a DEFINE FIELD statement into a FieldState.
 
@@ -181,7 +230,7 @@ def parse_define_field(statement: str) -> FieldState:
 
     field_name = match.group(1)
     # table_name = match.group(2)  # Not stored in FieldState
-    body = match.group(3)
+    body = _cut_field_permissions(match.group(3))
 
     clauses = _extract_clauses(body, _FIELD_KEYWORDS)
 

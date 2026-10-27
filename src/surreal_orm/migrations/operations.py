@@ -5,6 +5,7 @@ Each operation represents a single schema modification that can be
 applied (forwards) or reverted (backwards).
 """
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -93,12 +94,14 @@ def _apply_nullable(field_type: str, nullable: bool) -> str:
 #: The VALUE expression that makes a column an ``Encrypted`` one.
 ARGON2_VALUE = "crypto::argon2::generate($value)"
 
-#: The attributes a ``DEFINE FIELD`` statement carries, in clause order.
-#: ``AddField.forwards``, ``AlterField.forwards`` and ``AlterField.backwards``
-#: are all driven off this one tuple. They used to be three hand-written
-#: renderers, and every clause added to one of them was eventually forgotten in
-#: another — that is #170 (REFERENCE), #195 (VALUE) and the DEFAULT divergence
-#: below, all the same omission.
+#: The attributes a field definition carries, in clause order — the clauses the
+#: ORM *models*. ``AddField.forwards``, ``AlterField.forwards`` and
+#: ``AlterField.backwards`` are all driven off this one tuple, through
+#: ``_render_define_field`` and ``_render_alter_field``. They used to be three
+#: hand-written renderers, and every clause added to one of them was eventually
+#: forgotten in another — that is #170 (REFERENCE), #196 (VALUE) and the DEFAULT
+#: divergence below, all the same omission. A clause that is *not* here, field
+#: ``PERMISSIONS`` first, is one ``ALTER FIELD`` leaves as the database has it.
 FIELD_DEFINITION_FIELDS = (
     "field_type",
     "nullable",
@@ -156,11 +159,28 @@ def _render_default(default: Any) -> str:
     return str(default)
 
 
+def _render_comment(comment: str) -> str:
+    """
+    Render a COMMENT text as a SurrealQL string literal.
+
+    Shared by both field renderers so a comment is quoted the same way whether
+    the field is being defined or altered.
+
+    Args:
+        comment: The comment text
+
+    Returns:
+        The quoted literal
+    """
+    return "'" + comment.replace("'", "''") + "'"
+
+
 def _render_define_field(
     table: str,
     name: str,
     *,
-    overwrite: bool,
+    overwrite: bool = False,
+    if_not_exists: bool = False,
     field_type: "FieldType | str | None" = None,
     nullable: bool = False,
     flexible: bool = False,
@@ -175,13 +195,16 @@ def _render_define_field(
     """
     Render one ``DEFINE FIELD`` statement.
 
-    Shared by ``AddField`` and both directions of ``AlterField``, so a rollback
-    cannot render a clause differently from the statement it reverses.
+    Used by ``AddField`` and, with ``if_not_exists``, by the create half of
+    :func:`_render_create_or_alter_field`. An existing field is changed with
+    :func:`_render_alter_field` instead: a redefinition replaces clauses the
+    ORM does not model, field ``PERMISSIONS`` among them (#195).
 
     Args:
         table: Table the field belongs to
         name: Field name
         overwrite: Emit ``DEFINE FIELD OVERWRITE``
+        if_not_exists: Emit ``DEFINE FIELD IF NOT EXISTS``
         field_type: Field type; no TYPE clause when absent
         nullable: Whether the column accepts NONE
         flexible: FLEXIBLE TYPE
@@ -195,8 +218,13 @@ def _render_define_field(
 
     Returns:
         The complete statement, semicolon included
+
+    Raises:
+        ValueError: If both ``overwrite`` and ``if_not_exists`` are set
     """
-    keyword = "DEFINE FIELD OVERWRITE" if overwrite else "DEFINE FIELD"
+    if overwrite and if_not_exists:
+        raise ValueError("DEFINE FIELD takes OVERWRITE or IF NOT EXISTS, not both")
+    keyword = "DEFINE FIELD OVERWRITE" if overwrite else "DEFINE FIELD IF NOT EXISTS" if if_not_exists else "DEFINE FIELD"
     parts = [f"{keyword} {name} ON {table}"]
 
     if flexible:
@@ -224,9 +252,383 @@ def _render_define_field(
             parts.append(f"ON DELETE {on_delete_to_surql(on_delete)}")
 
     if comment:
-        parts.append(f"COMMENT '{comment.replace(chr(39), chr(39) * 2)}'")
+        parts.append(f"COMMENT {_render_comment(comment)}")
 
     return " ".join(parts) + ";"
+
+
+def _split_top_level(text: str, separator: str) -> list[str]:
+    """
+    Split a SurrealQL type on *separator*, outside brackets and quotes.
+
+    ``array<record<a | b>> | string`` splits on ``|`` into two members, and
+    ``array<string, 5>`` on ``,`` into the element and the length.
+
+    Args:
+        text: The type text
+        separator: A one-character separator
+
+    Returns:
+        The stripped parts, in order
+    """
+    parts: list[str] = []
+    depth = 0
+    quote: str | None = None
+    start = 0
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+        elif ch in "<([{":
+            depth += 1
+        elif ch in ">)]}":
+            depth -= 1
+        elif ch == separator and depth == 0:
+            parts.append(text[start:i].strip())
+            start = i + 1
+    parts.append(text[start:].strip())
+    return parts
+
+
+def _union_members(field_type: str) -> list[str]:
+    """
+    Flatten a type into its union members, without ``none``/``null``.
+
+    ``option<T>`` is ``none | T``, so it is unwrapped into T's members.
+
+    Args:
+        field_type: The type text
+
+    Returns:
+        The non-null members
+    """
+    members: list[str] = []
+    for member in _split_top_level(field_type, "|"):
+        lowered = member.lower()
+        if lowered in ("none", "null"):
+            continue
+        if lowered.startswith("option<") and member.endswith(">"):
+            members.extend(_union_members(member[len("option<") : -1]))
+        else:
+            members.append(member)
+    return members
+
+
+def _is_union(field_type: str) -> bool:
+    """
+    Whether a type, as written, is a union.
+
+    Read on the raw text, before :func:`_union_members` drops ``none`` and
+    ``null``: several top-level ``|`` members, or ``option<T>`` — ``none | T``
+    — even when ``T`` is a single member.
+
+    Args:
+        field_type: The type text
+
+    Returns:
+        True for ``a | b``, ``none | T`` and ``option<T>``
+    """
+    return len(_split_top_level(field_type, "|")) > 1 or field_type.lower().startswith("option<")
+
+
+def _element_type(field_type: str) -> str | None:
+    """
+    The type of the ``name.*`` level of an array or set column.
+
+    Defining a field whose type has an ``array<T>`` or ``set<T>`` member also
+    defines ``name.*`` with type ``T`` — the union of every such member's
+    element, ``array<int> | set<string>`` giving ``int | string``.
+
+    An untyped ``array``/``set`` member, or an element with an ``any`` member
+    (``array<any>``, ``set<any>``), makes the element ``any`` — for the whole
+    union, since ``any`` absorbs the other members. A redefinition of
+    ``array<int> | array<any>`` makes the server derive ``int | any``, which
+    SurrealDB 3.3 then fails to parse back, leaving ``INFO FOR TABLE`` broken.
+    Whether an ``any`` level exists at all is for
+    :func:`_render_element_types` to decide.
+
+    Args:
+        field_type: The column's type, as rendered
+
+    Returns:
+        The element type, or ``None`` for a type with no array or set member
+    """
+    elements: list[str] = []
+    for member in _union_members(field_type):
+        lowered = member.lower()
+        if lowered in ("array", "set"):
+            return "any"
+        for kind in ("array<", "set<"):
+            if lowered.startswith(kind) and member.endswith(">"):
+                element = _split_top_level(member[len(kind) : -1], ",")[0]
+                if any(m.lower() == "any" for m in _union_members(element)):
+                    return "any"
+                if element not in elements:
+                    elements.append(element)
+                break
+    return " | ".join(elements) or None
+
+
+#: A quoted string inside a type — a literal type (``'object'``) — whose text
+#: is not a type keyword.
+_QUOTED = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`[^`]*`")
+#: A ``record<…>`` member, whose contents are table names, not types.
+_RECORD_TABLES = re.compile(r"\brecord\s*<[^>]*>", re.IGNORECASE)
+_OBJECT_KEYWORD = re.compile(r"\bobject\b", re.IGNORECASE)
+
+
+def _contains_object(field_type: str) -> bool:
+    """
+    Whether a type contains an object, the condition for ``FLEXIBLE``.
+
+    The SurrealDB parser's own test (``FLEXIBLE can only be used with types
+    containing object``): the ``object`` keyword or a literal object type
+    ``{ … }`` anywhere in the type — ``array<int> | object``,
+    ``array<option<object>>`` and ``{ a: int }`` qualify. A table named in
+    ``record<…>`` and a string literal do not, which is why both are removed
+    before looking.
+
+    Args:
+        field_type: The type text
+
+    Returns:
+        True when ``FLEXIBLE`` is valid on the type
+    """
+    text = _RECORD_TABLES.sub("record", _QUOTED.sub("''", field_type))
+    return "{" in text or _OBJECT_KEYWORD.search(text) is not None
+
+
+def _render_element_types(table: str, name: str, field_type: str, *, flexible: bool = False) -> list[str]:
+    """
+    Align the element sub-fields SurrealDB derives for an array or set column.
+
+    ``DEFINE FIELD tags ON t TYPE array<string>`` also defines ``tags.*`` as
+    ``string`` (and ``n.*.*`` for ``array<array<…>>``); a redefinition
+    re-derives them. ``ALTER FIELD tags ON t TYPE array<int>`` does not: it
+    leaves ``tags.*`` at ``string`` and the column then refuses every
+    non-empty value. Each element level SurrealDB derives itself for the new
+    type is therefore aligned the way the redefinition did it, and nothing
+    more: its TYPE, plus FLEXIBLE on a level whose type contains an object
+    (:func:`_contains_object`) when the column is FLEXIBLE, or ``DROP
+    FLEXIBLE`` on a level whose type contains none. Those are the only two
+    modelled clauses a redefinition carried down to the elements. The field
+    is the server's, and any other clause set on it by hand stays.
+
+    A FLEXIBLE column whose elements were left strict reported success and
+    still refused ``[{x: 'hello'}]`` with ``Found field 'items[0].x', but no
+    such field exists``.
+
+    FLEXIBLE is never removed from an object element level: a non-FLEXIBLE
+    redefinition left ``items.*`` FLEXIBLE too, and a FLEXIBLE set there by
+    hand must survive. Known limitation, the same as with the redefinition:
+    removing FLEXIBLE from an array column leaves its object element levels
+    FLEXIBLE. A ``RawSQL`` operation with
+    ``ALTER FIELD items.* ON <table> DROP FLEXIBLE;`` removes it.
+
+    A level whose type contains no object always gets ``DROP FLEXIBLE``.
+    FLEXIBLE does nothing there, yet the server derives it (``int FLEXIBLE``
+    for the inner level of a FLEXIBLE ``array<array<int> | object>``, ``any
+    FLEXIBLE`` under ``array<any> | object``) and keeps it when a FLEXIBLE
+    ``array<object>`` is retyped to ``array<string>``. On such a level a
+    ``TYPE`` without ``DROP FLEXIBLE`` is refused (``FLEXIBLE can only be
+    used with types containing object``): the rollback of ``array<string>`` →
+    FLEXIBLE ``array<object>`` failed halfway and left the column refusing
+    every non-empty list. ``DROP FLEXIBLE`` is accepted on a level without
+    FLEXIBLE as well, and writing FLEXIBLE on such a type is a parse error,
+    so no hand-set clause can be lost.
+
+    A typed element is always derived. An ``any`` element — ``array<any>``, an
+    untyped ``array`` or ``set`` — only under an optional column or a union, a
+    union anywhere on the path above that level (:func:`_is_union`):
+    ``option<array<any>>`` derives ``tags.*`` as ``any``, and widening
+    ``option<array<int>>`` to it has to widen ``tags.*`` too. Under a
+    non-optional ``array``/``array<any>`` the server derives nothing, so a
+    ``tags.*`` defined there by hand is left as it is, and the walk stops.
+    It also stops after an ``any`` level, ``any`` having no element of its
+    own.
+
+    Known limitation, the same as with the redefinition: a non-optional
+    column taken from ``array<T>`` to ``array<any>``, to ``array`` or to
+    ``any`` keeps ``tags.*`` at ``T``. A ``RawSQL`` operation with
+    ``ALTER FIELD tags.* ON <table> TYPE any;`` or
+    ``REMOVE FIELD tags.* ON <table>;`` lifts it.
+
+    ``IF EXISTS`` because whether the server derived a level depends on the
+    previous definition — none for a column that was not an array before —
+    and where it derived none, the parent's TYPE alone checks the elements.
+
+    Args:
+        table: Table the column belongs to
+        name: Column name
+        field_type: The column's new type, as rendered
+        flexible: Whether the column is FLEXIBLE
+
+    Returns:
+        One statement per derived element level, outermost first; none for a
+        column with no array or set member
+    """
+    statements: list[str] = []
+    path = name
+    union_seen = _is_union(field_type)
+    element = _element_type(field_type)
+    while element:
+        if element.lower() == "any" and not union_seen:
+            break
+        path += ".*"
+        if not _contains_object(element):
+            clauses = f"TYPE {element} DROP FLEXIBLE"
+        elif flexible:
+            clauses = f"TYPE {element} FLEXIBLE"
+        else:
+            clauses = f"TYPE {element}"
+        statements.append(f"ALTER FIELD IF EXISTS {path} ON {table} {clauses};")
+        union_seen = union_seen or _is_union(element)
+        element = _element_type(element)
+    return statements
+
+
+def _render_alter_field(
+    table: str,
+    name: str,
+    *,
+    field_type: "FieldType | str | None" = None,
+    nullable: bool = False,
+    flexible: bool = False,
+    value: str | None = None,
+    default: Any = None,
+    assertion: str | None = None,
+    readonly: bool = False,
+    reference: bool = False,
+    on_delete: str | None = None,
+    comment: str | None = None,
+) -> str:
+    """
+    Render the ``ALTER FIELD`` statement setting every modelled clause.
+
+    ``DEFINE FIELD OVERWRITE`` replaces the whole definition, so a clause the
+    ORM does not model was reset to the server default: a field restricted
+    with ``PERMISSIONS FOR select NONE`` came back ``PERMISSIONS FULL`` after
+    the next alteration (#195). ``ALTER FIELD`` changes only the clauses it
+    names. Each clause of :data:`FIELD_DEFINITION_FIELDS` is therefore named
+    every time — set when present, ``DROP``-ped when absent — so the modelled
+    semantics stay those of a full redefinition (removing a clause from the
+    model removes it from the database) while every other clause is left
+    untouched by construction.
+
+    ``ALTER FIELD`` requires the field to exist: on a missing one SurrealDB
+    answers ``The field 'x' does not exist``. Shared by both directions of
+    ``AlterField``, so a rollback cannot render a clause differently from the
+    statement it reverses.
+
+    For an array or set column, the statement is followed by one per element
+    sub-field SurrealDB derives itself for the new type (``tags.*``,
+    ``n.*.*``): a redefinition re-derived them, ``ALTER FIELD`` does not. Each
+    gets its TYPE, plus FLEXIBLE on the levels that hold an object when the
+    column is FLEXIBLE, as the redefinition did, and ``DROP FLEXIBLE`` on the
+    levels that hold none, where the server refuses a TYPE change while
+    FLEXIBLE is set; nothing else is dropped there. A typed element is aligned always, an ``any`` element only under an
+    optional column or a union; under a non-optional ``array``/``array<any>``
+    the server derives nothing, and a hand-defined ``tags.*`` is left as it
+    is (:func:`_render_element_types`).
+
+    Args:
+        table: Table the field belongs to
+        name: Field name
+        field_type: Field type; ``DROP TYPE`` when absent
+        nullable: Whether the column accepts NONE
+        flexible: FLEXIBLE (object types only)
+        value: VALUE expression, already resolved for encrypted columns
+        default: DEFAULT value
+        assertion: ASSERT expression
+        readonly: READONLY
+        reference: SurrealDB 3.0 REFERENCE clause
+        on_delete: ON DELETE strategy, in Django or SurrealDB vocabulary;
+            rendered only with ``reference``
+        comment: COMMENT text
+
+    Returns:
+        The ALTER FIELD statement, then any element sub-field statements,
+        newline-separated, each with its semicolon
+    """
+    parts = [f"ALTER FIELD {name} ON {table}"]
+
+    rendered_type = _apply_nullable(_normalize_field_type(field_type), nullable) if field_type else None
+    parts.append(f"TYPE {rendered_type}" if rendered_type else "DROP TYPE")
+
+    # FLEXIBLE is only valid on a type containing object. The server checks the
+    # field once every clause is applied, so a statement that changes the type
+    # and FLEXIBLE together is accepted in either direction.
+    parts.append("FLEXIBLE" if flexible else "DROP FLEXIBLE")
+
+    parts.append(f"VALUE {value}" if value else "DROP VALUE")
+
+    parts.append(f"DEFAULT {_render_default(default)}" if default is not None else "DROP DEFAULT")
+
+    parts.append(f"ASSERT {assertion}" if assertion else "DROP ASSERT")
+
+    parts.append("READONLY" if readonly else "DROP READONLY")
+
+    if reference:
+        # A bare REFERENCE resets ON DELETE to the server default, so the
+        # strategy is always restated with it.
+        parts.append(f"REFERENCE ON DELETE {on_delete_to_surql(on_delete)}" if on_delete else "REFERENCE")
+    else:
+        parts.append("DROP REFERENCE")
+
+    parts.append(f"COMMENT {_render_comment(comment)}" if comment else "DROP COMMENT")
+
+    statements = [" ".join(parts) + ";"]
+    if rendered_type:
+        statements.extend(_render_element_types(table, name, rendered_type, flexible=flexible))
+    return "\n".join(statements)
+
+
+def _field_clauses(op: "AddField | AlterField") -> dict[str, Any]:
+    """
+    Collect the modelled clauses of a field operation, ready for a renderer.
+
+    ``encrypted`` *is* "VALUE is the argon2 expression", so it is resolved here
+    rather than in each renderer.
+
+    Args:
+        op: The operation whose target definition to render
+
+    Returns:
+        One entry per :data:`FIELD_DEFINITION_FIELDS` attribute
+    """
+    clauses = {f: getattr(op, f) for f in FIELD_DEFINITION_FIELDS}
+    if op.encrypted:
+        clauses["value"] = ARGON2_VALUE
+    return clauses
+
+
+def _render_create_or_alter_field(op: "AddField") -> str:
+    """
+    Render a field as a create-or-update pair.
+
+    ``DEFINE FIELD IF NOT EXISTS`` creates the field with its whole definition
+    when it is missing and is a no-op otherwise; the ``ALTER FIELD`` that
+    follows then brings an existing field's modelled clauses in line, leaving
+    the clauses the ORM does not model — field ``PERMISSIONS`` — as they are,
+    and aligns the element sub-fields of an array or set column.
+    ``DEFINE FIELD OVERWRITE`` was create-or-redefine in one statement, but it
+    reset those clauses (#195).
+
+    Args:
+        op: The field to apply
+
+    Returns:
+        The statements, newline-separated
+    """
+    clauses = _field_clauses(op)
+    return "\n".join(
+        (
+            _render_define_field(op.table, op.name, if_not_exists=True, **clauses),
+            _render_alter_field(op.table, op.name, **clauses),
+        )
+    )
 
 
 #: The attributes a ``DEFINE TABLE`` statement carries. ``CreateTable``,
@@ -721,8 +1123,9 @@ class AddField(Operation):
     nullable: bool = False
     #: Emit ``DEFINE FIELD OVERWRITE``. A migration adds a field that is not
     #: there yet, so the plain form is right there and a second run *should*
-    #: fail. ``define_table()`` applies a model's whole schema and has to be
-    #: callable twice, so it opts in.
+    #: fail. OVERWRITE replaces the whole definition, including clauses the ORM
+    #: does not model such as field ``PERMISSIONS``, so ``define_table()`` no
+    #: longer uses it (#195); it is kept for code that opts in explicitly.
     overwrite: bool = False
 
     def __post_init__(self) -> None:
@@ -763,13 +1166,7 @@ class AddField(Operation):
         )
 
     def forwards(self) -> str:
-        return _render_define_field(
-            self.table,
-            self.name,
-            overwrite=self.overwrite,
-            **{f: getattr(self, f) for f in FIELD_DEFINITION_FIELDS if f != "value"},
-            value=ARGON2_VALUE if self.encrypted else self.value,
-        )
+        return _render_define_field(self.table, self.name, overwrite=self.overwrite, **_field_clauses(self))
 
     def backwards(self) -> str:
         return f"REMOVE FIELD {self.name} ON {self.table};"
@@ -812,6 +1209,13 @@ class AlterField(Operation):
     """
     Alter an existing field's definition.
 
+    Every modelled clause is stated: set when the operation carries it,
+    ``DROP``-ped when it does not. Clauses the ORM does not model, such as a
+    field-level ``PERMISSIONS`` set by hand, are left as the database has them.
+    The field must exist — altering a missing one fails the migration with
+    ``The field 'x' does not exist``; ``AddField`` is the operation that
+    creates a field.
+
     Example:
         AlterField(
             table="users",
@@ -821,7 +1225,8 @@ class AlterField(Operation):
         )
 
     Generates:
-        DEFINE FIELD OVERWRITE email ON users TYPE string ASSERT is::email($value);
+        ALTER FIELD email ON users TYPE string DROP FLEXIBLE DROP VALUE DROP DEFAULT
+        ASSERT is::email($value) DROP READONLY DROP REFERENCE DROP COMMENT;
     """
 
     table: str
@@ -906,32 +1311,28 @@ class AlterField(Operation):
         object.__setattr__(self, "reversible", self.previous_type is not None)
 
     def forwards(self) -> str:
-        # OVERWRITE is required, not optional (#162). A plain `DEFINE FIELD` over
-        # an existing field does NOT update it — SurrealDB answers
-        # `The field 'x' already exists` and leaves the definition untouched, so
-        # every AlterField was a no-op. OVERWRITE is create-or-redefine, so it is
-        # still correct when the field happens to be missing.
-        return _render_define_field(
-            self.table,
-            self.name,
-            overwrite=True,
-            **{f: getattr(self, f) for f in FIELD_DEFINITION_FIELDS if f != "value"},
-            value=ARGON2_VALUE if self.encrypted else self.value,
-        )
+        # ALTER FIELD, not DEFINE FIELD. A plain `DEFINE FIELD` over an existing
+        # field does not update it — SurrealDB answers `The field 'x' already
+        # exists` — so every AlterField was a no-op (#162). `DEFINE FIELD
+        # OVERWRITE` fixed that but replaces the whole definition, resetting
+        # every clause the ORM does not model: a field restricted with
+        # `PERMISSIONS FOR select NONE` came back `PERMISSIONS FULL` (#195).
+        # ALTER FIELD changes only what it names, and a missing field is an
+        # error the executor raises as MigrationStatementError rather than a
+        # field silently created under a mistyped name.
+        return _render_alter_field(self.table, self.name, **_field_clauses(self))
 
     def backwards(self) -> str:
         if not self.previous_type:
             return ""
 
-        # OVERWRITE for the same reason as forwards(): a rollback re-defining
-        # the previous type is otherwise a silent no-op too. It also replaces
-        # the *whole* definition, so a clause with no previous_* slot is
-        # dropped — losing VALUE is the dangerous one, an Encrypted column
-        # stops hashing and stores plaintext from then on.
-        return _render_define_field(
+        # The same renderer as forwards(), over the previous_* slots: every
+        # modelled clause is restored — VALUE included, or an Encrypted column
+        # stops hashing and stores plaintext (#196) — and nothing else is
+        # touched.
+        return _render_alter_field(
             self.table,
             self.name,
-            overwrite=True,
             **{f: getattr(self, _previous_attr(f)) for f in FIELD_DEFINITION_FIELDS},
         )
 

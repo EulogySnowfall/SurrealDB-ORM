@@ -623,15 +623,19 @@ class BaseSurrealModel(BaseModel):
                 password: Encrypted
 
             await User.define_table()
-            # Executes:
-            #   DEFINE TABLE users SCHEMAFULL;
-            #   DEFINE FIELD email ON users TYPE string;
-            #   DEFINE FIELD name ON users TYPE string;
-            #   DEFINE FIELD password ON users TYPE string VALUE crypto::argon2::generate($value);
+            # Executes, per field, a create-or-update pair:
+            #   DEFINE TABLE OVERWRITE users SCHEMAFULL;
+            #   DEFINE FIELD IF NOT EXISTS email ON users TYPE string;
+            #   ALTER FIELD email ON users TYPE string DROP FLEXIBLE ... DROP COMMENT;
+            #   ...
+
+        Each field is created when missing and otherwise altered, so calling
+        this twice is not an error, and clauses the model does not describe —
+        a field ``PERMISSIONS`` set by hand — are left as the database has them.
         """
         from .migrations.executor import _check_statements
         from .migrations.introspector import ModelIntrospector
-        from .migrations.operations import AddField, AlterTable
+        from .migrations.operations import AddField, AlterTable, _render_create_or_alter_field
 
         introspector = ModelIntrospector([cls])
         table_state = introspector._introspect_model(cls)
@@ -651,12 +655,13 @@ class BaseSurrealModel(BaseModel):
 
         for _field_name, field_state in table_state.fields.items():
             add_field = AddField.from_field_state(table_state.name, field_state)
-            # Same reason as the table above: applying a model's schema twice
-            # must not fail with "The field 'x' already exists".
-            add_field.overwrite = True
             if is_user_table and add_field.encrypted:
                 add_field.encrypted = False
-            statements.append(add_field.forwards())
+            # Applying a model's schema twice must not fail with "The field 'x'
+            # already exists", yet DEFINE FIELD OVERWRITE reset every clause the
+            # model does not describe — a field's PERMISSIONS went back to FULL
+            # on every call (#195). Create if missing, then alter.
+            statements.append(_render_create_or_alter_field(add_field))
 
         combined_sql = "\n".join(statements)
 
