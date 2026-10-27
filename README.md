@@ -37,6 +37,24 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.7
+
+**Fix release.** No new public API, but `reconnect()` changes behaviour: see [CHANGELOG.md](CHANGELOG.md) before
+upgrading.
+
+- **`reconnect()` no longer breaks requests already running**
+  ([#232](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/232)). It closed the shared HTTP client before
+  the new one existed, so a request overlapping the call failed with `ConnectionError: Request failed`, and an HTTP
+  transaction opened before it lost every write at commit (`Not connected`). The new client is now connected and
+  signed in first, then swapped in; the previous one is closed once its in-flight RPC requests and open transactions
+  have finished, or after 30 s at most. If the new client cannot connect, `reconnect()` raises
+  `SurrealDbConnectionError` and keeps the current clients.
+- **A failed close no longer leaves a dead client registered.** `close_connection()` / `remove_connection()` let
+  an HTTP close error (e.g. `RuntimeError: Event loop is closed`) escape before the registry was cleared, so
+  `get_client()` kept returning the dead client. The error is now logged and the entry always removed.
+- Token renewal does not need `reconnect()`: an expired token gets HTTP 401 and the HTTP client signs in again and
+  retries. Call `get_client()` again rather than keeping a client across an `await`.
+
 ## What's New in 0.34.6
 
 **Fix release.** No new public API, but both fixes change behaviour: see [CHANGELOG.md](CHANGELOG.md) before
