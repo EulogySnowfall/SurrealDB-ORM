@@ -6,12 +6,45 @@ Provides atomic transaction handling for both HTTP and WebSocket connections.
 
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Container
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
 from .exceptions import TransactionError
 
 _SAFE_THING_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(:[a-zA-Z0-9_`]+)?$")
+
+# A whole ``$name`` parameter reference. ASCII only, like SurrealDB's identifier
+# lexer: ``$a-b`` is ``$a`` followed by ``-b``, and a non-ASCII name is rejected.
+_PARAM_REFERENCE_RE = re.compile(r"\$(\w+)", re.ASCII)
+
+
+def _namespace_params(sql: str, keys: Container[str], prefix: str) -> str:
+    """Rename each whole ``$key`` reference in *sql* to ``$<prefix><key>``, in one pass.
+
+    Only a reference whose *entire* name is in *keys* is renamed. A key that is a
+    prefix of a longer reference — a built-in such as ``$auth`` or ``$session``, or
+    a parameter nobody binds — leaves that reference as written. The scan runs once
+    over the original text, so a reference just renamed is never matched again by a
+    later key (a key ``tx`` cannot reach into ``$tx_0_amount``).
+
+    The scan is textual: a bound ``$key`` written inside a quoted string literal is
+    renamed too.
+
+    Args:
+        sql: SurrealQL statement containing ``$name`` references
+        keys: Names the statement binds
+        prefix: Text inserted between ``$`` and each bound name
+
+    Returns:
+        The statement with every bound reference renamed
+    """
+
+    def _rename(match: re.Match[str]) -> str:
+        name = match.group(1)
+        return f"${prefix}{name}" if name in keys else match.group(0)
+
+    return _PARAM_REFERENCE_RE.sub(_rename, sql)
 
 
 def _validate_thing(thing: str, context: str = "thing") -> None:
@@ -200,7 +233,14 @@ class HTTPTransaction(BaseTransaction):
         self._statements = []
 
     async def commit(self) -> "QueryResponse":
-        """Execute all queued statements atomically."""
+        """Execute all queued statements atomically.
+
+        Every statement's bindings are renamed ``$k`` → ``$tx_<i>_k`` (``i`` being its
+        position) and sent together in one query. Only references to a key the
+        statement binds are renamed; built-ins such as ``$auth`` or ``$session`` and
+        unbound references stay as written. The scan is textual, so a bound ``$k``
+        written inside a quoted string literal is renamed too.
+        """
         from .types import QueryResponse
 
         if not self.is_active:
@@ -217,14 +257,15 @@ class HTTPTransaction(BaseTransaction):
         all_vars: dict[str, Any] = {}
 
         for i, stmt in enumerate(self._statements):
-            # Work on a copy to avoid mutating the original statement
-            namespaced_sql = stmt.sql
-            # Namespace variables to avoid conflicts between statements
+            # Namespace each statement's bindings ($k -> $tx_<i>_k) so two statements
+            # can bind the same name to different values in the one batched query.
+            # Whole identifiers only, in a single pass: a key that prefixes another
+            # reference ($a vs $auth, $session, $tenant…) leaves it alone, and a field
+            # named `tx` cannot reach into the `$tx_0_amount` just emitted. The queued
+            # statement itself is left untouched.
             for key, val in stmt.vars.items():
-                namespaced_key = f"tx_{i}_{key}"
-                all_vars[namespaced_key] = val
-                namespaced_sql = namespaced_sql.replace(f"${key}", f"${namespaced_key}")
-            sql_parts.append(namespaced_sql)
+                all_vars[f"tx_{i}_{key}"] = val
+            sql_parts.append(_namespace_params(stmt.sql, stmt.vars, f"tx_{i}_"))
 
         sql_parts.append("COMMIT TRANSACTION;")
         full_sql = "\n".join(sql_parts)
