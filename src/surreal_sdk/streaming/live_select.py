@@ -5,16 +5,73 @@ Provides async iterator pattern for real-time change notifications via WebSocket
 """
 
 import asyncio
+import math
 import re
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Self
+from uuid import UUID
 
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
+from ..protocol.cbor import RecordId, format_decimal
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+#: A ``$name`` parameter reference, read the way SurrealDB's lexer reads it.
+_PARAM_REF_RE = re.compile(r"\$([A-Za-z0-9_]+)", re.ASCII)
+
+
+def _string_literal(text: str) -> str:
+    """Write *text* as a single-quoted SurrealQL string holding exactly *text*.
+
+    Inside the quotes a backslash starts a two-character sequence, so each
+    backslash is written as two backslashes and each single quote as a
+    backslash followed by the quote. Every other character stands for itself.
+    """
+    body = str.__str__(text).replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{body}'"
+
+
+def _backtick_name(name: str) -> str:
+    """Write a table name or string record id between backticks.
+
+    Inside backticks SurrealQL reads two backslashes as one backslash, and a
+    backslash followed by a backtick as one backtick (checked on SurrealDB
+    2.7.0). A doubled backtick is not read as one, and a lone trailing
+    backslash would take the closing backtick with it, so each backslash and
+    each backtick of *name* is written that way.
+    """
+    body = str.__str__(name).replace("\\", "\\\\").replace("`", "\\`")
+    return f"`{body}`"
+
+
+def _record_literal(value: RecordId) -> str:
+    """Write the record link that designates exactly the record *value* binds to.
+
+    The table and a string id always go between backticks, so a keyword, a
+    leading digit or any other character keeps its meaning: the string id
+    ``"123"`` is ``t:`123```, a different record from the numeric ``t:123``.
+    An ``int`` id stays a bare number; an array, object or UUID id is written
+    as that value's literal.
+    """
+    if not isinstance(value.table, str):
+        raise TypeError(f"live() filter: record table must be a str, got {type(value.table).__name__}")
+    record_id = value.id
+    if isinstance(record_id, bool):
+        raise TypeError("live() filter: a record id cannot be a bool")
+    if isinstance(record_id, int):
+        id_text = int.__repr__(record_id)
+    elif isinstance(record_id, str):
+        id_text = _backtick_name(record_id)
+    elif isinstance(record_id, (list, tuple, dict, UUID)):
+        id_text = LiveSelectStream._format_value(record_id)
+    else:
+        raise TypeError(f"live() filter: record ids of type {type(record_id).__name__} have no SurrealQL literal")
+    return f"{_backtick_name(value.table)}:{id_text}"
 
 
 class LiveAction(StrEnum):
@@ -162,58 +219,111 @@ class LiveSelectStream:
 
     @staticmethod
     def _format_value(value: Any) -> str:
-        """Format a Python value for inline substitution in SurrealQL.
+        """Render a Python value as the SurrealQL literal of the same value.
 
-        SurrealDB LIVE SELECT does not evaluate session variables ($param)
-        in WHERE clauses, so parameters must be inlined directly into the
-        query string.  Handles native SurrealDB types (RecordId, datetime,
-        UUID) so that LIVE SELECT filters behave the same as parameterized
-        queries.
+        SurrealDB 2.x does not evaluate bound parameters (``$param``) in a
+        ``LIVE SELECT`` WHERE clause, so the values are written into the query
+        text. Each literal designates exactly the value the CBOR encoder sends
+        when the same Python value is bound as a parameter (checked against
+        SurrealDB 2.7.0), so a ``live()`` filter matches what ``exec()`` matches:
+
+        - ``None`` → ``NONE``; ``bool`` → ``true`` / ``false``; ``int`` → its digits
+        - ``float`` → its ``repr`` (finite values only)
+        - ``Decimal`` → positional digits with the ``dec`` suffix, e.g. ``1.50dec``,
+          written by :func:`~surreal_sdk.protocol.cbor.format_decimal` like a
+          bound ``Decimal`` (finite and in range only; places beyond the 28th
+          rounded off as SurrealDB rounds them)
+        - ``str`` → a single-quoted string with the same characters
+        - ``UUID`` → ``u'...'``
+        - ``datetime`` → ``d'...'`` in UTC; a naive datetime is read as UTC
+        - ``date`` → ``d'YYYY-MM-DD'``, midnight UTC
+        - ``list`` / ``tuple`` → an array; ``dict`` with ``str`` keys → an object
+        - ``RecordId`` → the record link: the table and a string id between
+          backticks, an ``int`` id as a bare number
+
+        Args:
+            value: The value to render
+
+        Returns:
+            The SurrealQL literal
+
+        Raises:
+            TypeError: The value is of any other type (``set``, ``bytes``,
+                ``Duration``, ``Table``, arbitrary objects...), is a NaN or
+                infinite ``float``/``Decimal``, or holds a dict key that is not
+                a ``str`` or a record id of an unsupported type.
+            ValueError: A ``Decimal`` is above the largest SurrealDB decimal
+                in magnitude.
         """
-        from datetime import date, datetime
-        from uuid import UUID
-
-        from ..protocol.cbor import RecordId
-
         if value is None:
             return "NONE"
         if isinstance(value, bool):
             return "true" if value else "false"
-        if isinstance(value, (int, float)):
-            return str(value)
-        if isinstance(value, RecordId):
-            # Emit as a record reference: table:id (unquoted, SurrealQL thing syntax)
-            return str(value)
+        if isinstance(value, int):
+            return int.__repr__(value)
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise TypeError(f"live() filter values must be finite numbers, got {value!r}")
+            return float.__repr__(value)
+        if isinstance(value, Decimal):
+            if not value.is_finite():
+                raise TypeError(f"live() filter values must be finite numbers, got {value!r}")
+            return f"{format_decimal(value)}dec"
+        if isinstance(value, str):
+            return _string_literal(value)
         if isinstance(value, UUID):
             return f"u'{value}'"
         if isinstance(value, datetime):
-            return f"d'{value.isoformat()}'"
+            if value.utcoffset() is None:
+                value = value.replace(tzinfo=UTC)
+            return f"d'{value.astimezone(UTC).isoformat()}'"
         if isinstance(value, date):
             return f"d'{value.isoformat()}'"
-        if isinstance(value, str):
-            # Escape single quotes inside the string
-            escaped = value.replace("\\", "\\\\").replace("'", "\\'")
-            return f"'{escaped}'"
+        if isinstance(value, RecordId):
+            return _record_literal(value)
         if isinstance(value, (list, tuple)):
             items = ", ".join(LiveSelectStream._format_value(v) for v in value)
             return f"[{items}]"
-        # Fallback: convert to string and quote
-        escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
-        return f"'{escaped}'"
+        if isinstance(value, dict):
+            entries: list[str] = []
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise TypeError(f"live() filter: object keys must be str, got key {key!r}")
+                entries.append(f"{_string_literal(key)}: {LiveSelectStream._format_value(item)}")
+            return "{" + ", ".join(entries) + "}"
+        raise TypeError(f"live() filter values of type {type(value).__name__} have no SurrealQL literal: {value!r}")
 
     @staticmethod
     def _inline_params_static(sql: str, params: dict[str, Any]) -> str:
-        """Replace $param references with inline values in the SQL string.
+        """Replace each ``$name`` that has a value in *params* with its literal.
 
-        Uses regex word-boundary matching to avoid substituting partial
-        tokens or occurrences inside string literals.
+        One pass with a callable replacement: the inserted text is never
+        scanned again, so a ``$other`` inside a string value stays text, and
+        it is never read as a ``re`` replacement pattern, so backslashes come
+        through as rendered. A ``$name`` with no value in *params* (``$auth``,
+        ``$this``...) is left as written.
+
+        Args:
+            sql: The query text
+            params: The values for the ``$name`` references
+
+        Returns:
+            The query text with the values written in
+
+        Raises:
+            TypeError: A referenced value has no SurrealQL literal
+                (see :meth:`_format_value`).
+            ValueError: A referenced ``Decimal`` is out of range
+                (see :meth:`_format_value`).
         """
-        result = sql
-        for key in sorted(params, key=len, reverse=True):
-            # Match $key only when followed by a non-identifier character (or end of string)
-            pattern = re.escape(f"${key}") + r"(?![a-zA-Z0-9_])"
-            result = re.sub(pattern, LiveSelectStream._format_value(params[key]), result)
-        return result
+
+        def render(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name in params:
+                return LiveSelectStream._format_value(params[name])
+            return match.group(0)
+
+        return _PARAM_REF_RE.sub(render, sql)
 
     async def start(self) -> str:
         """

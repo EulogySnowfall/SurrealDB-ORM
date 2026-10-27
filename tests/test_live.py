@@ -750,105 +750,392 @@ class TestQuerySetLiveExtended:
 # ==================== _format_value & _parse_id ====================
 
 
+def _render(value: object) -> str:
+    from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+    return LiveSelectStream._format_value(value)
+
+
+def _inline(sql: str, params: dict[str, object]) -> str:
+    from src.surreal_sdk.streaming.live_select import LiveSelectStream
+
+    return LiveSelectStream._inline_params_static(sql, params)
+
+
 class TestFormatValue:
-    """Tests for LiveSelectStream._format_value() inline param formatting."""
+    """``LiveSelectStream._format_value()``: the SurrealQL literal of each value.
+
+    SurrealDB 2.x does not evaluate bound parameters in a ``LIVE SELECT``
+    WHERE clause, so each value is written into the query text. The literal
+    must designate exactly what the same value bound as a parameter would;
+    every form below is checked against a bound value on 2.7.0 by
+    ``tests/test_issue_246_v2_integration.py``.
+    """
 
     def test_none(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+        assert _render(None) == "NONE"
 
-        assert LiveSelectStream._format_value(None) == "NONE"
-
-    def test_bool_true(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        assert LiveSelectStream._format_value(True) == "true"
-
-    def test_bool_false(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        assert LiveSelectStream._format_value(False) == "false"
+    def test_bool(self) -> None:
+        assert _render(True) == "true"
+        assert _render(False) == "false"
 
     def test_int(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+        assert _render(42) == "42"
+        assert _render(-5) == "-5"
 
-        assert LiveSelectStream._format_value(42) == "42"
+    def test_int_enum_renders_its_value(self) -> None:
+        from enum import Enum
+
+        class Level(int, Enum):
+            HIGH = 3
+
+        assert _render(Level.HIGH) == "3"
 
     def test_float(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+        assert _render(3.14) == "3.14"
+        assert _render(3.0) == "3.0"
+        assert _render(1e20) == "1e+20"
+        assert _render(-1e-05) == "-1e-05"
 
-        assert LiveSelectStream._format_value(3.14) == "3.14"
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_float_raises(self, value: float) -> None:
+        with pytest.raises(TypeError, match="finite"):
+            _render(value)
 
     def test_string(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+        assert _render("hello") == "'hello'"
 
-        assert LiveSelectStream._format_value("hello") == "'hello'"
+    @pytest.mark.parametrize(
+        ("value", "literal"),
+        [
+            ("it's", "'it\\'s'"),
+            ("a\\b", "'a\\\\b'"),
+            ("ends with \\", "'ends with \\\\'"),
+            ("\\'", "'\\\\\\''"),
+            ('say "hi"', "'say \"hi\"'"),
+            ("a `b`", "'a `b`'"),
+            ("costs $other", "'costs $other'"),
+            ("\\1 \\g<0>", "'\\\\1 \\\\g<0>'"),
+            ("line\nbreak", "'line\nbreak'"),
+        ],
+        ids=[
+            "quote",
+            "backslash",
+            "trailing-backslash",
+            "backslash-quote",
+            "double-quote",
+            "backtick",
+            "dollar",
+            "group-ref",
+            "newline",
+        ],
+    )
+    def test_string_literal_keeps_every_character(self, value: str, literal: str) -> None:
+        assert _render(value) == literal
 
-    def test_string_with_quotes(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+    def test_str_enum_renders_its_value(self) -> None:
+        from enum import Enum
 
-        assert LiveSelectStream._format_value("it's") == "'it\\'s'"
+        class Color(str, Enum):
+            RED = "red"
 
-    def test_list(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+        assert _render(Color.RED) == "'red'"
 
-        assert LiveSelectStream._format_value([1, "a"]) == "[1, 'a']"
+    def test_decimal(self) -> None:
+        from decimal import Decimal
 
-    def test_record_id(self) -> None:
-        from src.surreal_sdk.protocol.cbor import RecordId
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+        assert _render(Decimal("9.99")) == "9.99dec"
+        assert _render(Decimal("-1.50")) == "-1.50dec"
+        assert _render(Decimal("123.4567890123456789012345")) == "123.4567890123456789012345dec"
 
-        rid = RecordId(table="users", id="abc123")
-        assert LiveSelectStream._format_value(rid) == "users:abc123"
+    def test_decimal_in_scientific_notation_renders_positional(self) -> None:
+        """2.7.0 reads ``1E+2dec`` but refuses ``1E+2`` as a decimal parameter; one form for both."""
+        from decimal import Decimal
+
+        assert _render(Decimal("1E+2")) == "100dec"
+        assert _render(Decimal("1E-5")) == "0.00001dec"
+
+    @pytest.mark.parametrize("digits", ["NaN", "sNaN", "Infinity", "-Infinity"])
+    def test_non_finite_decimal_raises(self, digits: str) -> None:
+        from decimal import Decimal
+
+        with pytest.raises(TypeError, match="finite"):
+            _render(Decimal(digits))
+
+    @pytest.mark.parametrize(
+        ("digits", "literal"),
+        [
+            ("79228162514264337593543950335", "79228162514264337593543950335dec"),
+            ("-79228162514264337593543950335", "-79228162514264337593543950335dec"),
+            ("1E-28", "0.0000000000000000000000000001dec"),
+            ("0.1234567890123456789012345678", "0.1234567890123456789012345678dec"),
+        ],
+        ids=["max", "min", "smallest-step", "28-places"],
+    )
+    def test_decimal_at_the_range_bounds(self, digits: str, literal: str) -> None:
+        from decimal import Decimal
+
+        assert _render(Decimal(digits)) == literal
+
+    @pytest.mark.parametrize(
+        "digits",
+        ["1e1000000000", "-1e1000000000", "79228162514264337593543950336", "1E+29"],
+        ids=["huge", "huge-negative", "max-plus-one", "1E+29"],
+    )
+    def test_out_of_range_decimal_raises(self, digits: str) -> None:
+        """Out-of-range Decimal values raise instead of being expanded."""
+        from decimal import Decimal
+
+        with pytest.raises(ValueError, match="out of range"):
+            _render({"price": [Decimal(digits)]})
+
+    def test_extreme_decimal_exponents_never_write_their_digits(self) -> None:
+        import tracemalloc
+        from decimal import Decimal
+
+        tracemalloc.start()
+        try:
+            with pytest.raises(ValueError):
+                _render(Decimal("1e1000000000"))
+            tiny = _render(Decimal("1e-1000000000"))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < 1_000_000
+        assert tiny == "0.0000000000000000000000000000dec"
+
+    def test_decimal_places_beyond_28_are_rounded_like_a_bound_decimal(self) -> None:
+        """Half away from zero at 28 places, as SurrealDB reads a longer value."""
+        from decimal import Decimal
+
+        assert _render(Decimal("0.00000000000000000000000000025")) == "0.0000000000000000000000000003dec"
+        assert _render(Decimal("-0.00000000000000000000000000025")) == "-0.0000000000000000000000000003dec"
+        assert _render(Decimal(1) / Decimal(30)) == "0.0333333333333333333333333333dec"
 
     def test_uuid(self) -> None:
         from uuid import UUID
 
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
         uid = UUID("12345678-1234-5678-1234-567812345678")
-        assert LiveSelectStream._format_value(uid) == f"u'{uid}'"
+        assert _render(uid) == f"u'{uid}'"
 
-    def test_datetime(self) -> None:
+    def test_datetime_utc(self) -> None:
+        from datetime import UTC, datetime
+
+        assert _render(datetime(2026, 2, 1, 12, 30, tzinfo=UTC)) == "d'2026-02-01T12:30:00+00:00'"
+
+    def test_datetime_with_offset_is_converted_to_utc(self) -> None:
+        from datetime import datetime, timedelta, timezone
+
+        when = datetime(2026, 2, 1, 14, 30, 0, 250000, tzinfo=timezone(timedelta(hours=2)))
+        assert _render(when) == "d'2026-02-01T12:30:00.250000+00:00'"
+
+    def test_naive_datetime_is_read_as_utc(self) -> None:
+        """Like the CBOR encoder's datetime branch: a naive value means UTC."""
         from datetime import datetime
 
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        dt = datetime(2026, 2, 1, 12, 30, 0)
-        assert LiveSelectStream._format_value(dt) == f"d'{dt.isoformat()}'"
+        assert _render(datetime(2026, 2, 1, 12, 30)) == "d'2026-02-01T12:30:00+00:00'"
 
     def test_date(self) -> None:
         from datetime import date
 
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+        assert _render(date(2026, 2, 1)) == "d'2026-02-01'"
 
-        d = date(2026, 2, 1)
-        assert LiveSelectStream._format_value(d) == f"d'{d.isoformat()}'"
+    def test_list_and_tuple(self) -> None:
+        assert _render([1, "a", None]) == "[1, 'a', NONE]"
+        assert _render(("x", 2)) == "['x', 2]"
+        assert _render([]) == "[]"
+
+    def test_dict_renders_an_object_literal(self) -> None:
+        assert _render({"theme": "dark"}) == "{'theme': 'dark'}"
+        assert _render({}) == "{}"
+
+    def test_dict_keys_and_values_render_recursively(self) -> None:
+        from decimal import Decimal
+
+        value = {"it's": [1, {"a b": Decimal("1.5")}], "": None}
+        assert _render(value) == "{'it\\'s': [1, {'a b': 1.5dec}], '': NONE}"
+
+    def test_dict_with_non_string_key_raises(self) -> None:
+        with pytest.raises(TypeError, match="key"):
+            _render({1: "one"})
+
+    def test_record_id(self) -> None:
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        assert _render(RecordId(table="users", id="abc123")) == "`users`:`abc123`"
+
+    def test_record_id_int_stays_numeric(self) -> None:
+        """``t:123`` is the numeric record; the string ``"123"`` is another one."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        assert _render(RecordId(table="t", id=123)) == "`t`:123"
+        assert _render(RecordId(table="t", id=-5)) == "`t`:-5"
+        assert _render(RecordId(table="t", id="123")) == "`t`:`123`"
+        assert _render(RecordId(table="t", id="7qvdzsc14e5clo8sg064")) == "`t`:`7qvdzsc14e5clo8sg064`"
+
+    @pytest.mark.parametrize(
+        ("record_id", "literal"),
+        [
+            ("a b", "`a b`"),
+            ("a;b", "`a;b`"),
+            ("a'b", "`a'b`"),
+            ('a"b', '`a"b`'),
+            ("a`b", "`a\\`b`"),
+            ("a\\b", "`a\\\\b`"),
+            ("a\\", "`a\\\\`"),
+            ("a$b", "`a$b`"),
+            ("a-b", "`a-b`"),
+            ("", "``"),
+        ],
+        ids=[
+            "space",
+            "semicolon",
+            "quote",
+            "double-quote",
+            "backtick",
+            "backslash",
+            "trailing-backslash",
+            "dollar",
+            "dash",
+            "empty",
+        ],
+    )
+    def test_record_id_string_ids(self, record_id: str, literal: str) -> None:
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        assert _render(RecordId(table="t", id=record_id)) == f"`t`:{literal}"
+        assert _render(RecordId(table=record_id, id=1)) == f"{literal}:1"
+
+    def test_record_id_with_array_object_and_uuid_ids(self) -> None:
+        from uuid import UUID
+
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        uid = UUID("12345678-1234-5678-1234-567812345678")
+        assert _render(RecordId(table="t", id=["a", 1])) == "`t`:['a', 1]"
+        assert _render(RecordId(table="t", id={"k": "v"})) == "`t`:{'k': 'v'}"
+        assert _render(RecordId(table="t", id=uid)) == f"`t`:u'{uid}'"
+
+    @pytest.mark.parametrize("record_id", [True, 1.5, None])
+    def test_record_id_with_unsupported_id_raises(self, record_id: object) -> None:
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        with pytest.raises(TypeError):
+            _render(RecordId(table="t", id=record_id))
+
+    def test_record_id_with_non_string_table_raises(self) -> None:
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        with pytest.raises(TypeError):
+            _render(RecordId(table=1, id="a"))  # type: ignore[arg-type]
+
+    def test_unsupported_types_raise(self) -> None:
+        from src.surreal_sdk.protocol.cbor import Duration, Table
+
+        for value in [{1, 2}, frozenset({1}), b"bytes", Duration("1h"), Table("users"), object(), 1j]:
+            with pytest.raises(TypeError, match="live"):
+                _render(value)
 
 
 class TestInlineParams:
-    """Tests for LiveSelectStream._inline_params_static()."""
+    """``LiveSelectStream._inline_params_static()``: one substitution pass."""
 
     def test_single_param(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
         sql = "LIVE SELECT * FROM users WHERE role = $_f0"
-        result = LiveSelectStream._inline_params_static(sql, {"_f0": "admin"})
-        assert result == "LIVE SELECT * FROM users WHERE role = 'admin'"
+        assert _inline(sql, {"_f0": "admin"}) == "LIVE SELECT * FROM users WHERE role = 'admin'"
 
     def test_multiple_params(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
         sql = "LIVE SELECT * FROM users WHERE role = $_f0 AND age >= $_f1"
-        result = LiveSelectStream._inline_params_static(sql, {"_f0": "admin", "_f1": 18})
-        assert result == "LIVE SELECT * FROM users WHERE role = 'admin' AND age >= 18"
+        assert _inline(sql, {"_f0": "admin", "_f1": 18}) == "LIVE SELECT * FROM users WHERE role = 'admin' AND age >= 18"
 
-    def test_longer_key_first(self) -> None:
-        """$_f10 should be replaced before $_f1 to avoid partial replacement."""
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+    def test_longer_name_is_not_split(self) -> None:
+        """``$_f10`` is its own name, never ``$_f1`` followed by ``0``."""
+        assert _inline("WHERE x = $_f1 AND y = $_f10", {"_f1": "a", "_f10": "b"}) == "WHERE x = 'a' AND y = 'b'"
+        assert _inline("WHERE y = $_f10", {"_f1": "a"}) == "WHERE y = $_f10"
 
-        sql = "WHERE x = $_f1 AND y = $_f10"
-        result = LiveSelectStream._inline_params_static(sql, {"_f1": "a", "_f10": "b"})
-        assert result == "WHERE x = 'a' AND y = 'b'"
+    def test_inserted_text_is_not_rescanned(self) -> None:
+        """A ``$name`` inside a value is part of the string, whatever the order of the keys."""
+        params = {"a": "has $b", "b": 1}
+        assert _inline("x = $a AND y = $b", params) == "x = 'has $b' AND y = 1"
+        assert _inline("x = $a AND y = $b", dict(reversed(params.items()))) == "x = 'has $b' AND y = 1"
+
+    def test_inserted_text_is_not_a_replacement_pattern(self) -> None:
+        """Backslashes and group references in a value come through unchanged."""
+        assert _inline("x = $a", {"a": "C:\\dir\\"}) == "x = 'C:\\\\dir\\\\'"
+        assert _inline("x = $a", {"a": "\\g<0> \\1"}) == "x = '\\\\g<0> \\\\1'"
+
+    def test_names_without_a_value_are_left_as_written(self) -> None:
+        assert _inline("x = $auth.id AND y = $_f0 AND z = $", {"_f0": 1}) == "x = $auth.id AND y = 1 AND z = $"
+
+    def test_unsupported_value_raises(self) -> None:
+        with pytest.raises(TypeError):
+            _inline("x = $a", {"a": {1, 2}})
+
+    async def test_resubscribe_sends_the_same_query(self) -> None:
+        """After a reconnect the re-created LIVE SELECT carries the same literals."""
+        from decimal import Decimal
+
+        from src.surreal_sdk.connection.websocket import WebSocketConnection
+        from src.surreal_sdk.protocol.cbor import RecordId
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream, LiveSubscriptionParams
+        from src.surreal_sdk.types import QueryResponse
+
+        params = {"_f0": {"theme": "dark"}, "_f1": Decimal("9.99"), "_f2": RecordId("a", "x`y")}
+        where = "prefs = $_f0 AND price = $_f1 AND author = $_f2"
+        sent: list[str] = []
+
+        async def fake_query(sql: str, vars: dict[str, object] | None = None) -> QueryResponse:
+            sent.append(sql)
+            return QueryResponse.from_rpc_result([{"status": "OK", "result": "new-live-id", "time": "1ms"}])
+
+        conn = WebSocketConnection("ws://localhost:8000", "ns", "db")
+        conn.query = fake_query  # type: ignore[method-assign]
+        stream = LiveSelectStream(conn, "items", where=where, params=params)
+
+        await stream.start()
+        await conn._resubscribe_one(
+            LiveSubscriptionParams(table="items", where=where, params=params, diff=False, callback=None, on_reconnect=None)
+        )
+
+        expected = "LIVE SELECT * FROM items WHERE prefs = {'theme': 'dark'} AND price = 9.99dec AND author = `a`:`x\\`y`"
+        assert sent == [expected, expected]
+
+    async def test_diff_mode_renders_the_same_literals(self) -> None:
+        """``diff=True`` changes nothing in how the filter values are written.
+
+        ``start()`` and the resubscription after a reconnect send the same
+        rendered WHERE clause. Where ``DIFF`` itself goes in the statement is a
+        separate matter, so this test only requires that it is there.
+        """
+        from decimal import Decimal
+
+        from src.surreal_sdk.connection.websocket import WebSocketConnection
+        from src.surreal_sdk.protocol.cbor import RecordId
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream, LiveSubscriptionParams
+        from src.surreal_sdk.types import QueryResponse
+
+        params = {"_f0": {"theme": "dark"}, "_f1": Decimal("9.99"), "_f2": RecordId("a", "x`y")}
+        where = "prefs = $_f0 AND price = $_f1 AND author = $_f2"
+        sent: list[str] = []
+
+        async def fake_query(sql: str, vars: dict[str, object] | None = None) -> QueryResponse:
+            sent.append(sql)
+            return QueryResponse.from_rpc_result([{"status": "OK", "result": "new-live-id", "time": "1ms"}])
+
+        conn = WebSocketConnection("ws://localhost:8000", "ns", "db")
+        conn.query = fake_query  # type: ignore[method-assign]
+        stream = LiveSelectStream(conn, "items", where=where, params=params, diff=True)
+
+        await stream.start()
+        await conn._resubscribe_one(
+            LiveSubscriptionParams(table="items", where=where, params=params, diff=True, callback=None, on_reconnect=None)
+        )
+
+        rendered = "WHERE prefs = {'theme': 'dark'} AND price = 9.99dec AND author = `a`:`x\\`y`"
+        assert len(sent) == 2 and sent[0] == sent[1]
+        assert rendered in sent[0]
+        assert "DIFF" in sent[0]
+        assert "$" not in sent[0]
 
 
 class TestParseId:

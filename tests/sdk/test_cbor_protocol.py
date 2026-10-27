@@ -1,6 +1,6 @@
 """Tests for CBOR protocol support in the SDK."""
 
-from datetime import UTC, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -151,6 +151,144 @@ class TestCBOREncodeDecode:
         encoded = encode(data)
         decoded = decode(encoded)
         assert decoded == data
+
+    def test_decimal_goes_out_with_the_surrealdb_decimal_tag(self) -> None:
+        """``Decimal`` is sent as tag 10, the exact digits as a string.
+
+        cbor2 has a native encoder for ``Decimal`` (tag 4, a decimal fraction),
+        so the ``default`` hook never saw one. SurrealDB 2.7.0 does not read
+        tag 4: it rejects the whole request. Decoding with no tag hook shows
+        the tag that is actually on the wire.
+        """
+        import cbor2
+
+        assert cbor2.loads(encode({"p": Decimal("9.99")})) == {"p": cbor2.CBORTag(TAG_STRING_DECIMAL, "9.99")}
+
+    def test_decimal_keeps_every_digit(self) -> None:
+        """A float would round; the tagged string carries the value exactly."""
+        import cbor2
+
+        digits = "123.4567890123456789012345"
+        assert cbor2.loads(encode([Decimal(digits)])) == [cbor2.CBORTag(TAG_STRING_DECIMAL, digits)]
+        assert cbor2.loads(encode(Decimal("-1.50"))) == cbor2.CBORTag(TAG_STRING_DECIMAL, "-1.50")
+        assert decode(encode(Decimal(digits))) == Decimal(digits)
+
+    def test_decimal_in_scientific_notation_goes_out_positional(self) -> None:
+        """SurrealDB 2.7.0 refuses ``"1E+2"`` in tag 10 ("Expected a valid Decimal value")."""
+        import cbor2
+
+        assert cbor2.loads(encode(Decimal("1E+2"))) == cbor2.CBORTag(TAG_STRING_DECIMAL, "100")
+        assert cbor2.loads(encode(Decimal("1E-5"))) == cbor2.CBORTag(TAG_STRING_DECIMAL, "0.00001")
+
+    @pytest.mark.parametrize(
+        "digits",
+        [
+            "79228162514264337593543950335",
+            "-79228162514264337593543950335",
+            "0.0000000000000000000000000001",
+            "0.1234567890123456789012345678",
+            "1E+28",
+        ],
+        ids=["max", "min", "smallest-step", "28-places", "1E+28"],
+    )
+    def test_decimal_at_the_range_bounds_keeps_its_value(self, digits: str) -> None:
+        """The largest magnitude and 28 places are what a SurrealDB decimal holds."""
+        import cbor2
+
+        tagged = cbor2.loads(encode(Decimal(digits)))
+        assert tagged.tag == TAG_STRING_DECIMAL
+        assert Decimal(tagged.value) == Decimal(digits)
+        assert "E" not in tagged.value
+
+    @pytest.mark.parametrize(
+        "digits",
+        ["1e1000000000", "-1e1000000000", "79228162514264337593543950336", "1E+29", "79228162514264337593543950335.4"],
+        ids=["huge", "huge-negative", "max-plus-one", "1E+29", "max-plus-fraction"],
+    )
+    def test_out_of_range_decimal_raises(self, digits: str) -> None:
+        """Out-of-range Decimal values raise instead of being expanded.
+
+        SurrealDB 2.7.0 rejects the whole request for a magnitude above
+        79228162514264337593543950335. The check is made on the exponent, so
+        ``1e1000000000`` raises without its billion digits ever being written.
+        """
+        with pytest.raises(ValueError, match="out of range"):
+            encode({"p": [Decimal(digits)]})
+
+    def test_extreme_exponents_never_write_their_digits(self) -> None:
+        """Neither a huge nor a tiny exponent allocates digits in proportion to it."""
+        import tracemalloc
+
+        import cbor2
+
+        tracemalloc.start()
+        try:
+            with pytest.raises(ValueError):
+                encode(Decimal("1e1000000000"))
+            tiny = encode(Decimal("1e-1000000000"))
+            zero = encode(Decimal("0E+1000000000"))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < 1_000_000
+        assert cbor2.loads(tiny) == cbor2.CBORTag(TAG_STRING_DECIMAL, "0.0000000000000000000000000000")
+        assert cbor2.loads(zero) == cbor2.CBORTag(TAG_STRING_DECIMAL, "0")
+
+    @pytest.mark.parametrize(
+        ("digits", "sent"),
+        [
+            ("0.00000000000000000000000000025", "0.0000000000000000000000000003"),
+            ("-0.00000000000000000000000000025", "-0.0000000000000000000000000003"),
+            ("0.00000000000000000000000000035", "0.0000000000000000000000000004"),
+            ("0.00000000000000000000000000024", "0.0000000000000000000000000002"),
+            ("1e-40", "0.0000000000000000000000000000"),
+        ],
+        ids=["half-up", "half-up-negative", "half-odd", "below-half", "tiny"],
+    )
+    def test_places_beyond_28_are_rounded_like_surrealdb(self, digits: str, sent: str) -> None:
+        """SurrealDB keeps 28 places and rounds the rest half away from zero (2.7.0)."""
+        import cbor2
+
+        assert cbor2.loads(encode(Decimal(digits))) == cbor2.CBORTag(TAG_STRING_DECIMAL, sent)
+
+    def test_computed_decimal_is_sent_rounded_to_28_places(self) -> None:
+        """A quotient at the default 28-digit precision can carry 29 places or more."""
+        import cbor2
+
+        quotient = Decimal(1) / Decimal(30)
+        assert quotient.as_tuple().exponent == -29
+        assert cbor2.loads(encode(quotient)) == cbor2.CBORTag(TAG_STRING_DECIMAL, "0.0333333333333333333333333333")
+
+    def test_non_finite_decimal_is_left_to_cbor2(self) -> None:
+        """SurrealDB decimals have no NaN/infinity; those keep cbor2's float encoding."""
+        import math
+
+        import cbor2
+
+        assert math.isnan(cbor2.loads(encode(Decimal("NaN"))))
+        assert cbor2.loads(encode(Decimal("-Infinity"))) == float("-inf")
+
+    def test_date_goes_out_as_a_midnight_utc_datetime(self) -> None:
+        """A ``date`` is sent as a datetime at midnight UTC, what ``d'YYYY-MM-DD'`` means.
+
+        cbor2 has a native ``date`` encoder (tag 1004), so the ``default`` hook
+        never saw one, and SurrealDB 2.7.0 rejects tag 1004 for the whole
+        request. The bytes must be those of a timezone-aware ``datetime``
+        (tag 0), the form every datetime already travels in.
+        """
+        import cbor2
+
+        midnight = datetime(2026, 2, 1, tzinfo=UTC)
+        assert encode(date(2026, 2, 1)) == cbor2.dumps(midnight)
+        assert encode(date(2026, 2, 1))[0] == 0xC0  # CBOR tag 0: date/time string
+        assert decode(encode({"d": [date(2026, 2, 1)]})) == {"d": [midnight]}
+
+    def test_datetime_is_not_truncated_to_its_date(self) -> None:
+        """``datetime`` subclasses ``date``; its time of day must survive."""
+        import cbor2
+
+        when = datetime(2026, 2, 1, 12, 30, 45, tzinfo=UTC)
+        assert encode(when) == cbor2.dumps(when)
 
     def test_encode_decode_record_id(self) -> None:
         """Encode and decode RecordId with custom tag."""
