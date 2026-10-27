@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.2)
+> Context document for Claude AI - Last updated: October 2026 (0.34.5)
 
 ## Project Vision
 
@@ -10,14 +10,46 @@
 
 ---
 
-## Current Version: 0.34.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.0)
+## Current Version: 0.34.5 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.0**  | 0.34.x      | Active development              |
+| `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.5
+
+SurrealDB pin 3.3.0 → 3.3.4 and a monitor fix (#234, #238), no library code
+changes. **0.34.3** / **0.34.4** were the Dependabot auto-releases of #223
+(`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and #227 (`multidict`
+6.9.1, one advisory), backfilled here.
+
+- **The 3.x monitor sat on 3.3.0 for a week, green.** It took the first
+  matching release in API order, and the releases API orders by *creation
+  date*, not version. The v3.2.6 backport was cut from a newer commit than
+  v3.3.4 (2026-10-18 vs 2026-10-13), so the API listed it first, the monitor
+  picked 3.2.6, the no-downgrade guard (#155) refused it — correctly — and the
+  run ended "nothing to do". Selection now paginates, keeps plain `X.Y.Z`
+  tags of its own major (`sed`, because `sort -V` ranks a mislabelled
+  `3.4.0-rc.1` above every 3.3.x) and takes the highest. The 2.x monitor and the
+  pre-release canary had the same `[0]` and are fixed too.
+- **No `releases/latest` fallback in the 3.x monitor**: it is the newest release
+  of *any* line and would have proposed 4.0.0 the day it ships, which is the
+  user's decision, not the monitor's.
+- **An API failure used to read as "nothing to do"** — masked by the pipe into
+  `sed`. It fails the job now. Release notes/title are read by tag
+  (`releases/tags/vX.Y.Z`); a first-page scan would have pinned a security
+  release beyond page one without the version bump that ships it.
+- **The pin moved in the fix PR itself**, so no auto-merged pin PR released
+  before the support statement was written (the 0.33.5 / 0.34.0 rot).
+  Integration: 3.3.4 and 3.2.6 both 467 passed, 1 skipped, 1 xfailed. #147 is
+  still XFAIL on 3.3.4 — the `LET` prelude stays.
+- **A lock-file bump does not reach installed users.** `aiohttp` is a runtime
+  dependency, but the declared floor is still `aiohttp>=3.12`; 0.34.3 changed
+  only `uv.lock`, so the advisory fixes reach an existing environment only when
+  the user upgrades `aiohttp` themselves.
 
 ### What's New in 0.34.2
 

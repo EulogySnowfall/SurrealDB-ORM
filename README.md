@@ -30,12 +30,33 @@
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.0**  | 0.34.x      | Active development              |
+| `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
 
 ---
+
+## What's New in 0.34.5
+
+**SurrealDB 3.3.4 release.** No library code changes vs 0.34.2.
+
+- **Tested against SurrealDB 3.3.4; supported range unchanged (3.2.x – 3.3.x).** The integration suite
+  passes against 3.3.4 and against 3.2.6 at the floor. The upstream defect behind
+  [#147](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/147) still reproduces on 3.3.4, so
+  `Subquery` keeps its `LET` prelude.
+- **The SurrealDB version monitors now pick the newest stable release by version**
+  ([#234](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/234)). They took the first release the
+  API listed, which is ordered by creation date: the v3.2.6 backport, cut from a newer commit than v3.3.4,
+  was listed first and hid it, and the pin stayed at 3.3.0 while every daily run ended green. An API
+  failure now fails the run instead.
+
+### Maintenance releases 0.34.3 – 0.34.4
+
+| Version | Date       | Content                                                                                          |
+| ------- | ---------- | ------------------------------------------------------------------------------------------------ |
+| 0.34.4  | 2026-10-20 | `multidict` 6.9.1 in the lock file (one advisory; transitive, via `aiohttp`). No library changes. |
+| 0.34.3  | 2026-10-20 | `aiohttp` 3.14.4 and `yarl` 1.25.1 in the lock file (three advisories). `aiohttp` is a runtime dependency whose floor is unchanged: upgrade it in your environment. No library changes. |
 
 ## What's New in 0.34.2
 
@@ -1432,7 +1453,7 @@ pip install surrealdb-orm
 pip install surrealdb-orm[cli]
 ```
 
-**Requirements:** Python 3.12+ | SurrealDB 3.2.x – 3.3.x, tested against 3.3.0 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
+**Requirements:** Python 3.12+ | SurrealDB 3.2.x – 3.3.x, tested against 3.3.4 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
 
 **Included:** `pydantic`, `httpx`, `aiohttp`, `cbor2` (CBOR is the default protocol for WebSocket)
 
@@ -1445,7 +1466,7 @@ pip install surrealdb-orm[cli]
 | **0.30.x – 0.31.x**   | 3.0 – 3.1     | —      | Superseded          |
 | **0.21.x**            | 2.6.x – 2.7.x | `v2`   | Security fixes only |
 
-- **SurrealDB 3.2.x – 3.3.x** — Use `surrealdb-orm >= 0.34.0` (this branch). Tested against SurrealDB **3.3.0**, and against 3.2.4 to keep the floor honest.
+- **SurrealDB 3.2.x – 3.3.x** — Use `surrealdb-orm >= 0.34.0` (this branch). Tested against SurrealDB **3.3.4**, and against 3.2.6 to keep the floor honest.
 - **SurrealDB 3.0 – 3.1** — Pin `surrealdb-orm<0.32`. 0.32.0 requires 3.2+ and is not tested against 3.1.x.
 - **SurrealDB 2.6.x – 2.7.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`; 2.7.x from 0.21.8, tested against **2.7.0**). This branch receives security patches but no new features.
 

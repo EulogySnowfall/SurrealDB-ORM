@@ -6,6 +6,84 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.5] - 2026-10-27
+
+**SurrealDB 3.3.4 release.** No library code changes vs 0.34.4. The tested
+server moves from 3.3.0 to 3.3.4; the supported range stays 3.2.x – 3.3.x.
+0.34.3 and 0.34.4, which shipped without entries, are backfilled below.
+
+### Changed
+
+- **SurrealDB pin 3.3.0 → 3.3.4** (`.surrealdb-version`, `devops/docker-compose.yml`,
+  #238). The integration suite passes against 3.3.4 (467 passed, 1 skipped,
+  1 expected failure, 0 failed) and against 3.2.6 at the floor (same counts).
+  The skip is the refresh token the test server does not return; the expected
+  failure is the upstream #147 check, still failing on 3.3.4, so `Subquery`
+  keeps its `LET` prelude.
+- **Docs.** README, `SECURITY.md` and `CLAUDE.md` state "tested against 3.3.4".
+
+### Fixed — CI
+
+- **The SurrealDB 3.x monitor now picks the newest stable 3.x release by
+  version (#234, #238).** It took the first matching release in API order, and the
+  releases API lists by creation date, not by version. The v3.2.6 backport was
+  cut from a newer commit than v3.3.4 (2026-10-18 vs 2026-10-13), so the API
+  listed it first, the monitor picked 3.2.6, the no-downgrade guard (#155)
+  refused it, and every daily run ended green while the pin stayed at 3.3.0.
+  Selection now reads every page of the API, keeps plain `X.Y.Z` tags of the
+  monitor's own major, and takes the highest with `sort -V`. The 2.x monitor
+  and the pre-release canary had the same selection and are fixed too.
+- **Security detection reads the chosen release by tag**
+  (`releases/tags/vX.Y.Z`) for its notes and title, instead of scanning the
+  first page of the list. A security release outside that page used to read as
+  having no notes. A version with no release entry (an image-only tag, #155)
+  still reads as having no notes and does not abort the run.
+
+### Behaviour change (CI only)
+
+- A GitHub API failure now fails the check job of both monitors and of the
+  pre-release canary, instead of ending green as "nothing to do".
+- The 3.x monitor no longer falls back to `releases/latest`, which is the newest
+  release of any line and could have proposed a new major such as 4.0.0.
+- A manually dispatched version must be a whole `X.Y.Z` of the monitor's own
+  line (`3.3` or `3.3.x` is refused). Dispatch inputs reach the monitor scripts
+  through `env:` and are validated there.
+
+---
+
+## [0.34.4] - 2026-10-20
+
+**Dependency maintenance release.** No library code changes vs 0.34.3.
+Auto-released by the Dependabot flow; entry backfilled in 0.34.5.
+
+### Security
+
+- **`multidict` 6.7.1 → 6.9.1 in `uv.lock` (#227)** — GHSA-54p9-h82j-f925
+  (CVE-2026-104874), a reference leak in the items-view union and subtraction.
+  `multidict` is a transitive dependency of `aiohttp`; it is not declared by
+  this package, so an existing environment keeps its installed version until
+  it is upgraded.
+
+---
+
+## [0.34.3] - 2026-10-20
+
+**Dependency maintenance release.** No library code changes vs 0.34.2.
+Auto-released by the Dependabot flow; entry backfilled in 0.34.5.
+
+### Security
+
+- **`aiohttp` 3.14.3 → 3.14.4 in `uv.lock` (#223)**, with `yarl` 1.24.2 →
+  1.25.1 — GHSA-2g87-pp6c-29x5 (excessive or unbounded memory and CPU use),
+  GHSA-494j-54xm-rwp3 (CVE-2026-111063, `Secure` cookie attribute not enforced
+  for a shared cookie) and GHSA-5wr8-gcqf-gqf3 (CVE-2026-111064, no initial
+  request/header timeout in aiohttp's server). `aiohttp` is a runtime
+  dependency (the SDK's WebSocket client; the SDK does not use aiohttp's
+  server). The declared floor stays `aiohttp>=3.12`, so upgrade it in your
+  environment: `pip install -U aiohttp`.
+
+---
+
 ## [0.34.2] - 2026-10-01
 
 **CI maintenance release.** No library code changes vs 0.34.1.
