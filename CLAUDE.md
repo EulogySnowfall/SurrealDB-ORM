@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.5)
+> Context document for Claude AI - Last updated: October 2026 (0.34.6)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.5 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.6 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,58 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.6
+
+Two fixes, both with a behaviour change: field permissions survive migrations
+(#195, #248), and the atomic array helpers stop losing writes (#233, #257).
+Pin unchanged (3.3.4). `v2` has both defects: backports #259 and #261.
+Integration at 0.34.6: 3.3.4 and 3.2.6 both 537 passed, 1 skipped, 1 xfailed
+(#147 still XFAIL); unit 2,377 on 3.12/3.13/3.14.
+
+- **`DEFINE FIELD OVERWRITE` replaces the whole definition**, and the ORM only
+  re-emits the clauses it models, so every `AlterField` (and its rollback) and
+  every `define_table()` call reset a field's `PERMISSIONS` to `FULL`.
+  `FieldState` has no permissions attribute and gaining one was not needed:
+  `ALTER FIELD` states each modelled clause (set, or `DROP …`) and leaves the
+  rest as the database has it. One renderer, `_render_alter_field()`, takes the
+  same parameters as `_render_define_field()`. `define_table()` is now
+  `DEFINE FIELD IF NOT EXISTS` + `ALTER FIELD` per field.
+- **`ALTER FIELD` on a column does not re-derive its element sub-fields**
+  (`tags.*`, `n.*.*`), which `OVERWRITE` did. Each alteration is followed by
+  `ALTER FIELD IF EXISTS <name>.* … TYPE <element>` per level, outermost first
+  (`_render_element_types()`). `FLEXIBLE` goes down only to levels whose type
+  holds an object (`_contains_object()` mirrors the server's rule, checked on
+  3.2.6 and 3.3.4); every other level gets `DROP FLEXIBLE`, because the server
+  can leave `FLEXIBLE` there and then refuses any `TYPE` that keeps it. The
+  PR's intermediate commits broke element typing, then `FLEXIBLE` rollbacks,
+  both of which `OVERWRITE` had handled; neither shipped. When replacing a
+  statement with a "narrower" one, list what the old one did implicitly before
+  calling it equivalent.
+- **`AlterField` on a missing field now fails** (`MigrationStatementError`)
+  where `OVERWRITE` created it. Since 0.33.1 `makemigrations` diffs against the
+  live database, so a schema built by `define_table()` or by hand yields
+  `AlterField`s for fields no migration creates; a replay onto a fresh database
+  stops there. The fix is an `AddField` in the chain — `CreateTable` alone
+  defines no field.
+- **`parse_define_field()` cuts at the first top-level `PERMISSIONS` followed by
+  `FULL`/`NONE`/`FOR`.** `INFO FOR TABLE` writes field names in a permission's
+  `WHERE` unescaped, so `WHERE type = 'public'` parsed as the field type and the
+  diff never converged. SurrealDB reports `PERMISSIONS` last (after `COMMENT`,
+  `REFERENCE`, `DEFAULT ALWAYS`, whatever order it was written in).
+- **`+=` is not a set add.** On an array it appends, so `atomic_set_add()` was
+  `atomic_append()` with a different name. It is `array::add()` now, with an
+  `IF type::is_set(field)` branch through `<array>`/`<set>`: `array::add()`
+  rejects a set, and 3.2 does not coerce an array back into `set<T>`.
+  `?? []` covers a missing field (`array::append()` rejects `NONE`).
+- **Same blind spot as 0.32.6's migration executor:** `client.query()` raises
+  only on an RPC failure, and a rejected statement is `status: ERR` inside a
+  successful RPC. The three helpers read only the records, so a conflict came
+  back as `[]` and `@retry_on_conflict` had nothing to retry.
+  `_raise_on_statement_error()` raises `TransactionConflictError` or
+  `QueryError`. Its conflict test is the SDK's substring matcher, which also
+  matches an `ASSERT` message that merely contains "conflict" — a known
+  limitation, left to a follow-up.
 
 ### What's New in 0.34.5
 
