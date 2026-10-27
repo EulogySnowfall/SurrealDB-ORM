@@ -71,15 +71,19 @@ jobs:
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Inputs reach the script as data, as in the pre-release canary.
+          INPUT_VERSION: ${{ inputs.surrealdb_version }}
+          FORCE_UPDATE: ${{ inputs.force_update }}
         run: |
           # --- Determine latest v2.x version ---
-          if [[ -n "${{ inputs.surrealdb_version }}" ]]; then
-            LATEST_VERSION="${{ inputs.surrealdb_version }}"
+          if [[ -n "$INPUT_VERSION" ]]; then
+            LATEST_VERSION="$INPUT_VERSION"
 
-            # Validate that the manual version is 2.X
-            MAJOR=$(echo "$LATEST_VERSION" | cut -d. -f1)
-            if [[ "$MAJOR" -ge 3 ]]; then
-              echo "ERROR: Version $LATEST_VERSION is not a 2.X release."
+            # The whole value must be a 2.X.Y version (see surrealdb-security.yml):
+            # it becomes the pin, the image tag and the PR title.
+            VERSION_RE='^2\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+            if [[ ! "$LATEST_VERSION" =~ $VERSION_RE ]]; then
+              echo "ERROR: the dispatched version is not a 2.X.Y release: $LATEST_VERSION"
               echo "This workflow only supports SurrealDB 2.X. Use the main monitor for 3.X."
               exit 1
             fi
@@ -140,7 +144,7 @@ jobs:
           fi
 
           # Force update overrides the check
-          if [[ "${{ inputs.force_update }}" == "true" ]]; then
+          if [[ "$FORCE_UPDATE" == "true" ]]; then
             HAS_UPDATE="true"
           fi
 

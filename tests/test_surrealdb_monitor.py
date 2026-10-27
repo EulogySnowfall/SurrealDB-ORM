@@ -725,6 +725,48 @@ def test_v3_dispatched_version_of_another_major_is_refused(tmp_path: Path) -> No
     assert run.outputs.get("has-update") != "true", run.log
 
 
+@pytest.mark.parametrize(
+    ("workflow", "version", "pin"),
+    [
+        (V3, "3.3", "3.3.4"),
+        (V3, "3.3.5 ", "3.3.4"),
+        (V3, "3.3.x", "3.3.4"),
+        (V3, "3.3.5\n3.3.6", "3.3.4"),
+        (V2, "2.7", "2.7.0"),
+        (V2, "2.7.1 ", "2.7.0"),
+        (V2, "2.x", "2.7.0"),
+    ],
+)
+def test_a_dispatched_version_must_be_a_whole_version_of_the_line(
+    tmp_path: Path, workflow: str, version: str, pin: str
+) -> None:
+    """The dispatched value becomes the pin, the image tag and the PR title.
+
+    Only the text before the first dot was checked, so `3.3` (a floating image
+    tag) or a value with trailing text was accepted as a candidate.
+    """
+    run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin=pin, inputs={"surrealdb_version": version})
+    assert run.returncode != 0, f"{workflow}: dispatched {version!r} was accepted\n{run.log}"
+    assert "has-update" not in run.outputs, run.log
+    assert "latest-version" not in run.outputs, run.log
+
+
+@pytest.mark.parametrize("workflow", [*MONITORS, CANARY])
+def test_inputs_reach_the_scripts_through_env_only(workflow: str) -> None:
+    """A `${{ inputs.* }}` expanded into a `run:` block becomes part of the script text.
+
+    Every input goes through the step's `env:` instead, as the canary has done
+    from the start, and the script reads it as a variable.
+    """
+    data = yaml.safe_load((WORKFLOW_DIR / workflow).read_text(encoding="utf-8"))
+    for job_name, job in data["jobs"].items():
+        for step in job.get("steps", []):
+            script = step.get("run") or ""
+            assert not re.search(r"\$\{\{\s*(github\.event\.)?inputs\.", script), (
+                f"{workflow}: job {job_name!r}, step {step.get('name')!r} expands an input into its script"
+            )
+
+
 def _canary(tmp_path: Path, **kwargs: Any) -> StepRun:
     return _run_step(tmp_path, CANARY, "check-prerelease", "Resolve pre-release", **kwargs)
 
