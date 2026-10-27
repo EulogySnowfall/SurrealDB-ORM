@@ -30,6 +30,12 @@ class FieldState:
         readonly: Whether the field is read-only
         value: VALUE clause for computed fields
         comment: COMMENT text attached to the field
+        permissions: The field's PERMISSIONS clause, action → rule, as the
+            database reports it, without the FULL entries (FULL is a field's
+            default). Models cannot declare field permissions on this line, so
+            it is only ever filled from the database, and it is left out of
+            equality: a permission set outside the ORM is not a change to undo,
+            it is a clause ``AlterField`` must carry over (#259).
     """
 
     name: str
@@ -42,10 +48,12 @@ class FieldState:
     readonly: bool = False
     value: str | None = None
     comment: str | None = None
+    permissions: dict[str, str] = field(default_factory=dict)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, FieldState):
             return False
+        # `permissions` is deliberately not compared: see the class docstring.
         return (
             self.name == other.name
             and self.field_type == other.field_type

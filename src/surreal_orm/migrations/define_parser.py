@@ -11,12 +11,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .operations import _effective_field_permissions
 from .state import EventState, FieldState, IndexState
 
 # Keywords that delimit clauses in a DEFINE FIELD statement.
 # Order matters: longer keywords first to avoid partial matches.
+# PERMISSIONS is not one: the clause is split off first
+# (_split_field_permissions), so its conditions are never scanned for the other
+# keywords, and an expression naming a field ``permissions`` is not cut short.
 _FIELD_KEYWORDS = [
-    "PERMISSIONS",
     "FLEXIBLE",
     "READONLY",
     "COMMENT",
@@ -25,6 +28,11 @@ _FIELD_KEYWORDS = [
     "VALUE",
     "TYPE",
 ]
+
+# Where a field's PERMISSIONS clause starts: the keyword, then FULL, NONE or
+# FOR — the only three ways the clause can begin. A field *named*
+# ``permissions`` in a VALUE or ASSERT expression is not followed by one.
+_FIELD_PERMISSIONS_START = re.compile(r"PERMISSIONS\s+(?:FULL|NONE|FOR)\b", re.IGNORECASE)
 
 # The four actions a table PERMISSIONS clause can govern, in the order
 # SurrealDB reports them.
@@ -148,6 +156,50 @@ def _consume_until_keyword(text: str, keywords: list[str]) -> tuple[str, str]:
     return text, ""
 
 
+def _split_field_permissions(body: str) -> tuple[str, str]:
+    """Split a DEFINE FIELD body at its PERMISSIONS clause.
+
+    SurrealDB always reports a field's PERMISSIONS clause last, and its
+    ``WHERE`` conditions name fields unescaped — ``FOR select WHERE type =
+    'public'``. Scanned with the other clauses, ``type`` there was read as a
+    TYPE clause, and the ``>`` of a preceding ``ASSERT $value > 0`` hid the
+    PERMISSIONS keyword so the whole clause ended up in the assertion (#259).
+
+    Quotes (``'``, ``"`` and backticks, with backslash escapes), parentheses,
+    brackets and braces are respected. Angle brackets are not tracked: they
+    only nest inside a type, where the keyword cannot appear, while
+    ``ASSERT $value > 0`` would never close.
+
+    Args:
+        body: The statement body after ``DEFINE FIELD name ON table``
+
+    Returns:
+        ``(definition, permissions)``: the body before the clause, and the
+        clause after its ``PERMISSIONS`` keyword (empty when there is none)
+    """
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for i, ch in enumerate(body):
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in "'\"`":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0 and (i == 0 or body[i - 1] in (" ", "\t", "\n")) and _FIELD_PERMISSIONS_START.match(body, i):
+            return body[:i], body[i + len("PERMISSIONS") :].strip()
+    return body, ""
+
+
 def parse_define_field(statement: str) -> FieldState:
     """Parse a DEFINE FIELD statement into a FieldState.
 
@@ -180,7 +232,7 @@ def parse_define_field(statement: str) -> FieldState:
 
     field_name = match.group(1)
     # table_name = match.group(2)  # Not stored in FieldState
-    body = match.group(3)
+    body, raw_permissions = _split_field_permissions(match.group(3))
 
     clauses = _extract_clauses(body, _FIELD_KEYWORDS)
 
@@ -227,6 +279,8 @@ def parse_define_field(statement: str) -> FieldState:
         readonly=readonly,
         value=value_expr,
         comment=comment,
+        # Stored normalised: FULL is a field's default, NONE is a restriction.
+        permissions=_effective_field_permissions(_parse_permissions(raw_permissions)),
     )
 
 

@@ -99,7 +99,10 @@ ARGON2_VALUE = "crypto::argon2::generate($value)"
 #: renderers, and every clause added to one of them was eventually forgotten in
 #: another — #195 (VALUE) and the DEFAULT divergence below are the same
 #: omission. REFERENCE / ON DELETE is absent: it is a SurrealDB 3.0 clause and
-#: was deliberately not backported to this branch.
+#: was deliberately not backported to this branch. PERMISSIONS is absent too:
+#: ``AddField`` must not emit it (models cannot declare field permissions on
+#: this line), and ``AlterField`` passes its two slots explicitly, one per
+#: direction, to carry over what the database already has (#259).
 FIELD_DEFINITION_FIELDS = (
     "field_type",
     "nullable",
@@ -168,6 +171,7 @@ def _render_define_field(
     assertion: str | None = None,
     readonly: bool = False,
     comment: str | None = None,
+    permissions: dict[str, str] | None = None,
 ) -> str:
     """
     Render one ``DEFINE FIELD`` statement.
@@ -187,6 +191,8 @@ def _render_define_field(
         assertion: ASSERT expression
         readonly: READONLY
         comment: COMMENT text
+        permissions: Action → rule mapping, rendered last; no clause when
+            empty, which leaves the field at the server default, FULL
 
     Returns:
         The complete statement, semicolon included
@@ -214,6 +220,11 @@ def _render_define_field(
 
     if comment:
         parts.append(f"COMMENT '{comment.replace(chr(39), chr(39) * 2)}'")
+
+    # Last, where SurrealDB reports it. `DEFINE FIELD OVERWRITE` replaces the
+    # whole definition, so a clause left out here is reset to FULL (#259).
+    if permissions:
+        parts.append("PERMISSIONS " + " ".join(_render_permission_rule(a, r) for a, r in permissions.items()))
 
     return " ".join(parts) + ";"
 
@@ -305,6 +316,38 @@ def _effective_permissions(permissions: dict[str, str] | None) -> dict[str, str]
     if not permissions:
         return {}
     return {action: rule for action, rule in permissions.items() if str(rule).strip().upper() != "NONE"}
+
+
+#: The actions a field PERMISSIONS clause governs. SurrealDB accepts
+#: ``FOR delete`` on a field but ignores it and never reports it back.
+_FIELD_PERMISSION_ACTIONS = ("select", "create", "update")
+
+
+def _effective_field_permissions(permissions: dict[str, str] | None) -> dict[str, str]:
+    """
+    Drop field permission entries that only restate SurrealDB's default.
+
+    The opposite of :func:`_effective_permissions`, which must not be reused
+    here: a *table*'s default is NONE, a *field*'s is FULL. A field defined
+    with no clause is reported as ``PERMISSIONS FULL``, and one that restricts
+    a single action as ``PERMISSIONS FOR select NONE, FOR create, update FULL``
+    — an action a field clause does not list is FULL — so dropping FULL loses
+    nothing, while dropping NONE would drop the very restriction ``AlterField``
+    has to carry over (#259).
+
+    Args:
+        permissions: The permissions mapping, or None
+
+    Returns:
+        The select/create/update entries that are NONE or a condition
+    """
+    if not permissions:
+        return {}
+    return {
+        action: rule
+        for action, rule in permissions.items()
+        if action.lower() in _FIELD_PERMISSION_ACTIONS and str(rule).strip().upper() != "FULL"
+    }
 
 
 def _relation_tables(value: "str | list[str] | None") -> str | None:
@@ -806,7 +849,15 @@ class AlterField(Operation):
         )
 
     Generates:
-        DEFINE FIELD email ON users TYPE string ASSERT is::email($value);
+        DEFINE FIELD OVERWRITE email ON users TYPE string ASSERT is::email($value);
+
+    ``permissions`` and ``previous_permissions`` carry the field's PERMISSIONS
+    clause that the database already has. ``DEFINE FIELD OVERWRITE`` replaces
+    the whole definition, so without them a permission set outside the ORM was
+    reset to FULL by the alter and again by its rollback (#259). The diff fills
+    both from the current database state; this line does not model field
+    permissions, so a model can never change them. Left at None, no clause is
+    emitted and the field ends up with the server default, FULL.
     """
 
     table: str
@@ -829,6 +880,9 @@ class AlterField(Operation):
     previous_nullable: bool = False
     previous_value: str | None = None
     previous_comment: str | None = None
+    # Kept last so the positional order of the attributes above does not move.
+    permissions: dict[str, str] | None = None
+    previous_permissions: dict[str, str] | None = None
 
     @classmethod
     def from_field_states(cls, table: str, current: "FieldState", target: "FieldState") -> "AlterField":
@@ -840,6 +894,12 @@ class AlterField(Operation):
         ``backwards()`` needs. Hand-copying these is what left ``FLEXIBLE`` and
         ``READONLY`` off every generated rollback.
 
+        Both permission slots come from *current*: models cannot declare field
+        permissions on this line, so *target* never carries any, and what the
+        database has must survive both directions. They are distinct copies,
+        and None rather than ``{}`` when empty, so a generated migration file
+        only spells them out for a field that has a non-default permission.
+
         Args:
             table: Name of the table the field belongs to
             current: The field state the database is in
@@ -848,6 +908,7 @@ class AlterField(Operation):
         Returns:
             An ``AlterField`` carrying both states in full
         """
+        permissions = _effective_field_permissions(current.permissions)
         return cls(
             table=table,
             name=target.name,
@@ -871,6 +932,8 @@ class AlterField(Operation):
             # precedence rule over a state no diff can emit.
             previous_value=ARGON2_VALUE if current.encrypted else current.value,
             previous_comment=current.comment,
+            permissions=dict(permissions) or None,
+            previous_permissions=dict(permissions) or None,
         )
 
     def __post_init__(self) -> None:
@@ -894,6 +957,7 @@ class AlterField(Operation):
             overwrite=True,
             **{f: getattr(self, f) for f in FIELD_DEFINITION_FIELDS if f != "value"},
             value=ARGON2_VALUE if self.encrypted else self.value,
+            permissions=self.permissions,
         )
 
     def backwards(self) -> str:
@@ -910,6 +974,7 @@ class AlterField(Operation):
             self.name,
             overwrite=True,
             **{f: getattr(self, _previous_attr(f)) for f in FIELD_DEFINITION_FIELDS},
+            permissions=self.previous_permissions,
         )
 
     def describe(self) -> str:
