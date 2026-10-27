@@ -658,6 +658,10 @@ for user in users:
 
 Server-side array mutations that avoid read-modify-write conflicts.
 Ideal for multi-pod deployments where concurrent workers update the same array field.
+`atomic_append` and `atomic_set_add` start from an empty array on a record without the field.
+When SurrealDB rejects the statement, the helpers raise instead of returning `[]`:
+`TransactionConflictError` for a write conflict, `QueryError` otherwise (both
+`SurrealDBError`, from `surreal_sdk`).
 
 ### atomic_append (allows duplicates)
 
@@ -669,7 +673,8 @@ await Event.atomic_append(event_id, "processed_by", pod_id)
 ### atomic_set_add (no duplicates)
 
 ```python
-# Add a value only if not already present (like set.add)
+# Add a value only if not already present (like set.add);
+# an array field stays an array, a set<T> field stays a set
 await Event.atomic_set_add(event_id, "processed_by", pod_id)
 ```
 
