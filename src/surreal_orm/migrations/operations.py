@@ -411,22 +411,33 @@ def _render_element_types(table: str, name: str, field_type: str, *, flexible: b
     non-empty value. Each element level SurrealDB derives itself for the new
     type is therefore aligned the way the redefinition did it, and nothing
     more: its TYPE, plus FLEXIBLE on a level whose type contains an object
-    (:func:`_contains_object`) when the column is FLEXIBLE. Those are the only
-    two modelled clauses a redefinition carried down to the elements. The
-    field is the server's, and a clause set on it by hand stays.
+    (:func:`_contains_object`) when the column is FLEXIBLE, or ``DROP
+    FLEXIBLE`` on a level whose type contains none. Those are the only two
+    modelled clauses a redefinition carried down to the elements. The field
+    is the server's, and any other clause set on it by hand stays.
 
     A FLEXIBLE column whose elements were left strict reported success and
     still refused ``[{x: 'hello'}]`` with ``Found field 'items[0].x', but no
-    such field exists``. The server derives ``int FLEXIBLE`` for the inner
-    level of ``array<array<int> | object>``, but FLEXIBLE on ``int`` is a
-    parse error and means nothing there, so that level gets its TYPE only.
+    such field exists``.
 
-    FLEXIBLE is never removed from an element level: a non-FLEXIBLE
+    FLEXIBLE is never removed from an object element level: a non-FLEXIBLE
     redefinition left ``items.*`` FLEXIBLE too, and a FLEXIBLE set there by
     hand must survive. Known limitation, the same as with the redefinition:
     removing FLEXIBLE from an array column leaves its object element levels
     FLEXIBLE. A ``RawSQL`` operation with
     ``ALTER FIELD items.* ON <table> DROP FLEXIBLE;`` removes it.
+
+    A level whose type contains no object always gets ``DROP FLEXIBLE``.
+    FLEXIBLE does nothing there, yet the server derives it (``int FLEXIBLE``
+    for the inner level of a FLEXIBLE ``array<array<int> | object>``, ``any
+    FLEXIBLE`` under ``array<any> | object``) and keeps it when a FLEXIBLE
+    ``array<object>`` is retyped to ``array<string>``. On such a level a
+    ``TYPE`` without ``DROP FLEXIBLE`` is refused (``FLEXIBLE can only be
+    used with types containing object``): the rollback of ``array<string>`` →
+    FLEXIBLE ``array<object>`` failed halfway and left the column refusing
+    every non-empty list. ``DROP FLEXIBLE`` is accepted on a level without
+    FLEXIBLE as well, and writing FLEXIBLE on such a type is a parse error,
+    so no hand-set clause can be lost.
 
     A typed element is always derived. An ``any`` element — ``array<any>``, an
     untyped ``array`` or ``set`` — only under an optional column or a union, a
@@ -466,7 +477,12 @@ def _render_element_types(table: str, name: str, field_type: str, *, flexible: b
         if element.lower() == "any" and not union_seen:
             break
         path += ".*"
-        clauses = f"TYPE {element} FLEXIBLE" if flexible and _contains_object(element) else f"TYPE {element}"
+        if not _contains_object(element):
+            clauses = f"TYPE {element} DROP FLEXIBLE"
+        elif flexible:
+            clauses = f"TYPE {element} FLEXIBLE"
+        else:
+            clauses = f"TYPE {element}"
         statements.append(f"ALTER FIELD IF EXISTS {path} ON {table} {clauses};")
         union_seen = union_seen or _is_union(element)
         element = _element_type(element)
@@ -510,8 +526,9 @@ def _render_alter_field(
     sub-field SurrealDB derives itself for the new type (``tags.*``,
     ``n.*.*``): a redefinition re-derived them, ``ALTER FIELD`` does not. Each
     gets its TYPE, plus FLEXIBLE on the levels that hold an object when the
-    column is FLEXIBLE, as the redefinition did; nothing is dropped there. A
-    typed element is aligned always, an ``any`` element only under an
+    column is FLEXIBLE, as the redefinition did, and ``DROP FLEXIBLE`` on the
+    levels that hold none, where the server refuses a TYPE change while
+    FLEXIBLE is set; nothing else is dropped there. A typed element is aligned always, an ``any`` element only under an
     optional column or a union; under a non-optional ``array``/``array<any>``
     the server derives nothing, and a hand-defined ``tags.*`` is left as it
     is (:func:`_render_element_types`).

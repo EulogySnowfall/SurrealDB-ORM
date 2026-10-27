@@ -306,22 +306,30 @@ set by hand, for instance — is left as the database has it (#195).
 For an array or set column, SurrealDB also keeps a field per element level
 (`tags.*` for `array<string>`, `n.*.*` for `array<array<int>>`), which `ALTER FIELD`
 on the column does not update. The alteration is therefore followed by one
-`ALTER FIELD IF EXISTS tags.* ON users TYPE int;` per level, so changing a list's
-element type leaves the column writable. Each element level SurrealDB derives itself
-for the new type is aligned, its `TYPE`, plus `FLEXIBLE` on the levels that hold an
-object when the column is `FLEXIBLE`, as the redefinition did: a typed element
+`ALTER FIELD IF EXISTS tags.* ON users TYPE int DROP FLEXIBLE;` per level, so changing
+a list's element type leaves the column writable. Each element level SurrealDB derives
+itself for the new type is aligned, its `TYPE`, plus `FLEXIBLE` on the levels that hold
+an object when the column is `FLEXIBLE`, as the redefinition did: a typed element
 always, an `any` element (`array<any>`, an untyped `array` or `set`) only under an
 optional column or a union — widening `option<array<int>>` to `option<array<any>>` emits
-`ALTER FIELD IF EXISTS tags.* ON users TYPE any;` and nothing below it. Under a
-non-optional `array` or `array<any>` column the server derives nothing, and a
+`ALTER FIELD IF EXISTS tags.* ON users TYPE any DROP FLEXIBLE;` and nothing below it.
+Under a non-optional `array` or `array<any>` column the server derives nothing, and a
 `tags.*` defined there by hand is left as it is.
+
+A level whose type holds no object always gets `DROP FLEXIBLE`. `FLEXIBLE` does
+nothing on such a type, but the server can leave it there — it derives `int FLEXIBLE`
+for the inner level of a `FLEXIBLE` `array<array<int> | object>`, and a `FLEXIBLE`
+`array<object>` retyped to `array<string>` keeps `items.*` `FLEXIBLE` — and then
+refuses any `TYPE` on that level that does not also drop it (`FLEXIBLE can only be
+used with types containing object`). An object level keeps whatever `FLEXIBLE` it has
+unless the column is `FLEXIBLE`, which sets it.
 
 Known limitation, the same as with `DEFINE FIELD OVERWRITE` before: taking a
 non-optional column from `array<T>` to `array<any>`, to `array` or to `any` leaves
 `tags.*` at `T`, so the column still refuses non-`T` elements. Add a `RawSQL`
 operation with `ALTER FIELD tags.* ON users TYPE any;` (or
 `REMOVE FIELD tags.* ON users;`) to lift it. Likewise, removing `FLEXIBLE` from an
-array column leaves its element levels `FLEXIBLE`, the same as with
+array column leaves its object element levels `FLEXIBLE`, the same as with
 `DEFINE FIELD OVERWRITE` before: `items.*` still accepts undeclared keys. A `RawSQL`
 operation with `ALTER FIELD items.* ON users DROP FLEXIBLE;` removes it.
 

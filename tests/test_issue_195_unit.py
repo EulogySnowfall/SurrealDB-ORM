@@ -317,8 +317,8 @@ class TestArrayElementSubFieldsFollowTheType:
     ``string``, so the column then refuses every non-empty value. The renderer
     aligns each derived level with ``ALTER FIELD IF EXISTS`` — the sub-field is
     the server's, and whether it exists depends on the previous definition, so
-    a missing one is a no-op — naming its TYPE only, so a clause set on it by
-    hand survives too.
+    a missing one is a no-op — naming its TYPE and, on a level whose type holds
+    no object, DROP FLEXIBLE, so any other clause set on it by hand survives.
 
     Only the levels the server derives are aligned, which is what a redefinition
     did. A typed element is derived always. An ``any`` element, or an untyped
@@ -333,36 +333,36 @@ class TestArrayElementSubFieldsFollowTheType:
     @pytest.mark.parametrize(
         ("attributes", "statements"),
         [
-            ({"field_type": "array<int>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
-            ({"field_type": "set<string>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE string;"]),
-            ({"field_type": "array<string, 5>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE string;"]),
+            ({"field_type": "array<int>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int DROP FLEXIBLE;"]),
+            ({"field_type": "set<string>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE string DROP FLEXIBLE;"]),
+            ({"field_type": "array<string, 5>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE string DROP FLEXIBLE;"]),
             (
                 {"field_type": "array<array<int>>"},
                 [
-                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<int>;",
-                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE int;",
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<int> DROP FLEXIBLE;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE int DROP FLEXIBLE;",
                 ],
             ),
             (
                 {"field_type": "array<set<array<bool>>>"},
                 [
-                    "ALTER FIELD IF EXISTS f.* ON t TYPE set<array<bool>>;",
-                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE array<bool>;",
-                    "ALTER FIELD IF EXISTS f.*.*.* ON t TYPE bool;",
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE set<array<bool>> DROP FLEXIBLE;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE array<bool> DROP FLEXIBLE;",
+                    "ALTER FIELD IF EXISTS f.*.*.* ON t TYPE bool DROP FLEXIBLE;",
                 ],
             ),
             # A ReferencesField: option<array<record<T>>>, the target table in the element.
             (
                 {"field_type": "array<record<authors>>", "nullable": True, "reference": True},
-                ["ALTER FIELD IF EXISTS f.* ON t TYPE record<authors>;"],
+                ["ALTER FIELD IF EXISTS f.* ON t TYPE record<authors> DROP FLEXIBLE;"],
             ),
-            ({"field_type": "option<array<int>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
-            ({"field_type": "none | array<int>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
-            ({"field_type": "array<option<int>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE option<int>;"]),
+            ({"field_type": "option<array<int>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int DROP FLEXIBLE;"]),
+            ({"field_type": "none | array<int>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int DROP FLEXIBLE;"]),
+            ({"field_type": "array<option<int>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE option<int> DROP FLEXIBLE;"]),
             # The server derives the element from every array/set member of a union.
-            ({"field_type": "array<int> | string"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
-            ({"field_type": "array<int> | set<string>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int | string;"]),
-            ({"field_type": "array<record<a | b>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE record<a | b>;"]),
+            ({"field_type": "array<int> | string"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int DROP FLEXIBLE;"]),
+            ({"field_type": "array<int> | set<string>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int | string DROP FLEXIBLE;"]),
+            ({"field_type": "array<record<a | b>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE record<a | b> DROP FLEXIBLE;"]),
             # An any element, or an untyped array or set, under a non-optional,
             # non-union column: the server derives no level, so none is aligned
             # and a hand-defined one is left as it is.
@@ -372,40 +372,40 @@ class TestArrayElementSubFieldsFollowTheType:
             ({"field_type": "set"}, []),
             ({"field_type": "set<any>"}, []),
             # The walk stops at the first such level; the typed ones above it stay.
-            ({"field_type": "array<array<any>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE array<any>;"]),
-            ({"field_type": "array<array>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE array;"]),
+            ({"field_type": "array<array<any>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE array<any> DROP FLEXIBLE;"]),
+            ({"field_type": "array<array>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE array DROP FLEXIBLE;"]),
             # Under an optional column the server derives an any element as any:
             # the level is widened, and nothing below it is derived.
-            ({"field_type": "array<any>", "nullable": True}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
-            ({"field_type": "option<array>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
-            ({"field_type": "none | array<any>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "array<any>", "nullable": True}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any DROP FLEXIBLE;"]),
+            ({"field_type": "option<array>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any DROP FLEXIBLE;"]),
+            ({"field_type": "none | array<any>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any DROP FLEXIBLE;"]),
             (
                 {"field_type": "option<array<array<any>>>"},
                 [
-                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<any>;",
-                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE any;",
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<any> DROP FLEXIBLE;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE any DROP FLEXIBLE;",
                 ],
             ),
             # An optional element counts as well: the union is on the path.
             (
                 {"field_type": "array<option<array<any>>>"},
                 [
-                    "ALTER FIELD IF EXISTS f.* ON t TYPE option<array<any>>;",
-                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE any;",
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE option<array<any>> DROP FLEXIBLE;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE any DROP FLEXIBLE;",
                 ],
             ),
             (
                 {"field_type": "array<array<any> | string>"},
                 [
-                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<any> | string;",
-                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE any;",
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<any> | string DROP FLEXIBLE;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE any DROP FLEXIBLE;",
                 ],
             ),
             # A union with an any element accepts anything at that level.
-            ({"field_type": "array<int> | array<any>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
-            ({"field_type": "array<any> | array<int>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
-            ({"field_type": "array<int> | set"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
-            ({"field_type": "array | string"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "array<int> | array<any>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any DROP FLEXIBLE;"]),
+            ({"field_type": "array<any> | array<int>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any DROP FLEXIBLE;"]),
+            ({"field_type": "array<int> | set"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any DROP FLEXIBLE;"]),
+            ({"field_type": "array | string"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any DROP FLEXIBLE;"]),
             # Not an array or set: no element level.
             ({"field_type": "any"}, []),
             ({"field_type": "string"}, []),
@@ -428,8 +428,8 @@ class TestArrayElementSubFieldsFollowTheType:
             FieldState(name="tags", field_type="array<int>"),
         )
 
-        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE int;"]
-        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE string;"]
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE int DROP FLEXIBLE;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE string DROP FLEXIBLE;"]
 
     def test_widening_to_any_and_back(self) -> None:
         """``option<array<int>>`` → ``option<array<any>>``: ``tags.*`` must follow both ways."""
@@ -439,8 +439,8 @@ class TestArrayElementSubFieldsFollowTheType:
             FieldState(name="tags", field_type="array<any>", nullable=True),
         )
 
-        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE any;"]
-        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE int;"]
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE any DROP FLEXIBLE;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE int DROP FLEXIBLE;"]
 
     def test_narrowing_from_an_untyped_array_and_back(self) -> None:
         """The rollback of a previous untyped ``array`` widens ``tags.*`` back to ``any``."""
@@ -450,8 +450,8 @@ class TestArrayElementSubFieldsFollowTheType:
             FieldState(name="tags", field_type="array<string>", nullable=True),
         )
 
-        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE string;"]
-        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE any;"]
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE string DROP FLEXIBLE;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE any DROP FLEXIBLE;"]
 
     def test_an_unrelated_change_to_an_untyped_array_leaves_the_element_alone(self) -> None:
         """``array`` → ``array`` with a COMMENT: no ``tags.*`` statement either way.
@@ -481,7 +481,7 @@ class TestArrayElementSubFieldsFollowTheType:
             FieldState(name="tags", field_type="array<string>", nullable=False),
         )
 
-        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE string;"]
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE string DROP FLEXIBLE;"]
         assert op.backwards().splitlines()[1:] == []
 
     def test_a_changed_reference_target_reaches_the_element(self) -> None:
@@ -492,15 +492,19 @@ class TestArrayElementSubFieldsFollowTheType:
             FieldState(name="o", field_type="array<record<new>>", nullable=True, reference=True, on_delete="IGNORE"),
         )
 
-        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS o.* ON t TYPE record<new>;"]
-        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS o.* ON t TYPE record<old>;"]
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS o.* ON t TYPE record<new> DROP FLEXIBLE;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS o.* ON t TYPE record<old> DROP FLEXIBLE;"]
 
-    def test_the_sub_field_statement_names_its_type_only(self) -> None:
-        """No DROP on the derived field: the server owns it, and a hand-set clause there stays."""
+    def test_the_sub_field_statement_names_its_type_and_flexibility_only(self) -> None:
+        """No other clause on the derived field: the server owns it, and a hand-set clause there stays.
+
+        DROP FLEXIBLE is the one exception, on a level with no object: FLEXIBLE
+        means nothing there, and the server refuses any later TYPE on a level
+        that carries it.
+        """
         sub = AlterField(table="t", name="f", field_type="array<int>", comment="c").forwards().splitlines()[1]
 
-        assert "DROP" not in sub
-        assert "COMMENT" not in sub
+        assert sub == "ALTER FIELD IF EXISTS f.* ON t TYPE int DROP FLEXIBLE;"
 
     def test_add_field_does_not_need_it(self) -> None:
         """A creation derives the sub-fields itself."""
@@ -519,8 +523,18 @@ class TestFlexibleReachesTheObjectElementLevels:
     Of the modelled clauses, only TYPE and FLEXIBLE reach the element levels.
     FLEXIBLE is written on a level whose type contains an object — the parser's
     own rule (``FLEXIBLE can only be used with types containing object``) — and
-    never removed from one: a non-FLEXIBLE redefinition left ``items.*``
-    FLEXIBLE as well, and a FLEXIBLE set there by hand must survive (#195).
+    never removed from an object level: a non-FLEXIBLE redefinition left
+    ``items.*`` FLEXIBLE as well, and a FLEXIBLE set there by hand must survive
+    (#195).
+
+    A level whose type holds no object always gets DROP FLEXIBLE. The server
+    puts FLEXIBLE there itself (``int FLEXIBLE`` under ``array<array<int> |
+    object> FLEXIBLE``, ``any FLEXIBLE`` under ``array<any> | object
+    FLEXIBLE``), and so did the ORM's own ``items.*`` before a retype to
+    ``array<string>``. On such a level any later ``TYPE`` without DROP
+    FLEXIBLE is refused with that same parser error, which failed the rollback
+    of ``array<string>`` → FLEXIBLE ``array<object>`` halfway and left the
+    column refusing every non-empty list.
     """
 
     @pytest.mark.parametrize(
@@ -536,16 +550,19 @@ class TestFlexibleReachesTheObjectElementLevels:
                 ],
             ),
             # The server derives `int FLEXIBLE` for the inner level, but writing
-            # FLEXIBLE on `int` is a parse error, and it means nothing there.
+            # FLEXIBLE on `int` is a parse error, and a bare `TYPE int` over the
+            # derived `int FLEXIBLE` is refused with the same error.
             (
                 "array<array<int> | object>",
                 [
                     "ALTER FIELD IF EXISTS f.* ON t TYPE array<int> | object FLEXIBLE;",
-                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE int;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE int DROP FLEXIBLE;",
                 ],
             ),
             ("array<{ a: int }>", ["ALTER FIELD IF EXISTS f.* ON t TYPE { a: int } FLEXIBLE;"]),
-            ("array<int> | object", ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
+            ("array<int> | object", ["ALTER FIELD IF EXISTS f.* ON t TYPE int DROP FLEXIBLE;"]),
+            # The server derives `any FLEXIBLE` here.
+            ("array<any> | object", ["ALTER FIELD IF EXISTS f.* ON t TYPE any DROP FLEXIBLE;"]),
         ],
     )
     def test_forwards(self, field_type: str, statements: list[str]) -> None:
@@ -569,16 +586,17 @@ class TestFlexibleReachesTheObjectElementLevels:
                 "array<array<int> | object>",
                 [
                     "ALTER FIELD IF EXISTS f.* ON t TYPE array<int> | object;",
-                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE int;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE int DROP FLEXIBLE;",
                 ],
             ),
         ],
     )
     def test_backwards_to_a_strict_column(self, field_type: str, statements: list[str]) -> None:
-        """The rollback names neither FLEXIBLE nor DROP FLEXIBLE on an element level.
+        """The rollback names neither FLEXIBLE nor DROP FLEXIBLE on an object element level.
 
         A non-FLEXIBLE redefinition left ``items.*`` FLEXIBLE, and a FLEXIBLE set
         there by hand must survive: the rollback removes it from the column only.
+        A level with no object gets DROP FLEXIBLE either way.
         """
         op = AlterField.from_field_states(
             "t",
@@ -589,9 +607,16 @@ class TestFlexibleReachesTheObjectElementLevels:
 
         assert " DROP FLEXIBLE " in lines[0]
         assert lines[1:] == statements
-        assert not any("FLEXIBLE" in line for line in lines[1:])
+        assert not any("FLEXIBLE" in line for line in lines[1:] if "object" in line)
 
     def test_retyping_a_list_of_strings_to_flexible_objects(self) -> None:
+        """The rollback types ``items.*`` back to ``string`` and drops the FLEXIBLE the forward step set.
+
+        A bare ``TYPE string`` on the FLEXIBLE ``object`` level is refused (``FLEXIBLE
+        can only be used with types containing object``): the rollback failed after
+        the column statement, leaving ``items.*`` at ``object`` and the column refusing
+        ``['a']``.
+        """
         op = AlterField.from_field_states(
             "t",
             FieldState(name="items", field_type="array<string>"),
@@ -599,7 +624,27 @@ class TestFlexibleReachesTheObjectElementLevels:
         )
 
         assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS items.* ON t TYPE object FLEXIBLE;"]
-        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS items.* ON t TYPE string;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS items.* ON t TYPE string DROP FLEXIBLE;"]
+
+    def test_retyping_flexible_objects_to_a_list_of_strings(self) -> None:
+        """The same statement forwards, over a FLEXIBLE ``array<object>`` defined by hand or by the ORM."""
+        op = AlterField.from_field_states(
+            "t",
+            FieldState(name="items", field_type="array<object>", flexible=True),
+            FieldState(name="items", field_type="array<string>"),
+        )
+
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS items.* ON t TYPE string DROP FLEXIBLE;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS items.* ON t TYPE object FLEXIBLE;"]
+
+    @pytest.mark.parametrize("flexible", [True, False])
+    def test_a_level_without_an_object_drops_flexible_whatever_the_column(self, flexible: bool) -> None:
+        """The column's FLEXIBLE decides object levels only: the inner ``int`` level drops it either way."""
+        lines = (
+            AlterField(table="t", name="f", field_type="array<array<int> | object>", flexible=flexible).forwards().splitlines()
+        )
+
+        assert lines[-1] == "ALTER FIELD IF EXISTS f.*.* ON t TYPE int DROP FLEXIBLE;"
 
     def test_a_strict_column_leaves_the_element_flexibility_alone(self) -> None:
         """No FLEXIBLE and no DROP FLEXIBLE on ``items.*``: a hand-set FLEXIBLE there stays."""
@@ -618,6 +663,14 @@ class TestFlexibleReachesTheObjectElementLevels:
             "ALTER FIELD items ON t TYPE option<array<object>> FLEXIBLE " + " ".join(ALL_DROPS[2:]) + ";",
             "ALTER FIELD IF EXISTS items.* ON t TYPE object FLEXIBLE;",
         ]
+
+    def test_the_define_table_pair_drops_it_from_a_list_of_strings(self) -> None:
+        """Re-applying a model whose FLEXIBLE ``list[dict]`` became ``list[str]`` failed on ``items.*``."""
+        sql = operations._render_create_or_alter_field(
+            AddField(table="t", name="items", field_type="array<string>", nullable=True)
+        )
+
+        assert sql.splitlines()[-1] == "ALTER FIELD IF EXISTS items.* ON t TYPE string DROP FLEXIBLE;"
 
     @pytest.mark.parametrize(
         ("field_type", "contains"),
@@ -692,7 +745,7 @@ class TestDefineTableAlignsElementSubFields:
         assert sql.splitlines()[1:] == [
             "DEFINE FIELD IF NOT EXISTS tags ON i195_unit_tagged TYPE array<int>;",
             "ALTER FIELD tags ON i195_unit_tagged TYPE array<int> " + " ".join(ALL_DROPS[1:]) + ";",
-            "ALTER FIELD IF EXISTS tags.* ON i195_unit_tagged TYPE int;",
+            "ALTER FIELD IF EXISTS tags.* ON i195_unit_tagged TYPE int DROP FLEXIBLE;",
         ]
 
     @pytest.mark.asyncio
@@ -705,7 +758,7 @@ class TestDefineTableAlignsElementSubFields:
         ):
             sql = await I195UnitAnyTagged.define_table()
 
-        assert sql.splitlines()[-1] == "ALTER FIELD IF EXISTS tags.* ON i195_unit_any_tagged TYPE any;"
+        assert sql.splitlines()[-1] == "ALTER FIELD IF EXISTS tags.* ON i195_unit_any_tagged TYPE any DROP FLEXIBLE;"
 
     @pytest.mark.asyncio
     async def test_a_non_optional_list_of_any_leaves_the_element_alone(self) -> None:

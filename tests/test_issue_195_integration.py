@@ -753,6 +753,134 @@ async def test_turning_flexible_on_reaches_the_object_elements(migrations_dir: P
     await _query(f"DELETE {ITEMS};")
     await executor.rollback("")
 
-    # Only the column: the element levels keep FLEXIBLE after the rollback, as
+    # Only the column: the object element levels keep FLEXIBLE after the rollback, as
     # they did after a non-FLEXIBLE redefinition (documented limitation).
     assert "FLEXIBLE" not in (await _fields(ITEMS))["items"]
+
+
+# ----------------------------------- FLEXIBLE on an element level that holds no object
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_rolling_back_a_retype_to_flexible_objects_keeps_the_column_writable(migrations_dir: Path) -> None:
+    """``option<array<string>>`` → FLEXIBLE ``option<array<object>>``, then the rollback.
+
+    The forward step makes ``items.*`` ``object FLEXIBLE``. The rollback then
+    wrote a bare ``TYPE string`` there, which the server refuses on a FLEXIBLE
+    level (``FLEXIBLE can only be used with types containing object``): the
+    rollback raised after the column statement, and, migrations not being
+    transactional, left ``items`` at ``array<string>`` over an ``object``
+    ``items.*`` — a column refusing every non-empty list.
+    """
+    await _query(f"DEFINE TABLE {ITEMS} SCHEMAFULL; DEFINE FIELD items ON {ITEMS} TYPE option<array<string>>;")
+    op = AlterField.from_field_states(
+        ITEMS,
+        FieldState(name="items", field_type="array<string>", nullable=True),
+        FieldState(name="items", field_type="array<object>", nullable=True, flexible=True),
+    )
+    MigrationGenerator(migrations_dir).generate(name="flexible_objects", operations=[op])
+    executor = MigrationExecutor(migrations_dir)
+    await executor.migrate()
+
+    assert await _write_errors(f"CREATE {ITEMS}:objects SET items = [{{x: 'hello'}}];") == []
+
+    await _query(f"DELETE {ITEMS};")
+    await executor.rollback("")
+
+    assert (await _fields(ITEMS))["items.*"] == f"DEFINE FIELD items.* ON {ITEMS} TYPE string PERMISSIONS FULL"
+    assert await _write_errors(f"CREATE {ITEMS}:strings SET items = ['a'];") == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_retyping_a_flexible_object_list_to_strings(migrations_dir: Path) -> None:
+    """A FLEXIBLE ``option<array<object>>``, defined by hand, altered to ``option<array<string>>`` and back.
+
+    ``DEFINE FIELD OVERWRITE`` accepted this. The element alignment wrote a bare
+    ``TYPE string`` on the FLEXIBLE ``items.*``, which the server refuses: the
+    migration failed and left the column refusing ``['a']``.
+    """
+    await _query(f"DEFINE TABLE {ITEMS} SCHEMAFULL; DEFINE FIELD items ON {ITEMS} TYPE option<array<object>> FLEXIBLE;")
+    op = AlterField.from_field_states(
+        ITEMS,
+        FieldState(name="items", field_type="array<object>", nullable=True, flexible=True),
+        FieldState(name="items", field_type="array<string>", nullable=True),
+    )
+    MigrationGenerator(migrations_dir).generate(name="string_items", operations=[op])
+    executor = MigrationExecutor(migrations_dir)
+    await executor.migrate()
+
+    assert (await _fields(ITEMS))["items.*"] == f"DEFINE FIELD items.* ON {ITEMS} TYPE string PERMISSIONS FULL"
+    assert await _write_errors(f"CREATE {ITEMS}:strings SET items = ['a'];") == []
+
+    await _query(f"DELETE {ITEMS};")
+    await executor.rollback("")
+
+    assert (await _fields(ITEMS))["items.*"] == f"DEFINE FIELD items.* ON {ITEMS} TYPE object FLEXIBLE PERMISSIONS FULL"
+    assert await _write_errors(f"CREATE {ITEMS}:objects SET items = [{{x: 'hello'}}];") == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "level", "write"),
+    [
+        pytest.param("array<array<int> | object>", "items.*.*", "[[1], {x: 2}]", id="int-under-a-union"),
+        pytest.param("array<any> | object", "items.*", "['a', 1, {x: 2}]", id="any-under-a-union"),
+    ],
+)
+async def test_an_unrelated_alteration_of_a_flexible_union_column(
+    migrations_dir: Path, column: str, level: str, write: str
+) -> None:
+    """A COMMENT-only AlterField, and its rollback, on a FLEXIBLE column.
+
+    The server derives FLEXIBLE on a level that holds no object here
+    (``int FLEXIBLE``, ``any FLEXIBLE``), and refuses a bare ``TYPE int`` on
+    it: every alteration of such a column failed, whatever it changed.
+    """
+    await _query(f"DEFINE TABLE {ITEMS} SCHEMAFULL; DEFINE FIELD items ON {ITEMS} TYPE {column} FLEXIBLE;")
+    assert "FLEXIBLE" in (await _fields(ITEMS))[level], "precondition: the server derives FLEXIBLE on that level"
+
+    op = AlterField.from_field_states(
+        ITEMS,
+        FieldState(name="items", field_type=column, nullable=False, flexible=True),
+        FieldState(name="items", field_type=column, nullable=False, flexible=True, comment="mixed"),
+    )
+    MigrationGenerator(migrations_dir).generate(name="comment_items", operations=[op])
+    executor = MigrationExecutor(migrations_dir)
+    await executor.migrate()
+
+    assert "COMMENT 'mixed'" in (await _fields(ITEMS))["items"], "the alteration itself did not happen"
+    assert await _write_errors(f"CREATE {ITEMS}:forwards SET items = {write};") == []
+
+    await executor.rollback("")
+
+    assert "COMMENT" not in (await _fields(ITEMS))["items"]
+    assert await _write_errors(f"CREATE {ITEMS}:backwards SET items = {write};") == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_define_table_again_after_a_flexible_object_list_became_strings() -> None:
+    """``define_table()`` goes through the same renderer: re-applying ``list[str]`` failed the same way.
+
+    The FLEXIBLE ``option<array<object>>`` column is defined by hand here, as
+    the model it came from would have left it.
+    """
+    await _query(f"DEFINE TABLE {ITEMS} SCHEMAFULL; DEFINE FIELD items ON {ITEMS} TYPE option<array<object>> FLEXIBLE;")
+    assert "FLEXIBLE" in (await _fields(ITEMS))["items.*"], "precondition: the server derives a FLEXIBLE items.*"
+
+    clear_model_registry()
+
+    class I195ItemsStrings(BaseSurrealModel):
+        model_config = SurrealConfigDict(table_name=ITEMS)
+        id: str | None = None
+        items: list[str] | None = None
+
+    await I195ItemsStrings.define_table()
+
+    assert (await _fields(ITEMS))["items.*"] == f"DEFINE FIELD items.* ON {ITEMS} TYPE string PERMISSIONS FULL"
+    saved = I195ItemsStrings(items=["a"])
+    await saved.save()
+    assert (await I195ItemsStrings.objects().get(saved.get_id())).items == ["a"]
