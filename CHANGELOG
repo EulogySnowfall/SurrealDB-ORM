@@ -6,6 +6,65 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.15] - 2026-10-27
+
+**Bug fix release (V2 LTS).** One SDK fix (#231, #254), the `v2` port of
+#166 from `main`. No public API change.
+
+### Fixed
+
+- **Datetimes read from SurrealDB 2.x came back as `[seconds, nanoseconds]`
+  lists (#231, #254).** Over CBOR, the default protocol, SurrealDB 2.x sends
+  every datetime as tag 12 holding a compact `[seconds, nanoseconds]` pair,
+  over HTTP and WebSocket alike. The SDK's tag decoder only handled the ISO
+  8601 string form, so the pair went through unchanged. A `datetime`-annotated
+  model field hid the gap, because the ORM converted the pair afterwards, but
+  everything else reached callers as a list of two ints: `raw_query()` and
+  `query()` results, datetimes nested in object or `dict` fields, and
+  live-query payloads. Two ORM paths broke on it:
+  - a `date` model field could not load a datetime stored at midnight UTC:
+    it failed validation on the list;
+  - a `dict` field loaded from the database and saved back replaced its
+    datetimes with `[seconds, nanoseconds]` arrays on the server.
+
+  The pair now decodes to a timezone-aware UTC `datetime`, truncated to the
+  microsecond. A value before the epoch decodes too (SurrealDB floors the
+  seconds: `1969-12-31T23:59:59.5Z` arrives as `[-1, 500000000]`). The JSON
+  protocol is not affected.
+- **One undecodable datetime no longer loses the whole message (#231).** An
+  ISO datetime string under the datetime tag that Python cannot parse made
+  the decoder raise: over HTTP the request failed with `ValueError`, and over
+  WebSocket the message was dropped, so the request timed out or the
+  live-query notification was lost. That value is now returned as the server
+  sent it, and every other value in the same message decodes. A datetime
+  outside Python's years 1-9999, which SurrealDB accepts (2.7.0 stores year
+  -1), stays the raw `[seconds, nanoseconds]` list.
+
+### Behaviour change
+
+Code that read the raw `[seconds, nanoseconds]` list now receives a
+`datetime`, except for a datetime outside years 1-9999.
+
+**Migration:** remove any workaround that converts the list to a `datetime`
+or to ISO text yourself. Converting a `datetime` to ISO text is still needed
+wherever results are serialised to JSON. No schema or dependency change;
+`cbor2` stays `>=5.9.0,<6`.
+
+### Verification
+
+Against a live SurrealDB 2.7.0 (#254): 1,935 unit tests on each of Python
+3.12, 3.13 and 3.14, and 526 integration tests, pass; `ruff` and `mypy`
+clean. The new and changed tests (70 unit, 7 integration) passed three times
+in a row, and 14 of them fail on the code before the fix, including all 7
+integration tests.
+
+### Changed
+
+- **Version bump to 0.21.15** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
 ## [0.21.14] - 2026-10-27
 
 **Bug fix release (V2 LTS).** One SDK fix (#246, #253), the `v2` port of
