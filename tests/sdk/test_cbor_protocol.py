@@ -152,6 +152,35 @@ class TestCBOREncodeDecode:
         decoded = decode(encoded)
         assert decoded == data
 
+    def test_decimal_goes_out_with_the_surrealdb_decimal_tag(self) -> None:
+        """``Decimal`` is sent as tag 10, the exact digits as a string.
+
+        cbor2 has a native encoder for ``Decimal`` (tag 4, a decimal fraction),
+        so the ``default`` hook never saw one. SurrealDB does not read tag 4:
+        it rejects the whole request as a parse error. Decoding with no tag
+        hook shows the tag that is actually on the wire.
+        """
+        import cbor2
+
+        assert cbor2.loads(encode({"p": Decimal("9.99")})) == {"p": cbor2.CBORTag(TAG_STRING_DECIMAL, "9.99")}
+
+    def test_decimal_keeps_every_digit(self) -> None:
+        """A float would round; the tagged string carries the value exactly."""
+        import cbor2
+
+        digits = "123.4567890123456789012345"
+        assert cbor2.loads(encode([Decimal(digits)])) == [cbor2.CBORTag(TAG_STRING_DECIMAL, digits)]
+        assert decode(encode(Decimal(digits))) == Decimal(digits)
+
+    def test_non_finite_decimal_is_left_to_cbor2(self) -> None:
+        """SurrealDB decimals have no NaN/infinity; those keep cbor2's float encoding."""
+        import math
+
+        import cbor2
+
+        assert math.isnan(cbor2.loads(encode(Decimal("NaN"))))
+        assert cbor2.loads(encode(Decimal("-Infinity"))) == float("-inf")
+
     def test_encode_decode_record_id(self) -> None:
         """Encode and decode RecordId with custom tag."""
         data = RecordId(table="users", id="abc123")

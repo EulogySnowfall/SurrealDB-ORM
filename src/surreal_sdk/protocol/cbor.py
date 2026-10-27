@@ -99,9 +99,18 @@ def _preprocess_for_cbor(data: Any) -> Any:
     This function recursively walks common container types (dicts, lists,
     tuples, sets), replacing Python ``None`` with ``CBORTag(TAG_NONE, None)``
     so that SurrealDB receives the correct NONE value instead of NULL.
+
+    ``Decimal`` is tagged here too, as ``TAG_STRING_DECIMAL`` with the exact
+    digits. cbor2 has a native ``Decimal`` encoder (tag 4, a decimal
+    fraction), so ``_cbor_default_encoder`` is never called for one, and
+    SurrealDB does not read tag 4 — it rejects the whole request as a parse
+    error. NaN and infinities have no SurrealDB decimal form and keep cbor2's
+    float encoding.
     """
     if data is None:
         return CBORTag(TAG_NONE, None)
+    if isinstance(data, Decimal) and data.is_finite():
+        return CBORTag(TAG_STRING_DECIMAL, str(data))
     if isinstance(data, dict):
         return {k: _preprocess_for_cbor(v) for k, v in data.items()}
     if isinstance(data, (list, tuple, set, frozenset)):
@@ -135,9 +144,6 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
     elif isinstance(value, UUID):
         # Encode UUID as tagged string
         encoder.encode(CBORTag(TAG_STRING_UUID, str(value)))
-    elif isinstance(value, Decimal):
-        # Encode Decimal as tagged string to preserve precision
-        encoder.encode(CBORTag(TAG_STRING_DECIMAL, str(value)))
     elif isinstance(value, Duration):
         # Encode Duration as tagged string
         encoder.encode(CBORTag(TAG_STRING_DURATION, value.value))
