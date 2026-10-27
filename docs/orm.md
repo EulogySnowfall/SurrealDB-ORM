@@ -109,7 +109,9 @@ if SurrealDBConnectionManager.is_connected():
 # Get current settings
 settings = SurrealDBConnectionManager.get_connection_kwargs()
 
-# Reconnect
+# Reconnect: the new client is signed in and swapped in first; requests still
+# running on the old client finish before it is closed (waits at most 30 s).
+# Not needed to renew an expired token: the HTTP client signs in again on a 401.
 await SurrealDBConnectionManager.reconnect()
 
 # Close connection
