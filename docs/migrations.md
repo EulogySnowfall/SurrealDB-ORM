@@ -302,6 +302,11 @@ definition. A generated `AlterField` therefore carries the field's existing
 directions. A field at the default permissions (`FULL`) gets neither, and its
 statement is unchanged.
 
+Both arguments are a snapshot: the clause the database had when the migration
+was generated. Applying the file, or rolling it back, writes that clause. If you
+change a field's permissions afterwards, regenerate the migration (or edit both
+arguments) before applying it, or the old clause comes back.
+
 ```python
 AlterField(
     table="users",
