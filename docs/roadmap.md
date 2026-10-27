@@ -1,6 +1,6 @@
 # SurrealDB-ORM Roadmap
 
-> Planning document for future ORM features - Last updated: October 2026 (0.21.13)
+> Planning document for future ORM features - Last updated: October 2026 (0.21.14)
 >
 > **Note:** This is the deprecated `v2` LTS branch (SurrealDB 2.x). New feature work happens on
 > [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite) and the `main` branch
@@ -43,6 +43,7 @@
 | 0.21.8  | Released | SurrealDB 2.7.0 tested; supported range 2.6.x – 2.7.x      |
 | 0.21.9–0.21.12 | Released | Security dependency maintenance (lock file)         |
 | 0.21.13 | Released | HTTP transaction parameter fix backported from `main` |
+| 0.21.14 | Released | `live()` filter values and `Decimal`/`date` binding fixed (port of `main`'s #239) |
 
 ---
 

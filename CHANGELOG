@@ -6,6 +6,100 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.14] - 2026-10-27
+
+**Bug fix release (V2 LTS).** One SDK fix (#246, #253), the `v2` port of
+#239 from `main`. No ORM API change.
+
+### Fixed
+
+- **`live()` filters never matched for some values (#246, #253).**
+  SurrealDB 2.x does not evaluate bound parameters in a `LIVE SELECT` `WHERE`
+  clause, so `v2` writes the filter values into the query text, and several
+  types were written as something other than the value a bound parameter
+  carries:
+  - a `dict` was written as a quoted Python repr, so it never matched an
+    object;
+  - a `Decimal` was written as a quoted string, so it never matched a decimal;
+  - a record link (`RecordId`, a `ForeignKey` value, a model instance) was
+    written as `str(value)`, which is not the same record whenever the table
+    or the id is not a plain identifier: the string id `"123"` was read as
+    the number 123, for example;
+  - a naive `datetime` was written without an offset, which SurrealDB 2.x
+    does not parse, so the subscription failed;
+  - a string value holding a backslash or a `$name` was altered on the way
+    in: values were substituted one key at a time with `re.sub`, which read
+    the inserted text as a replacement pattern and then scanned it again for
+    the next key.
+
+  Each supported value is now written as the literal of what it binds to as
+  a parameter: a `dict` as an object literal with string keys, a `Decimal` as
+  `<digits>dec`, a record link as the link to that record (a string id and
+  the table between backticks, an integer id as a bare number, since `t:123`
+  and ``t:`123` `` are different records), and strings unchanged. A
+  `datetime` is written in UTC, and a naive one is read as UTC. The
+  parameters are substituted in one pass, so inserted text is never scanned
+  again, and a `$name` with no value (`$auth`, `$this`, ...) is left as
+  written. Auto-resubscribe after a reconnect goes through the same
+  rendering.
+- **Binding a `Decimal` or a `datetime.date` made SurrealDB 2.x reject the
+  whole request (#246, v2 port of #239).** cbor2 encodes them natively as
+  CBOR tags 4 and 1004, which SurrealDB 2.x does not read ("unknown CBOR
+  tag"). That covered `save()` of a model with such a field, `exec()` filters
+  and `query()` variables. A `Decimal` is now sent as SurrealDB's decimal
+  (tag 10, exact digits in positional form) and a `date` as the datetime at
+  midnight UTC.
+- **A `Decimal` outside SurrealDB's decimal range is refused before the
+  request is sent (#246).** Above 79228162514264337593543950335 in magnitude,
+  binding it or using it in a `live()` filter raises `ValueError` (over a
+  WebSocket connection, `query()` wraps it in the SDK's `ConnectionError`,
+  as it does for every encoding error). Binding it was rejected by SurrealDB
+  before this release, like any `Decimal`. Places beyond the 28th are
+  rounded half away from zero, which is what SurrealDB stores for a longer
+  value.
+
+### Behaviour change
+
+A `live()` filter value that has no exact SurrealQL literal now raises
+`TypeError` instead of being turned into a quoted string: a `set`, `bytes`,
+`Duration`, `Table`, an arbitrary object, an `Enum` that is not a `str` or
+`int` subclass, a NaN or infinite `float` or `Decimal`, or a `dict` with a
+key that is not a `str`.
+
+**Migration:** convert such a value to a supported type before filtering
+(`str`, a number, `Decimal`, `list`, a `dict` with `str` keys, `datetime`,
+`date`, `UUID`, `RecordId`): a `set` to a `list`, an `Enum` to its `.value`.
+Nothing changes for supported types.
+
+### Known limitations
+
+Not changed by this release; each predates it.
+
+- `live(diff=True)` appends `DIFF` after the `WHERE` clause
+  (`LIVE SELECT * FROM t WHERE ... DIFF`). SurrealDB 2.7.0 rejects that as a
+  parse error, with or without a `WHERE`; it accepts
+  `LIVE SELECT DIFF FROM t WHERE ...`. DIFF-mode subscriptions therefore fail
+  on this line. `main` builds the statement the same way.
+- A naive `datetime` bound as a query parameter is still refused by the CBOR
+  encoder (no default timezone); only `live()` reads it as UTC.
+- A `RecordId` whose integer id is outside the signed 64-bit range is
+  written as a number SurrealDB reads back as a string id, so it does not
+  designate the bound record.
+
+### Verification
+
+Against a live SurrealDB 2.7.0 (#253): 1894 unit tests on each of Python
+3.12, 3.13 and 3.14, and 518 integration tests, pass; `ruff` and `mypy`
+clean. The new and changed tests (203 unit, 134 integration) passed three
+times in a row, and 149 of them fail on the code before the fix.
+
+### Changed
+
+- **Version bump to 0.21.14** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
 ## [0.21.13] - 2026-10-27
 
 **Bug fix release (V2 LTS).** One SDK fix, backported from `main`.
