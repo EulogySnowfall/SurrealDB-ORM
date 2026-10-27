@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
+from surreal_sdk.protocol.cbor import _warn_naive_datetime
 from surreal_sdk.utils import find_param_references, substitute_params
 
 logger = logging.getLogger(__name__)
@@ -215,11 +216,16 @@ def _extract_datetime_values(
     SurrealQL ``d"<iso>"`` literal is stored in *markers*.  After
     ``json.dumps()``, the caller replaces ``"__SURQL_DT_N__"`` (including
     the surrounding JSON quotes) with the unwrapped literal.
+
+    A naive ``datetime`` is read as UTC, with the same ``RuntimeWarning`` the
+    CBOR encoder emits, so both paths store the same instant: SurrealDB
+    refuses a ``d"..."`` literal with no offset.
     """
     from datetime import UTC, datetime
 
     if isinstance(value, datetime):
         if value.tzinfo is None:
+            _warn_naive_datetime()
             value = value.replace(tzinfo=UTC)
         marker = f"__SURQL_DT_{counter[0]}__"
         counter[0] += 1

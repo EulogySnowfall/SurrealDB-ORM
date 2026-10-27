@@ -940,7 +940,8 @@ class BaseSurrealModel(BaseModel):
         custom Pydantic serializers or sub-model configs can convert them to
         ISO strings.  This method detects such cases and restores the original
         ``datetime`` object from the model instance so that the CBOR encoder
-        can emit a proper ``CBORTag(TAG_DATETIME, ...)`` on the wire.
+        sends a datetime rather than a string. A naive one is read as UTC
+        there, with a ``RuntimeWarning``.
 
         Handles aliased fields: when ``model_dump(by_alias=True)`` is used,
         dict keys may be aliases rather than Python field names.
