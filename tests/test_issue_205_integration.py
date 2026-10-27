@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -65,6 +65,7 @@ class I205Item(BaseSurrealModel):
     author: ForeignKey("I205Author") = None  # type: ignore[valid-type]
     when: datetime | None = None
     uid: UUID | None = None
+    day: date | None = None
     tags: list[str] | None = None
     note: str | None = None
 
@@ -169,6 +170,23 @@ async def test_decimal_binds_as_a_surrealdb_decimal() -> None:
     assert [item.id for item in found] == ["match"]
 
 
+@pytest.mark.integration
+async def test_date_binds_as_a_surrealdb_datetime() -> None:
+    """A bound ``date`` reaches the server as the datetime ``d'YYYY-MM-DD'`` denotes.
+
+    The live filter on a ``date`` depends on this, and so do ``save()`` and
+    ``exec()`` with one: the request used to be rejected outright.
+    """
+    client = await SurrealDBConnectionManager.get_client()
+    response = await client.query("RETURN [type::of($d), $d = d'2026-02-01']", {"d": date(2026, 2, 1)})
+    assert response.results[0].result == ["datetime", True]
+
+    await I205Item(id="match", day=date(2026, 2, 1)).save()
+    await I205Item(id="decoy", day=date(2025, 1, 1)).save()
+    found = await I205Item.objects().filter(day=date(2026, 2, 1)).exec()
+    assert [(item.id, item.day) for item in found] == [("match", date(2026, 2, 1))]
+
+
 # ==================== Every other value type still matches ====================
 
 
@@ -185,6 +203,7 @@ _STILL_MATCHING: list[tuple[str, dict[str, Any], tuple[str, Any, Any]]] = [
     ("fk_in", {"author__in": ["alice", "i205_authors:carol"]}, ("author", _author("bob"), _author("alice"))),
     ("datetime", {"when": WHEN}, ("when", OTHER_WHEN, WHEN)),
     ("uuid", {"uid": UID}, ("uid", OTHER_UID, UID)),
+    ("date", {"day": date(2026, 2, 1)}, ("day", datetime(2025, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC))),
     ("list_in", {"tag__in": ["x", "y"]}, ("tag", "z", "y")),
     ("list_exact", {"tags": ["a", "b"]}, ("tags", ["b", "a"], ["a", "b"])),
     ("string_with_quotes", {"tag": 'it\'s "quoted" \\ here'}, ("tag", "it's", 'it\'s "quoted" \\ here')),

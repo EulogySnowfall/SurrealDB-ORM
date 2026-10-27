@@ -1,6 +1,6 @@
 """Tests for CBOR protocol support in the SDK."""
 
-from datetime import UTC, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -180,6 +180,29 @@ class TestCBOREncodeDecode:
 
         assert math.isnan(cbor2.loads(encode(Decimal("NaN"))))
         assert cbor2.loads(encode(Decimal("-Infinity"))) == float("-inf")
+
+    def test_date_goes_out_as_a_midnight_utc_datetime(self) -> None:
+        """A ``date`` is sent as a datetime at midnight UTC, what ``d'YYYY-MM-DD'`` means.
+
+        cbor2 has a native ``date`` encoder (tag 1004, an RFC 8943 date
+        string), so the ``default`` hook never saw one. SurrealDB does not
+        read tag 1004: it rejects the whole request as a parse error. The
+        bytes must be those of a timezone-aware ``datetime`` (tag 0), the form
+        every datetime already travels in.
+        """
+        import cbor2
+
+        midnight = datetime(2026, 2, 1, tzinfo=UTC)
+        assert encode(date(2026, 2, 1)) == cbor2.dumps(midnight)
+        assert encode(date(2026, 2, 1))[0] == 0xC0  # CBOR tag 0: date/time string
+        assert decode(encode({"d": [date(2026, 2, 1)]})) == {"d": [midnight]}
+
+    def test_datetime_is_not_truncated_to_its_date(self) -> None:
+        """``datetime`` subclasses ``date``; its time of day must survive."""
+        import cbor2
+
+        when = datetime(2026, 2, 1, 12, 30, 45, tzinfo=UTC)
+        assert encode(when) == cbor2.dumps(when)
 
     def test_encode_decode_record_id(self) -> None:
         """Encode and decode RecordId with custom tag."""
