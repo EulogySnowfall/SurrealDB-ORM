@@ -13,7 +13,6 @@ from typing import Any, Self
 
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
-from ..utils import substitute_params
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -131,7 +130,8 @@ class LiveSelectStream:
             connection: WebSocket connection to use
             table: Table to watch
             where: Optional WHERE clause filter (e.g., "table_id = $id")
-            params: Parameters for the WHERE clause
+            params: Values for the ``$name`` references in *where*, sent as
+                bound query variables (also on auto-resubscribe)
             diff: If True, receive only changed fields
             auto_resubscribe: If True, automatically resubscribe on reconnect
             on_reconnect: Optional callback when resubscribed (old_id, new_id)
@@ -161,60 +161,6 @@ class LiveSelectStream:
         """Get the live query UUID."""
         return self._live_id
 
-    @staticmethod
-    def _format_value(value: Any) -> str:
-        """Format a Python value for inline substitution in SurrealQL.
-
-        SurrealDB LIVE SELECT does not evaluate session variables ($param)
-        in WHERE clauses, so parameters must be inlined directly into the
-        query string.  Handles native SurrealDB types (RecordId, datetime,
-        UUID) so that LIVE SELECT filters behave the same as parameterized
-        queries.
-        """
-        from datetime import date, datetime
-        from uuid import UUID
-
-        from ..protocol.cbor import RecordId
-
-        if value is None:
-            return "NONE"
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, (int, float)):
-            return str(value)
-        if isinstance(value, RecordId):
-            # Emit as a record reference: table:id (unquoted, SurrealQL thing syntax)
-            return str(value)
-        if isinstance(value, UUID):
-            return f"u'{value}'"
-        if isinstance(value, datetime):
-            return f"d'{value.isoformat()}'"
-        if isinstance(value, date):
-            return f"d'{value.isoformat()}'"
-        if isinstance(value, str):
-            # Escape single quotes inside the string
-            escaped = value.replace("\\", "\\\\").replace("'", "\\'")
-            return f"'{escaped}'"
-        if isinstance(value, (list, tuple)):
-            items = ", ".join(LiveSelectStream._format_value(v) for v in value)
-            return f"[{items}]"
-        # Fallback: convert to string and quote
-        escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
-        return f"'{escaped}'"
-
-    @staticmethod
-    def _inline_params_static(sql: str, params: dict[str, Any]) -> str:
-        r"""Replace $param references with inline values in the SQL string.
-
-        Verbatim insertion is what matters here: ``_format_value`` deliberately
-        doubles backslashes, and the previous ``re.sub`` replacement-string
-        parsing collapsed them straight back, so SurrealQL read ``\t`` as a tab
-        and the live filter silently matched nothing. See
-        :func:`~surreal_sdk.utils.substitute_params`.
-        """
-        rendered = {key: LiveSelectStream._format_value(value) for key, value in params.items()}
-        return substitute_params(sql, rendered)
-
     async def start(self) -> str:
         """
         Start the live query subscription.
@@ -228,20 +174,17 @@ class LiveSelectStream:
         if self._active:
             raise LiveQueryError("Live select already active")
 
-        # Build query with variable substitution
         sql = f"LIVE SELECT * FROM {self.table}"
         if self.where:
             sql += f" WHERE {self.where}"
         if self.diff:
             sql += " DIFF"
 
-        # SurrealDB LIVE SELECT does not evaluate session variables set via
-        # LET in the WHERE clause.  Inline them directly into the SQL.
-        if self.params:
-            sql = self._inline_params_static(sql, self.params)
-
         try:
-            response = await self.connection.query(sql)
+            # The WHERE values are bound, never written into the SQL text:
+            # SurrealDB 3.x evaluates bound parameters in a LIVE SELECT, and a
+            # bound value compares exactly like it does in a plain SELECT.
+            response = await self.connection.query(sql, self.params or None)
 
             # Extract live query UUID
             if response.results:

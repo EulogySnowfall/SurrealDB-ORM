@@ -346,13 +346,8 @@ class WebSocketConnection(BaseSurrealConnection):
         if params.diff:
             sql += " DIFF"
 
-        # Inline params (LIVE SELECT does not support session variables)
-        if params.params:
-            from ..streaming.live_select import LiveSelectStream
-
-            sql = LiveSelectStream._inline_params_static(sql, params.params)
-
-        response = await self.query(sql)
+        # Same bound values as the original subscription (see LiveSelectStream.start)
+        response = await self.query(sql, params.params or None)
 
         if response.results:
             first_result = response.results[0]
@@ -568,7 +563,8 @@ class WebSocketConnection(BaseSurrealConnection):
         Args:
             table: Table to watch (e.g., "players", "game_tables")
             where: Optional WHERE clause filter (e.g., "table_id = $id")
-            params: Parameters for the WHERE clause (e.g., {"id": "game_tables:xyz"})
+            params: Values for the ``$name`` references in *where*, sent as bound
+                query variables (e.g., {"id": "game_tables:xyz"})
             diff: If True, receive only changed fields
             auto_resubscribe: If True, automatically resubscribe on reconnect
             on_reconnect: Optional callback when resubscribed (old_id, new_id)
