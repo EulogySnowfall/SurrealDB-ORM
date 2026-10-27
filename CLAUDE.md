@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.7)
+> Context document for Claude AI - Last updated: October 2026 (0.34.8)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.7 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.8 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,40 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.8
+
+Two SDK fixes from the 0.34.5 reviews (#255, #276), one with a behaviour
+change; the 0.34.5 notes are corrected (items 3–4 of #255). Pin unchanged
+(3.3.4). `v2`: live-stream backport #277, naive datetime in #258.
+Integration at 0.34.8: 3.3.4 and 3.2.6 both 553 passed, 1 skipped, 1 xfailed
+(#147 still XFAIL); unit 2,436 on 3.12/3.13/3.14.
+
+- **A `LiveSelectStream` was never resubscribed, only its query.** It
+  registers `callback=None` and receives through its own `_live_callbacks`
+  entry, which `_resubscribe_all()` clears; `_resubscribe_one()` re-registered
+  only `params.callback`, and `_update_live_id()` had no caller. The stream now
+  gives its subscription a private `_on_resubscribed` hook (a dataclass field
+  with `init=False, repr=False, compare=False`, so the exported
+  `LiveSubscriptionParams` is unchanged), and `_resubscribe_one()` calls it
+  with no await between the `LIVE SELECT` reply and the bookkeeping write: no
+  notification and no `stop()` can see the stale id. `stop()` marks the stream
+  closed before its first await; the hook then refuses a new id and the
+  connection kills the re-created query.
+- **cbor2 encodes `datetime` natively, so the `default=` branch never ran for
+  a plain one** — a naive value raised inside cbor2 first. `encode()` passes
+  `timezone=UTC` (naive read as UTC at any depth, record ids included; aware
+  bytes unchanged) and `_preprocess_for_cbor()` warns. The `default=` branch is
+  now reached only by subclasses, which it rebuilds as a plain `datetime`
+  (tag 0); they used to go out as tag 12 with an ISO string, which SurrealDB
+  rejects. The warning text is constant so the default filter shows it once
+  per call site (CBOR path, inline path).
+- **Open follow-ups, not regressions:** `LiveSelectManager` keys streams by
+  the first live id, so `stop(new_id)` is a no-op after a reconnect (before,
+  the stream was dead anyway). The callback API (`WebSocketConnection.live()`,
+  `LiveQuery.subscribe()`) registers no `LiveSubscriptionParams`, so it is
+  never resubscribed; and `_resubscribe_all()` drops for good a subscription
+  whose `LIVE SELECT` fails mid-resubscribe.
 
 ### What's New in 0.34.7
 
@@ -145,12 +179,16 @@ auto-releases of #223 (`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and
   the follow-up filed in 0.33.3. It namespaced each statement's keys
   (`$k` → `$tx_<i>_k`) with a boundary-less `str.replace`, one key at a time
   over its own output, so a key renamed every longer `$name` it prefixed:
-  built-ins (`$auth.id` → `$tx_0_auth.id` for key `a`) and, for a key `t`/`tx`/
-  `tx_<i>`, the references already renamed for earlier keys
-  (`$tx_0_amount` → `$tx_0_tx_0_amount`). Unbound, they read `NONE` — no error.
-  The builders bind each field under its own name, so a *model field* named
-  `t` or `tx` was enough to make `save(tx=)` of a new record drop the fields
-  bound before it.
+  built-ins (`$auth.id` → `$tx_0_auth.id` for key `a`) and, for any key that
+  prefixes `tx_<i>_<an earlier key>` (`t`, `tx`, `tx_`, `tx_<i>`, `tx_<i>_`, …;
+  `tx_1` also at positions 10–19, 100–199), the references already renamed for
+  earlier keys (`$tx_0_amount` → `$tx_0_tx_0_amount`). Unbound, they read
+  `NONE` — no error. The builders bind each field under its own name, so a
+  *model field* named `t` or `tx` was enough to make `save(tx=)` of a new
+  record or `bulk_create(atomic=True)` drop the fields bound before it;
+  `relate(tx=)` binds its `**edge_data` keywords, not model fields, so there it
+  took an edge-data keyword such as `t` or `tx_<i>` (never `tx`, which is the
+  transaction parameter).
   `commit()` now goes through `substitute_params()`, single pass, only the
   statement's own keys. Still textual: a bound `$k` inside a quoted string
   literal is renamed (unchanged). WebSocket transactions never renamed. v2 has
@@ -169,7 +207,9 @@ auto-releases of #223 (`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and
 - **`certifi` is transitive** (via `httpx`), so `uv.lock` kept the 2026.5.20
   bundle (still trusting `emSign ECC Root CA - G3`, GHSA-6q48-6c7w-9gw2) until it
   was named in `uv lock --upgrade-package`. The lock only moves dev/CI; users
-  need `pip install -U certifi`.
+  need `pip install -U certifi`. Only the HTTP transport uses that bundle
+  (httpx 0.28 → `certifi.where()` unless `SSL_CERT_FILE`/`SSL_CERT_DIR` is
+  set) for `https://`; aiohttp, the WebSocket transport, does not.
 - **The 3.x monitor sat on 3.3.0 for a week, green.** It took the first
   matching release in API order, and the releases API orders by *creation
   date*, not version. The v3.2.6 backport was cut from a newer commit than

@@ -37,6 +37,25 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.8
+
+**Fix release.** No new public API, but naive datetimes change behaviour: see [CHANGELOG.md](CHANGELOG.md) before
+upgrading.
+
+- **`QuerySet.live()` keeps receiving events after a WebSocket reconnect**
+  ([#255](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/255)). With `auto_resubscribe=True` (the default)
+  the live query was re-created on the server, but the stream was not attached to it and went silent. It now moves
+  to the re-created query during the resubscribe, `live_id` reports the new id, `on_reconnect` still fires with
+  `(old_id, new_id)`, and `stop()` ends the re-created query instead of leaving it running.
+- **A naive `datetime` sent over CBOR is now read as UTC, with a `RuntimeWarning`.** It used to make the request
+  fail before it was sent (`CBOREncodeError`, or `ConnectionError` over WebSocket): query variables, model fields on
+  `save()` / `merge()` / `update()`, `filter()` and `live()` values. Aware datetimes are unchanged. On a host whose
+  clock is not on UTC, `datetime.now()` is stored as local wall-clock time read as UTC: use `datetime.now(UTC)`.
+- **`datetime` subclasses** (`pandas.Timestamp`, `pendulum.DateTime`, …) are now sent like a `datetime`; SurrealDB
+  used to reject them.
+- **Known limitation:** after a reconnect, `LiveSelectManager.stop()` still expects the id `watch()` returned, not
+  the new one. The 0.34.5 notes below are corrected (who the #204 fix concerned, which connections use `certifi`).
+
 ## What's New in 0.34.7
 
 **Fix release.** No new public API, but `reconnect()` changes behaviour: see [CHANGELOG.md](CHANGELOG.md) before
@@ -94,8 +113,10 @@ upgrading.
 - **HTTP transactions no longer rename parameters a statement did not bind**
   ([#204](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/204)). `commit()` namespaced each bound key
   with a plain text replace, so a key that prefixed a longer `$name` renamed it too and the server read `NONE`:
-  with a variable `a`, `$auth.id` became `$tx_0_auth.id`, and a model field named `t`, `tx` or `tx_0` made
-  `save(tx=)` of a new record, `bulk_create(atomic=True)` or `relate(tx=)` drop the fields bound before it.
+  with a variable `a`, `$auth.id` became `$tx_0_auth.id`. A key that is a prefix of `tx_<i>_<an earlier key>`
+  (`t`, `tx`, `tx_`, `tx_<i>`, `tx_<i>_`, …; `tx_1` also hits positions 10–19) dropped the fields bound before it:
+  through a model field with such a name on `save(tx=)` of a new record and `bulk_create(atomic=True)`, and through
+  an edge-data keyword such as `t` or `tx_<i>` on `relate(tx=)`.
   Only whole `$key` references to the statement's own keys are renamed now. WebSocket transactions were not
   affected.
 - **Known limitation: `tx.merge()` over HTTP is still broken**
@@ -106,7 +127,9 @@ upgrading.
   holds no `SurrealFunc` and no nested object/array, on an HTTP connection. WebSocket transactions are not
   affected.
 - **`certifi` 2026.10.23 in the lock file** (GHSA-6q48-6c7w-9gw2). `certifi` is a transitive dependency, so
-  upgrading the ORM does not upgrade it: run `pip install -U certifi` to get `>= 2026.10.19`.
+  upgrading the ORM does not upgrade it: run `pip install -U certifi` to get `>= 2026.10.19`. The bundle is used by
+  `https://` connections made through the HTTP transport, the ORM's default (httpx trusts `certifi.where()` unless
+  `SSL_CERT_FILE` or `SSL_CERT_DIR` is set); the WebSocket transport does not use `certifi`.
 - **Tested against SurrealDB 3.3.4; supported range unchanged (3.2.x – 3.3.x).** The integration suite
   passes against 3.3.4 and against 3.2.6 on the 3.2 floor line. The upstream defect behind
   [#147](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/147) still reproduces on 3.3.4, so
