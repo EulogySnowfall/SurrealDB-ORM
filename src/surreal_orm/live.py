@@ -164,7 +164,7 @@ class LiveModelStream(Generic[T]):
 
     @property
     def live_id(self) -> str | None:
-        """Get the live query UUID."""
+        """Get the live query UUID (after an auto-resubscribe, the re-created query's)."""
         return self._stream.live_id if self._stream else None
 
     @property

@@ -621,7 +621,9 @@ async with db.live_select(
 
 1. When `auto_resubscribe=True`, the connection stores subscription parameters
 2. On WebSocket disconnect, the connection attempts to reconnect
-3. After reconnect, all stored subscriptions are recreated
+3. After reconnect, all stored subscriptions are recreated, and each stream
+   moves to its new live query: `stream.live_id` reports the new ID and
+   `stop()` ends that query
 4. `on_reconnect` callback is invoked with old and new subscription IDs
 5. The async iterator continues seamlessly
 
