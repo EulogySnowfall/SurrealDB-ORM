@@ -6,6 +6,150 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.6] - 2026-10-27
+
+**Fix release.** Migrations no longer reset field permissions set outside the
+ORM (#195, #248), and the atomic array helpers no longer lose writes silently
+(#233, #257). No new public API, but both fixes change behaviour: read
+*Behaviour change* and *Upgrading*. The SurrealDB pin is unchanged (tested
+against 3.3.4, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`AlterField` and `Model.define_table()` reset field permissions set
+  outside the ORM (#195, #248).** Both redefined the field with
+  `DEFINE FIELD OVERWRITE` (`AlterField` in forwards and in rollback), which
+  replaces the whole definition while the ORM re-emits only the clauses it
+  models. A field-level `PERMISSIONS` clause set by hand, by another tool or by
+  a `RawSQL` migration fell back to the server default, `PERMISSIONS FULL`, on
+  the next alteration, its rollback, or the next `define_table()` call. Fields
+  are now altered in place with `ALTER FIELD`, which leaves every clause the
+  ORM does not model as the database has it. Hand-written migrations are
+  covered as well as generated ones.
+- **`parse_define_field()` read a field's `PERMISSIONS` clause as other
+  clauses (#195, #248).** SurrealDB reports a permission's `WHERE` condition
+  with field names unescaped, so `FOR select WHERE type = 'public'` was read as
+  a `TYPE` clause, and `comment`, `default`, `readonly`, `reference` or
+  `flexible` in a condition set those clauses the same way. An `ASSERT` with a
+  comparison (`$value > 0`) on a field with a permission also swallowed the
+  permissions clause. `schema_diff()` and `makemigrations` then emitted a
+  spurious `AlterField` for that field, and its rollback did not parse.
+  Parsing now stops at the `PERMISSIONS` clause, which SurrealDB always reports
+  last, and the diff converges.
+- **`atomic_set_add()` appended duplicates on an array field (#233, #257).**
+  It ran `SET field += $value`, and `+=` on an array appends, so two calls with
+  the same value left two copies. It now uses `array::add()`, which adds only
+  the values the field does not already hold. A `set<T>` field (what
+  migrations generate for a Python `set[T]`) keeps its set type, and a record
+  without the field gets `[value]`.
+- **`atomic_append()`, `atomic_remove()` and `atomic_set_add()` returned `[]`
+  when SurrealDB rejected the statement (#233, #257)**: a write conflict, a
+  failed `ASSERT`, an argument of the wrong type. The write was lost silently,
+  indistinguishable from an update that matched no record, and
+  `@retry_on_conflict` never saw the conflict it exists to retry. They now
+  raise (see *Behaviour change*).
+- **`atomic_append()` on a record without the field (#233, #257)** was
+  rejected by the server (`array::append()` rejects `NONE`), and the rejection
+  was swallowed. It now creates `[value]`.
+
+### Behaviour change
+
+Migrations (#248):
+
+- `AlterField` emits `ALTER FIELD <name> ON <table> …;` instead of
+  `DEFINE FIELD OVERWRITE`, and states every modelled clause (`TYPE`,
+  `FLEXIBLE`, `VALUE`, `DEFAULT`, `ASSERT`, `READONLY`, `REFERENCE`/`ON DELETE`,
+  `COMMENT`): set when present, dropped (`DROP …`) when absent. Removing a
+  clause from a model still removes it, and a rollback still restores the
+  previous clauses. Operations render at run time, so migration files already
+  on disk emit the new statements when applied or rolled back.
+- For a typed array or set column, `AlterField` then emits
+  `ALTER FIELD IF EXISTS <name>.* ON <table> TYPE <element> …;` for each
+  element level the server derives, outermost first, so the element sub-fields
+  SurrealDB keeps (`tags.*`, `n.*.*`) still follow the column's type and its
+  `FLEXIBLE`, as the redefinition did. A level whose type holds an object gets
+  `FLEXIBLE` when the column is `FLEXIBLE`. A level whose type holds no object
+  always gets `DROP FLEXIBLE`: the server can leave `FLEXIBLE` on such a level
+  and then refuses any `TYPE` that keeps it. No other clause reaches an element
+  level. Two differences from 0.34.5, both harmless: a level the server never
+  derived is not created (`IF EXISTS`; the column's own `TYPE` already checks
+  its elements), and a level whose type holds no object loses the `FLEXIBLE`
+  the redefinition left on it, where it had no effect.
+- `AlterField` on a field that does not exist now fails the migration with
+  `MigrationStatementError` (`The field 'x' does not exist`) instead of
+  silently creating it. Use `AddField` to create a field.
+- `Model.define_table()` emits, for each field, `DEFINE FIELD IF NOT EXISTS …;`
+  followed by `ALTER FIELD …;` (plus the element-level statements), instead of
+  `DEFINE FIELD OVERWRITE`. It still works on an empty database and when called
+  twice. `AddField(overwrite=True)` remains an explicit opt-in.
+
+Atomic array helpers (#257):
+
+- `atomic_append()`, `atomic_remove()` and `atomic_set_add()` raise when
+  SurrealDB rejects the statement: `TransactionConflictError` for a write
+  conflict, which `@retry_on_conflict` retries, and `QueryError` otherwise.
+  Both are `SurrealDBError` subclasses from `surreal_sdk` and carry the
+  server's message. An `UPDATE` that matches no record still returns `[]`.
+- `atomic_set_add()` with a list value adds only the elements the field does
+  not already hold. On an array field it used to append all of them: `['a']`
+  plus `['a', 'b']` gave `['a', 'a', 'b']`, and now gives `['a', 'b']`.
+- `atomic_set_add()` on a field holding a string or a number now raises
+  `QueryError`; `+=` used to concatenate or add (`'str'` plus `'p1'` gave
+  `'strp1'`, `10` plus `5` gave `15`). Using it on a non-array field was
+  outside the documented contract.
+
+### Known limitations
+
+- Unchanged from earlier releases: widening a non-optional column from
+  `array<T>` to `array<any>`, `array` or `any` leaves the derived `tags.*` at
+  `T`, and removing `FLEXIBLE` from an array column (rolling back an
+  `AlterField` that turned it on included) leaves its object element levels
+  `FLEXIBLE`, as `DEFINE FIELD OVERWRITE` did. `docs/migrations.md` documents
+  a `RawSQL` workaround for each (`ALTER FIELD tags.* ON <table> TYPE any;`,
+  `ALTER FIELD items.* ON <table> DROP FLEXIBLE;`).
+- The choice between `TransactionConflictError` and `QueryError` matches the
+  server's message against substrings that include `conflict`. A rejection
+  whose message contains that word, such as a failed `ASSERT` echoing a value
+  like `'conflict-resolved'` or naming a field like `conflicts`, raises
+  `TransactionConflictError`, and `@retry_on_conflict` retries it before
+  raising. The matcher is the existing one in `surreal_sdk`, not new in this
+  release.
+
+### Changed
+
+- **Tests.** The suites of this release pass on SurrealDB 3.3.4 (pin) and
+  3.2.6 (3.2 floor line): 2,377 unit tests on Python 3.12, 3.13 and 3.14, and
+  537 integration tests passed, 1 skipped, 1 expected failure, 0 failed, on
+  each server. The skip is the refresh token the test server does not return;
+  the expected failure is the upstream #147 check, still failing, so
+  `Subquery` keeps its `LET` prelude.
+
+### Upgrading
+
+- **Migrations.** Any pending `AlterField` for a field that does not exist yet
+  now fails, generated ones included. `makemigrations` diffs against the live
+  database, so a database whose fields came from `define_table()` or
+  hand-written DDL yields `AlterField` operations for fields no earlier
+  migration creates. Replaying that chain onto a fresh database (CI, a new
+  deployment) stops at the first of them, where `DEFINE FIELD OVERWRITE` used
+  to create the field silently. Give the chain an `AddField` that creates the
+  field before it is altered, preceded by a `CreateTable` if the table should
+  be defined explicitly (for example `SCHEMAFULL`); a `CreateTable` alone
+  defines no field. Migrations are not transactional, so a failure partway
+  leaves the earlier statements applied. Field permissions already reset by an
+  earlier `AlterField` or `define_table()` are not restored: re-apply them by
+  hand.
+- **Atomic array helpers.** Code that treated `[]` from these helpers as "the
+  write did not happen" should catch `QueryError` / `TransactionConflictError`
+  (or `SurrealDBError`) instead, or wrap the call in `@retry_on_conflict`.
+  Duplicates already written by `atomic_set_add()` are not removed. On
+  SurrealDB 3.2, `atomic_set_add()` on a `set<T>` field that is still unset
+  raises `QueryError` (it already failed with `+=`, silently): 3.2 does not
+  coerce an array into a set, so give such a field an initial value.
+- The `v2` line has both defects; the backports are tracked in #259 and #261.
+
+---
+
 ## [0.34.5] - 2026-10-27
 
 **Fix and SurrealDB 3.3.4 release.** Three SDK fixes for values that never

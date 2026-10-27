@@ -37,6 +37,30 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.6
+
+**Fix release.** No new public API, but both fixes change behaviour: see [CHANGELOG.md](CHANGELOG.md) before
+upgrading.
+
+- **Migrations keep field permissions set outside the ORM**
+  ([#195](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/195)). `AlterField` (forwards and rollback) and
+  `Model.define_table()` redefined fields with `DEFINE FIELD OVERWRITE`, so a field-level `PERMISSIONS` clause
+  the ORM does not model fell back to `PERMISSIONS FULL` on the next alteration. Fields are now altered in place
+  with `ALTER FIELD`, which sets or drops each modelled clause and leaves the others alone. `AlterField` on a field
+  that does not exist now fails the migration instead of creating it: a migration chain replayed onto a fresh
+  database needs an `AddField` for each field it alters.
+- **`schema_diff()` / `makemigrations` no longer emit a spurious `AlterField` for a field with permissions.**
+  `parse_define_field()` read a permission condition such as `WHERE type = 'public'` as a `TYPE` clause; it now
+  stops at the `PERMISSIONS` clause.
+- **`atomic_set_add()` is set-like** ([#233](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/233)). It
+  used `+=`, which appends on an array, so two calls with the same value left two copies. It now uses
+  `array::add()`, and a `set<T>` field stays a set.
+- **The atomic array helpers raise on a rejected statement.** `atomic_append()`, `atomic_remove()` and
+  `atomic_set_add()` returned `[]` when SurrealDB rejected the write (a conflict, a failed `ASSERT`), the same
+  value as an update that matched nothing, so the write was lost silently and `@retry_on_conflict` never retried.
+  They now raise `TransactionConflictError` (retried by `@retry_on_conflict`) or `QueryError`.
+  `atomic_append()` on a record without the field now creates `[value]`.
+
 ## What's New in 0.34.5
 
 **Fix and SurrealDB 3.3.4 release.** No public API change.
