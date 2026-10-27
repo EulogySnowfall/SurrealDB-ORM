@@ -667,7 +667,8 @@ await Event.atomic_append(event_id, "processed_by", pod_id)
 ### atomic_set_add (no duplicates)
 
 ```python
-# Add a value only if not already present (like set.add)
+# Add a value only if not already present (like set.add);
+# an array field stays an array, a set<T> field stays a set
 await Event.atomic_set_add(event_id, "processed_by", pod_id)
 ```
 

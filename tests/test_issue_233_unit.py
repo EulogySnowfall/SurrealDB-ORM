@@ -139,13 +139,21 @@ class TestRetryOnConflict:
 
 class TestEmittedQueries:
     async def test_set_add_uses_array_add_from_empty(self) -> None:
-        """``+=`` appends duplicates; ``array::add`` adds only absent values."""
+        """``+=`` appends duplicates; ``array::add`` adds only absent values.
+
+        ``array::add`` rejects a set, so a set field round-trips through
+        ``<array>`` and ``<set>`` instead of failing.
+        """
         client = _client(_ok(UPDATED))
         with _patch_client(client):
             await U233Item.atomic_set_add("a", "tags", "p1")
 
         query, variables = client.query.await_args.args
-        assert query == "UPDATE u233_items:a SET tags = array::add(tags ?? [], $value);"
+        assert query == (
+            "UPDATE u233_items:a SET tags = IF type::is_set(tags) "
+            "{ <set> array::add(<array> tags, $value) } "
+            "ELSE { array::add(tags ?? [], $value) };"
+        )
         assert variables == {"value": "p1"}
 
     async def test_append_starts_from_empty_array(self) -> None:

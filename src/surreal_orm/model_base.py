@@ -1828,18 +1828,27 @@ class BaseSurrealModel(BaseModel):
         field: str,
         value: Any,
     ) -> list[dict[str, Any]]:
-        """Atomically add a value to an array field only if not already present.
+        """Atomically add a value to an array or set field only if not already present.
 
-        Uses SurrealDB's ``array::add()``, which adds only values the array
+        Uses SurrealDB's ``array::add()``, which adds only values the field
         does not already hold, so calling it twice with the same value leaves
-        one copy. (The ``+=`` operator, which this method used before, appends
-        duplicates.) A record without the field gets ``[value]``. A list
-        *value* is spread: each of its elements is added if absent. Ideal for
-        "claim" patterns where each worker marks a record as processed.
+        one copy. A field holding a ``set`` (the ``set<T>`` type migrations
+        generate for a Python ``set[T]``) stays a set. A record without the
+        field gets ``[value]``. A list *value* is spread: each of its elements
+        is added if absent. Ideal for "claim" patterns where each worker marks
+        a record as processed.
+
+        This method used to run ``SET field += $value``. On a set, ``+=``
+        skips a value already present; on an array it appends, so an array
+        field collected duplicates.
+
+        On SurrealDB 3.2 a ``set<T>`` field that is still unset rejects the
+        new ``[value]``: that server does not coerce an array into a set
+        (3.3 does). Give such a field an initial value.
 
         Args:
             record_id: The record ID (just ID or "table:id" format).
-            field: The array field name.
+            field: The array or set field name.
             value: The value to add (skipped if already present).
 
         Returns:
@@ -1861,7 +1870,14 @@ class BaseSurrealModel(BaseModel):
         _, id_part = parse_record_id(str(record_id))
         thing = format_thing(cls.get_table_name(), id_part)
 
-        query = f"UPDATE {thing} SET {field} = array::add({field} ?? [], $value);"
+        # array::add() rejects a set, so a set goes through <array> and back
+        # through <set>: the result stays a set without relying on the field
+        # type to coerce it (3.2 does not) or when there is none (SCHEMALESS).
+        query = (
+            f"UPDATE {thing} SET {field} = IF type::is_set({field}) "
+            f"{{ <set> array::add(<array> {field}, $value) }} "
+            f"ELSE {{ array::add({field} ?? [], $value) }};"
+        )
         client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
         start = _start_timer()
         result = await client.query(query, {"value": value})
