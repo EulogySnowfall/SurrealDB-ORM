@@ -6,6 +6,87 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.16] - 2026-10-27
+
+**Bug fix release (V2 LTS).** One ORM fix (#261, #271), the `v2` port of
+#257 from `main` (0.34.6): the atomic array helpers no longer lose writes
+silently, and `atomic_set_add()` no longer adds duplicates. No new public
+API, but the fix changes behaviour: read *Behaviour change* and *Upgrading*.
+The SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Fixed
+
+- **`atomic_set_add()` appended duplicates on an array field (#261, #271).**
+  It ran `SET field += $value`, and on SurrealDB 2.x `+=` on an array
+  appends, so two calls with the same value left two copies. It now runs
+  `array::add(field ?? [], $value)`, which adds only the values the field
+  does not already hold. A record without the field, or holding `NULL`, gets
+  `[value]` (on SurrealDB 2.7.0, `+=` left a `NULL` field unchanged). On
+  SurrealDB 2.x a `set<T>` field holds an array, so the same query covers it.
+- **`atomic_append()`, `atomic_remove()` and `atomic_set_add()` returned `[]`
+  when SurrealDB rejected the statement (#261, #271)**: a write conflict, a
+  failed `ASSERT`, an argument of the wrong type. The write was lost
+  silently, indistinguishable from an update that matched no record, and
+  `@retry_on_conflict` never saw the conflict it exists to retry. They now
+  raise (see *Behaviour change*).
+- **`atomic_append()` on a record without the field, or holding `NULL`
+  (#261, #271),** was rejected by the server (`array::append()` rejects
+  `NONE` and `NULL`), and the rejection was swallowed, so the value was lost.
+  It now writes `[value]`. `atomic_remove()` (`-=`) already left a missing
+  field alone; its query is unchanged.
+
+### Behaviour change
+
+- `atomic_append()`, `atomic_remove()` and `atomic_set_add()` raise when
+  SurrealDB rejects the statement: `TransactionConflictError` for a write
+  conflict, which `@retry_on_conflict` retries, and `QueryError` otherwise.
+  Both are `SurrealDBError` subclasses from `surreal_sdk` and carry the
+  server's message; `QueryError` also carries the query. An `UPDATE` that
+  matches no record still returns `[]`.
+- `atomic_set_add()` with a list value adds only the elements the field does
+  not already hold. On an array field it used to append all of them: `['a']`
+  plus `['a', 'b']` gave `['a', 'a', 'b']`, and now gives `['a', 'b']`.
+- `atomic_set_add()` on a field holding a number or a string now raises
+  `QueryError` (`array::add()` rejects it). On SurrealDB 2.7.0, `+=` added
+  to a number (`10` plus `5` gave `15`) and left a string unchanged (`'str'`
+  plus `'p1'` stayed `'str'`). Using it on a non-array field was outside the
+  documented contract.
+
+### Known limitation
+
+- The choice between `TransactionConflictError` and `QueryError` matches the
+  server's message against substrings that include `conflict`. A rejection
+  whose message contains that word, such as a failed `ASSERT` echoing a value
+  like `'conflict-resolved'` or naming a field like `conflicts`, raises
+  `TransactionConflictError`, and `@retry_on_conflict` retries it before
+  raising. The matcher is the existing one in `surreal_sdk`, not new in this
+  release (same as 0.34.6 on `main`).
+
+### Upgrading
+
+- Code that treated `[]` from these helpers as "the write did not happen"
+  should catch `QueryError` / `TransactionConflictError` (or `SurrealDBError`)
+  instead, or wrap the call in `@retry_on_conflict` for conflicts.
+- Duplicates already written by `atomic_set_add()` are not removed.
+- No schema or dependency change; `cbor2` stays `>=5.9.0,<6`.
+
+### Verification
+
+Against a live SurrealDB 2.7.0 (#271): 1,958 unit tests on each of Python
+3.12, 3.13 and 3.14, and 542 integration tests, pass; the full integration
+suite also passes on SurrealDB 2.6.5 (542), the supported floor, since the
+fix relies on `array::add()` and `??`. `ruff` and `mypy` clean. The 39 new
+tests (23 unit, 16 integration) passed three times in a row; 21 of them fail
+on the code before the fix.
+
+### Changed
+
+- **Version bump to 0.21.16** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
 ## [0.21.15] - 2026-10-27
 
 **Bug fix release (V2 LTS).** One SDK fix (#231, #254), the `v2` port of
