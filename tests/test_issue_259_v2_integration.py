@@ -145,6 +145,31 @@ async def _introspected(table: str, name: str) -> FieldState:
             {"assertion": "$value != NONE"},
             id="value-naming-permissions",
         ),
+        pytest.param(
+            "nm",
+            r"TYPE string ASSERT string::matches($value, /^[A-Za-z' -]+$/) PERMISSIONS FOR select WHERE $auth.id = id",
+            {"assertion": None},
+            id="regex-with-an-apostrophe",
+        ),
+        pytest.param(
+            "email",
+            r"TYPE string ASSERT $value = /^[a-zA-Z0-9.!#$%&'*+=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$/ "
+            r"PERMISSIONS FOR select WHERE $auth.id = id",
+            {"assertion": None},
+            id="email-regex",
+        ),
+        pytest.param(
+            "rp",
+            r"TYPE string ASSERT $value = /^\(x/ PERMISSIONS FOR select NONE",
+            {"assertion": None},
+            id="regex-with-an-escaped-parenthesis",
+        ),
+        pytest.param(
+            "k1",
+            "TYPE string ASSERT / it's/ = $value PERMISSIONS FOR select NONE",
+            {"assertion": None},
+            id="regex-starting-with-a-space-after-a-keyword",
+        ),
     ],
 )
 async def test_alter_and_rollback_keep_the_reported_clause(name: str, definition: str, change: dict[str, Any]) -> None:

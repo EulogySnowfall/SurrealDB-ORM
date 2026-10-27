@@ -119,6 +119,115 @@ class TestParseFieldPermissions:
         assert result.permissions == {"select": "NONE"}
 
 
+class TestRegexLiteralsAheadOfThePermissions:
+    """A ``/.../`` regex literal is read as one token, like a string.
+
+    Its content is not SurrealQL: an apostrophe or an escaped parenthesis
+    inside it must not open a quote or a bracket that never closes. Unless
+    noted, every statement is the verbatim ``INFO FOR TABLE`` output of
+    SurrealDB 2.7.0.
+    """
+
+    @pytest.mark.parametrize(
+        ("statement", "assertion", "permissions"),
+        [
+            pytest.param(
+                r"DEFINE FIELD nm ON r259 TYPE string ASSERT string::matches($value, /^[A-Za-z' -]+$/) "
+                r"PERMISSIONS FOR select WHERE $auth.id = id, FOR create, update FULL",
+                r"string::matches($value, /^[A-Za-z' -]+$/)",
+                {"select": "$auth.id = id"},
+                id="apostrophe-in-a-function-argument",
+            ),
+            pytest.param(
+                r"DEFINE FIELD email ON r259 TYPE string "
+                r"ASSERT $value = /^[a-zA-Z0-9.!#$%&'*+=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$/ "
+                r"PERMISSIONS FOR select WHERE $auth.id = id, FOR create, update FULL",
+                r"$value = /^[a-zA-Z0-9.!#$%&'*+=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*$/",
+                {"select": "$auth.id = id"},
+                id="email-pattern-with-quotes-and-braces",
+            ),
+            pytest.param(
+                r"DEFINE FIELD p ON r259 TYPE string ASSERT $value = /^\(x/ "
+                r"PERMISSIONS FOR select NONE, FOR create, update FULL",
+                r"$value = /^\(x/",
+                {"select": "NONE"},
+                id="escaped-parenthesis",
+            ),
+            pytest.param(
+                r"DEFINE FIELD c ON r259b TYPE string ASSERT $value = / it's/ "
+                r"PERMISSIONS FOR select NONE, FOR create, update FULL",
+                r"$value = / it's/",
+                {"select": "NONE"},
+                id="pattern-starting-with-a-space",
+            ),
+            pytest.param(
+                r"DEFINE FIELD k4 ON r259c TYPE string ASSERT $value INSIDE [/ it's/, /b/] "
+                r"PERMISSIONS FOR select WHERE $auth.id = id, FOR create FULL, FOR update NONE",
+                r"$value INSIDE [/ it's/, /b/]",
+                {"select": "$auth.id = id", "update": "NONE"},
+                id="patterns-in-an-array",
+            ),
+            pytest.param(
+                r"DEFINE FIELD k3 ON r259c TYPE string ASSERT $value = /a\\\/b/ "
+                r"PERMISSIONS FOR select NONE, FOR create, update FULL",
+                r"$value = /a\\\/b/",
+                {"select": "NONE"},
+                id="escaped-slash-after-backslashes",
+            ),
+            pytest.param(
+                "DEFINE FIELD k2 ON r259c TYPE string ASSERT $value = /x PERMISSIONS FOR y/ "
+                "PERMISSIONS FOR select NONE, FOR create, update FULL",
+                "$value = /x PERMISSIONS FOR y/",
+                {"select": "NONE"},
+                id="keyword-inside-the-pattern",
+            ),
+            pytest.param(
+                # After a keyword, a pattern starting with a space reads like
+                # a division: the scan ends inside the apostrophe, and the
+                # clause is found from the end, where the server reports it.
+                "DEFINE FIELD k1 ON r259c TYPE string ASSERT / it's/ = $value "
+                "PERMISSIONS FOR select NONE, FOR create, update FULL",
+                "/ it's/ = $value",
+                {"select": "NONE"},
+                id="pattern-the-scan-cannot-tell-from-division",
+            ),
+        ],
+    )
+    def test_the_clause_is_found_after_the_pattern(self, statement: str, assertion: str, permissions: dict[str, str]) -> None:
+        result = parse_define_field(statement)
+
+        assert result.field_type == "string"
+        assert result.assertion == assertion
+        assert result.permissions == permissions
+
+    def test_patterns_on_both_sides_of_the_clause(self) -> None:
+        """Two stray apostrophes balance each other: the scan must still see the patterns."""
+        result = parse_define_field(
+            "DEFINE FIELD g2 ON r259c TYPE string ASSERT $value INSIDE [/x'/, /y/] "
+            "PERMISSIONS FOR select WHERE name = /b'/, FOR create, update FULL"
+        )
+
+        assert result.assertion == "$value INSIDE [/x'/, /y/]"
+        assert result.permissions["select"].startswith("name = /b'/")
+
+    def test_division_is_not_a_pattern(self) -> None:
+        result = parse_define_field(
+            "DEFINE FIELD b ON r259b TYPE int VALUE math::floor($value / 2) "
+            "PERMISSIONS FOR select NONE, FOR create, update FULL"
+        )
+
+        assert result.field_type == "int"
+        assert result.value == "math::floor($value / 2)"
+        assert result.permissions == {"select": "NONE"}
+
+    def test_a_balanced_body_without_a_clause_has_none(self) -> None:
+        """Hand-written: the fallback applies only when the scan ends inside a token."""
+        result = parse_define_field("DEFINE FIELD note ON t TYPE string DEFAULT 'PERMISSIONS FOR all'")
+
+        assert result.default == "PERMISSIONS FOR all"
+        assert result.permissions == {}
+
+
 class TestEffectiveFieldPermissions:
     """A field's default is FULL, the opposite of a table's (NONE)."""
 
