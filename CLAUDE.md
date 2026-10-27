@@ -21,9 +21,10 @@
 
 ### What's New in 0.34.5
 
-Live-filter binding and two CBOR encoding fixes (#205, #239), `certifi`
-2026.10.23 (#240, #242), SurrealDB pin 3.3.0 → 3.3.4 and a monitor fix (#234,
-#238). No public API change. **0.34.3** / **0.34.4** were the Dependabot
+Live-filter binding and two CBOR encoding fixes (#205, #239), whole-identifier
+parameter namespacing in HTTP transactions (#204, #243), `certifi` 2026.10.23
+(#240, #242), SurrealDB pin 3.3.0 → 3.3.4 and a monitor fix (#234, #238). No
+public API change. **0.34.3** / **0.34.4** were the Dependabot
 auto-releases of #223 (`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and
 #227 (`multidict` 6.9.1, one advisory), backfilled here.
 
@@ -35,8 +36,8 @@ auto-releases of #223 (`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and
   parameters in a `LIVE SELECT` (measured on 3.2 and 3.3), so the renderers
   (`_format_value`, `_inline_params_static`) are gone and `start()` and
   `_resubscribe_one()` send `query(sql, params)`. `substitute_params()` stays —
-  `inline_dict_variables()` and #204 use it. The emitted text now holds only
-  `$_fN` references.
+  `inline_dict_variables()` and `HTTPTransaction.commit()` use it. The emitted
+  text now holds only `$_fN` references.
 - **Binding is what exposed the CBOR defects.** cbor2 has *native* encoders for
   `Decimal` (tag 4) and `date` (tag 1004), so `_cbor_default_encoder` was never
   called for them (its `Decimal` branch was dead code), and SurrealDB rejects
@@ -45,6 +46,19 @@ auto-releases of #223 (`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and
   tag 10 with its exact digits, a `date` → the UTC-midnight `datetime`
   (`d'YYYY-MM-DD'`, tag 0). Any type cbor2 encodes natively bypasses the
   `default` hook — check there first when a new type misbehaves.
+- **`HTTPTransaction.commit()` renamed what it did not bind (#204, #243)** —
+  the follow-up filed in 0.33.3. It namespaced each statement's keys
+  (`$k` → `$tx_<i>_k`) with a boundary-less `str.replace`, one key at a time
+  over its own output, so a key renamed every longer `$name` it prefixed:
+  built-ins (`$auth.id` → `$tx_0_auth.id` for key `a`) and, for a key `t`/`tx`/
+  `tx_<i>`, the references already renamed for earlier keys
+  (`$tx_0_amount` → `$tx_0_tx_0_amount`). Unbound, they read `NONE` — no error.
+  The builders bind each field under its own name, so a *model field* named
+  `t` or `tx` was enough to make `save(tx=)` drop the fields bound before it.
+  `commit()` now goes through `substitute_params()`, single pass, only the
+  statement's own keys. Still textual: a bound `$k` inside a quoted string
+  literal is renamed (unchanged). WebSocket transactions never renamed. v2 has
+  the same loop and no `substitute_params()`: backport tracked in #247.
 - **`certifi` is transitive** (via `httpx`), so `uv.lock` kept the 2026.5.20
   bundle (still trusting `emSign ECC Root CA - G3`, GHSA-6q48-6c7w-9gw2) until it
   was named in `uv lock --upgrade-package`. The lock only moves dev/CI; users
@@ -68,7 +82,7 @@ auto-releases of #223 (`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and
   release beyond page one without the version bump that ships it.
 - **The pin moved in the fix PR itself**, so no auto-merged pin PR released
   before the support statement was written (the 0.33.5 / 0.34.0 rot).
-  Integration at 0.34.5: 3.3.4 and 3.2.6 both 488 passed, 1 skipped,
+  Integration at 0.34.5: 3.3.4 and 3.2.6 both 489 passed, 1 skipped,
   1 xfailed. #147 is still XFAIL on 3.3.4 — the `LET` prelude stays.
 - **A lock-file bump does not reach installed users.** `aiohttp` is a runtime
   dependency, but the declared floor is still `aiohttp>=3.12`; 0.34.3 changed

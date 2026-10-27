@@ -49,6 +49,12 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 - **`Decimal` and `datetime.date` values can be bound to any query.** Both made SurrealDB 3.x reject the whole
   request (cbor2 tags 4 and 1004). A `Decimal` is now sent as SurrealDB's decimal with every digit kept, and a
   `date` as the datetime at midnight UTC (`d'YYYY-MM-DD'`); a field typed `date` reads back the same date.
+- **HTTP transactions no longer rename parameters a statement did not bind**
+  ([#204](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/204)). `commit()` namespaced each bound key
+  with a plain text replace, so a key that prefixed a longer `$name` renamed it too and the server read `NONE`:
+  with a variable `a`, `$auth.id` became `$tx_0_auth.id`, and a model field named `t`, `tx` or `tx_0` made
+  `save(tx=)`, `merge(tx=)` or `bulk_create(atomic=True)` drop the fields bound before it. Only whole `$key`
+  references to the statement's own keys are renamed now. WebSocket transactions were not affected.
 - **`certifi` 2026.10.23 in the lock file** (GHSA-6q48-6c7w-9gw2). `certifi` is a transitive dependency, so
   upgrading the ORM does not upgrade it: run `pip install -U certifi` to get `>= 2026.10.19`.
 - **Tested against SurrealDB 3.3.4; supported range unchanged (3.2.x – 3.3.x).** The integration suite

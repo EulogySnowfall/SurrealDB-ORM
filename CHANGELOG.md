@@ -9,10 +9,11 @@ and adheres to [SemVer](https://semver.org/) versioning.
 ## [0.34.5] - 2026-10-27
 
 **Fix and SurrealDB 3.3.4 release.** Three SDK fixes for values that never
-reached the server intact (#205), a `certifi` update in the lock file (#240),
-and the tested server moves from 3.3.0 to 3.3.4 (#234); the supported range
-stays 3.2.x – 3.3.x. No public API change. 0.34.3 and 0.34.4, which shipped
-without entries, are backfilled below.
+reached the server intact (#205), one for parameters an HTTP transaction
+renamed out of reach (#204), a `certifi` update in the lock file (#240), and
+the tested server moves from 3.3.0 to 3.3.4 (#234); the supported range stays
+3.2.x – 3.3.x. No public API change. 0.34.3 and 0.34.4, which shipped without
+entries, are backfilled below.
 
 ### Fixed
 
@@ -35,6 +36,35 @@ without entries, are backfilled below.
   1004). `save()`, `exec()` and `query()` now work with a `date` value. It is
   sent as the datetime at midnight UTC, which is what `d'YYYY-MM-DD'` means in
   SurrealDB, and a field typed `date` reads it back as the same date.
+- **`HTTPTransaction.commit()` renamed parameters a statement did not bind
+  (#204, #243).** Over an HTTP connection, `commit()` sends every queued
+  statement as one query and namespaces each statement's keys (`$k` →
+  `$tx_<i>_k`). It did so with a plain text replace, one key at a time, so a
+  key also rewrote every longer `$name` it was a prefix of. The renamed name is
+  unbound and evaluates to `NONE`: a `WHERE` on it silently matched nothing and
+  a `SET` from it silently wrote nothing. Two ways in:
+  - a key that prefixes a built-in (`$auth`, `$session`, `$this`, `$before`,
+    `$after`, `$value`, `$input`) or another unbound parameter such as a
+    `DEFINE PARAM` value: with key `a`, `$auth.id` became `$tx_0_auth.id`.
+    Only names the caller chooses can do this: `tx.query()` variables,
+    `extra_vars` used with a `SurrealFunc`/`server_values` expression on
+    `save(tx=)`/`merge(tx=)`, and `QuerySet.variables()` in the atomic bulk
+    operations;
+  - a key `t`, `tx` or `tx_<i>` (`i` being the statement's position in the
+    transaction), which rewrote the references already renamed for the keys
+    bound before it (`$tx_0_amount` → `$tx_0_tx_0_amount`). The SDK builders
+    `tx.create/update/upsert/merge/relate` bind each field under its own name,
+    so `save(tx=)`, `merge(tx=)`, `update(tx=)`, `relate(tx=)` and
+    `bulk_create(atomic=True)` of a model with a field named `t`, `tx` or
+    `tx_<i>` lost the fields bound before it.
+
+  Only whole `$key` references to a key the statement binds are renamed now,
+  in a single pass through `surreal_sdk.utils.substitute_params()` (0.33.3).
+  The names the ORM generates for its own bindings (`_sv_*`, `_f*`, `_bu*`,
+  `_oc*`) could not trigger either case, `delete(tx=)` binds nothing, and
+  WebSocket transactions do not rename. A bound `$k` written inside a quoted
+  string literal is still renamed, as before. The `v2` line has the same
+  defect; its backport is tracked in #247.
 
 ### Security
 
@@ -50,7 +80,7 @@ without entries, are backfilled below.
 ### Changed
 
 - **SurrealDB pin 3.3.0 → 3.3.4** (`.surrealdb-version`, `devops/docker-compose.yml`,
-  #238). The integration suite of this release passes against 3.3.4 (488
+  #238). The integration suite of this release passes against 3.3.4 (489
   passed, 1 skipped, 1 expected failure, 0 failed), and against 3.2.6 on the
   3.2 floor line (same counts). The skip is the refresh token the test server
   does not return; the expected failure is the upstream #147 check, still
