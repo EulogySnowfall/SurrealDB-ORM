@@ -1542,7 +1542,7 @@ pip install surrealdb-orm
 pip install surrealdb-orm[cli]
 ```
 
-**Requirements:** Python 3.12+ | SurrealDB 3.2.x – 3.3.x, tested against 3.3.4 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
+**Requirements:** Python 3.12+ (tested on 3.12 – 3.15) | SurrealDB 3.2.x – 3.3.x, tested against 3.3.4 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
 
 **Included:** `pydantic`, `httpx`, `aiohttp`, `cbor2` (CBOR is the default protocol for WebSocket)
 
