@@ -1,10 +1,13 @@
 """Tests for CBOR protocol support in the SDK."""
 
-from datetime import UTC, date, datetime, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
+import cbor2
 import pytest
+from cbor2 import CBORTag
 
 from src.surreal_sdk.protocol import cbor as cbor_module
 from src.surreal_sdk.protocol.cbor import (
@@ -18,6 +21,7 @@ from src.surreal_sdk.protocol.cbor import (
     Duration,
     RecordId,
     Table,
+    _cbor_tag_decoder,
     decode,
     encode,
     is_available,
@@ -323,6 +327,107 @@ class TestCBOREncodeDecode:
 
         with pytest.raises(TypeError, match="Cannot CBOR encode"):
             encode(CustomClass())
+
+
+#: 2025-02-13T05:00:00Z as SurrealDB sends it in a compact tag 12.
+_COMPACT_SECONDS = 1_739_422_800
+_COMPACT_AT = datetime(2025, 2, 13, 5, 0, tzinfo=UTC)
+
+
+def _compact(seconds: int = _COMPACT_SECONDS, nanoseconds: int = 0) -> CBORTag:
+    """Tag 12 in the compact form, as cbor2 5.x hands it to the tag hook (a list)."""
+    return CBORTag(TAG_DATETIME, [seconds, nanoseconds])
+
+
+class TestCompactDatetimeDecoding:
+    """Tag 12 as a compact ``[seconds, nanoseconds]`` pair (#231).
+
+    Over CBOR RPC, SurrealDB 2.x sends every datetime in the compact form, not
+    as an ISO 8601 string. The decoder only handled the string, so a datetime the
+    ORM does not coerce through a model annotation (a ``raw_query()`` result, a
+    value nested in an object field) reached the caller as a list of two ints.
+    """
+
+    def test_compact_list_decodes_to_an_aware_utc_datetime(self) -> None:
+        result = _cbor_tag_decoder(None, _compact())
+
+        assert isinstance(result, datetime)
+        assert result == _COMPACT_AT
+        assert result.utcoffset() == timedelta(0)
+
+    def test_compact_list_keeps_sub_second_precision_to_the_microsecond(self) -> None:
+        """Python stops at the microsecond: the last three digits are dropped, not rounded."""
+        result = _cbor_tag_decoder(None, _compact(nanoseconds=123_456_789))
+
+        assert result == datetime(2025, 2, 13, 5, 0, 0, 123_456, tzinfo=UTC)
+
+    def test_compact_tuple_decodes_too(self) -> None:
+        result = _cbor_tag_decoder(None, CBORTag(TAG_DATETIME, (_COMPACT_SECONDS, 999)))
+
+        assert result == _COMPACT_AT
+
+    def test_compact_value_before_the_epoch(self) -> None:
+        """SurrealDB floors the seconds: ``1969-12-31T23:59:59.5Z`` arrives as ``[-1, 500000000]``."""
+        result = _cbor_tag_decoder(None, _compact(-1, 500_000_000))
+
+        assert result == datetime(1969, 12, 31, 23, 59, 59, 500_000, tzinfo=UTC)
+
+    def test_iso_string_form_still_decodes(self) -> None:
+        result = _cbor_tag_decoder(None, CBORTag(TAG_DATETIME, "2025-02-13T05:00:00.123456Z"))
+
+        assert result == datetime(2025, 2, 13, 5, 0, 0, 123_456, tzinfo=UTC)
+
+    def test_compact_values_nested_in_dicts_and_lists_decode(self) -> None:
+        payload = {
+            "at": _compact(),
+            "meta": {"seen": _compact(), "deeper": {"at": _compact()}},
+            "history": [_compact(), {"at": _compact()}, [_compact()]],
+        }
+
+        decoded = decode(cbor2.dumps(payload))
+
+        assert decoded == {
+            "at": _COMPACT_AT,
+            "meta": {"seen": _COMPACT_AT, "deeper": {"at": _COMPACT_AT}},
+            "history": [_COMPACT_AT, {"at": _COMPACT_AT}, [_COMPACT_AT]],
+        }
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param([734_708_966_400, 0], id="year-25252"),
+            # What 2.7.0 sends for <datetime>'-0001-01-01T00:00:00Z'.
+            pytest.param([-62_198_755_200, 0], id="year-minus-1"),
+            pytest.param([_COMPACT_SECONDS, 5_000_000_000], id="nanoseconds-past-a-second"),
+            pytest.param([_COMPACT_SECONDS, -1], id="negative-nanoseconds"),
+        ],
+    )
+    def test_unrepresentable_compact_value_returns_the_raw_value(self, value: list[int]) -> None:
+        """SurrealDB's datetime range is wider than Python's years 1-9999."""
+        assert _cbor_tag_decoder(None, CBORTag(TAG_DATETIME, value)) == value
+
+    @pytest.mark.parametrize("value", [[_COMPACT_SECONDS], [_COMPACT_SECONDS, 0, 0], ["1739422800", 0], [1.5, 0]])
+    def test_a_value_that_is_not_a_pair_of_ints_is_returned_unchanged(self, value: list[Any]) -> None:
+        assert _cbor_tag_decoder(None, CBORTag(TAG_DATETIME, value)) == value
+
+    def test_unparsable_iso_string_returns_the_raw_value(self) -> None:
+        assert _cbor_tag_decoder(None, CBORTag(TAG_DATETIME, "not-a-datetime")) == "not-a-datetime"
+
+    def test_one_undecodable_datetime_does_not_fail_the_whole_response(self) -> None:
+        """An exception in the tag hook surfaces as ``CBORDecodeError`` for the entire payload.
+
+        The fallback keeps it local to the one value, and every other datetime
+        in the same response still decodes.
+        """
+        payload = {
+            "ok": _compact(),
+            "huge": _compact(734_708_966_400),
+            "bad": CBORTag(TAG_DATETIME, "not-a-datetime"),
+        }
+
+        decoded = decode(cbor2.dumps(payload))
+
+        assert decoded == {"ok": _COMPACT_AT, "huge": [734_708_966_400, 0], "bad": "not-a-datetime"}
 
 
 class TestCBORTags:

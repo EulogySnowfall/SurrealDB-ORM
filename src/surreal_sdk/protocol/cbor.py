@@ -12,7 +12,7 @@ Custom CBOR Tags used by SurrealDB:
 - TAG_RECORDID (8): Record ID (table:id)
 - TAG_STRING_UUID (9): UUID as string
 - TAG_STRING_DECIMAL (10): Decimal as string
-- TAG_DATETIME (12): DateTime (ISO 8601)
+- TAG_DATETIME (12): DateTime (ISO 8601 string, or a [seconds, nanoseconds] pair)
 - TAG_STRING_DURATION (14): Duration as string
 """
 
@@ -284,9 +284,30 @@ def _cbor_tag_decoder(decoder: Any, tag: Any) -> Any:
     elif tag.tag == TAG_STRING_DECIMAL:
         return Decimal(tag.value)
     elif tag.tag == TAG_DATETIME:
-        # Parse ISO 8601 datetime string
+        # SurrealDB sends tag 12 either as an ISO 8601 string or as a compact
+        # [seconds, nanoseconds] pair, and 2.x uses the compact form for every
+        # datetime over CBOR RPC. Decoding it here is what makes datetimes
+        # outside a typed model field (raw queries, values nested in objects)
+        # come back as datetimes rather than as a list of two ints. The seconds
+        # are floored: 1969-12-31T23:59:59.5Z arrives as [-1, 500000000].
+        #
+        # Both branches fall back to the raw value rather than raising: cbor2
+        # re-raises an error from this hook as CBORDecodeError for the whole
+        # response, and SurrealDB's datetime range is wider than Python's
+        # years 1-9999, so one unrepresentable value would lose every other
+        # value in the same response.
         if isinstance(tag.value, str):
-            return datetime.fromisoformat(tag.value.replace("Z", "+00:00"))
+            try:
+                return datetime.fromisoformat(tag.value.replace("Z", "+00:00"))
+            except ValueError:
+                return tag.value
+        if isinstance(tag.value, (list, tuple)) and len(tag.value) == 2:
+            seconds, nanoseconds = tag.value
+            if isinstance(seconds, int) and isinstance(nanoseconds, int):
+                try:
+                    return datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=nanoseconds // 1000)
+                except (ValueError, OverflowError, OSError):
+                    return tag.value
         return tag.value
     elif tag.tag == TAG_STRING_DURATION:
         return Duration(value=tag.value)
