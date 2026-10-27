@@ -7,17 +7,23 @@ requiring a running SurrealDB instance.
 
 import asyncio
 import inspect
+from decimal import Decimal
+from typing import Any
 
 import pytest
 
+from src.surreal_orm.fields.relation import ForeignKey
 from src.surreal_orm.live import (
     ChangeModelStream,
     LiveModelStream,
     ModelChangeEvent,
 )
-from src.surreal_orm.model_base import BaseSurrealModel
+from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from src.surreal_orm.query_set import QuerySet
+from src.surreal_orm.subquery import Subquery
 from src.surreal_sdk.streaming.live_select import LiveAction, LiveChange
+from src.surreal_sdk.types import QueryResponse
+from surreal_sdk.protocol.cbor import RecordId
 
 # ==================== Test Models ====================
 
@@ -747,143 +753,189 @@ class TestQuerySetLiveExtended:
         assert stream._model is PlayerModel
 
 
-# ==================== _format_value & _parse_id ====================
+# ==================== Bound LIVE SELECT parameters ====================
 
 
-class TestFormatValue:
-    """Tests for LiveSelectStream._format_value() inline param formatting."""
+class TL205Author(BaseSurrealModel):
+    """Target of the foreign key below."""
 
-    def test_none(self) -> None:
+    model_config = SurrealConfigDict(table_name="tl205_authors")
+
+    id: str | None = None
+    name: str = ""
+
+
+class TL205Book(BaseSurrealModel):
+    """A model whose live filters carry every kind of value the ORM binds."""
+
+    model_config = SurrealConfigDict(table_name="tl205_books")
+
+    id: str | None = None
+    title: str = ""
+    prefs: dict[str, Any] | None = None
+    price: Decimal | None = None
+    author: ForeignKey("TL205Author") = None  # type: ignore[valid-type]
+
+
+class _RecordingConnection:
+    """Stands in for ``WebSocketConnection``: records every ``query(sql, vars)``."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any] | None]] = []
+        self._live_callbacks: dict[str, Any] = {}
+        self._live_subscriptions: dict[str, Any] = {}
+
+    async def query(self, sql: str, vars: dict[str, Any] | None = None) -> QueryResponse:
+        self.calls.append((sql, vars))
+        return QueryResponse.from_rpc_result([{"status": "OK", "result": "live-1", "time": "1ms"}])
+
+    def _register_live_subscription(self, live_id: str, params: Any) -> None:
+        self._live_subscriptions[live_id] = params
+
+    async def kill(self, live_id: str) -> None:
+        pass
+
+    def _unregister_live_subscription(self, live_id: str) -> None:
+        self._live_subscriptions.pop(live_id, None)
+
+
+#: A record id with spaces, quotes, a semicolon and backticks.
+_AWKWARD_ID = "a b; 'c' \"d\" `e`"
+
+
+class TestLiveSelectStreamBindsParams:
+    """``LiveSelectStream.start()`` sends ``query(sql, vars)``, never a rendered value."""
+
+    async def test_values_travel_in_vars(self) -> None:
         from src.surreal_sdk.streaming.live_select import LiveSelectStream
 
-        assert LiveSelectStream._format_value(None) == "NONE"
+        conn = _RecordingConnection()
+        params = {"_f0": "admin", "_f1": 18}
+        stream = LiveSelectStream(conn, "users", where="role = $_f0 AND age >= $_f1", params=params)  # type: ignore[arg-type]
 
-    def test_bool_true(self) -> None:
+        assert await stream.start() == "live-1"
+
+        assert conn.calls == [("LIVE SELECT * FROM users WHERE role = $_f0 AND age >= $_f1", params)]
+
+    async def test_no_params_sends_no_vars(self) -> None:
         from src.surreal_sdk.streaming.live_select import LiveSelectStream
 
-        assert LiveSelectStream._format_value(True) == "true"
+        conn = _RecordingConnection()
+        await LiveSelectStream(conn, "users").start()  # type: ignore[arg-type]
 
-    def test_bool_false(self) -> None:
+        assert conn.calls == [("LIVE SELECT * FROM users", None)]
+
+    async def test_diff_mode_still_binds(self) -> None:
         from src.surreal_sdk.streaming.live_select import LiveSelectStream
 
-        assert LiveSelectStream._format_value(False) == "false"
+        conn = _RecordingConnection()
+        params = {"_f0": {"theme": "dark"}}
+        await LiveSelectStream(conn, "users", where="prefs = $_f0", params=params, diff=True).start()  # type: ignore[arg-type]
 
-    def test_int(self) -> None:
+        sql, sent = conn.calls[0]
+        assert sql.endswith(" DIFF")
+        assert "theme" not in sql and "dark" not in sql
+        assert sent == params
+
+    async def test_subscription_keeps_the_values_for_resubscribe(self) -> None:
         from src.surreal_sdk.streaming.live_select import LiveSelectStream
 
-        assert LiveSelectStream._format_value(42) == "42"
+        conn = _RecordingConnection()
+        params = {"_f0": Decimal("9.99")}
+        await LiveSelectStream(conn, "users", where="price = $_f0", params=params).start()  # type: ignore[arg-type]
 
-    def test_float(self) -> None:
+        registered = conn._live_subscriptions["live-1"]
+        assert registered.where == "price = $_f0"
+        assert registered.params == params
+
+    async def test_queryset_live_sends_only_references(self) -> None:
+        """Every value a ``filter()`` produces reaches ``query()`` as a variable."""
+        conn = _RecordingConnection()
+        stream = (
+            TL205Book.objects()
+            .filter(author=_AWKWARD_ID, prefs={"theme": "dark"}, price=Decimal("9.99"), title__in=["x", "it's"])
+            .live()
+        )
+        stream._connection = conn  # type: ignore[assignment]
+
+        async with stream:
+            pass
+
+        sql, sent = conn.calls[0]
+        assert sql == ("LIVE SELECT * FROM tl205_books WHERE author = $_f0 AND prefs = $_f1 AND price = $_f2 AND title IN $_f3")
+        assert sent == {
+            "_f0": RecordId(table="tl205_authors", id=_AWKWARD_ID),
+            "_f1": {"theme": "dark"},
+            "_f2": Decimal("9.99"),
+            "_f3": ["x", "it's"],
+        }
+
+    async def test_variables_references_are_bound(self) -> None:
+        """``.variables()`` values travel in ``vars`` next to the filter values."""
         from src.surreal_sdk.streaming.live_select import LiveSelectStream
 
-        assert LiveSelectStream._format_value(3.14) == "3.14"
+        stream = PlayerModel.objects().filter(role="$wanted", age__gte=18).variables(wanted="admin").live()
+        conn = _RecordingConnection()
+        await LiveSelectStream(conn, stream._table, where=stream._where, params=stream._params).start()  # type: ignore[arg-type]
 
-    def test_string(self) -> None:
+        sql, sent = conn.calls[0]
+        assert "admin" not in sql and "18" not in sql
+        assert "role = $wanted" in sql
+        assert sent == {"wanted": "admin", "_f0": 18}
+
+    async def test_subquery_values_are_bound(self) -> None:
+        """A ``Subquery`` stays inline in the WHERE, its own values become variables."""
         from src.surreal_sdk.streaming.live_select import LiveSelectStream
 
-        assert LiveSelectStream._format_value("hello") == "'hello'"
+        inner = TL205Author.objects().filter(name="Alice").select("id")
+        stream = TL205Book.objects().filter(author__in=Subquery(inner)).live()
+        conn = _RecordingConnection()
+        await LiveSelectStream(conn, stream._table, where=stream._where, params=stream._params).start()  # type: ignore[arg-type]
 
-    def test_string_with_quotes(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        assert LiveSelectStream._format_value("it's") == "'it\\'s'"
-
-    def test_list(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        assert LiveSelectStream._format_value([1, "a"]) == "[1, 'a']"
-
-    def test_record_id(self) -> None:
-        from src.surreal_sdk.protocol.cbor import RecordId
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        rid = RecordId(table="users", id="abc123")
-        assert LiveSelectStream._format_value(rid) == "users:abc123"
-
-    def test_uuid(self) -> None:
-        from uuid import UUID
-
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        uid = UUID("12345678-1234-5678-1234-567812345678")
-        assert LiveSelectStream._format_value(uid) == f"u'{uid}'"
-
-    def test_datetime(self) -> None:
-        from datetime import datetime
-
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        dt = datetime(2026, 2, 1, 12, 30, 0)
-        assert LiveSelectStream._format_value(dt) == f"d'{dt.isoformat()}'"
-
-    def test_date(self) -> None:
-        from datetime import date
-
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        d = date(2026, 2, 1)
-        assert LiveSelectStream._format_value(d) == f"d'{d.isoformat()}'"
+        sql, sent = conn.calls[0]
+        assert "(SELECT VALUE id FROM tl205_authors WHERE name = $_f0)" in sql
+        assert "Alice" not in sql
+        assert sent == {"_f0": "Alice"}
 
 
-class TestInlineParams:
-    """Tests for LiveSelectStream._inline_params_static()."""
+class TestResubscribeBindsParams:
+    """``WebSocketConnection._resubscribe_one()`` rebuilds the query with the same bound values."""
 
-    def test_single_param(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+    async def test_values_travel_in_vars(self) -> None:
+        from src.surreal_sdk.connection.websocket import WebSocketConnection
+        from src.surreal_sdk.streaming.live_select import LiveSubscriptionParams
 
-        sql = "LIVE SELECT * FROM users WHERE role = $_f0"
-        result = LiveSelectStream._inline_params_static(sql, {"_f0": "admin"})
-        assert result == "LIVE SELECT * FROM users WHERE role = 'admin'"
+        conn = WebSocketConnection("ws://localhost:8000", "ns", "db")
+        recorder = _RecordingConnection()
+        conn.query = recorder.query  # type: ignore[method-assign]
+        params = {"_f0": RecordId(table="users", id=_AWKWARD_ID), "_f1": {"theme": "dark"}}
+        sub = LiveSubscriptionParams(
+            table="players",
+            where="author = $_f0 AND prefs = $_f1",
+            params=params,
+            diff=False,
+            callback=None,
+            on_reconnect=None,
+        )
 
-    def test_multiple_params(self) -> None:
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+        new_id = await conn._resubscribe_one(sub)
 
-        sql = "LIVE SELECT * FROM users WHERE role = $_f0 AND age >= $_f1"
-        result = LiveSelectStream._inline_params_static(sql, {"_f0": "admin", "_f1": 18})
-        assert result == "LIVE SELECT * FROM users WHERE role = 'admin' AND age >= 18"
+        assert new_id == "live-1"
+        assert recorder.calls == [("LIVE SELECT * FROM players WHERE author = $_f0 AND prefs = $_f1", params)]
+        assert conn._live_subscriptions["live-1"] is sub
 
-    def test_escaped_backslashes_survive_substitution(self) -> None:
-        """``_format_value`` doubles backslashes; ``re.sub`` used to undo that.
+    async def test_no_params_sends_no_vars(self) -> None:
+        from src.surreal_sdk.connection.websocket import WebSocketConnection
+        from src.surreal_sdk.streaming.live_select import LiveSubscriptionParams
 
-        The formatted value went to ``re.sub`` as a *replacement string*, which
-        parses escapes — so ``'C:\\\\temp'`` came back out as ``'C:\\temp'``.
-        SurrealQL then reads ``\\t`` as a tab and the live filter silently
-        matches nothing. ``QuerySet.live()`` feeds user filter values here.
-        """
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
+        conn = WebSocketConnection("ws://localhost:8000", "ns", "db")
+        recorder = _RecordingConnection()
+        conn.query = recorder.query  # type: ignore[method-assign]
+        sub = LiveSubscriptionParams(table="players", where=None, params={}, diff=True, callback=None, on_reconnect=None)
 
-        result = LiveSelectStream._inline_params_static("WHERE p = $p", {"p": "C:\\temp\\x"})
+        await conn._resubscribe_one(sub)
 
-        assert result == "WHERE p = 'C:\\\\temp\\\\x'", result
-
-    def test_regex_backreferences_in_a_value_are_literal(self) -> None:
-        """``\\1`` and ``\\g<0>`` are replacement syntax — they must stay data."""
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        result = LiveSelectStream._inline_params_static("WHERE p = $p", {"p": "\\g<0>"})
-
-        assert result == "WHERE p = '\\\\g<0>'", result
-
-    def test_a_later_key_does_not_rewrite_an_earlier_value(self) -> None:
-        """Substitution is a single pass over the original SQL."""
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        result = LiveSelectStream._inline_params_static("WHERE a = $a AND b = $b", {"a": "cost $b here", "b": "x"})
-
-        assert result == "WHERE a = 'cost $b here' AND b = 'x'", result
-
-    def test_a_shorter_key_does_not_match_inside_a_longer_reference(self) -> None:
-        r"""``$_f1`` must not match the prefix of ``$_f10``.
-
-        This used to be guaranteed by sorting the keys longest-first. It now
-        falls out of the greedy ``\w+`` in the shared reference pattern, which
-        captures the whole identifier — do not reintroduce the sort.
-        """
-        from src.surreal_sdk.streaming.live_select import LiveSelectStream
-
-        sql = "WHERE x = $_f1 AND y = $_f10"
-        result = LiveSelectStream._inline_params_static(sql, {"_f1": "a", "_f10": "b"})
-        assert result == "WHERE x = 'a' AND y = 'b'"
+        assert recorder.calls == [("LIVE SELECT * FROM players DIFF", None)]
 
 
 class TestParseId:
