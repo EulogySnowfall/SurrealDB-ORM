@@ -54,9 +54,9 @@ wherever results are serialised to JSON. No schema or dependency change;
 
 Against a live SurrealDB 2.7.0 (#254): 1,935 unit tests on each of Python
 3.12, 3.13 and 3.14, and 526 integration tests, pass; `ruff` and `mypy`
-clean. The new and changed tests (70 unit, 7 integration) passed three times
-in a row, and 14 of them fail on the code before the fix, including all 7
-integration tests.
+clean. The tests in the two files #254 touched (70 unit, 16 of them new, and
+7 new integration tests) passed three times in a row; 14 of the 23 new tests
+fail on the code before the fix, including all 7 integration tests.
 
 ### Changed
 
