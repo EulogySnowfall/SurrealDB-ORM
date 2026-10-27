@@ -191,6 +191,20 @@ class TestRegexLiteralsAheadOfThePermissions:
                 {"select": "NONE"},
                 id="pattern-the-scan-cannot-tell-from-division",
             ),
+            pytest.param(
+                "DEFINE FIELD b2 ON r259k TYPE string ASSERT / +/ != $value "
+                "PERMISSIONS FOR select WHERE $auth.score / 2 > 1, FOR create, update FULL",
+                "/ +/ != $value",
+                {"select": "$auth.score / 2 > 1"},
+                id="regex-starting-with-a-space-then-a-division",
+            ),
+            pytest.param(
+                "DEFINE FIELD d ON r259k TYPE string ASSERT $value = 'x' OR / +/ = $value "
+                "PERMISSIONS FOR select, create, update WHERE $auth.email = /@corp$/",
+                "$value = 'x' OR / +/ = $value",
+                {action: "$auth.email = /@corp$/" for action in ("select", "create", "update")},
+                id="regex-starting-with-a-space-then-a-pattern",
+            ),
         ],
     )
     def test_the_clause_is_found_after_the_pattern(self, statement: str, assertion: str, permissions: dict[str, str]) -> None:
@@ -221,7 +235,7 @@ class TestRegexLiteralsAheadOfThePermissions:
         assert result.permissions == {"select": "NONE"}
 
     def test_a_balanced_body_without_a_clause_has_none(self) -> None:
-        """Hand-written: the fallback applies only when the scan ends inside a token."""
+        """Hand-written: the keyword never follows whitespace, so there is no clause to fall back to."""
         result = parse_define_field("DEFINE FIELD note ON t TYPE string DEFAULT 'PERMISSIONS FOR all'")
 
         assert result.default == "PERMISSIONS FOR all"

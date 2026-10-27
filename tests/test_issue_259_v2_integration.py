@@ -170,6 +170,19 @@ async def _introspected(table: str, name: str) -> FieldState:
             {"assertion": None},
             id="regex-starting-with-a-space-after-a-keyword",
         ),
+        pytest.param(
+            "k2",
+            "TYPE string ASSERT / +/ != $value PERMISSIONS FOR select WHERE $auth.score / 2 > 1",
+            {"assertion": "$value != NONE"},
+            id="regex-starting-with-a-space-then-a-division",
+        ),
+        pytest.param(
+            "k3",
+            "TYPE string ASSERT $value = 'x' OR / +/ = $value "
+            "PERMISSIONS FOR select, create, update WHERE $auth.email = /@corp$/",
+            {"assertion": "$value != NONE"},
+            id="regex-starting-with-a-space-then-a-pattern",
+        ),
     ],
 )
 async def test_alter_and_rollback_keep_the_reported_clause(name: str, definition: str, change: dict[str, Any]) -> None:
