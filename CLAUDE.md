@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.16)
+> Context document for Claude AI - Last updated: October 2026 (0.21.17)
 
 <!-- -->
 
@@ -19,12 +19,39 @@
 
 ---
 
-## Current Version: 0.21.16 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.17 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.17
+
+Bug fix, the `v2` port of #248 (#259, #274). Two new optional `AlterField` arguments and one
+`FieldState` attribute; behaviour change in generated migrations.
+
+- **The defect:** `AlterField.forwards()` / `backwards()` redefine a field with
+  `DEFINE FIELD OVERWRITE`, which replaces the whole definition, and re-emitted only the clauses
+  `FieldState` models. Field-level `PERMISSIONS` was not one of them, so every generated alter of
+  a field (and its rollback) reset a permission set outside the ORM to `PERMISSIONS FULL`.
+- **Why `main`'s fix could not be cherry-picked:** `main` (0.34.6) alters fields with
+  `ALTER FIELD`, which leaves unmodelled clauses alone, but SurrealDB 2.7.0 does not parse
+  `ALTER FIELD`. `v2` models the clause instead: `FieldState.permissions` (action → rule, `FULL`
+  entries dropped since `FULL` is a field's default; `FOR delete` dropped since the server accepts
+  but never reports it), and `AlterField(permissions=, previous_permissions=)`, rendered last by
+  `_render_define_field()`. `FieldState.__eq__` ignores it: models cannot declare field
+  permissions on this line, so the diff never tries to undo one.
+- **The parser had to change first.** `parse_define_field()` treated `PERMISSIONS` as one more
+  clause keyword, and SurrealDB reports a condition's field names unescaped (only `` `value` `` is
+  backticked), so `WHERE type = 'public'` became the field type and `schema_diff()` raised
+  `ValueError`. `_split_field_permissions()` now cuts the body at the first top-level
+  `PERMISSIONS FULL|NONE|FOR` (quotes, brackets and `/regex/` literals respected, angle brackets
+  not), falling back to the last occurrence, where `INFO FOR TABLE` always reports it.
+- **Snapshot semantics:** both arguments are the clause the database had when the migration was
+  generated. Files generated before 0.21.17 carry neither and still reset the permission.
+- **Still open:** #273, a `<` / `>` comparison still hides the other clauses after it (same on
+  `main`).
 
 ### What's New in 0.21.16
 

@@ -52,6 +52,26 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.17
+
+**Bug fix release (V2 LTS).** One migrations fix, the `v2` port of #248 from `main`; a behaviour change in
+what generated migrations emit.
+
+- **A generated `AlterField` no longer resets a field's permissions to `FULL` (#259).** It redefines the
+  field with `DEFINE FIELD OVERWRITE`, which replaces the whole definition, and field-level `PERMISSIONS`
+  were not carried, so a clause set by hand, by another tool or by a `RawSQL` migration fell back to
+  `PERMISSIONS FULL` on the next generated alteration and on its rollback. The diff now reads the clause
+  from the database (`FieldState.permissions`) and `AlterField` re-emits it in both directions through the
+  new `permissions` / `previous_permissions` arguments.
+- **`parse_define_field()` no longer misreads a field's `PERMISSIONS` clause.** A `WHERE` condition naming
+  a field such as `type` or `default` was read as that clause (`schema_diff()` raised `ValueError` on
+  `type`), and a preceding `ASSERT $value > 0`, or a regex literal holding an apostrophe, folded the clause
+  into the assertion.
+- **Behaviour change / upgrading:** both arguments are a snapshot of the clause when the migration is
+  generated; regenerate (or edit both) if the field's permissions change before you apply it. Migration
+  files already on disk carry neither argument and still reset the permissions: add them, or regenerate
+  an unapplied migration. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.16
 
 **Bug fix release (V2 LTS).** One ORM fix, the `v2` port of #257 from `main`; no new public API, but a
