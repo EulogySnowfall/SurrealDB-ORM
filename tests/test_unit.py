@@ -1162,7 +1162,8 @@ class TestExtractDatetimeValues:
         naive = datetime(2026, 1, 1, 0, 0, 0)
         markers: dict[str, str] = {}
         counter = [0]
-        _extract_datetime_values(naive, markers, counter)
+        with pytest.warns(RuntimeWarning, match="read as UTC"):
+            _extract_datetime_values(naive, markers, counter)
 
         # Should have UTC timezone in the d"..." literal
         assert "+00:00" in markers["__SURQL_DT_0__"]

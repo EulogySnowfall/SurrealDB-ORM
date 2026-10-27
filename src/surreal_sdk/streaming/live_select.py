@@ -92,6 +92,13 @@ class LiveSubscriptionParams:
     diff: bool
     callback: LiveCallback | None
     on_reconnect: ReconnectCallback | None
+    # Private: set by LiveSelectStream, which receives notifications through its
+    # own handler rather than ``callback``. The connection calls it with the id
+    # of the re-created live query as soon as it has it, with no await in
+    # between, so the stream re-registers its handler and adopts the new id. It
+    # returns False when the stream was stopped while its query was being
+    # re-created. Not a constructor argument, and left out of repr and equality.
+    _on_resubscribed: Callable[[str], bool] | None = field(default=None, init=False, repr=False, compare=False)
 
 
 class LiveSelectStream:
@@ -206,17 +213,18 @@ class LiveSelectStream:
 
                     # Register for auto-resubscribe if enabled
                     if self.auto_resubscribe:
-                        self.connection._register_live_subscription(
-                            self._live_id,
-                            LiveSubscriptionParams(
-                                table=self.table,
-                                where=self.where,
-                                params=self.params,
-                                diff=self.diff,
-                                callback=None,  # We use queue, not callback
-                                on_reconnect=self.on_reconnect,
-                            ),
+                        subscription = LiveSubscriptionParams(
+                            table=self.table,
+                            where=self.where,
+                            params=self.params,
+                            diff=self.diff,
+                            callback=None,  # We use queue, not callback
+                            on_reconnect=self.on_reconnect,
                         )
+                        # After a reconnect, the connection moves this stream to
+                        # the re-created live query (handler and id).
+                        subscription._on_resubscribed = self._update_live_id
+                        self.connection._register_live_subscription(self._live_id, subscription)
 
                     self._active = True
                     return self._live_id
@@ -228,19 +236,26 @@ class LiveSelectStream:
 
     async def stop(self) -> None:
         """Stop the live query subscription."""
-        if self._live_id:
+        # Marked stopped before the first await. A resubscribe whose re-created
+        # LIVE SELECT is answered while the kill below is in flight must find
+        # the stream stopped: ``_update_live_id`` then refuses the new id and
+        # the connection kills that query. Marked only after the kill, the
+        # stream adopted it while this kill reached the old id, which had
+        # ended with the socket, and the new query kept running.
+        self._closed = True
+        live_id = self._live_id
+        if live_id:
             try:
                 # Unregister from auto-resubscribe
-                self.connection._unregister_live_subscription(self._live_id)
-                await self.connection.kill(self._live_id)
+                self.connection._unregister_live_subscription(live_id)
+                await self.connection.kill(live_id)
             except Exception:
                 pass
             finally:
-                self.connection._live_callbacks.pop(self._live_id, None)
+                self.connection._live_callbacks.pop(live_id, None)
                 self._live_id = None
                 self._active = False
 
-        self._closed = True
         # Signal end of stream
         await self._queue.put(None)  # type: ignore
 
@@ -249,11 +264,26 @@ class LiveSelectStream:
         change = LiveChange.from_dict(data)
         await self._queue.put(change)
 
-    def _update_live_id(self, new_id: str) -> None:
-        """Update live ID after reconnection (called by connection)."""
+    def _update_live_id(self, new_id: str) -> bool:
+        """
+        Adopt the live query the connection re-created after a reconnect.
+
+        Called by ``WebSocketConnection._resubscribe_one()`` as soon as the new
+        id is known, with no await in between: the stream's handler is
+        registered under the new id (the resubscribe cleared every handler),
+        and ``stop()`` then kills the new live query instead of the old one,
+        which ended with the socket.
+
+        Returns:
+            False once ``stop()`` has begun, even with its kill of the old id
+            still in flight: the stream does not take the new id, and the
+            connection kills that live query instead of keeping it.
+        """
+        if self._closed:
+            return False
         self._live_id = new_id
-        # Re-register callback with new ID
         self.connection._live_callbacks[new_id] = self._handle_notification
+        return True
 
     # Async iterator protocol
 
