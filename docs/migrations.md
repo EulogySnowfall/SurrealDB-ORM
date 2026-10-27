@@ -325,6 +325,16 @@ The field must exist: altering a missing one fails the migration with
 `MigrationStatementError: ... The field 'email' does not exist`. Use `AddField` to
 create a field.
 
+This holds for every pending `AlterField`, generated ones included. `makemigrations`
+diffs against the live database, so a database whose fields came from
+`define_table()` or from hand-written DDL, rather than from a migration, yields
+`AlterField` operations for fields that no earlier migration creates. Replaying that
+chain onto a fresh database (CI, a new deployment) stops at the first such
+`AlterField`, and the statements applied before it stay applied: migrations are not
+transactional. `DEFINE FIELD OVERWRITE` used to create the field silently at that
+step. Give the chain an `AddField` (or `CreateTable`) that creates the field before
+it is altered.
+
 Neither form of `DEFINE FIELD` works here. A plain `DEFINE FIELD` over an existing
 field is rejected (`The field 'email' already exists`) and leaves the definition
 untouched (#162); `DEFINE FIELD OVERWRITE` replaces the whole definition, which
