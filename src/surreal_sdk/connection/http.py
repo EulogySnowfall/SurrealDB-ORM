@@ -5,6 +5,7 @@ Provides stateless HTTP-based connection, ideal for microservices and serverless
 """
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 import httpx
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
 from ..exceptions import ConnectionError, QueryError
 from ..protocol.rpc import RPCRequest, RPCResponse
 from ..types import AuthResponse
+
+logger = logging.getLogger(__name__)
 
 # Backoff delays (seconds) between attempts when recovering from a transient
 # ``401`` caused by a freshly-minted JWT whose ``nbf`` claim is momentarily in
@@ -76,13 +79,18 @@ class HTTPConnection(BaseSurrealConnection):
         # Last successful signin arguments, retained so a transient auth failure
         # (see ``_send_rpc``) can transparently re-mint a token.
         self._signin_args: dict[str, Any] | None = None
-        # RPC requests currently in flight through ``_send_rpc``, and an event
-        # set whenever that count is zero. ``_drain_and_close`` waits on them so
-        # a client being retired is not closed under a request still reading
-        # its response.
+        # What still uses this connection, so that ``_drain_and_close`` does
+        # not close a client being retired under it: RPC requests in flight
+        # through ``_send_rpc``, and open ``HTTPTransaction``s (which send their
+        # statements only at commit), counted per task that opened them.
+        # ``_released`` is set each time one of them ends.
         self._inflight_rpcs = 0
-        self._rpcs_idle = asyncio.Event()
-        self._rpcs_idle.set()
+        self._open_transactions: dict[asyncio.Task[Any] | None, int] = {}
+        self._released = asyncio.Event()
+        # Set by ``_drain_and_close`` when the task retiring this connection has
+        # transactions open on it: the close then happens when they end.
+        self._close_after_transactions_of: asyncio.Task[Any] | None = None
+        self._close_pending = False
 
     @property
     def headers(self) -> dict[str, str]:
@@ -147,37 +155,90 @@ class HTTPConnection(BaseSurrealConnection):
         client, self._client = self._client, None
         self._connected = False
         self._authenticated = False
+        self._close_pending = False
+        self._close_after_transactions_of = None
         if client:
             await client.aclose()
 
     async def _drain_and_close(self, timeout: float) -> bool:
-        """Close this connection once no RPC request is in flight on it.
+        """Close this connection once nothing is using it any more.
 
-        Used to retire a client that has just been replaced: requests already
-        running on it finish normally instead of failing when the ``httpx``
-        client is closed under them. The wait is bounded; a request still
-        running after *timeout* seconds is cut off by the close. Nothing is
-        left running in the background: the wait happens in the caller's task.
+        Used to retire a client that has just been replaced: RPC requests
+        already running on it, and transactions open on it (an
+        ``HTTPTransaction`` sends its statements only at commit), finish
+        normally instead of failing when the ``httpx`` client is closed under
+        them. The wait is bounded; whatever still uses the connection after
+        *timeout* seconds is cut off by the close. Nothing is left running in
+        the background: the wait happens in the caller's task.
+
+        Transactions opened by the calling task itself are not waited for, as
+        they cannot end while this task waits: the connection is then closed
+        when the last of them commits or rolls back, instead of here.
 
         Args:
-            timeout: Maximum number of seconds to wait for in-flight requests.
+            timeout: Maximum number of seconds to wait for in-flight requests
+                and open transactions of other tasks.
 
         Returns:
-            ``True`` if every in-flight request finished before the close,
-            ``False`` if the timeout expired first.
+            ``True`` if everything else using the connection finished before
+            the close, ``False`` if the timeout expired first.
         """
+        me = asyncio.current_task()
         drained = True
         try:
             async with asyncio.timeout(timeout):
-                # Re-check the count after each wake-up: a request can start
-                # between the event being set and this task resuming.
-                while self._inflight_rpcs:
-                    await self._rpcs_idle.wait()
+                # Clear, then re-check: a request can start between the event
+                # being set and this task resuming. Nothing can run between the
+                # check and the wait, so no release is missed.
+                while True:
+                    self._released.clear()
+                    if not self._in_use_by_others(me):
+                        break
+                    await self._released.wait()
         except TimeoutError:
             drained = False
         finally:
-            await self.close()
+            if self._open_transactions.get(me):
+                self._close_after_transactions_of = me
+                self._close_pending = True
+            else:
+                await self.close()
         return drained
+
+    def _in_use_by_others(self, task: asyncio.Task[Any] | None) -> bool:
+        """Whether an RPC request, or a transaction opened by another task than *task*, uses this connection."""
+        return bool(self._inflight_rpcs) or any(owner is not task for owner in self._open_transactions)
+
+    def _transaction_opened(self) -> asyncio.Task[Any] | None:
+        """Count a transaction opened by the current task as using this connection.
+
+        Called by ``HTTPTransaction`` when it begins. Returns the owning task,
+        which the transaction hands back to ``_transaction_ended``.
+        """
+        owner = asyncio.current_task()
+        self._open_transactions[owner] = self._open_transactions.get(owner, 0) + 1
+        return owner
+
+    async def _transaction_ended(self, owner: asyncio.Task[Any] | None) -> None:
+        """Stop counting a transaction of *owner* that committed or rolled back.
+
+        Performs the close that ``_drain_and_close`` deferred if this was the
+        last open transaction of the task that retired this connection. A
+        failure to close is logged, not raised: the transaction itself has
+        already ended.
+        """
+        remaining = self._open_transactions.get(owner, 0) - 1
+        if remaining > 0:
+            self._open_transactions[owner] = remaining
+        else:
+            self._open_transactions.pop(owner, None)
+        self._released.set()
+
+        if self._close_pending and remaining <= 0 and owner is self._close_after_transactions_of:
+            try:
+                await self.close()
+            except Exception:
+                logger.warning("Failed to close a retired HTTP connection cleanly.", exc_info=True)
 
     async def _send_rpc(self, request: RPCRequest) -> RPCResponse:
         """
@@ -204,13 +265,11 @@ class HTTPConnection(BaseSurrealConnection):
             raise ConnectionError("Not connected. Call connect() first.")
 
         self._inflight_rpcs += 1
-        self._rpcs_idle.clear()
         try:
             return await self._post_rpc(self._client, request)
         finally:
             self._inflight_rpcs -= 1
-            if not self._inflight_rpcs:
-                self._rpcs_idle.set()
+            self._released.set()
 
     async def _post_rpc(self, client: httpx.AsyncClient, request: RPCRequest) -> RPCResponse:
         """POST *request* to ``/rpc`` on *client*, re-minting the token on a transient 401."""

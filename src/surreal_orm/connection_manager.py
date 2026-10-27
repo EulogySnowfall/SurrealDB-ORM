@@ -435,12 +435,20 @@ class SurrealDBConnectionManager:
 
         The new client is built and signed in first, then swapped in under the
         connection lock, so concurrent callers of ``get_client()`` always get a
-        connected client. Requests already running on the previous client are
-        allowed to finish: it is closed once none is in flight, or after
-        ``_reconnect_drain_timeout`` seconds (30 by default), whichever comes
-        first, and this call returns after that close. The default WebSocket
-        client, if any, is closed as before and recreated on the next
+        connected client. Requests already running on the previous client, and
+        transactions already open on it (from ``transaction()``, which send
+        their statements at commit), are allowed to finish: it is closed once
+        none is left, or after ``_reconnect_drain_timeout`` seconds (30 by
+        default), whichever comes first, and this call returns after that
+        close. Transactions opened by the task calling ``reconnect()`` are not
+        waited for (they cannot end while it waits): the previous client is
+        then closed when the last of them commits or rolls back. The default
+        WebSocket client, if any, is closed as before and recreated on the next
         ``get_ws_client()``.
+
+        Code that keeps a client from ``get_client()`` across an ``await``
+        and uses it after a ``reconnect()`` gets ``Not connected`` once that
+        client is closed: call ``get_client()`` again instead of holding it.
 
         If the new client cannot be connected or authenticated,
         ``SurrealDbConnectionError`` is raised and the current clients are
@@ -887,7 +895,8 @@ class SurrealDBConnectionManager:
             http: HTTP client to close, if any.
             ws: WebSocket client to close, if any.
             drain_timeout: When set, the HTTP client is closed only once no
-                request is in flight on it, or after this many seconds.
+                request or transaction is in flight on it, or after this many
+                seconds (see ``HTTPConnection._drain_and_close``).
         """
         if ws is not None:
             try:
@@ -901,7 +910,8 @@ class SurrealDBConnectionManager:
                     await http.close()
                 elif not await http._drain_and_close(drain_timeout):
                     logger.warning(
-                        "Closed the previous HTTP client for connection '%s' with requests still in flight after %.1f s.",
+                        "Retired the previous HTTP client for connection '%s' with requests or transactions "
+                        "still in flight after %.1f s.",
                         name,
                         drain_timeout,
                     )
