@@ -6,6 +6,52 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.9] - 2026-10-27
+
+**Maintenance release.** Python 3.15 is supported (#235, #288). No library code
+changes vs 0.34.8 and no new public API. `requires-python` (`>=3.12`) and every
+dependency floor are unchanged. The SurrealDB pin is unchanged (tested against
+3.3.4, supported range 3.2.x – 3.3.x).
+
+### Added
+
+- **Python 3.15 support (#235, #288).** CI runs the unit suite on Python 3.12,
+  3.13, 3.14 and 3.15; lint and integration tests stay on 3.13. Both the
+  package and the SDK carry the `Programming Language :: Python :: 3.15`
+  classifier. A new unit test, `tests/test_python_support.py`, keeps the
+  tested range in step: the classifiers of both `pyproject.toml` files, the
+  `requires-python` floor, the ruff and mypy targets and the
+  `make test-all-python` helper must match the CI matrix, and every locked
+  package must install from a wheel on every tested Python (PyYAML, a dev
+  dependency with a pure-Python fallback, excepted).
+
+### Changed
+
+- **Lock file only, for development and CI (#288).** A targeted refresh so
+  that every dependency installs from a wheel on Python 3.15: pydantic
+  2.13.4 → 2.14.1 (pydantic-core 2.46.4 → 2.50.1), cbor2 6.1.2 → 6.1.5,
+  mypy 2.1.0 → 2.4.0 (librt 0.11.0 → 0.16.0, ast-serialize 0.5.0 → 0.13.1),
+  typing-extensions 4.15.0 → 4.16.0 and typing-inspection 0.4.2 → 0.4.4. No
+  other package changes. The lock does not ship in the package, so installs
+  of `surrealdb-orm` resolve exactly as before.
+- **Tests.** The suites of this release pass on SurrealDB 3.3.4 (pin) and
+  3.2.6 (3.2 floor line): 2,454 unit tests on each of Python 3.12, 3.13, 3.14
+  and 3.15, and 553 integration tests passed, 1 skipped, 1 expected failure,
+  0 failed, on each server. The skip is the refresh token the test server
+  does not return; the expected failure is the upstream #147 check, still
+  failing, so `Subquery` keeps its `LET` prelude.
+
+### Upgrading
+
+- On Python 3.15, use pydantic >= 2.14.0 (pydantic-core 2.50.0) and
+  cbor2 >= 6.1.5, the first stable releases with cp315 wheels. Older versions
+  that the floors still allow are built from source there, and both
+  pydantic-core and cbor2 need a Rust toolchain for that.
+- The `v2` line is not concerned: it is an LTS line and takes no new platform
+  support.
+
+---
+
 ## [0.34.8] - 2026-10-27
 
 **Fix release.** `QuerySet.live()` keeps receiving events after a WebSocket
