@@ -13,7 +13,9 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
+from surreal_sdk.exceptions import QueryError, TransactionConflictError
 from surreal_sdk.protocol.cbor import RecordId
+from surreal_sdk.types import QueryResponse
 
 from . import signals as model_signals
 from .connection_manager import SurrealDBConnectionManager
@@ -44,6 +46,30 @@ logger = logging.getLogger(__name__)
 _UPDATE_NO_RECORD_MSG = (
     "Can't update data, no record affected for {thing} (record may not exist or the write was denied by permissions)."
 )
+
+
+def _raise_on_statement_error(response: QueryResponse, query: str) -> None:
+    """Raise if SurrealDB rejected a statement of *response*.
+
+    ``client.query()`` raises only on an RPC-level failure. A statement the
+    server rejects — a write conflict, a failed ``ASSERT``, an argument of the
+    wrong type — comes back inside a *successful* RPC as ``status: ERR``, with
+    no records. Reading only the records turns that rejection into ``[]``,
+    indistinguishable from an update that matched nothing, and hides a conflict
+    from ``@retry_on_conflict`` (#233).
+
+    Raises:
+        TransactionConflictError: The server reported a retryable conflict.
+        QueryError: Any other rejected statement; carries the server message
+            and the query.
+    """
+    for statement in response.results:
+        if statement.is_error:
+            error = QueryError(str(statement.result), query=query)
+            if TransactionConflictError.is_conflict_error(error):
+                raise TransactionConflictError(error.message) from error
+            raise error
+
 
 # Global registry of all SurrealDB models for migration introspection
 _MODEL_REGISTRY: list[type["BaseSurrealModel"]] = []
@@ -1715,6 +1741,8 @@ class BaseSurrealModel(BaseModel):
 
         Uses SurrealDB's ``array::append()`` in an UPDATE statement,
         avoiding read-modify-write conflicts in concurrent environments.
+        A record without the field gets ``[value]``. A list *value* is
+        appended as one nested element.
 
         Args:
             record_id: The record ID (just ID or "table:id" format).
@@ -1722,7 +1750,15 @@ class BaseSurrealModel(BaseModel):
             value: The value to append.
 
         Returns:
-            The updated record(s) as a list of dicts.
+            The updated record(s) as a list of dicts (empty when no record
+            matches *record_id*).
+
+        Raises:
+            ValueError: *field* is not a plain identifier.
+            TransactionConflictError: The write conflicted with a concurrent
+                transaction; ``@retry_on_conflict`` retries it.
+            QueryError: SurrealDB rejected the statement (e.g. a failed
+                ``ASSERT``); the message is the server's.
 
         Example:
             await Event.atomic_append(event_id, "processed_by", pod_id)
@@ -1732,11 +1768,13 @@ class BaseSurrealModel(BaseModel):
         _, id_part = parse_record_id(str(record_id))
         thing = format_thing(cls.get_table_name(), id_part)
 
-        query = f"UPDATE {thing} SET {field} = array::append({field}, $value);"
+        # array::append() rejects NONE, so a missing field starts from [].
+        query = f"UPDATE {thing} SET {field} = array::append({field} ?? [], $value);"
         client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
         start = _start_timer()
         result = await client.query(query, {"value": value})
         _log_query(query, {"value": value}, _elapsed_ms(start))
+        _raise_on_statement_error(result, query)
         return list(result.all_records) if result.all_records else []
 
     @classmethod
@@ -1748,7 +1786,8 @@ class BaseSurrealModel(BaseModel):
     ) -> list[dict[str, Any]]:
         """Atomically remove all occurrences of a value from an array field.
 
-        Uses SurrealDB's ``-=`` operator in an UPDATE statement.
+        Uses SurrealDB's ``-=`` operator in an UPDATE statement. A record
+        without the field is left unchanged.
 
         Args:
             record_id: The record ID (just ID or "table:id" format).
@@ -1756,7 +1795,15 @@ class BaseSurrealModel(BaseModel):
             value: The value to remove.
 
         Returns:
-            The updated record(s) as a list of dicts.
+            The updated record(s) as a list of dicts (empty when no record
+            matches *record_id*).
+
+        Raises:
+            ValueError: *field* is not a plain identifier.
+            TransactionConflictError: The write conflicted with a concurrent
+                transaction; ``@retry_on_conflict`` retries it.
+            QueryError: SurrealDB rejected the statement (e.g. a failed
+                ``ASSERT``); the message is the server's.
 
         Example:
             await Event.atomic_remove(event_id, "tags", "deprecated")
@@ -1771,6 +1818,7 @@ class BaseSurrealModel(BaseModel):
         start = _start_timer()
         result = await client.query(query, {"value": value})
         _log_query(query, {"value": value}, _elapsed_ms(start))
+        _raise_on_statement_error(result, query)
         return list(result.all_records) if result.all_records else []
 
     @classmethod
@@ -1782,9 +1830,12 @@ class BaseSurrealModel(BaseModel):
     ) -> list[dict[str, Any]]:
         """Atomically add a value to an array field only if not already present.
 
-        Uses SurrealDB's ``+=`` operator which performs set-like addition
-        (no duplicates). Ideal for "claim" patterns where each worker marks
-        a record as processed.
+        Uses SurrealDB's ``array::add()``, which adds only values the array
+        does not already hold, so calling it twice with the same value leaves
+        one copy. (The ``+=`` operator, which this method used before, appends
+        duplicates.) A record without the field gets ``[value]``. A list
+        *value* is spread: each of its elements is added if absent. Ideal for
+        "claim" patterns where each worker marks a record as processed.
 
         Args:
             record_id: The record ID (just ID or "table:id" format).
@@ -1792,7 +1843,15 @@ class BaseSurrealModel(BaseModel):
             value: The value to add (skipped if already present).
 
         Returns:
-            The updated record(s) as a list of dicts.
+            The updated record(s) as a list of dicts (empty when no record
+            matches *record_id*).
+
+        Raises:
+            ValueError: *field* is not a plain identifier.
+            TransactionConflictError: The write conflicted with a concurrent
+                transaction; ``@retry_on_conflict`` retries it.
+            QueryError: SurrealDB rejected the statement (e.g. a failed
+                ``ASSERT``); the message is the server's.
 
         Example:
             await Event.atomic_set_add(event_id, "processed_by", pod_id)
@@ -1802,11 +1861,12 @@ class BaseSurrealModel(BaseModel):
         _, id_part = parse_record_id(str(record_id))
         thing = format_thing(cls.get_table_name(), id_part)
 
-        query = f"UPDATE {thing} SET {field} += $value;"
+        query = f"UPDATE {thing} SET {field} = array::add({field} ?? [], $value);"
         client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
         start = _start_timer()
         result = await client.query(query, {"value": value})
         _log_query(query, {"value": value}, _elapsed_ms(start))
+        _raise_on_statement_error(result, query)
         return list(result.all_records) if result.all_records else []
 
     # ==================== Graph Relation Methods ====================
