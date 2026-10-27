@@ -33,7 +33,9 @@ SURREALDB_DATABASE = "test_issue_195"
 DOCS = "i195_docs"
 NOTES = "i195_notes"
 AUTHORS = "i195_authors"
-TABLES = [DOCS, NOTES, AUTHORS, MIGRATIONS_TABLE]
+EDITORS = "i195_editors"
+TAGGED = "i195_tagged"
+TABLES = [DOCS, NOTES, AUTHORS, EDITORS, TAGGED, MIGRATIONS_TABLE]
 
 #: How SurrealDB reports ``PERMISSIONS FOR select NONE`` on a field: the other
 #: actions keep the field default, FULL. Losing the restriction reads ``PERMISSIONS FULL``.
@@ -100,6 +102,13 @@ async def _restrict(table: str, field: str) -> str:
     permissions = _permissions((await _fields(table))[field])
     assert permissions != "PERMISSIONS FULL", "precondition: the field should be restricted"
     return permissions
+
+
+async def _write_errors(sql: str) -> list[str]:
+    """The statement-level errors of a write, for asserting that it is accepted."""
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    response = await client.query(sql)
+    return [str(r.result) for r in response.results if r.status.value == "ERR"]
 
 
 async def _restricted_docs_table() -> None:
@@ -378,3 +387,115 @@ async def test_add_field_still_refuses_an_existing_field() -> None:
 
     assert [r.status.value for r in response.results] == ["ERR"]
     assert RESTRICTED in (await _fields(DOCS))["secret"]
+
+
+# ------------------------------------------------------------- array element sub-fields
+
+
+def _retype_tags(previous: str, target: str) -> AlterField:
+    """The AlterField makemigrations generates for a changed list element type."""
+    return AlterField.from_field_states(
+        TAGGED,
+        FieldState(name="tags", field_type=previous, nullable=False),
+        FieldState(name="tags", field_type=target, nullable=False),
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_an_array_retype_keeps_the_column_writable_both_ways(migrations_dir: Path) -> None:
+    """SurrealDB derives ``tags.*``; ALTER FIELD on ``tags`` alone left it at the old element type.
+
+    The column then refused every non-empty value: ``Couldn't coerce value for
+    field `tags.*```. DEFINE FIELD OVERWRITE re-derived it, so this worked
+    while AlterField emitted that.
+    """
+    await _query(f"DEFINE TABLE {TAGGED} SCHEMAFULL; DEFINE FIELD tags ON {TAGGED} TYPE array<string>;")
+
+    MigrationGenerator(migrations_dir).generate(name="retype_tags", operations=[_retype_tags("array<string>", "array<int>")])
+    executor = MigrationExecutor(migrations_dir)
+    await executor.migrate()
+
+    assert (await _fields(TAGGED))["tags.*"] == f"DEFINE FIELD tags.* ON {TAGGED} TYPE int PERMISSIONS FULL"
+    assert await _write_errors(f"CREATE {TAGGED}:forwards SET tags = [1, 2];") == []
+
+    await _query(f"DELETE {TAGGED};")
+    await executor.rollback("")
+
+    assert (await _fields(TAGGED))["tags.*"] == f"DEFINE FIELD tags.* ON {TAGGED} TYPE string PERMISSIONS FULL"
+    assert await _write_errors(f"CREATE {TAGGED}:backwards SET tags = ['a', 'b'];") == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_rolling_back_an_array_retype_applied_by_overwrite() -> None:
+    """A database migrated forward by 0.34.x has ``tags.*`` in the new element type already."""
+    await _query(f"DEFINE TABLE {TAGGED} SCHEMAFULL; DEFINE FIELD tags ON {TAGGED} TYPE array<int>;")
+    assert (await _fields(TAGGED))["tags.*"] == f"DEFINE FIELD tags.* ON {TAGGED} TYPE int PERMISSIONS FULL"
+
+    await _query(_retype_tags("array<string>", "array<int>").backwards())
+
+    assert (await _fields(TAGGED))["tags.*"] == f"DEFINE FIELD tags.* ON {TAGGED} TYPE string PERMISSIONS FULL"
+    assert await _write_errors(f"CREATE {TAGGED}:1 SET tags = ['a', 'b'];") == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_nested_array_retype_aligns_every_level() -> None:
+    """``array<array<…>>`` derives ``n.*`` and ``n.*.*``."""
+    await _query(f"DEFINE TABLE {TAGGED} SCHEMAFULL; DEFINE FIELD tags ON {TAGGED} TYPE array<array<string>>;")
+
+    await _query(_retype_tags("array<array<string>>", "array<array<int>>").forwards())
+    fields = await _fields(TAGGED)
+
+    assert fields["tags.*"] == f"DEFINE FIELD tags.* ON {TAGGED} TYPE array<int> PERMISSIONS FULL"
+    assert fields["tags.*.*"] == f"DEFINE FIELD tags.*.* ON {TAGGED} TYPE int PERMISSIONS FULL"
+    assert await _write_errors(f"CREATE {TAGGED}:1 SET tags = [[1, 2], [3]];") == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_a_changed_reference_target_reaches_the_element() -> None:
+    """A ReferencesField is ``option<array<record<T>>>``: ``o.*`` kept ``record<old>``."""
+    await _query(
+        f"DEFINE TABLE {AUTHORS} SCHEMAFULL; DEFINE TABLE {EDITORS} SCHEMAFULL; DEFINE TABLE {TAGGED} SCHEMAFULL;"
+        f"DEFINE FIELD o ON {TAGGED} TYPE option<array<record<{AUTHORS}>>> REFERENCE ON DELETE IGNORE;"
+    )
+    op = AlterField.from_field_states(
+        TAGGED,
+        FieldState(name="o", field_type=f"array<record<{AUTHORS}>>", nullable=True, reference=True, on_delete="IGNORE"),
+        FieldState(name="o", field_type=f"array<record<{EDITORS}>>", nullable=True, reference=True, on_delete="IGNORE"),
+    )
+
+    await _query(op.forwards())
+
+    assert (await _fields(TAGGED))["o.*"] == f"DEFINE FIELD o.* ON {TAGGED} TYPE record<{EDITORS}> PERMISSIONS FULL"
+    assert await _write_errors(f"CREATE {TAGGED}:1 SET o = [{EDITORS}:1];") == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_define_table_again_after_the_element_type_changed() -> None:
+    """The define_table() pair goes through the same renderer, so ``tags.*`` follows the model."""
+
+    class I195TaggedStr(BaseSurrealModel):
+        model_config = SurrealConfigDict(table_name=TAGGED)
+        id: str | None = None
+        tags: list[str] = []
+
+    await I195TaggedStr.define_table()
+    assert (await _fields(TAGGED))["tags.*"] == f"DEFINE FIELD tags.* ON {TAGGED} TYPE string PERMISSIONS FULL"
+
+    clear_model_registry()
+
+    class I195TaggedInt(BaseSurrealModel):
+        model_config = SurrealConfigDict(table_name=TAGGED)
+        id: str | None = None
+        tags: list[int] = []
+
+    await I195TaggedInt.define_table()
+
+    assert (await _fields(TAGGED))["tags.*"] == f"DEFINE FIELD tags.* ON {TAGGED} TYPE int PERMISSIONS FULL"
+    saved = I195TaggedInt(tags=[1, 2])
+    await saved.save()
+    assert (await I195TaggedInt.objects().get(saved.get_id())).tags == [1, 2]

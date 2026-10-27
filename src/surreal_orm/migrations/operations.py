@@ -256,6 +256,126 @@ def _render_define_field(
     return " ".join(parts) + ";"
 
 
+def _split_top_level(text: str, separator: str) -> list[str]:
+    """
+    Split a SurrealQL type on *separator*, outside brackets and quotes.
+
+    ``array<record<a | b>> | string`` splits on ``|`` into two members, and
+    ``array<string, 5>`` on ``,`` into the element and the length.
+
+    Args:
+        text: The type text
+        separator: A one-character separator
+
+    Returns:
+        The stripped parts, in order
+    """
+    parts: list[str] = []
+    depth = 0
+    quote: str | None = None
+    start = 0
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+        elif ch in "<([{":
+            depth += 1
+        elif ch in ">)]}":
+            depth -= 1
+        elif ch == separator and depth == 0:
+            parts.append(text[start:i].strip())
+            start = i + 1
+    parts.append(text[start:].strip())
+    return parts
+
+
+def _union_members(field_type: str) -> list[str]:
+    """
+    Flatten a type into its union members, without ``none``/``null``.
+
+    ``option<T>`` is ``none | T``, so it is unwrapped into T's members.
+
+    Args:
+        field_type: The type text
+
+    Returns:
+        The non-null members
+    """
+    members: list[str] = []
+    for member in _split_top_level(field_type, "|"):
+        lowered = member.lower()
+        if lowered in ("none", "null"):
+            continue
+        if lowered.startswith("option<") and member.endswith(">"):
+            members.extend(_union_members(member[len("option<") : -1]))
+        else:
+            members.append(member)
+    return members
+
+
+def _element_type(field_type: str) -> str | None:
+    """
+    The type SurrealDB gives the ``name.*`` field it derives for a column.
+
+    Defining a field whose type has an ``array<T>`` or ``set<T>`` member also
+    defines ``name.*`` with type ``T`` — the union of every such member's
+    element, ``array<int> | set<string>`` giving ``int | string``. An untyped
+    ``array``/``set``, or an ``any`` element, derives nothing.
+
+    Args:
+        field_type: The column's type, as rendered
+
+    Returns:
+        The derived element type, or ``None`` when nothing is derived
+    """
+    elements: list[str] = []
+    for member in _union_members(field_type):
+        lowered = member.lower()
+        for kind in ("array<", "set<"):
+            if lowered.startswith(kind) and member.endswith(">"):
+                element = _split_top_level(member[len(kind) : -1], ",")[0]
+                if element.lower() == "any":
+                    return None
+                if element not in elements:
+                    elements.append(element)
+                break
+    return " | ".join(elements) or None
+
+
+def _render_element_types(table: str, name: str, field_type: str) -> list[str]:
+    """
+    Align the element sub-fields SurrealDB derived for an array or set column.
+
+    ``DEFINE FIELD tags ON t TYPE array<string>`` also defines ``tags.*`` as
+    ``string`` (and ``n.*.*`` for ``array<array<…>>``); a redefinition
+    re-derives them. ``ALTER FIELD tags ON t TYPE array<int>`` does not: it
+    leaves ``tags.*`` at ``string`` and the column then refuses every
+    non-empty value. Each derived level is therefore altered too, its TYPE
+    only — the field is the server's, and a clause set on it by hand stays.
+    ``IF EXISTS`` because the server derived nothing for a column that was not
+    a typed array before: there, the parent's TYPE alone checks the elements.
+
+    Args:
+        table: Table the column belongs to
+        name: Column name
+        field_type: The column's new type, as rendered
+
+    Returns:
+        One statement per derived level, outermost first; none for a column
+        that is not a typed array or set
+    """
+    statements: list[str] = []
+    path = name
+    element = _element_type(field_type)
+    while element:
+        path += ".*"
+        statements.append(f"ALTER FIELD IF EXISTS {path} ON {table} TYPE {element};")
+        element = _element_type(element)
+    return statements
+
+
 def _render_alter_field(
     table: str,
     name: str,
@@ -272,7 +392,7 @@ def _render_alter_field(
     comment: str | None = None,
 ) -> str:
     """
-    Render one ``ALTER FIELD`` statement setting every modelled clause.
+    Render the ``ALTER FIELD`` statement setting every modelled clause.
 
     ``DEFINE FIELD OVERWRITE`` replaces the whole definition, so a clause the
     ORM does not model was reset to the server default: a field restricted
@@ -288,6 +408,11 @@ def _render_alter_field(
     answers ``The field 'x' does not exist``. Shared by both directions of
     ``AlterField``, so a rollback cannot render a clause differently from the
     statement it reverses.
+
+    For a typed array or set column, the statement is followed by one per
+    element sub-field SurrealDB derived (``tags.*``, ``n.*.*``): a
+    redefinition re-derived them, ``ALTER FIELD`` does not
+    (:func:`_render_element_types`).
 
     Args:
         table: Table the field belongs to
@@ -305,14 +430,13 @@ def _render_alter_field(
         comment: COMMENT text
 
     Returns:
-        The complete statement, semicolon included
+        The ALTER FIELD statement, then any element sub-field statements,
+        newline-separated, each with its semicolon
     """
     parts = [f"ALTER FIELD {name} ON {table}"]
 
-    if field_type:
-        parts.append(f"TYPE {_apply_nullable(_normalize_field_type(field_type), nullable)}")
-    else:
-        parts.append("DROP TYPE")
+    rendered_type = _apply_nullable(_normalize_field_type(field_type), nullable) if field_type else None
+    parts.append(f"TYPE {rendered_type}" if rendered_type else "DROP TYPE")
 
     # FLEXIBLE is only valid on a type containing object. The server checks the
     # field once every clause is applied, so a statement that changes the type
@@ -336,7 +460,10 @@ def _render_alter_field(
 
     parts.append(f"COMMENT {_render_comment(comment)}" if comment else "DROP COMMENT")
 
-    return " ".join(parts) + ";"
+    statements = [" ".join(parts) + ";"]
+    if rendered_type:
+        statements.extend(_render_element_types(table, name, rendered_type))
+    return "\n".join(statements)
 
 
 def _field_clauses(op: "AddField | AlterField") -> dict[str, Any]:
@@ -365,7 +492,8 @@ def _render_create_or_alter_field(op: "AddField") -> str:
     ``DEFINE FIELD IF NOT EXISTS`` creates the field with its whole definition
     when it is missing and is a no-op otherwise; the ``ALTER FIELD`` that
     follows then brings an existing field's modelled clauses in line, leaving
-    the clauses the ORM does not model — field ``PERMISSIONS`` — as they are.
+    the clauses the ORM does not model — field ``PERMISSIONS`` — as they are,
+    and aligns the element sub-fields of an array or set column.
     ``DEFINE FIELD OVERWRITE`` was create-or-redefine in one statement, but it
     reset those clauses (#195).
 
@@ -373,7 +501,7 @@ def _render_create_or_alter_field(op: "AddField") -> str:
         op: The field to apply
 
     Returns:
-        The two statements, newline-separated
+        The statements, newline-separated
     """
     clauses = _field_clauses(op)
     return "\n".join(

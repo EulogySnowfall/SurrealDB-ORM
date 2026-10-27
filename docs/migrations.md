@@ -303,6 +303,12 @@ carries it, `DROP`-ped when it does not, so removing a clause from a model remov
 from the database. Anything else on the field — a field-level `PERMISSIONS` clause
 set by hand, for instance — is left as the database has it (#195).
 
+For an array or set column, SurrealDB also keeps a field per element level
+(`tags.*` for `array<string>`, `n.*.*` for `array<array<int>>`), which `ALTER FIELD`
+on the column does not update. The alteration is therefore followed by one
+`ALTER FIELD IF EXISTS tags.* ON users TYPE int;` per level, so changing a list's
+element type leaves the column writable.
+
 The field must exist: altering a missing one fails the migration with
 `MigrationStatementError: ... The field 'email' does not exist`. Use `AddField` to
 create a field.

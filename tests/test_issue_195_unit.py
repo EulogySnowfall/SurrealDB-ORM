@@ -305,3 +305,126 @@ class TestTheDefineRendererModes:
     def test_both_modes_is_an_error(self) -> None:
         with pytest.raises(ValueError, match="OVERWRITE"):
             operations._render_define_field("t", "f", overwrite=True, if_not_exists=True, field_type="int")
+
+
+class TestArrayElementSubFieldsFollowTheType:
+    """SurrealDB derives ``name.*`` for a typed array or set; ``ALTER FIELD`` does not update it.
+
+    ``DEFINE FIELD tags ON t TYPE array<string>`` also defines ``tags.*`` as
+    ``string``, and ``n.*.*`` for ``array<array<…>>``. A redefinition re-derives
+    them; ``ALTER FIELD tags ON t TYPE array<int>`` leaves ``tags.*`` at
+    ``string``, so the column then refuses every non-empty value. The renderer
+    aligns each derived level with ``ALTER FIELD IF EXISTS`` — the sub-field is
+    the server's, absent for an untyped ``array``, so a missing one is a no-op —
+    naming its TYPE only, so a clause set on it by hand survives too.
+    """
+
+    @pytest.mark.parametrize(
+        ("attributes", "statements"),
+        [
+            ({"field_type": "array<int>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
+            ({"field_type": "set<string>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE string;"]),
+            ({"field_type": "array<string, 5>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE string;"]),
+            (
+                {"field_type": "array<array<int>>"},
+                [
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<int>;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE int;",
+                ],
+            ),
+            (
+                {"field_type": "array<set<array<bool>>>"},
+                [
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE set<array<bool>>;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE array<bool>;",
+                    "ALTER FIELD IF EXISTS f.*.*.* ON t TYPE bool;",
+                ],
+            ),
+            # A ReferencesField: option<array<record<T>>>, the target table in the element.
+            (
+                {"field_type": "array<record<authors>>", "nullable": True, "reference": True},
+                ["ALTER FIELD IF EXISTS f.* ON t TYPE record<authors>;"],
+            ),
+            ({"field_type": "option<array<int>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
+            ({"field_type": "none | array<int>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
+            ({"field_type": "array<option<int>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE option<int>;"]),
+            # The server derives the element from every array/set member of a union.
+            ({"field_type": "array<int> | string"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
+            ({"field_type": "array<int> | set<string>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int | string;"]),
+            ({"field_type": "array<record<a | b>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE record<a | b>;"]),
+            # Nothing derived, nothing to align.
+            ({"field_type": "array"}, []),
+            ({"field_type": "array<any>"}, []),
+            ({"field_type": "set"}, []),
+            ({"field_type": "string"}, []),
+            ({"field_type": "object", "flexible": True}, []),
+            ({"field_type": None}, []),
+        ],
+    )
+    def test_forwards(self, attributes: dict[str, Any], statements: list[str]) -> None:
+        """The parent's ALTER first, then one statement per derived level, outermost first."""
+        lines = AlterField(table="t", name="f", **attributes).forwards().splitlines()
+
+        assert lines[0].startswith("ALTER FIELD f ON t ")
+        assert lines[1:] == statements
+
+    def test_backwards_restores_the_previous_element_type(self) -> None:
+        """A database migrated forward by OVERWRITE already has ``tags.*`` in the new type."""
+        op = AlterField.from_field_states(
+            "t",
+            FieldState(name="tags", field_type="array<string>"),
+            FieldState(name="tags", field_type="array<int>"),
+        )
+
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE int;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE string;"]
+
+    def test_a_changed_reference_target_reaches_the_element(self) -> None:
+        """``o.*`` kept ``record<old>`` and refused every link to the new table."""
+        op = AlterField.from_field_states(
+            "t",
+            FieldState(name="o", field_type="array<record<old>>", nullable=True, reference=True, on_delete="IGNORE"),
+            FieldState(name="o", field_type="array<record<new>>", nullable=True, reference=True, on_delete="IGNORE"),
+        )
+
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS o.* ON t TYPE record<new>;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS o.* ON t TYPE record<old>;"]
+
+    def test_the_sub_field_statement_names_its_type_only(self) -> None:
+        """No DROP on the derived field: the server owns it, and a hand-set clause there stays."""
+        sub = AlterField(table="t", name="f", field_type="array<int>", comment="c").forwards().splitlines()[1]
+
+        assert "DROP" not in sub
+        assert "COMMENT" not in sub
+
+    def test_add_field_does_not_need_it(self) -> None:
+        """A creation derives the sub-fields itself."""
+        assert AddField(table="t", name="f", field_type="array<int>").forwards() == ("DEFINE FIELD f ON t TYPE array<int>;")
+
+
+class I195UnitTagged(BaseSurrealModel):
+    """A list column: its element sub-field must follow ``define_table()`` too."""
+
+    model_config = SurrealConfigDict(table_name="i195_unit_tagged")
+
+    id: str | None = None
+    tags: list[int]
+
+
+class TestDefineTableAlignsElementSubFields:
+    """The define_table() pair goes through the same ALTER renderer."""
+
+    @pytest.mark.asyncio
+    async def test_the_element_statement_follows_the_pair(self) -> None:
+        client = _fake_client()
+        with patch(
+            "src.surreal_orm.model_base.SurrealDBConnectionManager.get_client",
+            new=AsyncMock(return_value=client),
+        ):
+            sql = await I195UnitTagged.define_table()
+
+        assert sql.splitlines()[1:] == [
+            "DEFINE FIELD IF NOT EXISTS tags ON i195_unit_tagged TYPE array<int>;",
+            "ALTER FIELD tags ON i195_unit_tagged TYPE array<int> " + " ".join(ALL_DROPS[1:]) + ";",
+            "ALTER FIELD IF EXISTS tags.* ON i195_unit_tagged TYPE int;",
+        ]
