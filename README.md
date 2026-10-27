@@ -30,12 +30,57 @@
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.0**  | 0.34.x      | Active development              |
+| `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
 
 ---
+
+## What's New in 0.34.5
+
+**Fix and SurrealDB 3.3.4 release.** No public API change.
+
+- **Every `QuerySet.live()` filter value is now bound as a query parameter**
+  ([#205](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/205)), as `exec()` already does. Some filters
+  never matched, for example on a dict or a `Decimal`: the values were written into the `LIVE SELECT` text, a
+  dict as a Python repr and a `Decimal` as a quoted string. This holds on auto-resubscribe after a reconnect
+  too. Code that asserts on the emitted `LIVE SELECT` text now sees `$_fN` references instead of literals.
+- **`Decimal` and `datetime.date` values can be bound to any query.** Both made SurrealDB 3.x reject the whole
+  request (cbor2 tags 4 and 1004). A `Decimal` is now sent as SurrealDB's decimal with every digit kept, and a
+  `date` as the datetime at midnight UTC (`d'YYYY-MM-DD'`); a field typed `date` reads back the same date.
+- **HTTP transactions no longer rename parameters a statement did not bind**
+  ([#204](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/204)). `commit()` namespaced each bound key
+  with a plain text replace, so a key that prefixed a longer `$name` renamed it too and the server read `NONE`:
+  with a variable `a`, `$auth.id` became `$tx_0_auth.id`, and a model field named `t`, `tx` or `tx_0` made
+  `save(tx=)` of a new record, `bulk_create(atomic=True)` or `relate(tx=)` drop the fields bound before it.
+  Only whole `$key` references to the statement's own keys are renamed now. WebSocket transactions were not
+  affected.
+- **Known limitation: `tx.merge()` over HTTP is still broken**
+  ([#251](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/251)), for a reason this release does not
+  touch. It emits `MERGE { k = $k, ... }`, which SurrealDB 3.x rejects per statement, and `commit()` returns
+  without an error while the server cancels the whole transaction, its other statements included. This covers
+  `update(tx=)`, `merge(tx=)` without a `SurrealFunc`, and `save(tx=)` of an already-saved record whose data
+  holds no `SurrealFunc` and no nested object/array, on an HTTP connection. WebSocket transactions are not
+  affected.
+- **`certifi` 2026.10.23 in the lock file** (GHSA-6q48-6c7w-9gw2). `certifi` is a transitive dependency, so
+  upgrading the ORM does not upgrade it: run `pip install -U certifi` to get `>= 2026.10.19`.
+- **Tested against SurrealDB 3.3.4; supported range unchanged (3.2.x – 3.3.x).** The integration suite
+  passes against 3.3.4 and against 3.2.6 on the 3.2 floor line. The upstream defect behind
+  [#147](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/147) still reproduces on 3.3.4, so
+  `Subquery` keeps its `LET` prelude.
+- **The SurrealDB version monitors now pick the newest stable release by version**
+  ([#234](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/234)). They took the first release the
+  API listed, which is ordered by creation date: the v3.2.6 backport, cut from a newer commit than v3.3.4,
+  was listed first and hid it, and the pin stayed at 3.3.0 while every daily run ended green. An API
+  failure now fails the run instead.
+
+### Maintenance releases 0.34.3 – 0.34.4
+
+| Version | Date       | Content                                                                                          |
+| ------- | ---------- | ------------------------------------------------------------------------------------------------ |
+| 0.34.4  | 2026-10-20 | `multidict` 6.9.1 in the lock file (one advisory; transitive, via `aiohttp`). No library changes. |
+| 0.34.3  | 2026-10-20 | `aiohttp` 3.14.4 and `yarl` 1.25.1 in the lock file (three advisories). `aiohttp` is a runtime dependency whose floor is unchanged: upgrade it in your environment. No library changes. |
 
 ## What's New in 0.34.2
 
@@ -1432,7 +1477,7 @@ pip install surrealdb-orm
 pip install surrealdb-orm[cli]
 ```
 
-**Requirements:** Python 3.12+ | SurrealDB 3.2.x – 3.3.x, tested against 3.3.0 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
+**Requirements:** Python 3.12+ | SurrealDB 3.2.x – 3.3.x, tested against 3.3.4 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
 
 **Included:** `pydantic`, `httpx`, `aiohttp`, `cbor2` (CBOR is the default protocol for WebSocket)
 
@@ -1445,7 +1490,7 @@ pip install surrealdb-orm[cli]
 | **0.30.x – 0.31.x**   | 3.0 – 3.1     | —      | Superseded          |
 | **0.21.x**            | 2.6.x – 2.7.x | `v2`   | Security fixes only |
 
-- **SurrealDB 3.2.x – 3.3.x** — Use `surrealdb-orm >= 0.34.0` (this branch). Tested against SurrealDB **3.3.0**, and against 3.2.4 to keep the floor honest.
+- **SurrealDB 3.2.x – 3.3.x** — Use `surrealdb-orm >= 0.34.0` (this branch). Tested against SurrealDB **3.3.4**, and against 3.2.6 on the 3.2 floor line.
 - **SurrealDB 3.0 – 3.1** — Pin `surrealdb-orm<0.32`. 0.32.0 requires 3.2+ and is not tested against 3.1.x.
 - **SurrealDB 2.6.x – 2.7.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`; 2.7.x from 0.21.8, tested against **2.7.0**). This branch receives security patches but no new features.
 
