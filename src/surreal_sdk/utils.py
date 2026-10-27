@@ -41,10 +41,9 @@ def substitute_params(query: str, replacements: Mapping[str, str]) -> str:
     **The text is inserted verbatim.** ``re.sub`` reads a replacement *string*
     as a mini-pattern — ``\1`` is a backreference, ``\g<0>`` a group reference,
     and an unknown escape is an error. Rendered SurrealQL is full of
-    backslashes (JSON doubles every literal one; ``_format_value`` escapes
-    quotes), so passing it as a string raises on some inputs and silently
-    collapses backslashes on others. A *callable* replacement is exempt from
-    that parsing.
+    backslashes (JSON doubles every literal one), so passing it as a string
+    raises on some inputs and silently collapses backslashes on others. A
+    *callable* replacement is exempt from that parsing.
 
     **It is one pass over the original query.** Substituting one key at a time
     re-scans text that was just inserted, so a ``$b`` occurring inside a string
