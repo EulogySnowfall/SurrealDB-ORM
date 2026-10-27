@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.2)
+> Context document for Claude AI - Last updated: October 2026 (0.34.5)
 
 ## Project Vision
 
@@ -10,14 +10,96 @@
 
 ---
 
-## Current Version: 0.34.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.0)
+## Current Version: 0.34.5 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.0**  | 0.34.x      | Active development              |
+| `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.5
+
+Live-filter binding and two CBOR encoding fixes (#205, #239), whole-identifier
+parameter namespacing in HTTP transactions (#204, #243), `certifi` 2026.10.23
+(#240, #242), SurrealDB pin 3.3.0 → 3.3.4 and a monitor fix (#234, #238). No
+public API change. **0.34.3** / **0.34.4** were the Dependabot
+auto-releases of #223 (`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and
+#227 (`multidict` 6.9.1, one advisory), backfilled here.
+
+- **`live()` filters are bound, not rendered.** `LiveSelectStream` wrote each
+  value into the `LIVE SELECT` text through a hand-written renderer from the
+  2.x era (2.x did not evaluate bound parameters there). A dict came out as a
+  Python repr and a `Decimal` as a quoted string, so those filters never
+  matched. `main` has required 3.2+ since 0.32.0 and 3.x evaluates bound
+  parameters in a `LIVE SELECT` (measured on 3.2 and 3.3), so the renderers
+  (`_format_value`, `_inline_params_static`) are gone and `start()` and
+  `_resubscribe_one()` send `query(sql, params)`. `substitute_params()` stays —
+  `inline_dict_variables()` and `HTTPTransaction.commit()` use it. The emitted
+  text now holds only `$_fN` references.
+- **Binding is what exposed the CBOR defects.** cbor2 has *native* encoders for
+  `Decimal` (tag 4) and `date` (tag 1004), so `_cbor_default_encoder` was never
+  called for them (its `Decimal` branch was dead code), and SurrealDB rejects
+  both tags: a 400 over HTTP, a full timeout over WebSocket. They are handled in
+  `_preprocess_for_cbor()` now, *before* cbor2 sees them: a finite `Decimal` →
+  tag 10 with its exact digits, a `date` → the UTC-midnight `datetime`
+  (`d'YYYY-MM-DD'`, tag 0). Any type cbor2 encodes natively bypasses the
+  `default` hook — check there first when a new type misbehaves.
+- **`HTTPTransaction.commit()` renamed what it did not bind (#204, #243)** —
+  the follow-up filed in 0.33.3. It namespaced each statement's keys
+  (`$k` → `$tx_<i>_k`) with a boundary-less `str.replace`, one key at a time
+  over its own output, so a key renamed every longer `$name` it prefixed:
+  built-ins (`$auth.id` → `$tx_0_auth.id` for key `a`) and, for a key `t`/`tx`/
+  `tx_<i>`, the references already renamed for earlier keys
+  (`$tx_0_amount` → `$tx_0_tx_0_amount`). Unbound, they read `NONE` — no error.
+  The builders bind each field under its own name, so a *model field* named
+  `t` or `tx` was enough to make `save(tx=)` of a new record drop the fields
+  bound before it.
+  `commit()` now goes through `substitute_params()`, single pass, only the
+  statement's own keys. Still textual: a bound `$k` inside a quoted string
+  literal is renamed (unchanged). WebSocket transactions never renamed. v2 has
+  the same loop and no `substitute_params()`: backport tracked in #247.
+- **Known limitation, untouched here: `tx.merge()` over HTTP (#251).** It
+  emits `UPDATE <thing> MERGE { k = $k, ... }`, which 3.x rejects per
+  statement (`Cannot use false in a MERGE clause` with one field; with two, a
+  `Found {NONE,} for the id field` error). `commit()` does not check
+  per-statement status, so it returns cleanly while the server cancels the
+  whole transaction, the other statements included. It reaches `update(tx=)`,
+  `merge(tx=)` without a `SurrealFunc`, and `save(tx=)` of an already-saved
+  record whose data holds no `SurrealFunc` and no nested object/array — over
+  HTTP, the ORM's default. WebSocket transactions use the RPC `merge` and are
+  not affected. So #243's `t`/`tx` field case only ever reached the working
+  builders (`create`, `upsert`, `relate`).
+- **`certifi` is transitive** (via `httpx`), so `uv.lock` kept the 2026.5.20
+  bundle (still trusting `emSign ECC Root CA - G3`, GHSA-6q48-6c7w-9gw2) until it
+  was named in `uv lock --upgrade-package`. The lock only moves dev/CI; users
+  need `pip install -U certifi`.
+- **The 3.x monitor sat on 3.3.0 for a week, green.** It took the first
+  matching release in API order, and the releases API orders by *creation
+  date*, not version. The v3.2.6 backport was cut from a newer commit than
+  v3.3.4 (2026-10-18 vs 2026-10-13), so the API listed it first, the monitor
+  picked 3.2.6, the no-downgrade guard (#155) refused it — correctly — and the
+  run ended "nothing to do". Selection now paginates, keeps plain `X.Y.Z`
+  tags of its own major (`sed`, because `sort -V` ranks a mislabelled
+  `3.4.0-rc.1` above every 3.3.x) and takes the highest. The 2.x monitor and the
+  pre-release canary had the same `[0]` and are fixed too.
+- **No `releases/latest` fallback in the 3.x monitor**: it is the newest release
+  of *any* line, so it could have proposed a 4.x release once no stable 3.x was
+  left on the first page — a new major is the user's decision, not the
+  monitor's.
+- **An API failure used to read as "nothing to do"** — masked by the pipe into
+  `sed`. It fails the job now. Release notes/title are read by tag
+  (`releases/tags/vX.Y.Z`); a first-page scan would have pinned a security
+  release beyond page one without the version bump that ships it.
+- **The pin moved in the fix PR itself**, so no auto-merged pin PR released
+  before the support statement was written (the 0.33.5 / 0.34.0 rot).
+  Integration at 0.34.5: 3.3.4 and 3.2.6 both 489 passed, 1 skipped,
+  1 xfailed. #147 is still XFAIL on 3.3.4 — the `LET` prelude stays.
+- **A lock-file bump does not reach installed users.** `aiohttp` is a runtime
+  dependency, but the declared floor is still `aiohttp>=3.12`; 0.34.3 changed
+  only `uv.lock`, so the advisory fixes reach an existing environment only when
+  the user upgrades `aiohttp` themselves.
 
 ### What's New in 0.34.2
 

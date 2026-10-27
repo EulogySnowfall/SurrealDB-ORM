@@ -10,8 +10,8 @@ Two release lines are actively maintained, one per SurrealDB major version:
 | **0.21.x**  | 2.6.x – 2.7.x | `v2`   | :white_check_mark: |
 | any other   | -             | -      | :x:                |
 
-`main` supports **SurrealDB 3.2.x – 3.3.x** (tested against 3.3.0 as of ORM
-0.34.0); 3.1.x and earlier are not supported there. Security fixes on `main`
+`main` supports **SurrealDB 3.2.x – 3.3.x** (tested against 3.3.4 as of ORM
+0.34.5); 3.1.x and earlier are not supported there. Security fixes on `main`
 ship in the current minor only — upgrade from 0.33.x to 0.34.x, which needs no
 server upgrade. The `v2` line supports SurrealDB 2.6.x – 2.7.x (tested against
 2.7.0 as of 0.21.8) and receives security and bug fixes only.
