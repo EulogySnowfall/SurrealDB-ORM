@@ -8,19 +8,64 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ## [0.34.5] - 2026-10-27
 
-**SurrealDB 3.3.4 release.** No library code changes vs 0.34.4. The tested
-server moves from 3.3.0 to 3.3.4; the supported range stays 3.2.x – 3.3.x.
-0.34.3 and 0.34.4, which shipped without entries, are backfilled below.
+**Fix and SurrealDB 3.3.4 release.** Three SDK fixes for values that never
+reached the server intact (#205), a `certifi` update in the lock file (#240),
+and the tested server moves from 3.3.0 to 3.3.4 (#234); the supported range
+stays 3.2.x – 3.3.x. No public API change. 0.34.3 and 0.34.4, which shipped
+without entries, are backfilled below.
+
+### Fixed
+
+- **Some `QuerySet.live()` / `LiveSelectStream` filters never matched (#205,
+  #239)**, for example on a dict (`filter(prefs={...})`) or a `Decimal`. The
+  values were written into the `LIVE SELECT` text, a dict as a Python repr and
+  a `Decimal` as a quoted string, so the comparison was always false. Every
+  filter value is now bound as a query parameter, as `exec()` already does,
+  both when the subscription starts and when auto-resubscribe re-creates it
+  after a reconnect: SurrealDB 3.x evaluates bound parameters in a
+  `LIVE SELECT`. The private helpers `LiveSelectStream._format_value` and
+  `_inline_params_static` are removed.
+- **Binding a `Decimal` made SurrealDB 3.x reject the whole request (#239)**,
+  in any query (`query()`, `exec()` filters). cbor2 encodes a `Decimal` as CBOR
+  tag 4, which SurrealDB does not read: over HTTP the request failed with a
+  400, and over WebSocket the call waited for its full timeout. A finite
+  `Decimal` is now sent as SurrealDB's decimal (tag 10) with every digit kept;
+  NaN and infinities keep cbor2's float encoding.
+- **Binding a `datetime.date` made the whole request fail (#239)** (cbor2 tag
+  1004). `save()`, `exec()` and `query()` now work with a `date` value. It is
+  sent as the datetime at midnight UTC, which is what `d'YYYY-MM-DD'` means in
+  SurrealDB, and a field typed `date` reads it back as the same date.
+
+### Security
+
+- **`certifi` 2026.5.20 → 2026.10.23 in `uv.lock` (#240, #242)** —
+  GHSA-6q48-6c7w-9gw2 / PYSEC-2026-4320. The 2026.5.20 bundle still trusts
+  `emSign ECC Root CA - G3`, under which eight intermediate CA keys were
+  compromised (and revoked), so a TLS connection verified against it accepts
+  certificates issued with those keys. 2026.10.23 no longer carries that root.
+  `certifi` is a transitive dependency (through `httpx`), so the lock file
+  only moves the repository's development and CI environments: see
+  *Upgrading*. The `v2` line received the same update in 0.21.12.
 
 ### Changed
 
 - **SurrealDB pin 3.3.0 → 3.3.4** (`.surrealdb-version`, `devops/docker-compose.yml`,
-  #238). The integration suite passes against 3.3.4 (467 passed, 1 skipped,
-  1 expected failure, 0 failed) and against 3.2.6 at the floor (same counts).
-  The skip is the refresh token the test server does not return; the expected
-  failure is the upstream #147 check, still failing on 3.3.4, so `Subquery`
-  keeps its `LET` prelude.
+  #238). The integration suite of this release passes against 3.3.4 (488
+  passed, 1 skipped, 1 expected failure, 0 failed), and against 3.2.6 on the
+  3.2 floor line (same counts). The skip is the refresh token the test server
+  does not return; the expected failure is the upstream #147 check, still
+  failing on 3.3.4, so `Subquery` keeps its `LET` prelude.
 - **Docs.** README, `SECURITY.md` and `CLAUDE.md` state "tested against 3.3.4".
+
+### Behaviour change
+
+- The SurrealQL a live query sends now contains only `$name` references, for
+  example `LIVE SELECT * FROM t WHERE author = $_f0`, with the values in the
+  query variables. Code that asserts on the emitted `LIVE SELECT` text sees
+  `$_fN` references instead of literals.
+- A `Decimal` is encoded as CBOR tag 10 instead of tag 4. SurrealDB rejected
+  tag 4, so no request that used to succeed changes.
+- A `date` is stored as the datetime at midnight UTC.
 
 ### Fixed — CI
 
@@ -48,6 +93,13 @@ server moves from 3.3.0 to 3.3.4; the supported range stays 3.2.x – 3.3.x.
 - A manually dispatched version must be a whole `X.Y.Z` of the monitor's own
   line (`3.3` or `3.3.x` is refused). Dispatch inputs reach the monitor scripts
   through `env:` and are validated there.
+
+### Upgrading
+
+- No migration. Upgrading `surrealdb-orm` does not upgrade `certifi`: this
+  package does not declare it, so `pip install -U surrealdb-orm` and existing
+  lockfiles keep the installed bundle. Run `pip install -U certifi` (or bump it
+  in your lockfile) to `>= 2026.10.19`.
 
 ---
 

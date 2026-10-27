@@ -21,11 +21,34 @@
 
 ### What's New in 0.34.5
 
-SurrealDB pin 3.3.0 → 3.3.4 and a monitor fix (#234, #238), no library code
-changes. **0.34.3** / **0.34.4** were the Dependabot auto-releases of #223
-(`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and #227 (`multidict`
-6.9.1, one advisory), backfilled here.
+Live-filter binding and two CBOR encoding fixes (#205, #239), `certifi`
+2026.10.23 (#240, #242), SurrealDB pin 3.3.0 → 3.3.4 and a monitor fix (#234,
+#238). No public API change. **0.34.3** / **0.34.4** were the Dependabot
+auto-releases of #223 (`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and
+#227 (`multidict` 6.9.1, one advisory), backfilled here.
 
+- **`live()` filters are bound, not rendered.** `LiveSelectStream` wrote each
+  value into the `LIVE SELECT` text through a hand-written renderer from the
+  2.x era (2.x did not evaluate bound parameters there). A dict came out as a
+  Python repr and a `Decimal` as a quoted string, so those filters never
+  matched. `main` has required 3.2+ since 0.32.0 and 3.x evaluates bound
+  parameters in a `LIVE SELECT` (measured on 3.2 and 3.3), so the renderers
+  (`_format_value`, `_inline_params_static`) are gone and `start()` and
+  `_resubscribe_one()` send `query(sql, params)`. `substitute_params()` stays —
+  `inline_dict_variables()` and #204 use it. The emitted text now holds only
+  `$_fN` references.
+- **Binding is what exposed the CBOR defects.** cbor2 has *native* encoders for
+  `Decimal` (tag 4) and `date` (tag 1004), so `_cbor_default_encoder` was never
+  called for them (its `Decimal` branch was dead code), and SurrealDB rejects
+  both tags: a 400 over HTTP, a full timeout over WebSocket. They are handled in
+  `_preprocess_for_cbor()` now, *before* cbor2 sees them: a finite `Decimal` →
+  tag 10 with its exact digits, a `date` → the UTC-midnight `datetime`
+  (`d'YYYY-MM-DD'`, tag 0). Any type cbor2 encodes natively bypasses the
+  `default` hook — check there first when a new type misbehaves.
+- **`certifi` is transitive** (via `httpx`), so `uv.lock` kept the 2026.5.20
+  bundle (still trusting `emSign ECC Root CA - G3`, GHSA-6q48-6c7w-9gw2) until it
+  was named in `uv lock --upgrade-package`. The lock only moves dev/CI; users
+  need `pip install -U certifi`.
 - **The 3.x monitor sat on 3.3.0 for a week, green.** It took the first
   matching release in API order, and the releases API orders by *creation
   date*, not version. The v3.2.6 backport was cut from a newer commit than
@@ -36,16 +59,17 @@ changes. **0.34.3** / **0.34.4** were the Dependabot auto-releases of #223
   `3.4.0-rc.1` above every 3.3.x) and takes the highest. The 2.x monitor and the
   pre-release canary had the same `[0]` and are fixed too.
 - **No `releases/latest` fallback in the 3.x monitor**: it is the newest release
-  of *any* line and would have proposed 4.0.0 the day it ships, which is the
-  user's decision, not the monitor's.
+  of *any* line, so it could have proposed a 4.x release once no stable 3.x was
+  left on the first page — a new major is the user's decision, not the
+  monitor's.
 - **An API failure used to read as "nothing to do"** — masked by the pipe into
   `sed`. It fails the job now. Release notes/title are read by tag
   (`releases/tags/vX.Y.Z`); a first-page scan would have pinned a security
   release beyond page one without the version bump that ships it.
 - **The pin moved in the fix PR itself**, so no auto-merged pin PR released
   before the support statement was written (the 0.33.5 / 0.34.0 rot).
-  Integration: 3.3.4 and 3.2.6 both 467 passed, 1 skipped, 1 xfailed. #147 is
-  still XFAIL on 3.3.4 — the `LET` prelude stays.
+  Integration at 0.34.5: 3.3.4 and 3.2.6 both 488 passed, 1 skipped,
+  1 xfailed. #147 is still XFAIL on 3.3.4 — the `LET` prelude stays.
 - **A lock-file bump does not reach installed users.** `aiohttp` is a runtime
   dependency, but the declared floor is still `aiohttp>=3.12`; 0.34.3 changed
   only `uv.lock`, so the advisory fixes reach an existing environment only when

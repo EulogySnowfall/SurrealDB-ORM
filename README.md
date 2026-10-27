@@ -39,10 +39,20 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ## What's New in 0.34.5
 
-**SurrealDB 3.3.4 release.** No library code changes vs 0.34.2.
+**Fix and SurrealDB 3.3.4 release.** No public API change.
 
+- **Every `QuerySet.live()` filter value is now bound as a query parameter**
+  ([#205](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/205)), as `exec()` already does. Some filters
+  never matched, for example on a dict or a `Decimal`: the values were written into the `LIVE SELECT` text, a
+  dict as a Python repr and a `Decimal` as a quoted string. This holds on auto-resubscribe after a reconnect
+  too. Code that asserts on the emitted `LIVE SELECT` text now sees `$_fN` references instead of literals.
+- **`Decimal` and `datetime.date` values can be bound to any query.** Both made SurrealDB 3.x reject the whole
+  request (cbor2 tags 4 and 1004). A `Decimal` is now sent as SurrealDB's decimal with every digit kept, and a
+  `date` as the datetime at midnight UTC (`d'YYYY-MM-DD'`); a field typed `date` reads back the same date.
+- **`certifi` 2026.10.23 in the lock file** (GHSA-6q48-6c7w-9gw2). `certifi` is a transitive dependency, so
+  upgrading the ORM does not upgrade it: run `pip install -U certifi` to get `>= 2026.10.19`.
 - **Tested against SurrealDB 3.3.4; supported range unchanged (3.2.x – 3.3.x).** The integration suite
-  passes against 3.3.4 and against 3.2.6 at the floor. The upstream defect behind
+  passes against 3.3.4 and against 3.2.6 on the 3.2 floor line. The upstream defect behind
   [#147](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/147) still reproduces on 3.3.4, so
   `Subquery` keeps its `LET` prelude.
 - **The SurrealDB version monitors now pick the newest stable release by version**
@@ -1466,7 +1476,7 @@ pip install surrealdb-orm[cli]
 | **0.30.x – 0.31.x**   | 3.0 – 3.1     | —      | Superseded          |
 | **0.21.x**            | 2.6.x – 2.7.x | `v2`   | Security fixes only |
 
-- **SurrealDB 3.2.x – 3.3.x** — Use `surrealdb-orm >= 0.34.0` (this branch). Tested against SurrealDB **3.3.4**, and against 3.2.6 to keep the floor honest.
+- **SurrealDB 3.2.x – 3.3.x** — Use `surrealdb-orm >= 0.34.0` (this branch). Tested against SurrealDB **3.3.4**, and against 3.2.6 on the 3.2 floor line.
 - **SurrealDB 3.0 – 3.1** — Pin `surrealdb-orm<0.32`. 0.32.0 requires 3.2+ and is not tested against 3.1.x.
 - **SurrealDB 2.6.x – 2.7.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`; 2.7.x from 0.21.8, tested against **2.7.0**). This branch receives security patches but no new features.
 
