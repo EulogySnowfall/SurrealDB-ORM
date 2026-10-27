@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.13)
+> Context document for Claude AI - Last updated: October 2026 (0.21.14)
 
 <!-- -->
 
@@ -19,12 +19,48 @@
 
 ---
 
-## Current Version: 0.21.13 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.14 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.14
+
+Bug fix, the `v2` port of #239 (#246, #253). No ORM API change.
+
+- **Why `v2` renders instead of binding:** SurrealDB 2.x does not evaluate bound
+  parameters in a `LIVE SELECT` `WHERE` clause (3.x does, which is why `main`'s
+  #239 binds them), so `LiveSelectStream._format_value` still writes each value into
+  the query text. The rule now: write the literal of exactly what the value binds to,
+  or raise `TypeError`. Never fall back to a quoted `str(value)` — that fallback is
+  what turned a `dict` into a Python repr and a `Decimal` into a string, so those
+  filters never matched.
+- **Record links:** `_record_literal()` puts the table and a string id between
+  backticks, so the link designates the same record as the bound `RecordId` (each id
+  form checked with `RETURN <literal> = $r` on 2.7.0). An `int` id stays bare:
+  `t:123` and ``t:`123` `` are different records. The old `str(value)` gave `t:123`
+  for the string id `"123"`.
+- **Substitution:** `_inline_params_static` is one `re.sub` pass with a callable
+  replacement, so inserted text is never rescanned or parsed as a replacement
+  pattern, and an unknown `$name` stays as written. `_resubscribe_one` goes through
+  it too.
+- **CBOR:** cbor2 encodes `Decimal` (tag 4) and `date` (tag 1004) natively, before
+  `_cbor_default_encoder` is ever called, and SurrealDB 2.x rejects both tags.
+  `_preprocess_for_cbor` now sends a finite `Decimal` as tag 10 through
+  `format_decimal()` (positional digits; 2.7.0 refuses `"1E+2"`) and a `date` as the
+  datetime at midnight UTC. `format_decimal()` checks the range from the exponent
+  before writing any digit: above 79228162514264337593543950335 in magnitude it
+  raises `ValueError`, and places beyond the 28th are rounded half away from zero,
+  as 2.7.0 stores them.
+- **Known limitations, not fixed here:** `live(diff=True)` appends `DIFF` after the
+  `WHERE` (`LIVE SELECT * FROM t WHERE ... DIFF`), a parse error on 2.7.0 with or
+  without a `WHERE` (`main` builds it the same way); a naive `datetime` bound as a
+  parameter still fails in cbor2 (no default timezone), only `live()` reads it as UTC;
+  an out-of-range `Decimal` sent over WebSocket surfaces as `ConnectionError`, because
+  `WebSocketConnection._send_rpc` wraps every exception; an `int` record id outside
+  the signed 64-bit range is read back by 2.7.0 as a string id.
 
 ### What's New in 0.21.13
 
