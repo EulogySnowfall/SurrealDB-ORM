@@ -49,11 +49,12 @@ test-integration: db-up
 test-all: db-up
 	uv run pytest tests/
 
-.PHONY: test-all-python  # Run tests on Python 3.12 to 3.14
+.PHONY: test-all-python  # Run tests on Python 3.12 to 3.15
 test-all-python:
 	uv run --python 3.12 coverage run -p -m pytest -m "not integration" --junitxml=junit.xml -o junit_family=legacy
 	UV_PROJECT_ENVIRONMENT=.venv313 uv run --python 3.13 coverage run -p -m pytest -m "not integration"
 	UV_PROJECT_ENVIRONMENT=.venv314 uv run --python 3.14 coverage run -p -m pytest -m "not integration"
+	UV_PROJECT_ENVIRONMENT=.venv315 uv run --python 3.15 coverage run -p -m pytest -m "not integration"
 	@uv run coverage xml -o coverage.xml
 	@uv run coverage report
 
@@ -154,7 +155,7 @@ help:
 	@echo "    test-sdk         Run SDK tests only"
 	@echo "    test-integration Run integration tests (starts SurrealDB)"
 	@echo "    test-all         Run all tests including integration"
-	@echo "    test-all-python  Run tests on Python 3.12-3.14"
+	@echo "    test-all-python  Run tests on Python 3.12-3.15"
 	@echo ""
 	@echo "  Docker/SurrealDB:"
 	@echo "    db-up            Start SurrealDB (in-memory, port 8000)"
