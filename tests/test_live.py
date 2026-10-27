@@ -1100,6 +1100,43 @@ class TestInlineParams:
         expected = "LIVE SELECT * FROM items WHERE prefs = {'theme': 'dark'} AND price = 9.99dec AND author = `a`:`x\\`y`"
         assert sent == [expected, expected]
 
+    async def test_diff_mode_renders_the_same_literals(self) -> None:
+        """``diff=True`` changes nothing in how the filter values are written.
+
+        ``start()`` and the resubscription after a reconnect send the same
+        rendered WHERE clause. Where ``DIFF`` itself goes in the statement is a
+        separate matter, so this test only requires that it is there.
+        """
+        from decimal import Decimal
+
+        from src.surreal_sdk.connection.websocket import WebSocketConnection
+        from src.surreal_sdk.protocol.cbor import RecordId
+        from src.surreal_sdk.streaming.live_select import LiveSelectStream, LiveSubscriptionParams
+        from src.surreal_sdk.types import QueryResponse
+
+        params = {"_f0": {"theme": "dark"}, "_f1": Decimal("9.99"), "_f2": RecordId("a", "x`y")}
+        where = "prefs = $_f0 AND price = $_f1 AND author = $_f2"
+        sent: list[str] = []
+
+        async def fake_query(sql: str, vars: dict[str, object] | None = None) -> QueryResponse:
+            sent.append(sql)
+            return QueryResponse.from_rpc_result([{"status": "OK", "result": "new-live-id", "time": "1ms"}])
+
+        conn = WebSocketConnection("ws://localhost:8000", "ns", "db")
+        conn.query = fake_query  # type: ignore[method-assign]
+        stream = LiveSelectStream(conn, "items", where=where, params=params, diff=True)
+
+        await stream.start()
+        await conn._resubscribe_one(
+            LiveSubscriptionParams(table="items", where=where, params=params, diff=True, callback=None, on_reconnect=None)
+        )
+
+        rendered = "WHERE prefs = {'theme': 'dark'} AND price = 9.99dec AND author = `a`:`x\\`y`"
+        assert len(sent) == 2 and sent[0] == sent[1]
+        assert rendered in sent[0]
+        assert "DIFF" in sent[0]
+        assert "$" not in sent[0]
+
 
 class TestParseId:
     """Tests for LiveModelStream._parse_id()."""
