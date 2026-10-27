@@ -27,10 +27,10 @@ and adheres to [SemVer](https://semver.org/) versioning.
     the number 123, for example;
   - a naive `datetime` was written without an offset, which SurrealDB 2.x
     does not parse, so the subscription failed;
-  - a string value holding a backslash or a `$name` was altered on the way
-    in: values were substituted one key at a time with `re.sub`, which read
-    the inserted text as a replacement pattern and then scanned it again for
-    the next key.
+  - a string value holding a backslash, or the `$name` of another filter
+    parameter, was altered on the way in: values were substituted one key at
+    a time with `re.sub`, which read the inserted text as a replacement
+    pattern and then scanned it again for the next key.
 
   Each supported value is now written as the literal of what it binds to as
   a parameter: a `dict` as an object literal with string keys, a `Decimal` as
@@ -61,10 +61,11 @@ and adheres to [SemVer](https://semver.org/) versioning.
 ### Behaviour change
 
 A `live()` filter value that has no exact SurrealQL literal now raises
-`TypeError` instead of being turned into a quoted string: a `set`, `bytes`,
-`Duration`, `Table`, an arbitrary object, an `Enum` that is not a `str` or
-`int` subclass, a NaN or infinite `float` or `Decimal`, or a `dict` with a
-key that is not a `str`.
+`TypeError`. A `set`, `bytes`, `Duration`, `Table`, an arbitrary object, an
+`Enum` that is not a `str` or `int` subclass, a NaN or infinite `Decimal`, or
+a `dict` with a key that is not a `str` used to be turned into a quoted
+string; a NaN or infinite `float` was written bare (`nan`, `inf`), which
+SurrealDB does not read as a number.
 
 **Migration:** convert such a value to a supported type before filtering
 (`str`, a number, `Decimal`, `list`, a `dict` with `str` keys, `datetime`,

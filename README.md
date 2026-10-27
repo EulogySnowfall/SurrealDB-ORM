@@ -60,7 +60,8 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
   bound parameters in a `LIVE SELECT`, so `v2` writes filter values into the query text, and some
   never matched: a `dict` (written as a quoted Python repr), a `Decimal` (a quoted string), a record
   link whose table or id is not a plain identifier (the string id `"123"` read as the number 123),
-  and a string holding a backslash or a `$name`. A naive `datetime` made the subscription fail.
+  and a string holding a backslash or the `$name` of another filter parameter. A naive `datetime`
+  made the subscription fail.
   Each value is now written as the literal of what it binds to as a parameter, a naive `datetime`
   is read as UTC, and auto-resubscribe after a reconnect sends the same filter.
 - **Binding a `Decimal` or a `datetime.date` works on SurrealDB 2.x.** Both used to make the server
@@ -68,9 +69,10 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
   `Decimal` is sent as SurrealDB's decimal, a `date` as the datetime at midnight UTC. A `Decimal`
   above 79228162514264337593543950335 in magnitude raises `ValueError` before the request is sent.
 - **Behaviour change:** a `live()` filter value with no exact SurrealQL literal (`set`, `bytes`,
-  `Duration`, an arbitrary object, a non-`str`/`int` `Enum`, NaN or infinity, a `dict` with
-  non-`str` keys) raises `TypeError` instead of being turned into a quoted string. Convert it first:
-  a `set` to a `list`, an `Enum` to its `.value`.
+  `Duration`, an arbitrary object, a non-`str`/`int` `Enum`, a NaN or infinite `Decimal`, a `dict`
+  with non-`str` keys) raises `TypeError` instead of being turned into a quoted string; so does a
+  NaN or infinite `float`, which used to be written bare (`nan`, `inf`) and is not a number to
+  SurrealDB. Convert it first: a `set` to a `list`, an `Enum` to its `.value`.
 - **Known limitation, unchanged:** `live(diff=True)` emits `DIFF` after the `WHERE` clause, which
   SurrealDB 2.7.0 rejects as a parse error. See the [CHANGELOG](CHANGELOG) for the full list.
 
