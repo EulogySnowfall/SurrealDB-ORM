@@ -52,6 +52,25 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.16
+
+**Bug fix release (V2 LTS).** One ORM fix, the `v2` port of #257 from `main`; no new public API, but a
+behaviour change.
+
+- **`atomic_set_add()` no longer adds duplicates (#261).** It ran `SET field += $value`, and on SurrealDB
+  2.x `+=` on an array appends, so two calls with the same value left two copies. It now uses
+  `array::add()`, which adds only the values the field does not already hold; a record without the
+  field, or holding `NULL`, gets `[value]`.
+- **The atomic array helpers no longer lose writes silently.** `atomic_append()`, `atomic_remove()` and
+  `atomic_set_add()` returned `[]` when SurrealDB rejected the statement (a write conflict, a failed
+  `ASSERT`, an argument of the wrong type), so the write was lost and `@retry_on_conflict` never retried
+  the conflict. They now raise `TransactionConflictError` for a conflict and `QueryError` otherwise.
+  `atomic_append()` on a record without the field (or holding `NULL`) now writes `[value]` instead of
+  being rejected.
+- **Behaviour change:** catch `QueryError` / `TransactionConflictError` where you treated `[]` as "not
+  written"; `atomic_set_add()` with a list value adds only the missing elements, and on a number or
+  string field it now raises. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.15
 
 **Bug fix release (V2 LTS).** One SDK fix, the `v2` port of #166 from `main`; no public API change.

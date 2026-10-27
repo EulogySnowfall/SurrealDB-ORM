@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.15)
+> Context document for Claude AI - Last updated: October 2026 (0.21.16)
 
 <!-- -->
 
@@ -19,12 +19,36 @@
 
 ---
 
-## Current Version: 0.21.15 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.16 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.16
+
+Bug fix, the `v2` port of #257 (#261, #271). No new public API; behaviour change.
+
+- **The defect:** the three atomic array helpers in `model_base.py` read only the records of
+  the response. `client.query()` raises only on an RPC-level failure; a statement the server
+  rejects comes back inside a successful RPC as `status: ERR` with no records, so a conflict,
+  a failed `ASSERT` or a wrong-type argument read as `[]`, like an `UPDATE` that matched
+  nothing, and `@retry_on_conflict` never saw the conflict. Separately, `atomic_set_add()`
+  ran `+=`, which appends on an array, and `atomic_append()` ran `array::append(field, …)`,
+  which 2.x rejects on `NONE`/`NULL` (that rejection was swallowed too).
+- **The fix:** `_raise_on_statement_error()` checks every statement and raises
+  `TransactionConflictError` (matched by the existing
+  `TransactionConflictError.is_conflict_error()`) or `QueryError` with the query.
+  `atomic_set_add()` runs `array::add(field ?? [], $value)`, `atomic_append()`
+  `array::append(field ?? [], $value)`; `atomic_remove()` keeps `-=`.
+- **Ported by hand, not cherry-picked:** `main`'s `type::is_set` branch (keeping a 3.x
+  `set<T>` a set) does not exist on SurrealDB 2.x and would make every call a parse error.
+  On 2.x a `set<T>` field holds an array, so one query covers it.
+- **Old behaviour on 2.7.0 differs from 3.x:** `+=` on a string field left it unchanged
+  (3.x concatenates), on a number it added, and on a `NULL` field it left `NULL`. The
+  release notes describe the 2.7.0 behaviour; probe on the `v2` pin before copying a
+  `main` release note.
 
 ### What's New in 0.21.15
 
