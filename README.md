@@ -53,8 +53,16 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
   ([#204](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/204)). `commit()` namespaced each bound key
   with a plain text replace, so a key that prefixed a longer `$name` renamed it too and the server read `NONE`:
   with a variable `a`, `$auth.id` became `$tx_0_auth.id`, and a model field named `t`, `tx` or `tx_0` made
-  `save(tx=)`, `merge(tx=)` or `bulk_create(atomic=True)` drop the fields bound before it. Only whole `$key`
-  references to the statement's own keys are renamed now. WebSocket transactions were not affected.
+  `save(tx=)` of a new record, `bulk_create(atomic=True)` or `relate(tx=)` drop the fields bound before it.
+  Only whole `$key` references to the statement's own keys are renamed now. WebSocket transactions were not
+  affected.
+- **Known limitation: `tx.merge()` over HTTP is still broken**
+  ([#251](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/251)), for a reason this release does not
+  touch. It emits `MERGE { k = $k, ... }`, which SurrealDB 3.x rejects per statement, and `commit()` returns
+  without an error while the server cancels the whole transaction, its other statements included. This covers
+  `update(tx=)`, `merge(tx=)` without a `SurrealFunc`, and `save(tx=)` of an already-saved record whose data
+  holds no `SurrealFunc` and no nested object/array, on an HTTP connection. WebSocket transactions are not
+  affected.
 - **`certifi` 2026.10.23 in the lock file** (GHSA-6q48-6c7w-9gw2). `certifi` is a transitive dependency, so
   upgrading the ORM does not upgrade it: run `pip install -U certifi` to get `>= 2026.10.19`.
 - **Tested against SurrealDB 3.3.4; supported range unchanged (3.2.x – 3.3.x).** The integration suite

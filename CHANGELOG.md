@@ -53,10 +53,10 @@ entries, are backfilled below.
   - a key `t`, `tx` or `tx_<i>` (`i` being the statement's position in the
     transaction), which rewrote the references already renamed for the keys
     bound before it (`$tx_0_amount` → `$tx_0_tx_0_amount`). The SDK builders
-    `tx.create/update/upsert/merge/relate` bind each field under its own name,
-    so `save(tx=)`, `merge(tx=)`, `update(tx=)`, `relate(tx=)` and
-    `bulk_create(atomic=True)` of a model with a field named `t`, `tx` or
-    `tx_<i>` lost the fields bound before it.
+    `tx.create`, `tx.upsert` and `tx.relate` bind each field under its own
+    name, so `save(tx=)` of a new record and `bulk_create(atomic=True)` of a
+    model with a field named `t`, `tx` or `tx_<i>`, and `relate(tx=)` with such
+    a key in its edge data, lost the fields bound before it.
 
   Only whole `$key` references to a key the statement binds are renamed now,
   in a single pass through `surreal_sdk.utils.substitute_params()` (0.33.3).
@@ -96,6 +96,17 @@ entries, are backfilled below.
 - A `Decimal` is encoded as CBOR tag 10 instead of tag 4. SurrealDB rejected
   tag 4, so no request that used to succeed changes.
 - A `date` is stored as the datetime at midnight UTC.
+
+### Known limitation
+
+`tx.merge()` over HTTP is still broken, for a reason this release does not
+touch (#251): it emits `UPDATE <record> MERGE { k = $k, ... }`, which
+SurrealDB 3.x rejects per statement. `commit()` returns without an error while
+the server cancels the whole transaction, its other statements included. This
+covers `update(tx=)`, `merge(tx=)` without a `SurrealFunc`, and `save(tx=)` of
+an already-saved record whose data holds no `SurrealFunc` and no nested
+object/array, on an HTTP connection (the ORM's default). WebSocket
+transactions are not affected.
 
 ### Fixed — CI
 

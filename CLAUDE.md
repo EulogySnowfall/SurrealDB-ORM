@@ -54,11 +54,23 @@ auto-releases of #223 (`aiohttp` 3.14.4 + `yarl` 1.25.1, three advisories) and
   `tx_<i>`, the references already renamed for earlier keys
   (`$tx_0_amount` → `$tx_0_tx_0_amount`). Unbound, they read `NONE` — no error.
   The builders bind each field under its own name, so a *model field* named
-  `t` or `tx` was enough to make `save(tx=)` drop the fields bound before it.
+  `t` or `tx` was enough to make `save(tx=)` of a new record drop the fields
+  bound before it.
   `commit()` now goes through `substitute_params()`, single pass, only the
   statement's own keys. Still textual: a bound `$k` inside a quoted string
   literal is renamed (unchanged). WebSocket transactions never renamed. v2 has
   the same loop and no `substitute_params()`: backport tracked in #247.
+- **Known limitation, untouched here: `tx.merge()` over HTTP (#251).** It
+  emits `UPDATE <thing> MERGE { k = $k, ... }`, which 3.x rejects per
+  statement (`Cannot use false in a MERGE clause` with one field; with two, a
+  `Found {NONE,} for the id field` error). `commit()` does not check
+  per-statement status, so it returns cleanly while the server cancels the
+  whole transaction, the other statements included. It reaches `update(tx=)`,
+  `merge(tx=)` without a `SurrealFunc`, and `save(tx=)` of an already-saved
+  record whose data holds no `SurrealFunc` and no nested object/array — over
+  HTTP, the ORM's default. WebSocket transactions use the RPC `merge` and are
+  not affected. So #243's `t`/`tx` field case only ever reached the working
+  builders (`create`, `upsert`, `relate`).
 - **`certifi` is transitive** (via `httpx`), so `uv.lock` kept the 2026.5.20
   bundle (still trusting `emSign ECC Root CA - G3`, GHSA-6q48-6c7w-9gw2) until it
   was named in `uv lock --upgrade-package`. The lock only moves dev/CI; users
