@@ -332,8 +332,9 @@ diffs against the live database, so a database whose fields came from
 chain onto a fresh database (CI, a new deployment) stops at the first such
 `AlterField`, and the statements applied before it stay applied: migrations are not
 transactional. `DEFINE FIELD OVERWRITE` used to create the field silently at that
-step. Give the chain an `AddField` (or `CreateTable`) that creates the field before
-it is altered.
+step. Give the chain an `AddField` that creates the field before it is altered,
+preceded by a `CreateTable` if the table should be defined explicitly (for example
+`SCHEMAFULL`). A `CreateTable` alone defines no field.
 
 Neither form of `DEFINE FIELD` works here. A plain `DEFINE FIELD` over an existing
 field is rejected (`The field 'email' already exists`) and leaves the definition
