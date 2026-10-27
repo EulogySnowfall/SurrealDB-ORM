@@ -295,6 +295,38 @@ AlterField(
 )
 ```
 
+`AlterField` emits `DEFINE FIELD OVERWRITE`, which replaces the whole field
+definition. A generated `AlterField` therefore carries the field's existing
+`PERMISSIONS` clause in `permissions` (forwards) and `previous_permissions`
+(rollback): the diff reads it from the database and re-emits it in both
+directions. A field at the default permissions (`FULL`) gets neither, and its
+statement is unchanged.
+
+Both arguments are a snapshot: the clause the database had when the migration
+was generated. Applying the file, or rolling it back, writes that clause. If you
+change a field's permissions afterwards, regenerate the migration (or edit both
+arguments) before applying it, or the old clause comes back.
+
+```python
+AlterField(
+    table="users",
+    name="email",
+    field_type="string",
+    assertion="is::email($value)",
+    previous_type="string",
+    # Filled by the diff from the database, identical in both directions
+    permissions={"select": "$auth.id = id"},
+    previous_permissions={"select": "$auth.id = id"},
+)
+```
+
+> **Known limitation (v2 line):** models cannot declare field permissions on
+> this line. Hand-written `AlterField` operations, and migration files already
+> on disk, carry no `permissions` / `previous_permissions`, so applying or
+> rolling them back still resets the field's permissions to `FULL`. To keep
+> them, add both arguments with the field's current clause, or regenerate a
+> migration that has not been applied yet.
+
 ### CreateIndex
 
 ```python
