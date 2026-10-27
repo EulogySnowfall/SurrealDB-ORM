@@ -307,7 +307,10 @@ For an array or set column, SurrealDB also keeps a field per element level
 (`tags.*` for `array<string>`, `n.*.*` for `array<array<int>>`), which `ALTER FIELD`
 on the column does not update. The alteration is therefore followed by one
 `ALTER FIELD IF EXISTS tags.* ON users TYPE int;` per level, so changing a list's
-element type leaves the column writable.
+element type leaves the column writable. An `any` element counts as a level too:
+widening `array<int>` to `array<any>`, or to an untyped `array` or `set`, emits
+`ALTER FIELD IF EXISTS tags.* ON users TYPE any;` and nothing below it — otherwise
+`tags.*` would stay `int` and refuse every other value.
 
 The field must exist: altering a missing one fails the migration with
 `MigrationStatementError: ... The field 'email' does not exist`. Use `AddField` to

@@ -316,8 +316,14 @@ class TestArrayElementSubFieldsFollowTheType:
     them; ``ALTER FIELD tags ON t TYPE array<int>`` leaves ``tags.*`` at
     ``string``, so the column then refuses every non-empty value. The renderer
     aligns each derived level with ``ALTER FIELD IF EXISTS`` — the sub-field is
-    the server's, absent for an untyped ``array``, so a missing one is a no-op —
-    naming its TYPE only, so a clause set on it by hand survives too.
+    the server's, and whether it exists depends on the previous definition, so
+    a missing one is a no-op — naming its TYPE only, so a clause set on it by
+    hand survives too.
+
+    An ``any`` element, or an untyped ``array``/``set``, is element ``any``, not
+    "nothing to align": ``option<array<any>>`` derives ``f.*`` as ``any``, and a
+    column widened from ``array<int>`` otherwise kept ``f.*`` at ``int`` and
+    refused every other value.
     """
 
     @pytest.mark.parametrize(
@@ -353,10 +359,38 @@ class TestArrayElementSubFieldsFollowTheType:
             ({"field_type": "array<int> | string"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
             ({"field_type": "array<int> | set<string>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE int | string;"]),
             ({"field_type": "array<record<a | b>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE record<a | b>;"]),
-            # Nothing derived, nothing to align.
-            ({"field_type": "array"}, []),
-            ({"field_type": "array<any>"}, []),
-            ({"field_type": "set"}, []),
+            # An any element, or an untyped array or set, is element any: the
+            # level is widened, and nothing below it is derived.
+            ({"field_type": "array"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "array<any>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "array<any>", "nullable": True}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "option<array>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "array<any, 5>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "array<option<any>>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "array<int | any>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "set"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "set<any>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            (
+                {"field_type": "array<array<any>>"},
+                [
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<any>;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE any;",
+                ],
+            ),
+            (
+                {"field_type": "array<array>"},
+                [
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE array;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE any;",
+                ],
+            ),
+            # A union with an any element accepts anything at that level.
+            ({"field_type": "array<int> | array<any>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "array<any> | array<int>"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "array<int> | set"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            ({"field_type": "array | string"}, ["ALTER FIELD IF EXISTS f.* ON t TYPE any;"]),
+            # Not an array or set: no element level.
+            ({"field_type": "any"}, []),
             ({"field_type": "string"}, []),
             ({"field_type": "object", "flexible": True}, []),
             ({"field_type": None}, []),
@@ -379,6 +413,28 @@ class TestArrayElementSubFieldsFollowTheType:
 
         assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE int;"]
         assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE string;"]
+
+    def test_widening_to_any_and_back(self) -> None:
+        """``option<array<int>>`` → ``option<array<any>>``: ``tags.*`` must follow both ways."""
+        op = AlterField.from_field_states(
+            "t",
+            FieldState(name="tags", field_type="array<int>", nullable=True),
+            FieldState(name="tags", field_type="array<any>", nullable=True),
+        )
+
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE any;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE int;"]
+
+    def test_narrowing_from_an_untyped_array_and_back(self) -> None:
+        """The rollback of a previous untyped ``array`` widens ``tags.*`` back to ``any``."""
+        op = AlterField.from_field_states(
+            "t",
+            FieldState(name="tags", field_type="array", nullable=True),
+            FieldState(name="tags", field_type="array<string>", nullable=True),
+        )
+
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE string;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS tags.* ON t TYPE any;"]
 
     def test_a_changed_reference_target_reaches_the_element(self) -> None:
         """``o.*`` kept ``record<old>`` and refused every link to the new table."""
@@ -412,6 +468,15 @@ class I195UnitTagged(BaseSurrealModel):
     tags: list[int]
 
 
+class I195UnitAnyTagged(BaseSurrealModel):
+    """``list[Any] | None`` maps to ``option<array<any>>``, which derives ``tags.*`` as ``any``."""
+
+    model_config = SurrealConfigDict(table_name="i195_unit_any_tagged")
+
+    id: str | None = None
+    tags: list[Any] | None = None
+
+
 class TestDefineTableAlignsElementSubFields:
     """The define_table() pair goes through the same ALTER renderer."""
 
@@ -429,6 +494,18 @@ class TestDefineTableAlignsElementSubFields:
             "ALTER FIELD tags ON i195_unit_tagged TYPE array<int> " + " ".join(ALL_DROPS[1:]) + ";",
             "ALTER FIELD IF EXISTS tags.* ON i195_unit_tagged TYPE int;",
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_list_of_any_widens_the_element(self) -> None:
+        """Replayed over ``list[int] | None``, ``tags.*`` would otherwise stay ``int``."""
+        client = _fake_client()
+        with patch(
+            "src.surreal_orm.model_base.SurrealDBConnectionManager.get_client",
+            new=AsyncMock(return_value=client),
+        ):
+            sql = await I195UnitAnyTagged.define_table()
+
+        assert sql.splitlines()[-1] == "ALTER FIELD IF EXISTS tags.* ON i195_unit_any_tagged TYPE any;"
 
 
 class TestTheParserStopsAtPermissions:

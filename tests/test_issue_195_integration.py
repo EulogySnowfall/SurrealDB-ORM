@@ -16,6 +16,7 @@ import shutil
 import tempfile
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -512,3 +513,77 @@ async def test_define_table_again_after_the_element_type_changed() -> None:
     saved = I195TaggedInt(tags=[1, 2])
     await saved.save()
     assert (await I195TaggedInt.objects().get(saved.get_id())).tags == [1, 2]
+
+
+# ------------------------------------------------------- widening an element to any
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("previous", "target", "widened", "narrowed"),
+    [
+        ("array<int>", "array<any>", "['x', 1]", "[1, 2]"),
+        ("array<int>", "array", "['x', 1]", "[1, 2]"),
+        # SurrealDB 3.2 does not coerce an array literal into a set column.
+        ("set<int>", "set<any>", "<set> ['x', 1]", "<set> [1, 2]"),
+        ("set<int>", "set", "<set> ['x', 1]", "<set> [1, 2]"),
+        ("array<array<int>>", "array<array<any>>", "[['x', 1]]", "[[1, 2]]"),
+        ("array<int>", "array<int> | array<any>", "['x', 1]", "[1, 2]"),
+    ],
+)
+async def test_widening_a_nullable_element_to_any_keeps_the_column_writable_both_ways(
+    migrations_dir: Path, previous: str, target: str, widened: str, narrowed: str
+) -> None:
+    """``option<array<int>>`` derives ``tags.*`` as ``int``; widening the element must widen it.
+
+    DEFINE FIELD OVERWRITE re-derived ``tags.*`` as ``any``. The ALTER FIELD on
+    ``tags`` alone left it at ``int``, so the widened column still refused
+    ``'x'``: an ``any`` element, or an untyped array or set, was read as
+    "nothing to align".
+    """
+    await _query(f"DEFINE TABLE {TAGGED} SCHEMAFULL; DEFINE FIELD tags ON {TAGGED} TYPE option<{previous}>;")
+    op = AlterField.from_field_states(
+        TAGGED,
+        FieldState(name="tags", field_type=previous, nullable=True),
+        FieldState(name="tags", field_type=target, nullable=True),
+    )
+    MigrationGenerator(migrations_dir).generate(name="widen_tags", operations=[op])
+    executor = MigrationExecutor(migrations_dir)
+    await executor.migrate()
+
+    assert await _write_errors(f"CREATE {TAGGED}:forwards SET tags = {widened};") == []
+
+    await _query(f"DELETE {TAGGED};")
+    await executor.rollback("")
+
+    assert await _write_errors(f"CREATE {TAGGED}:backwards SET tags = {narrowed};") == []
+    assert await _write_errors(f"CREATE {TAGGED}:refused SET tags = {widened};") != []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_define_table_again_after_widening_a_list_to_any() -> None:
+    """``list[int] | None`` → ``list[Any] | None``: the replayed pair widens ``tags.*`` too."""
+
+    class I195TaggedOptInt(BaseSurrealModel):
+        model_config = SurrealConfigDict(table_name=TAGGED)
+        id: str | None = None
+        tags: list[int] | None = None
+
+    await I195TaggedOptInt.define_table()
+    assert (await _fields(TAGGED))["tags.*"] == f"DEFINE FIELD tags.* ON {TAGGED} TYPE int PERMISSIONS FULL"
+
+    clear_model_registry()
+
+    class I195TaggedOptAny(BaseSurrealModel):
+        model_config = SurrealConfigDict(table_name=TAGGED)
+        id: str | None = None
+        tags: list[Any] | None = None
+
+    await I195TaggedOptAny.define_table()
+
+    assert (await _fields(TAGGED))["tags.*"] == f"DEFINE FIELD tags.* ON {TAGGED} TYPE any PERMISSIONS FULL"
+    saved = I195TaggedOptAny(tags=["x", 1])
+    await saved.save()
+    assert (await I195TaggedOptAny.objects().get(saved.get_id())).tags == ["x", 1]

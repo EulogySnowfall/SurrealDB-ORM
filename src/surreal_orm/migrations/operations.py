@@ -317,27 +317,37 @@ def _union_members(field_type: str) -> list[str]:
 
 def _element_type(field_type: str) -> str | None:
     """
-    The type SurrealDB gives the ``name.*`` field it derives for a column.
+    The type the ``name.*`` field of an array or set column must have.
 
     Defining a field whose type has an ``array<T>`` or ``set<T>`` member also
     defines ``name.*`` with type ``T`` — the union of every such member's
-    element, ``array<int> | set<string>`` giving ``int | string``. An untyped
-    ``array``/``set``, or an ``any`` element, derives nothing.
+    element, ``array<int> | set<string>`` giving ``int | string``.
+
+    An untyped ``array``/``set`` member, or an element with an ``any`` member
+    (``any``, ``option<any>``, ``int | any``), makes the element ``any`` — for
+    the whole union, since ``any`` absorbs the other members. It is not "nothing": ``option<array<any>>`` derives ``name.*`` as
+    ``any``, and a column widened from ``array<int>`` to ``array<any>`` has to
+    widen ``name.*`` too, or it keeps refusing every non-``int`` element.
+    ``any`` is also what a redefinition amounts to for such a union: the
+    server derives ``int | any`` for ``array<int> | array<any>``, which
+    SurrealDB 3.3 then fails to parse back, leaving ``INFO FOR TABLE`` broken.
 
     Args:
         field_type: The column's type, as rendered
 
     Returns:
-        The derived element type, or ``None`` when nothing is derived
+        The element type, or ``None`` for a type with no array or set member
     """
     elements: list[str] = []
     for member in _union_members(field_type):
         lowered = member.lower()
+        if lowered in ("array", "set"):
+            return "any"
         for kind in ("array<", "set<"):
             if lowered.startswith(kind) and member.endswith(">"):
                 element = _split_top_level(member[len(kind) : -1], ",")[0]
-                if element.lower() == "any":
-                    return None
+                if any(m.lower() == "any" for m in _union_members(element)):
+                    return "any"
                 if element not in elements:
                     elements.append(element)
                 break
@@ -354,8 +364,15 @@ def _render_element_types(table: str, name: str, field_type: str) -> list[str]:
     leaves ``tags.*`` at ``string`` and the column then refuses every
     non-empty value. Each derived level is therefore altered too, its TYPE
     only — the field is the server's, and a clause set on it by hand stays.
-    ``IF EXISTS`` because the server derived nothing for a column that was not
-    a typed array before: there, the parent's TYPE alone checks the elements.
+
+    An ``any`` element is a level like the others: widening ``array<int>`` to
+    ``array<any>`` (or to an untyped ``array``) sets ``tags.*`` to ``any``,
+    and the walk stops there, ``any`` having no element of its own.
+
+    ``IF EXISTS`` because whether the server derived a level depends on the
+    previous definition — none for a column that was not an array before, nor
+    for a non-optional ``array<any>`` — and where it derived none, the
+    parent's TYPE alone checks the elements.
 
     Args:
         table: Table the column belongs to
@@ -363,8 +380,8 @@ def _render_element_types(table: str, name: str, field_type: str) -> list[str]:
         field_type: The column's new type, as rendered
 
     Returns:
-        One statement per derived level, outermost first; none for a column
-        that is not a typed array or set
+        One statement per element level, outermost first; none for a column
+        with no array or set member
     """
     statements: list[str] = []
     path = name
@@ -409,9 +426,9 @@ def _render_alter_field(
     ``AlterField``, so a rollback cannot render a clause differently from the
     statement it reverses.
 
-    For a typed array or set column, the statement is followed by one per
-    element sub-field SurrealDB derived (``tags.*``, ``n.*.*``): a
-    redefinition re-derived them, ``ALTER FIELD`` does not
+    For an array or set column, the statement is followed by one per element
+    sub-field SurrealDB derives (``tags.*``, ``n.*.*``), an ``any`` element
+    included: a redefinition re-derived them, ``ALTER FIELD`` does not
     (:func:`_render_element_types`).
 
     Args:
