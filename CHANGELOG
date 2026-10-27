@@ -6,6 +6,85 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.18] - 2026-10-27
+
+**Bug fix release (V2 LTS).** One SDK fix (#277, #285), the `v2` port of the
+live-stream half of #276 from `main` (0.34.8): `QuerySet.live()` and every
+`LiveSelectStream` keep receiving events after a WebSocket reconnect, and
+`stop()` ends the re-created live query. No new public API; `live_id` changes
+after a reconnect: read *Behaviour change*. The SurrealDB pin is unchanged
+(tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`QuerySet.live()` stopped receiving events after its first WebSocket
+  reconnect (#277, #285).** This covered every `LiveSelectStream` with
+  `auto_resubscribe=True`, the default. The live query was re-created on the
+  server with the same filter, but the stream's handler was not registered
+  again under the new id and the stream kept the old id, so no event reached
+  the iterator. The stream now moves to the re-created live query during the
+  resubscribe itself, and a user `on_reconnect` still fires with
+  `(old_id, new_id)`. Subscriptions created with their own
+  `LiveSubscriptionParams.callback` were not affected.
+- **`stop()` after a reconnect left the re-created live query running (#277,
+  #285).** It killed the old, already dead live query id, so the re-created
+  query kept running and was re-created again on every later reconnect, even
+  after the stream had been stopped. `stop()` now ends the current query. This
+  also holds when `stop()` begins while the re-created `LIVE SELECT` is still
+  in flight, for example an `async with ...live()` block that ends during a
+  server restart: the stream refuses the new id and the connection kills that
+  query instead of keeping it.
+
+### Behaviour change
+
+- After a reconnect, `LiveSelectStream.live_id` and `LiveModelStream.live_id`
+  report the id of the re-created live query (the `new_id` passed to
+  `on_reconnect`) instead of the original id, and `stop()` ends that query.
+  `LiveSubscriptionParams` keeps its constructor, `repr()` and equality.
+
+### Known limitations
+
+- `LiveSelectManager` still keys each stream by the id `watch()` returned.
+  After a reconnect, `active_streams` lists that original id and
+  `manager.stop()` must be given it: `stop()` with the new id (the one
+  `on_reconnect` receives, and the stream's `live_id`) does nothing, and the
+  stream and its re-created live query keep running. `stop_all()` is not
+  affected. Before this release the stream was silent after a reconnect, so
+  the mismatch had no visible effect.
+- Pre-existing, unchanged in this release: the callback API
+  (`WebSocketConnection.live(table, callback)` and `LiveQuery.subscribe()`)
+  only registers a handler, so after a reconnect its live query is not
+  re-created and the callback receives nothing more. A subscription whose
+  `LIVE SELECT` fails during the resubscribe (the socket drops again, a
+  timeout, a server error) is dropped for good: the next reconnect does not
+  retry it, and its stream neither ends nor raises. `main` has the same
+  behaviour (#279).
+
+### Upgrading
+
+- Code that stored `live_id` before a reconnect and compares it afterwards
+  should take the new id from `on_reconnect` or re-read `live_id`.
+- The naive-`datetime` half of #276 is not part of this release; on `v2` it
+  is tracked in #258.
+- No schema or dependency change; `cbor2` stays `>=5.9.0,<6`.
+
+### Verification
+
+Against a live SurrealDB 2.7.0: 2,017 unit tests on each of Python 3.12,
+3.13 and 3.14, and 560 integration tests, pass; the full integration suite
+also passes on SurrealDB 2.6.5 (560), the supported floor. `ruff` and `mypy`
+clean. The 17 new tests (14 unit, 3 integration) passed three times in a row
+(#285); 13 of them fail on the code before the fix, including all 3
+integration tests. The other 4 guard behaviour that does not change
+(`on_reconnect` arguments, the callback path, `LiveSubscriptionParams`).
+
+### Changed
+
+- **Version bump to 0.21.18** — `pyproject.toml`, `surreal_orm/__init__.py`,
+  `surreal_sdk/__init__.py`, `surreal_sdk/pyproject.toml`.
+
+---
+
 ## [0.21.17] - 2026-10-27
 
 **Bug fix release (V2 LTS).** One migrations fix (#259, #274), the `v2`

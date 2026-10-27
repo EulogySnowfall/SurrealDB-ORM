@@ -52,6 +52,24 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.18
+
+**Bug fix release (V2 LTS).** One SDK fix, the `v2` port of the live-stream half of #276 from `main`; no
+new public API, but `live_id` changes after a reconnect.
+
+- **`QuerySet.live()` keeps receiving events after a WebSocket reconnect (#277).** With
+  `auto_resubscribe=True`, the default, the live query was re-created on the server but the stream's handler
+  was not registered under the new id, so every `LiveSelectStream` went silent after its first reconnect. The
+  stream now moves to the re-created live query during the resubscribe itself; `on_reconnect` still fires
+  with `(old_id, new_id)`.
+- **`stop()` after a reconnect ends the re-created live query.** It used to kill the old, dead id, which
+  left the re-created query running and re-created it again on every later reconnect. A `stop()` that starts
+  while the query is being re-created now ends it too.
+- **Behaviour change:** after a reconnect, `LiveSelectStream.live_id` / `LiveModelStream.live_id` report the
+  re-created query's id. Code that compares a stored `live_id` should take the new id from `on_reconnect`.
+  `LiveSelectManager` still keys streams by the id `watch()` returned: after a reconnect, stop a stream with
+  that original id, or use `stop_all()`. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.17
 
 **Bug fix release (V2 LTS).** One migrations fix, the `v2` port of #248 from `main`; a behaviour change in
