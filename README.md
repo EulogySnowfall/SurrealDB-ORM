@@ -37,6 +37,18 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.9
+
+**Maintenance release.** Python 3.15 support; no library code changes and no new public API.
+
+- **Python 3.15 is supported** ([#235](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/235)). CI runs the
+  unit suite on 3.12, 3.13, 3.14 and 3.15, and the package and the SDK declare the 3.15 classifier.
+  `requires-python` (`>=3.12`) and every dependency floor are unchanged.
+- **On Python 3.15, use pydantic >= 2.14.0 and cbor2 >= 6.1.5**, the first stable releases with cp315 wheels. Older
+  versions that the floors still allow are built from source there, and pydantic-core and cbor2 both need a Rust
+  toolchain for that.
+- The development lock moves to pydantic 2.14.1 and cbor2 6.1.5. The lock does not ship in the package.
+
 ## What's New in 0.34.8
 
 **Fix release.** No new public API, but naive datetimes change behaviour: see [CHANGELOG.md](CHANGELOG.md) before
