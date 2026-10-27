@@ -507,6 +507,149 @@ class TestArrayElementSubFieldsFollowTheType:
         assert AddField(table="t", name="f", field_type="array<int>").forwards() == ("DEFINE FIELD f ON t TYPE array<int>;")
 
 
+class TestFlexibleReachesTheObjectElementLevels:
+    """A FLEXIBLE array column made its object elements FLEXIBLE too, under a redefinition.
+
+    ``DEFINE FIELD OVERWRITE items ON t TYPE option<array<object>> FLEXIBLE`` also
+    sets ``items.*`` to ``object FLEXIBLE``. Aligning the element levels with
+    their TYPE only left ``items.*`` strict: the AlterField that turned FLEXIBLE
+    on reported success, and the column still refused ``[{x: 'hello'}]`` with
+    ``Found field 'items[0].x', but no such field exists``.
+
+    Of the modelled clauses, only TYPE and FLEXIBLE reach the element levels.
+    FLEXIBLE is written on a level whose type contains an object — the parser's
+    own rule (``FLEXIBLE can only be used with types containing object``) — and
+    never removed from one: a non-FLEXIBLE redefinition left ``items.*``
+    FLEXIBLE as well, and a FLEXIBLE set there by hand must survive (#195).
+    """
+
+    @pytest.mark.parametrize(
+        ("field_type", "statements"),
+        [
+            ("array<object>", ["ALTER FIELD IF EXISTS f.* ON t TYPE object FLEXIBLE;"]),
+            ("option<array<object>>", ["ALTER FIELD IF EXISTS f.* ON t TYPE object FLEXIBLE;"]),
+            (
+                "option<array<array<object>>>",
+                [
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<object> FLEXIBLE;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE object FLEXIBLE;",
+                ],
+            ),
+            # The server derives `int FLEXIBLE` for the inner level, but writing
+            # FLEXIBLE on `int` is a parse error, and it means nothing there.
+            (
+                "array<array<int> | object>",
+                [
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<int> | object FLEXIBLE;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE int;",
+                ],
+            ),
+            ("array<{ a: int }>", ["ALTER FIELD IF EXISTS f.* ON t TYPE { a: int } FLEXIBLE;"]),
+            ("array<int> | object", ["ALTER FIELD IF EXISTS f.* ON t TYPE int;"]),
+        ],
+    )
+    def test_forwards(self, field_type: str, statements: list[str]) -> None:
+        lines = AlterField(table="t", name="f", field_type=field_type, flexible=True).forwards().splitlines()
+
+        assert " FLEXIBLE " in lines[0]
+        assert lines[1:] == statements
+
+    @pytest.mark.parametrize(
+        ("field_type", "statements"),
+        [
+            ("array<object>", ["ALTER FIELD IF EXISTS f.* ON t TYPE object;"]),
+            (
+                "option<array<array<object>>>",
+                [
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<object>;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE object;",
+                ],
+            ),
+            (
+                "array<array<int> | object>",
+                [
+                    "ALTER FIELD IF EXISTS f.* ON t TYPE array<int> | object;",
+                    "ALTER FIELD IF EXISTS f.*.* ON t TYPE int;",
+                ],
+            ),
+        ],
+    )
+    def test_backwards_to_a_strict_column(self, field_type: str, statements: list[str]) -> None:
+        """The rollback names neither FLEXIBLE nor DROP FLEXIBLE on an element level.
+
+        A non-FLEXIBLE redefinition left ``items.*`` FLEXIBLE, and a FLEXIBLE set
+        there by hand must survive: the rollback removes it from the column only.
+        """
+        op = AlterField.from_field_states(
+            "t",
+            FieldState(name="f", field_type=field_type, flexible=False),
+            FieldState(name="f", field_type=field_type, flexible=True),
+        )
+        lines = op.backwards().splitlines()
+
+        assert " DROP FLEXIBLE " in lines[0]
+        assert lines[1:] == statements
+        assert not any("FLEXIBLE" in line for line in lines[1:])
+
+    def test_retyping_a_list_of_strings_to_flexible_objects(self) -> None:
+        op = AlterField.from_field_states(
+            "t",
+            FieldState(name="items", field_type="array<string>"),
+            FieldState(name="items", field_type="array<object>", flexible=True),
+        )
+
+        assert op.forwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS items.* ON t TYPE object FLEXIBLE;"]
+        assert op.backwards().splitlines()[1:] == ["ALTER FIELD IF EXISTS items.* ON t TYPE string;"]
+
+    def test_a_strict_column_leaves_the_element_flexibility_alone(self) -> None:
+        """No FLEXIBLE and no DROP FLEXIBLE on ``items.*``: a hand-set FLEXIBLE there stays."""
+        sub = AlterField(table="t", name="items", field_type="array<object>").forwards().splitlines()[1]
+
+        assert sub == "ALTER FIELD IF EXISTS items.* ON t TYPE object;"
+
+    def test_the_define_table_pair_carries_it(self) -> None:
+        """``define_table()`` renders through the same ALTER, so a FLEXIBLE list column gets it too."""
+        sql = operations._render_create_or_alter_field(
+            AddField(table="t", name="items", field_type="array<object>", nullable=True, flexible=True)
+        )
+
+        assert sql.splitlines() == [
+            "DEFINE FIELD IF NOT EXISTS items ON t FLEXIBLE TYPE option<array<object>>;",
+            "ALTER FIELD items ON t TYPE option<array<object>> FLEXIBLE " + " ".join(ALL_DROPS[2:]) + ";",
+            "ALTER FIELD IF EXISTS items.* ON t TYPE object FLEXIBLE;",
+        ]
+
+    @pytest.mark.parametrize(
+        ("field_type", "contains"),
+        [
+            # Accepted with FLEXIBLE by the 3.2.6 and 3.3.4 parsers.
+            ("object", True),
+            ("OBJECT", True),
+            ("option<object>", True),
+            ("array<object>", True),
+            ("set<object>", True),
+            ("array<array<object>>", True),
+            ("array<int> | object", True),
+            ("array<option<object>>", True),
+            ("{ a: int }", True),
+            ("array<{ a: int }>", True),
+            ("[int, object]", True),
+            # Refused: "FLEXIBLE can only be used with types containing object".
+            ("int", False),
+            ("any", False),
+            ("array<int>", False),
+            ("record<user>", False),
+            ("record<object>", False),
+            ("option<record<object>>", False),
+            ("record<object_store>", False),
+            ("'object'", False),
+        ],
+    )
+    def test_what_contains_an_object(self, field_type: str, contains: bool) -> None:
+        """The parser's test: the ``object`` keyword or a literal object type, not a table name or a string."""
+        assert operations._contains_object(field_type) is contains
+
+
 class I195UnitTagged(BaseSurrealModel):
     """A list column: its element sub-field must follow ``define_table()`` too."""
 

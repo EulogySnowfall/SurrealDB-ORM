@@ -37,7 +37,8 @@ NOTES = "i195_notes"
 AUTHORS = "i195_authors"
 EDITORS = "i195_editors"
 TAGGED = "i195_tagged"
-TABLES = [DOCS, NOTES, AUTHORS, EDITORS, TAGGED, MIGRATIONS_TABLE]
+ITEMS = "i195_items"
+TABLES = [DOCS, NOTES, AUTHORS, EDITORS, TAGGED, ITEMS, MIGRATIONS_TABLE]
 
 #: How SurrealDB reports ``PERMISSIONS FOR select NONE`` on a field: the other
 #: actions keep the field default, FULL. Losing the restriction reads ``PERMISSIONS FULL``.
@@ -712,3 +713,46 @@ async def test_rolling_back_a_narrowing_keeps_a_hand_defined_element(migrations_
 
     assert (await _fields(TAGGED))["tags.*"] == handmade
     assert await _write_errors(f"CREATE {TAGGED}:refused SET tags = [1];") != []
+
+
+# ------------------------------------------------- FLEXIBLE on an array of objects
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "write"),
+    [
+        pytest.param("array<object>", "[{x: 'hello'}]", id="array-of-objects"),
+        pytest.param("array<array<object>>", "[[{x: 'hello'}]]", id="nested-array-of-objects"),
+    ],
+)
+async def test_turning_flexible_on_reaches_the_object_elements(migrations_dir: Path, column: str, write: str) -> None:
+    """An AlterField turning FLEXIBLE on must make the column accept undeclared keys in its elements.
+
+    DEFINE FIELD OVERWRITE with FLEXIBLE set the object element levels FLEXIBLE
+    too. Aligning them with their TYPE alone left ``items.*`` strict: the
+    migration succeeded, the column read FLEXIBLE, and the write still failed
+    with ``Found field 'items[0].x', but no such field exists``.
+    """
+    await _query(f"DEFINE TABLE {ITEMS} SCHEMAFULL; DEFINE FIELD items ON {ITEMS} TYPE option<{column}>;")
+    assert await _write_errors(f"CREATE {ITEMS}:strict SET items = {write};") != [], "precondition: a strict column"
+
+    op = AlterField.from_field_states(
+        ITEMS,
+        FieldState(name="items", field_type=column, nullable=True, flexible=False),
+        FieldState(name="items", field_type=column, nullable=True, flexible=True),
+    )
+    MigrationGenerator(migrations_dir).generate(name="flexible_items", operations=[op])
+    executor = MigrationExecutor(migrations_dir)
+    await executor.migrate()
+
+    assert "FLEXIBLE" in (await _fields(ITEMS))["items"], "the alteration itself did not happen"
+    assert await _write_errors(f"CREATE {ITEMS}:flexible SET items = {write};") == []
+
+    await _query(f"DELETE {ITEMS};")
+    await executor.rollback("")
+
+    # Only the column: the element levels keep FLEXIBLE after the rollback, as
+    # they did after a non-FLEXIBLE redefinition (documented limitation).
+    assert "FLEXIBLE" not in (await _fields(ITEMS))["items"]

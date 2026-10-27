@@ -5,6 +5,7 @@ Each operation represents a single schema modification that can be
 applied (forwards) or reverted (backwards).
 """
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -370,7 +371,36 @@ def _element_type(field_type: str) -> str | None:
     return " | ".join(elements) or None
 
 
-def _render_element_types(table: str, name: str, field_type: str) -> list[str]:
+#: A quoted string inside a type — a literal type (``'object'``) — whose text
+#: is not a type keyword.
+_QUOTED = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|`[^`]*`")
+#: A ``record<…>`` member, whose contents are table names, not types.
+_RECORD_TABLES = re.compile(r"\brecord\s*<[^>]*>", re.IGNORECASE)
+_OBJECT_KEYWORD = re.compile(r"\bobject\b", re.IGNORECASE)
+
+
+def _contains_object(field_type: str) -> bool:
+    """
+    Whether a type contains an object, the condition for ``FLEXIBLE``.
+
+    The SurrealDB parser's own test (``FLEXIBLE can only be used with types
+    containing object``): the ``object`` keyword or a literal object type
+    ``{ … }`` anywhere in the type — ``array<int> | object``,
+    ``array<option<object>>`` and ``{ a: int }`` qualify. A table named in
+    ``record<…>`` and a string literal do not, which is why both are removed
+    before looking.
+
+    Args:
+        field_type: The type text
+
+    Returns:
+        True when ``FLEXIBLE`` is valid on the type
+    """
+    text = _RECORD_TABLES.sub("record", _QUOTED.sub("''", field_type))
+    return "{" in text or _OBJECT_KEYWORD.search(text) is not None
+
+
+def _render_element_types(table: str, name: str, field_type: str, *, flexible: bool = False) -> list[str]:
     """
     Align the element sub-fields SurrealDB derives for an array or set column.
 
@@ -379,9 +409,24 @@ def _render_element_types(table: str, name: str, field_type: str) -> list[str]:
     re-derives them. ``ALTER FIELD tags ON t TYPE array<int>`` does not: it
     leaves ``tags.*`` at ``string`` and the column then refuses every
     non-empty value. Each element level SurrealDB derives itself for the new
-    type is therefore aligned, its TYPE only — the field is the server's, and
-    a clause set on it by hand stays. That is exactly what the redefinition
-    did, and nothing more.
+    type is therefore aligned the way the redefinition did it, and nothing
+    more: its TYPE, plus FLEXIBLE on a level whose type contains an object
+    (:func:`_contains_object`) when the column is FLEXIBLE. Those are the only
+    two modelled clauses a redefinition carried down to the elements. The
+    field is the server's, and a clause set on it by hand stays.
+
+    A FLEXIBLE column whose elements were left strict reported success and
+    still refused ``[{x: 'hello'}]`` with ``Found field 'items[0].x', but no
+    such field exists``. The server derives ``int FLEXIBLE`` for the inner
+    level of ``array<array<int> | object>``, but FLEXIBLE on ``int`` is a
+    parse error and means nothing there, so that level gets its TYPE only.
+
+    FLEXIBLE is never removed from an element level: a non-FLEXIBLE
+    redefinition left ``items.*`` FLEXIBLE too, and a FLEXIBLE set there by
+    hand must survive. Known limitation, the same as with the redefinition:
+    removing FLEXIBLE from an array column leaves its object element levels
+    FLEXIBLE. A ``RawSQL`` operation with
+    ``ALTER FIELD items.* ON <table> DROP FLEXIBLE;`` removes it.
 
     A typed element is always derived. An ``any`` element — ``array<any>``, an
     untyped ``array`` or ``set`` — only under an optional column or a union, a
@@ -407,6 +452,7 @@ def _render_element_types(table: str, name: str, field_type: str) -> list[str]:
         table: Table the column belongs to
         name: Column name
         field_type: The column's new type, as rendered
+        flexible: Whether the column is FLEXIBLE
 
     Returns:
         One statement per derived element level, outermost first; none for a
@@ -420,7 +466,8 @@ def _render_element_types(table: str, name: str, field_type: str) -> list[str]:
         if element.lower() == "any" and not union_seen:
             break
         path += ".*"
-        statements.append(f"ALTER FIELD IF EXISTS {path} ON {table} TYPE {element};")
+        clauses = f"TYPE {element} FLEXIBLE" if flexible and _contains_object(element) else f"TYPE {element}"
+        statements.append(f"ALTER FIELD IF EXISTS {path} ON {table} {clauses};")
         union_seen = union_seen or _is_union(element)
         element = _element_type(element)
     return statements
@@ -461,8 +508,10 @@ def _render_alter_field(
 
     For an array or set column, the statement is followed by one per element
     sub-field SurrealDB derives itself for the new type (``tags.*``,
-    ``n.*.*``), TYPE only: a redefinition re-derived them, ``ALTER FIELD`` does
-    not. A typed element is aligned always, an ``any`` element only under an
+    ``n.*.*``): a redefinition re-derived them, ``ALTER FIELD`` does not. Each
+    gets its TYPE, plus FLEXIBLE on the levels that hold an object when the
+    column is FLEXIBLE, as the redefinition did; nothing is dropped there. A
+    typed element is aligned always, an ``any`` element only under an
     optional column or a union; under a non-optional ``array``/``array<any>``
     the server derives nothing, and a hand-defined ``tags.*`` is left as it
     is (:func:`_render_element_types`).
@@ -515,7 +564,7 @@ def _render_alter_field(
 
     statements = [" ".join(parts) + ";"]
     if rendered_type:
-        statements.extend(_render_element_types(table, name, rendered_type))
+        statements.extend(_render_element_types(table, name, rendered_type, flexible=flexible))
     return "\n".join(statements)
 
 
