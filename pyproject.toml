@@ -24,8 +24,12 @@ dependencies = [
     "pydantic>=2.10.5",
     # SDK dependencies (bundled until surreal-sdk is published to PyPI)
     "httpx>=0.27.0",
-    # aiohttp floor raised to 3.14.0 — patches CVE-2026-34513..34525 and others
-    "aiohttp>=3.14.0",
+    # aiohttp floor raised to 3.14.4 — first release patching GHSA-494j-54xm-rwp3,
+    # GHSA-2g87-pp6c-29x5, GHSA-5wr8-gcqf-gqf3, GHSA-f9xw-jh8m-3mwq,
+    # GHSA-gx76-c99x-2c96, GHSA-6cjc-53gc-5rqm, GHSA-pqxq-w44r-73xw and
+    # GHSA-9xw5-w5jj-pvcg (all affect <= 3.14.3). Downstream installs ignore
+    # uv.lock, so only this floor makes upgrading surrealdb-orm pull the fix.
+    "aiohttp>=3.14.4",
     # CBOR is required for proper binary protocol support
     # (fixes data:xxx strings being interpreted as record links)
     # Floor at 5.9.0 to avoid vulnerable 5.6–5.8 releases; capped at <6 on the
