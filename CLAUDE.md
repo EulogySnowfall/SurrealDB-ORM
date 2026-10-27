@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.17)
+> Context document for Claude AI - Last updated: October 2026 (0.21.18)
 
 <!-- -->
 
@@ -19,12 +19,38 @@
 
 ---
 
-## Current Version: 0.21.17 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.18 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.18
+
+Bug fix, the `v2` port of the live-stream half of #276 (#277, #285). No new public API; `live_id`
+changes after a reconnect.
+
+- **The defect:** after a WebSocket reconnect, `_resubscribe_all()` re-created each live query and
+  stored its params under the new id, but a `LiveSelectStream` subscription carries `callback=None`
+  (the stream's handler feeds its queue), so nothing was registered under the new id and the stream
+  kept the old one. Every `QuerySet.live()` went silent after its first reconnect, and `stop()`
+  killed the dead old id, leaving the re-created query running and re-created on every later
+  reconnect. The existing reconnect test passed its own callback, the one path that worked.
+- **The fix:** `LiveSubscriptionParams._on_resubscribed` (a private dataclass field with
+  `init=False, repr=False, compare=False`, so the exported constructor, `repr()` and `==` are
+  unchanged) points at the stream's `_update_live_id()`. `_resubscribe_one()` calls it right after
+  parsing the new id, with no await in between, so the handler is in place before the read loop can
+  dispatch a notification. `stop()` sets `_closed` before its first await; a hook called on a
+  stopped stream refuses the id, and the connection kills the re-created query and raises, so
+  `_resubscribe_all()` neither stores it nor fires `on_reconnect` for it.
+- **Why it was ported by hand:** `v2` still writes the filter values into the re-created
+  `LIVE SELECT` through `LiveSelectStream._inline_params_static`, since SurrealDB 2.x does not
+  evaluate bound parameters there; `main` binds them.
+- **Still open, same as `main` (#279):** `LiveSelectManager` keys streams by the id `watch()`
+  returned; the callback API (`WebSocketConnection.live()`, `LiveQuery.subscribe()`) is never
+  re-created after a reconnect; a failed resubscribe is dropped for good. The naive-`datetime` half
+  of #276 is tracked for `v2` in #258.
 
 ### What's New in 0.21.17
 

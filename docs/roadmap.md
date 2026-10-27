@@ -1,6 +1,6 @@
 # SurrealDB-ORM Roadmap
 
-> Planning document for future ORM features - Last updated: October 2026 (0.21.17)
+> Planning document for future ORM features - Last updated: October 2026 (0.21.18)
 >
 > **Note:** This is the deprecated `v2` LTS branch (SurrealDB 2.x). New feature work happens on
 > [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite) and the `main` branch
@@ -47,6 +47,7 @@
 | 0.21.15 | Released | Compact CBOR datetimes from SurrealDB 2.x decoded (port of `main`'s #166) |
 | 0.21.16 | Released | Atomic array helpers raise on rejected statements; `atomic_set_add()` set-like (port of `main`'s #257) |
 | 0.21.17 | Released | Generated `AlterField` keeps a field's `PERMISSIONS` clause (port of `main`'s #248) |
+| 0.21.18 | Released | `live()` streams keep receiving events after a reconnect; `stop()` ends the re-created query (port of `main`'s #276) |
 
 ---
 
