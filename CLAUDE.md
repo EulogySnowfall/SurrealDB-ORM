@@ -27,13 +27,15 @@ no new platform support). Integration at 0.34.9: 3.3.4 and 3.2.6 both 553
 passed, 1 skipped, 1 xfailed (#147 still XFAIL); unit 2,454 on
 3.12/3.13/3.14/3.15.
 
-- **The tested Python range is stated in five places** — the `ci.yml` unit
+- **The tested Python range is stated in six places** — the `ci.yml` unit
   matrix (the source of truth), the classifiers of both `pyproject.toml`
-  files, the Makefile `test-all-python` helper and the ruff/mypy floor.
-  `tests/test_python_support.py` ties them together: classifiers equal to the
-  matrix, the matrix starting at the `requires-python` floor with no gap,
-  ruff/mypy on the floor, the helper running every Python. `tox.ini` still
-  says py312–py314; nothing runs it and the guard does not read it.
+  files, the Makefile `test-all-python` helper, the ruff/mypy floor and the
+  README Requirements line ("tested on 3.12 – 3.15").
+  `tests/test_python_support.py` ties the first five together: classifiers
+  equal to the matrix, the matrix starting at the `requires-python` floor with
+  no gap, ruff/mypy on the floor, the helper running every Python. It does not
+  read `README.md`, so the Requirements line is kept by hand. `tox.ini` still
+  says py312–py314; nothing runs it and the guard does not read it either.
 - **A new CPython minor breaks the lock before the code.** A package locked
   before its maintainers shipped wheels for that Python is built from source
   by `uv sync --frozen` (Rust for pydantic-core and cbor2, a C compiler for
@@ -44,8 +46,10 @@ passed, 1 skipped, 1 xfailed (#147 still XFAIL); unit 2,454 on
   (`SOURCE_BUILD_ALLOWED`, pure-Python sdist fallback). Its manylinux check
   is capped at glibc 2.35, older than the ubuntu-24.04 runners. The fix is a
   targeted `uv lock --upgrade-package <name>`, never a blanket upgrade.
-- **Adding the next Python** = add it to the `ci.yml` unit matrix and let the
-  guard name every other place and every package to refresh.
+- **Adding the next Python** = add it to the `ci.yml` unit matrix, let the
+  guard name the classifiers, the Makefile helper and every package to
+  refresh, and update the README Requirements line by hand: the guard stays
+  green while that line is stale.
 
 ### What's New in 0.34.8
 
