@@ -2013,13 +2013,17 @@ from surreal_orm.auth import AuthenticatedUserMixin
 from surreal_orm.fields import Encrypted
 
 class User(AuthenticatedUserMixin, BaseSurrealModel):
-    model_config = SurrealConfigDict(table_type=TableType.USER)
+    model_config = SurrealConfigDict(
+        table_type=TableType.USER,
+        signup_fields=["name"],  # settable at sign-up, besides email and password
+    )
     email: str
     password: Encrypted  # Auto-hashed with argon2
     name: str
+    role: str = "user"  # not a sign-up field: keeps its default
 
-# Signup
-user = await User.signup(email="alice@example.com", password="secret", name="Alice")
+# Signup (any keyword outside email, password and signup_fields raises)
+user, token = await User.signup(email="alice@example.com", password="secret", name="Alice")
 
 # Signin
 user, token = await User.signin(email="alice@example.com", password="secret")
