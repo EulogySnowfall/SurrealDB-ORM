@@ -1447,7 +1447,8 @@ class TestIssue331TokenCacheExpiryAndTable:
             assert await member.validate_token(token) == "i331_member:a"
 
         ((key, entry),) = AuthenticatedUserMixin._token_cache.items()
-        assert key == ("i331_member", token)
+        assert key == member._token_cache_key(token)
+        assert key[1:] == ("i331_member", token)
         deadline = entry[1]
         assert deadline - time.monotonic() <= 31
 
@@ -1536,4 +1537,118 @@ class TestIssue331TokenCacheExpiryAndTable:
 
         staff.invalidate_token_cache(token)
 
-        assert list(AuthenticatedUserMixin._token_cache) == [("i331_member", other)]
+        assert list(AuthenticatedUserMixin._token_cache) == [member._token_cache_key(other)]
+
+
+class TestIssue331TokenCachePerConnection:
+    """#331 — cache entries are no longer shared between connections.
+
+    The same model (or two models sharing a table name) can be routed to
+    different databases via ``using()`` or ``connection=``.  A token validated
+    on one connection must be validated again by the server of another.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _registry_and_cache(self) -> Iterator[None]:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        mgr = SurrealDBConnectionManager
+        saved_configs = dict(mgr._configs)
+        for name, db in (("i331_a", "i331_db_a"), ("i331_b", "i331_db_b")):
+            mgr.add_connection(
+                name,
+                url="http://localhost:8000",
+                user="root",
+                password="root",
+                namespace="i331_ns",
+                database=db,
+            )
+        AuthenticatedUserMixin._token_cache.clear()
+        AuthenticatedUserMixin._token_cache_ttl = 300
+        AuthenticatedUserMixin._token_cache_max_size = 1000
+        yield
+        AuthenticatedUserMixin._token_cache.clear()
+        mgr._configs.clear()
+        mgr._configs.update(saved_configs)
+
+    @staticmethod
+    def _model() -> type:
+        class I331ConnUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="i331_conn_user")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        return I331ConnUser
+
+    async def test_entry_cached_on_one_connection_not_served_on_another(self) -> None:
+        """A token cached through connection A is re-validated through B."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        model = self._model()
+        token = _i331_jwt({"ID": "i331_conn_user:a", "exp": int(time.time()) + 600})
+        with patch.object(model, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_conn_user:a"))):
+            async with SurrealDBConnectionManager.using("i331_a"):
+                assert await model.validate_token(token) == "i331_conn_user:a"
+
+        refused = _i331_client(None, success=False)
+        with patch.object(model, "_create_auth_client", new=AsyncMock(return_value=refused)):
+            async with SurrealDBConnectionManager.using("i331_b"):
+                assert await model.validate_token(token) is None
+        refused.authenticate.assert_awaited_once_with(token)
+
+    async def test_entry_still_served_on_the_same_connection(self) -> None:
+        """Caching on one connection keeps working for that connection."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        model = self._model()
+        token = _i331_jwt({"ID": "i331_conn_user:a", "exp": int(time.time()) + 600})
+        client = _i331_client("i331_conn_user:a")
+        with patch.object(model, "_create_auth_client", new=AsyncMock(return_value=client)):
+            async with SurrealDBConnectionManager.using("i331_a"):
+                assert await model.validate_token(token) == "i331_conn_user:a"
+                assert await model.validate_token(token) == "i331_conn_user:a"
+        client.authenticate.assert_awaited_once_with(token)
+
+    async def test_invalidate_token_removes_entries_of_every_connection(self) -> None:
+        """invalidate_token_cache(token) drops the token on every connection."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        model = self._model()
+        token = _i331_jwt({"ID": "i331_conn_user:a", "exp": int(time.time()) + 600})
+        other = _i331_jwt({"ID": "i331_conn_user:b", "exp": int(time.time()) + 600})
+        for name in ("i331_a", "i331_b"):
+            async with SurrealDBConnectionManager.using(name):
+                with patch.object(model, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_conn_user:a"))):
+                    await model.validate_token(token)
+        async with SurrealDBConnectionManager.using("i331_a"):
+            with patch.object(model, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_conn_user:b"))):
+                await model.validate_token(other)
+            other_key = model._token_cache_key(other)
+        assert len(AuthenticatedUserMixin._token_cache) == 3
+
+        model.invalidate_token_cache(token)
+
+        assert list(AuthenticatedUserMixin._token_cache) == [other_key]
+
+    def test_model_connection_name_is_not_shadowed_by_the_mixin(self) -> None:
+        """Auth calls follow the model's connection (using(), then connection=)."""
+
+        class I331RoutedUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="i331_routed_user", connection="i331_b")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        assert I331RoutedUser.get_connection_name() == "i331_b"
+        assert I331RoutedUser._token_cache_key("t")[0] == ("i331_b", "http://localhost:8000", "i331_ns", "i331_db_b")
+        assert self._model().get_connection_name() == "default"
+
+    async def test_using_overrides_the_auth_connection(self) -> None:
+        """using() reroutes the auth connection and the cache key."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        model = self._model()
+        async with SurrealDBConnectionManager.using("i331_a"):
+            assert model.get_connection_name() == "i331_a"
+            assert model._token_cache_key("t")[0][3] == "i331_db_a"

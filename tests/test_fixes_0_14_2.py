@@ -238,19 +238,21 @@ class TestTokenCache:
     def test_invalidate_cache_specific_token(self) -> None:
         """invalidate_token_cache(token) should remove only that token."""
         far = time.time() + 3600
-        AuthenticatedUserMixin._token_cache[("users", "tok1")] = ("users:1", time.monotonic() + 300, far)
-        AuthenticatedUserMixin._token_cache[("users", "tok2")] = ("users:2", time.monotonic() + 300, far)
+        conn = ("default", None, None, None)
+        AuthenticatedUserMixin._token_cache[(conn, "users", "tok1")] = ("users:1", time.monotonic() + 300, far)
+        AuthenticatedUserMixin._token_cache[(conn, "users", "tok2")] = ("users:2", time.monotonic() + 300, far)
 
         AuthenticatedUserMixin.invalidate_token_cache("tok1")
 
-        assert ("users", "tok1") not in AuthenticatedUserMixin._token_cache
-        assert ("users", "tok2") in AuthenticatedUserMixin._token_cache
+        assert (conn, "users", "tok1") not in AuthenticatedUserMixin._token_cache
+        assert (conn, "users", "tok2") in AuthenticatedUserMixin._token_cache
 
     def test_invalidate_cache_all(self) -> None:
         """invalidate_token_cache() without args should clear all."""
         far = time.time() + 3600
-        AuthenticatedUserMixin._token_cache[("users", "tok1")] = ("users:1", time.monotonic() + 300, far)
-        AuthenticatedUserMixin._token_cache[("users", "tok2")] = ("users:2", time.monotonic() + 300, far)
+        conn = ("default", None, None, None)
+        AuthenticatedUserMixin._token_cache[(conn, "users", "tok1")] = ("users:1", time.monotonic() + 300, far)
+        AuthenticatedUserMixin._token_cache[(conn, "users", "tok2")] = ("users:2", time.monotonic() + 300, far)
 
         AuthenticatedUserMixin.invalidate_token_cache()
 
@@ -299,7 +301,11 @@ class TestTokenCache:
             password: Encrypted
 
         # Pre-populate cache
-        TestUser._token_cache[("TestUser", "my_token")] = ("TestUser:cached", time.monotonic() + 300, time.time() + 3600)
+        TestUser._token_cache[TestUser._token_cache_key("my_token")] = (
+            "TestUser:cached",
+            time.monotonic() + 300,
+            time.time() + 3600,
+        )
 
         mock_ephemeral = AsyncMock()
         mock_ephemeral.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=True, raw={}))
@@ -324,7 +330,11 @@ class TestTokenCache:
             password: Encrypted
 
         # Pre-populate cache with expired entry
-        TestUser._token_cache[("TestUser", "my_token")] = ("TestUser:old", time.monotonic() - 10, time.time() + 3600)
+        TestUser._token_cache[TestUser._token_cache_key("my_token")] = (
+            "TestUser:old",
+            time.monotonic() - 10,
+            time.time() + 3600,
+        )
 
         mock_ephemeral = AsyncMock()
         mock_ephemeral.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=True, raw={}))

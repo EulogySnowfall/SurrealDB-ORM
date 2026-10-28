@@ -19,6 +19,8 @@ from .result import AuthResult
 if TYPE_CHECKING:
     from surreal_sdk import HTTPConnection
 
+    from ..cache import ConnectionIdentity
+
 
 class AuthenticatedUserMixin:
     """
@@ -69,18 +71,27 @@ class AuthenticatedUserMixin:
     """
 
     # --- Token cache (shared across all subclasses) ---
-    # Key: (model table, token).  Value: (record ID, monotonic deadline, exp).
+    # Key: (connection identity, model table, token).
+    # Value: (record ID, monotonic deadline, exp).
     # The table is part of the key because this dict is shared by every
     # subclass: a token validated for one model must never be served to
-    # another one.
-    _token_cache: ClassVar[dict[tuple[str, str], tuple[str, float, float]]] = {}
+    # another one.  The connection identity (name, url, namespace, database,
+    # as for QueryCache) is part of it because the same model can be routed
+    # to another database: a token validated by one database must never be
+    # served for another one.
+    _token_cache: ClassVar[dict[tuple[ConnectionIdentity, str, str], tuple[str, float, float]]] = {}
     _token_cache_ttl: ClassVar[int] = 300  # seconds
     _token_cache_max_size: ClassVar[int] = 1000  # max cached tokens
 
-    # Stub for mypy — overridden by BaseSurrealModel.get_connection_name()
-    @classmethod
-    def get_connection_name(cls) -> str:  # pragma: no cover
-        return "default"
+    if TYPE_CHECKING:
+        # Type-only stub: provided by BaseSurrealModel.get_connection_name().
+        # It must not exist at runtime — the mixin comes first in the MRO
+        # (``class User(AuthenticatedUserMixin, BaseSurrealModel)``), so a
+        # real method here would shadow the model's resolution of
+        # ``using()`` and ``connection=`` and pin every auth call to
+        # ``"default"``.
+        @classmethod
+        def get_connection_name(cls) -> str: ...
 
     @classmethod
     def configure_token_cache(cls, *, ttl: int = 300, max_size: int = 1000) -> None:
@@ -102,14 +113,28 @@ class AuthenticatedUserMixin:
         Invalidate cached token validation results.
 
         Args:
-            token: Specific token to invalidate (for every model that cached
-                   it).  If ``None``, clears the entire cache.
+            token: Specific token to invalidate (for every model and every
+                   connection that cached it).  If ``None``, clears the
+                   entire cache.
         """
         if token is None:
             cls._token_cache.clear()
         else:
-            for key in [key for key in cls._token_cache if key[1] == token]:
+            for key in [key for key in cls._token_cache if key[2] == token]:
                 cls._token_cache.pop(key, None)
+
+    @classmethod
+    def _token_cache_key(cls, token: str) -> tuple[ConnectionIdentity, str, str]:
+        """
+        Return the cache key of *token* for this model, on its current connection.
+
+        The connection identity follows :meth:`get_connection_name`
+        (``using()`` override, then the model's ``connection`` config, then
+        ``"default"``), exactly like :class:`~surreal_orm.cache.QueryCache`.
+        """
+        from ..cache import QueryCache
+
+        return (QueryCache._connection_identity(cls), cls._auth_table_name(), token)
 
     @staticmethod
     def _decode_jwt_claims(token: str) -> dict[str, Any] | None:
@@ -692,7 +717,8 @@ class AuthenticatedUserMixin:
         ``use_cache=False`` or ``configure_token_cache(ttl=0)``.  A cached
         entry expires at the token's ``exp`` claim if that comes first; a
         token whose ``exp`` cannot be read is validated on every call and
-        never cached.  Entries are kept per model table.
+        never cached.  Entries are kept per model table and per connection
+        (name, URL, namespace, database).
 
         A token whose ``$auth`` record is not in this model's table returns
         ``None`` (validate it through the model it was issued for).
@@ -713,7 +739,7 @@ class AuthenticatedUserMixin:
             if record_id:
                 print(f"Token belongs to {record_id}")
         """
-        cache_key = (cls._auth_table_name(), token)
+        cache_key = cls._token_cache_key(token)
 
         # --- Cache hit ---
         if use_cache and cls._token_cache_ttl > 0:
