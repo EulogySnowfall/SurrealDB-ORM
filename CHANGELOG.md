@@ -6,6 +6,56 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.13] - 2026-10-28
+
+**Fix release.** `QuerySet.cache()` no longer shares results between
+connections (#297, #309). `QueryCache.make_key()` / `set()` gain one
+optional keyword; nothing to change on upgrade for single-connection apps.
+The SurrealDB pin is unchanged (tested against 3.3.4, supported range
+3.2.x – 3.3.x).
+
+### Fixed
+
+- **`QuerySet.cache()` returned another database's rows (#297).** The cache
+  key was built from the query, its variables and the table only, so the same
+  query run under `using("a")` and `using("b")` against two databases returned
+  the first database's cached rows. The key now includes the effective
+  connection: the name, URL, namespace and database of its
+  `ConnectionConfig`, resolved like every read path (`using()` override, then
+  the model's `connection` config, then `"default"`). Credentials are never
+  part of the key.
+- **Automatic invalidation is scoped to the database written to.**
+  `save()` / `merge()` / `update()` / `delete()` drop the cached entries of
+  that database for every connection name pointing at it, plus any entry for
+  the table stored without a connection. Entries cached from another database
+  for the same table stay cached.
+
+### Changed
+
+- `QueryCache.make_key()` and `QueryCache.set()` accept an optional
+  keyword-only `connection` argument. Omitted, the key depends on the query
+  alone, as before.
+- `QueryCache.invalidate(Model)` still clears the table on every connection;
+  `clear()` and `stats()` are unchanged.
+
+### Known limitation
+
+- `Model.transaction()` / `SurrealDBConnectionManager.transaction()` bind the
+  transaction to the `using()` connection or `"default"` and ignore the
+  model's `connection` config (unchanged). For a model configured with
+  `connection="b"`, a `save(tx=tx)` outside any `using()` block writes to
+  `default`'s database but invalidates `b`'s cached entries, so a `.cache()`
+  result stored for that table under `default` can stay stale until its TTL
+  expires. Call `QueryCache.invalidate(Model)` after such a transaction.
+
+### Upgrading
+
+- Apps with several named connections now get one cache entry per database
+  for the same query. The `v2` line has the same defect; the backport is
+  tracked in #315.
+
+---
+
 ## [0.34.12] - 2026-10-27
 
 **Fix release.** Change feeds deliver changes again (#281, #302), and record

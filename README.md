@@ -37,6 +37,17 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.13
+
+**Fix release.** Nothing to change on upgrade for single-connection apps.
+
+- **`QuerySet.cache()` no longer shares results between connections**
+  ([#297](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/297)). The same query run under `using("a")` and
+  `using("b")` against two databases returned the first database's cached rows. The cache key now includes the
+  effective connection (name, URL, namespace and database, never credentials), and a write only invalidates the
+  cached entries of the database it went to. `QueryCache.make_key()` / `set()` accept an optional `connection`
+  keyword.
+
 ## What's New in 0.34.12
 
 **Fix release.** One small SDK helper added; change-feed errors now raise: see [CHANGELOG.md](CHANGELOG.md)
