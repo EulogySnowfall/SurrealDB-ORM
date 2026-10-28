@@ -190,7 +190,7 @@ def to_record_id(value: Any) -> Any:
         return value
 
     table, id_part = parse_record_id(value)
-    if table is None or not _SAFE_IDENTIFIER_RE.match(table):
+    if table is None or not _SAFE_IDENTIFIER_RE.fullmatch(table):
         return value
 
     return RecordId(table=table, id=id_part)
@@ -1005,7 +1005,7 @@ class BaseSurrealModel(BaseModel):
         # Merge server-side function values
         if server_values:
             for key, val in server_values.items():
-                if not _SAFE_IDENTIFIER_RE.match(key):
+                if not _SAFE_IDENTIFIER_RE.fullmatch(key):
                     raise ValueError(f"Invalid server_values key {key!r}; keys must be valid identifiers.")
                 if key in exclude_fields:
                     raise ValueError(f"server_values may not set reserved or server-generated field: {key!r}")
@@ -1072,7 +1072,7 @@ class BaseSurrealModel(BaseModel):
         set_parts: list[str] = []
         variables: dict[str, Any] = {}
         for field, value in data.items():
-            if not _SAFE_IDENTIFIER_RE.match(field):
+            if not _SAFE_IDENTIFIER_RE.fullmatch(field):
                 raise ValueError(f"Invalid field name: {field!r}")
             if isinstance(value, SurrealFunc):
                 set_parts.append(f"{field} = {value.expression}")
@@ -1713,7 +1713,7 @@ class BaseSurrealModel(BaseModel):
         Example:
             await Event.atomic_append(event_id, "processed_by", pod_id)
         """
-        if not _SAFE_IDENTIFIER_RE.match(field):
+        if not _SAFE_IDENTIFIER_RE.fullmatch(field):
             raise ValueError(f"Invalid field name: {field!r}")
         _, id_part = parse_record_id(str(record_id))
         thing = format_thing(cls.get_table_name(), id_part)
@@ -1758,7 +1758,7 @@ class BaseSurrealModel(BaseModel):
         Example:
             await Event.atomic_remove(event_id, "tags", "deprecated")
         """
-        if not _SAFE_IDENTIFIER_RE.match(field):
+        if not _SAFE_IDENTIFIER_RE.fullmatch(field):
             raise ValueError(f"Invalid field name: {field!r}")
         _, id_part = parse_record_id(str(record_id))
         thing = format_thing(cls.get_table_name(), id_part)
@@ -1809,7 +1809,7 @@ class BaseSurrealModel(BaseModel):
         Example:
             await Event.atomic_set_add(event_id, "processed_by", pod_id)
         """
-        if not _SAFE_IDENTIFIER_RE.match(field):
+        if not _SAFE_IDENTIFIER_RE.fullmatch(field):
             raise ValueError(f"Invalid field name: {field!r}")
         _, id_part = parse_record_id(str(record_id))
         thing = format_thing(cls.get_table_name(), id_part)
@@ -1870,7 +1870,7 @@ class BaseSurrealModel(BaseModel):
         SurrealQL equivalent:
             RELATE users:alice->follows->users:bob SET since = '2025-01-01';
         """
-        if not _SAFE_IDENTIFIER_RE.match(relation):
+        if not _SAFE_IDENTIFIER_RE.fullmatch(relation):
             raise ValueError(f"Invalid relation name: {relation!r}")
 
         source_id = self.get_id()
@@ -1948,7 +1948,7 @@ class BaseSurrealModel(BaseModel):
                 await alice.remove_relation("follows", bob, tx=tx)
                 await alice.remove_relation("follows", "users:charlie", tx=tx)
         """
-        if not _SAFE_IDENTIFIER_RE.match(relation):
+        if not _SAFE_IDENTIFIER_RE.fullmatch(relation):
             raise ValueError(f"Invalid relation name: {relation!r}")
 
         source_id = self.get_id()
@@ -2050,7 +2050,7 @@ class BaseSurrealModel(BaseModel):
         relations = [relation] if isinstance(relation, str) else list(relation)
 
         for rel in relations:
-            if not _SAFE_IDENTIFIER_RE.match(rel):
+            if not _SAFE_IDENTIFIER_RE.fullmatch(rel):
                 raise ValueError(f"Invalid relation name: {rel!r}")
 
         source_id = self.get_id()
@@ -2132,7 +2132,7 @@ class BaseSurrealModel(BaseModel):
             - out: SELECT VALUE out.* FROM follows WHERE in = users:alice;
             - in: SELECT VALUE in.* FROM follows WHERE out = users:alice;
         """
-        if not _SAFE_IDENTIFIER_RE.match(relation):
+        if not _SAFE_IDENTIFIER_RE.fullmatch(relation):
             raise ValueError(f"Invalid relation name: {relation!r}")
 
         source_id = self.get_id()
