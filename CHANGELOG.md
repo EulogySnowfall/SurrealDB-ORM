@@ -6,6 +6,61 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.35.2] - 2026-10-28
+
+**Fix release.** Field-name checks for filter keys and `values()` (#328 via
+#367). Read *Behaviour change* below if you pass unknown lookups,
+backticked names or SurrealQL expressions as filter keys or `values()`
+names. The SurrealDB pin is unchanged (tested against 3.3.4, supported
+range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`QuerySet.filter()`, `Q` and relation filter
+  (`instance.<relation>.filter()`) keys whose field part is not a field
+  name now raise `ValueError` naming the key**, before any query is sent
+  (for example `"name x"` or `"a-b"`). Before, they reached the server,
+  which either reported a parse error or read them as a different
+  condition. Dotted paths into nested objects (`"address.city"`,
+  `"address.zip__startswith"`) keep working; each segment must be an
+  identifier (#328).
+- **`QuerySet.values()` validates each grouping name the same way** (a
+  field name or a dotted path), so it is no longer emitted unchecked into
+  the SELECT list and `GROUP BY` clause (#328).
+- **Trailing whitespace was accepted in identifiers.** A name ending in a
+  newline passed `validate_identifier()` and the other identifier checks
+  (`bulk_update()` keys, `atomic_append()` / `atomic_remove()` /
+  `atomic_set_add()` fields, relation names, SDK stream table names). These
+  checks now require a full match. Record-ID rendering follows the same
+  rule: `needs_id_escaping()` now returns `True` for an ID ending in a
+  newline, so `format_thing()` backtick-escapes it, and `to_record_id()`
+  returns a `"table:id"` string whose table part ends in a newline
+  unchanged instead of building a `RecordId` (#328).
+
+### Docs
+
+- The `QuerySet.select()` docstring says its arguments are SurrealQL
+  expressions rendered as written and must not be built from end-user
+  input.
+
+### Behaviour change
+
+- An unknown filter lookup (for example `name__iexact`) now raises
+  `ValueError`; it used to be treated silently as an exact match (`=`).
+- In relation filters, only `exact`, `gt`, `gte`, `lt`, `lte`, `in`,
+  `contains`, `startswith`, `endswith` and `isnull` are rendered; any other
+  lookup now raises `ValueError` instead of becoming an equality test.
+
+### Upgrading
+
+- No schema, DDL or public signature change.
+- Code that passed backticked names, bracket or `*` paths, SurrealQL
+  expressions or unknown lookups as filter keys or `values()` names now
+  gets `ValueError`. Use plain field names or dotted paths, `raw_query()`
+  for expressions, and a supported lookup. In a relation filter, replace an
+  unsupported lookup (`icontains`, `regex`, `not_in`, …) with a supported
+  one, or query through `Model.objects().filter()`.
+
 ## [0.35.1] - 2026-10-28
 
 **Fix release.** `validate_token()` cache and auth connection routing (#331
