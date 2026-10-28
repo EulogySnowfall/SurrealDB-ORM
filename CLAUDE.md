@@ -35,7 +35,8 @@ CLI fix, the `v2` port of #298 (#303, #317). No new public API.
   raised `RuntimeError` and 3.12 – 3.13 warned; every CLI command that reaches the database failed on 3.14.
   CI stayed green because every CLI test patched `run_async`, so the real helper never ran.
 - **The fix:** `run_async()` uses `asyncio.run()` (new loop per call, closed on return). `shell` keeps one
-  `asyncio.Runner` for the session and runs the blocking prompt outside it, so Ctrl+C still exits.
+  `asyncio.Runner` for the session and runs the blocking prompt outside it, so Ctrl+C at the prompt is no longer turned into the
+  cancellation of a running coroutine.
   `HTTPConnection` keeps no pooled connection, so the client the connection manager keeps after a command
   is not tied to the closed loop.
 - **Tests:** the real `run_async` runs from a thread with no current loop, `DeprecationWarning` as an

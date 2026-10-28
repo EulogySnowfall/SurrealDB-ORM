@@ -23,7 +23,8 @@ from `main`. No new public API. The SurrealDB pin is unchanged (tested against
   `schemadiff` and `shell` failed before doing anything. The CLI now runs its
   coroutines with `asyncio.run()`.
 - **`surreal-orm shell`** keeps a single `asyncio.Runner` for the session and
-  prompts outside it, so Ctrl+C at the prompt still exits the shell.
+  runs the blocking prompt outside it, so Ctrl+C at the prompt is no longer
+  turned into the cancellation of a running coroutine.
 
 ### Behaviour change
 
