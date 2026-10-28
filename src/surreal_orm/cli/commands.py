@@ -25,8 +25,26 @@ def require_click() -> None:
 
 
 def run_async(coro: Any) -> Any:
-    """Run an async coroutine synchronously."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """
+    Run an async coroutine synchronously, on a new event loop.
+
+    ``asyncio.run()`` creates the loop, closes it on return and leaves no loop
+    set on the thread. Looking up the thread's current loop instead (#303)
+    relied on one existing: Python 3.12-3.13 created it with a
+    ``DeprecationWarning`` and 3.14+ raises ``RuntimeError``, and a click
+    command starts with no loop, so every database command failed there.
+
+    Each command awaits a single coroutine, so a loop per call is enough. The
+    HTTP client the connection manager keeps afterwards is not tied to the
+    closed loop: ``HTTPConnection`` keeps no pooled connection alive.
+
+    Args:
+        coro: The coroutine to run
+
+    Returns:
+        The coroutine's result; its exception, if it raises, propagates
+    """
+    return asyncio.run(coro)
 
 
 async def _introspect_database(ctx: Any) -> Any:
@@ -466,15 +484,20 @@ if click is not None:
         """Start an interactive SurrealDB shell."""
         from ..connection_manager import SurrealDBConnectionManager
 
-        async def setup() -> None:
-            SurrealDBConnectionManager.set_connection(
-                url=ctx.obj["url"],
-                user=ctx.obj["user"],
-                password=ctx.obj["password"],
-                namespace=ctx.obj["namespace"],
-                database=ctx.obj["database"],
-            )
-            client = await SurrealDBConnectionManager.get_client()
+        SurrealDBConnectionManager.set_connection(
+            url=ctx.obj["url"],
+            user=ctx.obj["user"],
+            password=ctx.obj["password"],
+            namespace=ctx.obj["namespace"],
+            database=ctx.obj["database"],
+        )
+
+        # One loop for the session, entered only to connect and to run a query.
+        # The prompt blocks, and while a coroutine runs asyncio turns Ctrl+C
+        # into a cancellation of that coroutine, which a blocking call inside it
+        # would only see at its next await (#303).
+        with asyncio.Runner() as runner:
+            client = runner.run(SurrealDBConnectionManager.get_client())
             click.echo(f"Connected to {ctx.obj['url']}")
             click.echo(f"Namespace: {ctx.obj['namespace']}, Database: {ctx.obj['database']}")
             click.echo("Type 'exit' or 'quit' to exit. Enter SurrealQL queries:")
@@ -488,7 +511,7 @@ if click is not None:
                     if not query.strip():
                         continue
 
-                    result = await client.query(query)
+                    result = runner.run(client.query(query))
                     if result.is_empty:
                         click.echo("(empty result)")
                     else:
@@ -499,9 +522,7 @@ if click is not None:
                 except Exception as e:
                     click.echo(f"Error: {e}")
 
-            click.echo("Goodbye!")
-
-        run_async(setup())
+        click.echo("Goodbye!")
 
 else:
     # Placeholder CLI if click is not installed
