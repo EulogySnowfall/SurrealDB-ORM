@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.35.5)
+> Context document for Claude AI - Last updated: October 2026 (0.35.6)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.35.5 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.35.6 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,30 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.35.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.35.6
+
+Two fixes: #401 via #407 (`migrations/operations.py`, `define_parser.py`,
+`introspector.py`, `generator.py`, `model_generator.py`, `search.py`) and
+#393 via #408 (`auth/mixins.py`). Pin unchanged (3.3.4). `v2`: the defaults
+half of #401 was already there (#395); `SearchHighlight` is tracked in #413,
+#393 in #415.
+
+- **A `str` default is a text, an expression is a `SurrealFunc`.** The old
+  `"::" in default or default.startswith("$")` heuristic is gone from both the
+  renderer and the parser. The legacy form (a full-match no-argument call or a
+  bare `$identifier`, `re.ASCII`) still renders unquoted with a
+  `DeprecationWarning`, and the model introspector reads it as `SurrealFunc`
+  so a model and the database compare equal. Same rule as `v2` #395.
+- **`SearchHighlight` uses `surql_string()`** for both tags (backslash before
+  apostrophe) and `int()` for `ref`. `SearchScore` still interpolates `ref`
+  as is.
+- **Token claims are compared after the server accepts the token.**
+  `_is_own_token()` checks `AC` against `get_access_name()` and `NS` / `DB`
+  against the model's connection; the cache key is
+  `(connection, table, access name, token)` and `invalidate_token_cache()`
+  reads the token as `key[-1]`. `validate_token_local()` still does no claim
+  check.
 
 ### What's New in 0.35.5
 
