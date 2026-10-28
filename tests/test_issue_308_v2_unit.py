@@ -133,6 +133,8 @@ class FakeChangeFeedServer:
         self.statement_error: str | None = None
         #: A stream that polls without making progress fails here instead of hanging the test.
         self.max_queries = 500
+        #: Entries written to ``busy`` before each query: concurrent writers that never stop.
+        self.writes_per_query = 0
 
     def write(self, table: str, *records: dict[str, Any], version: int | None = None) -> int:
         """Record one transaction on *table* and return the entry's versionstamp."""
@@ -148,15 +150,12 @@ class FakeChangeFeedServer:
             raise QueryError("Parse error: Unexpected token `a strand`, expected a version stamp or a date-time")
         start = 0 if since.startswith("d'") else int(since)
         scanned = [key for key in self.keys if key[0] >= start][: min(limit or 100, 1000)]
-        entries: list[dict[str, Any]] = []
-        for version, tb, changes in scanned:
-            if table is not None and tb != table:
-                continue
-            if entries and entries[-1]["versionstamp"] == version * STEP:
-                entries[-1]["changes"].extend(changes)
-            else:
-                entries.append({"versionstamp": version * STEP, "changes": list(changes)})
-        return entries
+        # One entry per (commit version, table), as 2.7.0 reports them: LIMIT counts entries.
+        return [
+            {"versionstamp": version * STEP, "changes": list(changes)}
+            for version, tb, changes in scanned
+            if table is None or tb == table
+        ]
 
     async def query(self, sql: str, vars: dict[str, Any] | None = None) -> QueryResponse:
         self.queries.append(sql)
@@ -164,6 +163,8 @@ class FakeChangeFeedServer:
             raise AssertionError("too many SHOW CHANGES queries: the stream is spinning")
         if self.fail_with is not None:
             raise self.fail_with
+        for _ in range(self.writes_per_query):
+            self.write("busy", {"id": f"busy:{self.next_version}"})
         results: list[dict[str, Any]] = []
         for statement in (part.strip() for part in sql.split(";")):
             if not statement:
@@ -264,6 +265,15 @@ class TestChangeFeedQueries:
         entries = await _feed(server, batch_size=10).get_changes(since=0)
         assert _ids(entries) == ["orders:1"]
 
+    async def test_get_changes_returns_while_other_tables_keep_writing(self) -> None:
+        """A window that was not cut is the end: it used to read until an empty window."""
+        server = FakeChangeFeedServer()
+        server.write("orders", {"id": "orders:1"})
+        server.writes_per_query = 3
+        entries = await asyncio.wait_for(_feed(server).get_changes(since=0), 2.0)
+        assert _ids(entries) == ["orders:1"]
+        assert len(server.queries) == 1
+
     async def test_get_changes_respects_limit(self) -> None:
         server = FakeChangeFeedServer()
         for i in range(5):
@@ -302,6 +312,38 @@ class TestChangeFeedStreams:
         entry = await asyncio.wait_for(first, 2.0)
         assert _ids([entry]) == ["orders:new"]
         await stream.aclose()
+
+    async def test_default_start_resolves_while_the_feed_keeps_growing(self) -> None:
+        """Under steady writes the feed is never empty; "now" used to wait for an empty window."""
+        server = FakeChangeFeedServer()
+        server.write("orders", {"id": "orders:old"})
+        server.writes_per_query = 3
+        feed = _feed(server, poll_interval=0.01)
+        stream = feed.stream()
+        first = asyncio.ensure_future(anext(stream))
+        await _wait_cursor(feed)
+        # "now" took a single read of the feed; the polls that follow are the stream's.
+        assert [q for q in server.queries if not q.startswith("BEGIN")] == [server.queries[0]]
+        server.write("orders", {"id": "orders:new"})
+        entry = await asyncio.wait_for(first, 2.0)
+        assert _ids([entry]) == ["orders:new"]
+        await stream.aclose()
+
+    async def test_a_busy_feed_still_sleeps_between_polls(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Other tables' entries are not this table's changes: a caught-up poll sleeps."""
+        server = FakeChangeFeedServer()
+        server.writes_per_query = 3
+        feed = _feed(server, poll_interval=0.5)
+        sleeps: list[int] = []
+
+        async def fake_sleep(delay: float) -> None:
+            sleeps.append(len(server.queries))
+            if len(sleeps) == 3:
+                feed.stop()
+
+        monkeypatch.setattr(change_feed_module.asyncio, "sleep", fake_sleep)
+        assert [entry async for entry in feed.stream(since=0)] == []
+        assert sleeps == [1, 2, 3]
 
     async def test_default_start_finds_the_end_of_a_long_feed(self) -> None:
         """More than one server page (1000 entries) before "now"."""
@@ -438,6 +480,22 @@ class TestMultiTableChangeFeedStream:
         feed = MultiTableChangeFeed(server, ["users", "orders"], poll_interval=0.01)  # type: ignore[arg-type]
         stream = feed.stream(since=str(cutoff))
         assert [(t, _ids([e])) for t, e in await _take(stream, 1)] == [("users", ["users:new"])]
+        await stream.aclose()
+
+    async def test_default_start_while_other_tables_keep_writing(self) -> None:
+        server = FakeChangeFeedServer()
+        server.write("users", {"id": "users:old"})
+        server.writes_per_query = 3
+        feed = MultiTableChangeFeed(server, ["users", "orders"], poll_interval=0.01)  # type: ignore[arg-type]
+        stream = feed.stream()
+        first = asyncio.ensure_future(anext(stream))
+        for _ in range(200):
+            if len(server.queries) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        server.write("orders", {"id": "orders:new"})
+        table, entry = await asyncio.wait_for(first, 2.0)
+        assert (table, _ids([entry])) == ("orders", ["orders:new"])
         await stream.aclose()
 
     async def test_errors_are_raised(self) -> None:
