@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .utils import parse_filter_key
+
 
 class Q:
     """
@@ -44,10 +46,9 @@ class Q:
         self.negated: bool = False
 
         for key, value in kwargs.items():
-            if "__" in key:
-                field_name, lookup_name = key.split("__", 1)
-            else:
-                field_name, lookup_name = key, "exact"
+            # Raises ValueError for a key whose field part is not a field name
+            # (or dotted path) or whose lookup is unknown.
+            field_name, lookup_name = parse_filter_key(key)
             self.children.append((field_name, lookup_name, value))
 
     def __or__(self, other: Q) -> Q:

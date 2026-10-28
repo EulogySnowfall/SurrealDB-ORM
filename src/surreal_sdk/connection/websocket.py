@@ -26,7 +26,7 @@ from ..protocol import cbor as cbor_module
 from ..protocol.rpc import RPCRequest, RPCResponse
 from ..utils import unescape_record_id
 
-_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
 # Type alias for live query callbacks
 LiveCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
@@ -338,7 +338,7 @@ class WebSocketConnection(BaseSurrealConnection):
 
     async def _resubscribe_one(self, params: "LiveSubscriptionParams") -> str:
         """Resubscribe a single live query."""
-        if not _SAFE_TABLE_RE.match(params.table):
+        if not _SAFE_TABLE_RE.fullmatch(params.table):
             raise ValueError(f"Invalid table name: {params.table!r}")
         # Build query
         sql = f"LIVE SELECT * FROM {params.table}"
@@ -461,7 +461,7 @@ class WebSocketConnection(BaseSurrealConnection):
         Raises:
             LiveQueryError: If live query fails to start
         """
-        if not _SAFE_TABLE_RE.match(table):
+        if not _SAFE_TABLE_RE.fullmatch(table):
             raise ValueError(f"Invalid table name: {table!r}")
         sql = f"LIVE SELECT * FROM {table}"
         if diff:
