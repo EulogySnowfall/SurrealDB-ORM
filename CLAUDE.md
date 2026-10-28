@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.9)
+> Context document for Claude AI - Last updated: October 2026 (0.34.10)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.9 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.10 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,39 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.10
+
+One ORM fix with a behaviour change (#268, #286). Pin unchanged (3.3.4).
+`v2`: same defect, backport tracked in #294. Integration at 0.34.10: 3.3.4
+572 passed, 1 skipped, 1 xfailed (#147 still XFAIL); the new FK tests also pass
+on 3.2.6; unit 2,521 on 3.12/3.13/3.14/3.15.
+
+- **An optional `ForeignKey` skipped every 0.32.7 coercion.** Pydantic does
+  not lift an `Annotated` marker out of a union member into
+  `FieldInfo.metadata`; it stays on `FieldInfo.annotation`.
+  `get_foreign_key_targets()` read only the metadata, so
+  `ForeignKey("X") | None` / `Optional[ForeignKey("X")]` was written as a
+  string (rejected by `option<record<...>>`) and filtered as a string (no
+  rows). 0.33.0 had fixed the same blind spot in the migrations introspector
+  with its own lookup: two readers of one marker had drifted apart. Both now
+  go through `_find_marker()` in `fields/relation.py` (union members first,
+  then the metadata).
+- **The public detection helpers were left alone on purpose.**
+  `is_foreign_key()`, `is_relation_field()`, `is_many_to_many()`,
+  `is_graph_relation()` and `get_relation_info()` still look only at a
+  top-level `Annotated` and report an optional FK as not a relation. Changing
+  them changes what a public API returns, so it is left to a follow-up.
+- **The upgrade repair needs a guard on 3.2.6.** Strings written before the
+  fix (`'table:id'` or a bare id, in SCHEMALESS or `any` columns) no longer
+  match a filter. The repair `UPDATE` keeps an outer
+  `IF !type::is_string(<field>) THEN <field> ELSE … END` even with
+  `WHERE type::is_string(<field>)`: on 3.2.6, `string::contains()` fails on a
+  `NONE` or a record link in a row the `WHERE` excludes, and the whole
+  statement converts nothing. The note merged with #286 had been checked on
+  3.3.4 only; the release notes carry the guarded form, checked on both. An
+  `option<string>` column must be retyped before the conversion, or the
+  `UPDATE` itself is rejected.
 
 ### What's New in 0.34.9
 
