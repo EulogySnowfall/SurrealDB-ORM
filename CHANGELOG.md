@@ -6,6 +6,46 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.11] - 2026-10-27
+
+**Fix release.** The `surreal-orm` CLI works on Python 3.14 and 3.15 (#280,
+#298). No new public API, no behaviour change for library code. The SurrealDB
+pin is unchanged (tested against 3.3.4, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **Every CLI command that reaches the database failed on Python 3.14+ (#280,
+  #298).** `makemigrations` (reading the schema), `migrate`, `upgrade`,
+  `rollback`, `status`, `sqlmigrate`, `inspectdb`, `schemadiff` and `shell`
+  raised `RuntimeError: There is no current event loop` before doing
+  anything. The CLI ran each command's coroutine on the thread's current
+  event loop, and a command starts with none. Commands now run their
+  coroutine with `asyncio.run()` on a fresh event loop. `surreal-orm shell`
+  keeps one event loop for the session, with its prompt outside it, so Ctrl+C
+  at the prompt exits as before.
+- On Python 3.12 and 3.13 the same commands no longer emit an event-loop
+  `DeprecationWarning`.
+
+### Changed
+
+- **Tests.** The CLI tests used to replace the helper that runs a command's
+  coroutine, so the defect above never ran in CI. New tests run the real
+  helper from a thread with no event loop, with `DeprecationWarning` raised as
+  an error, and drive `status`, `makemigrations` and `shell` with only the
+  database layer mocked. Three unit tests whose outcome on Python 3.14+
+  depended on an earlier test leaving an event loop set no longer depend on
+  test order. 2,527 unit
+  tests pass on each of Python 3.12, 3.13, 3.14 and 3.15. On SurrealDB 3.3.4
+  (pin), 572 integration tests passed, 1 skipped, 1 expected failure, 0
+  failed.
+
+### Upgrading
+
+- Nothing to do. The `v2` line has the same defect; the backport is tracked
+  in #303.
+
+---
+
 ## [0.34.10] - 2026-10-27
 
 **Fix release.** An optional `ForeignKey` is now written and filtered as a
