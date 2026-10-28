@@ -87,6 +87,10 @@ class QuerySet(Generic[T]):
         self._order_by: str | None = None
         self._model_table: str = model.get_table_name()
         self._variables: dict[str, Any] = {}
+        # Names passed to .variables(), kept apart from _variables: compiling
+        # the query writes the ORM's own bindings ($_fN, $_knn_vec, ...) into
+        # _variables, and those must never make a "$name" value a reference.
+        self._declared_variables: frozenset[str] = frozenset()
         self._group_by_fields: list[str] = []
         self._annotations: dict[str, Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance] = {}
         # Vector similarity search (KNN)
@@ -150,6 +154,7 @@ class QuerySet(Generic[T]):
             ```
         """
         self._variables = {key: value for key, value in kwargs.items()}
+        self._declared_variables = frozenset(kwargs)
         return self
 
     def filter(self, *args: Q, **kwargs: Any) -> Self:
@@ -865,7 +870,7 @@ class QuerySet(Generic[T]):
 
         for alias, annotation in self._annotations.items():
             if isinstance(annotation, Subquery):
-                sub_sql = annotation.to_surql(sub_vars, counter, prelude, frozenset(self._variables))
+                sub_sql = annotation.to_surql(sub_vars, counter, prelude, self._declared_variables)
                 select_parts.append(f"{sub_sql} AS {alias}")
             else:
                 select_parts.append(annotation.to_surql(alias))
@@ -1045,8 +1050,9 @@ class QuerySet(Generic[T]):
             prelude: Mutable list collecting ``LET`` statements for hoisted
                 subqueries. ``None`` keeps subqueries inline (see
                 :meth:`Subquery.to_surql`).
-            declared: Variable names the query is sent with: those passed
-                through ``.variables()`` and those bound by the ORM itself.
+            declared: Variable names passed through ``.variables()``. The
+                ORM's own bindings (``$_fN``, ...) are never in it, so a value
+                equal to one of them is data on every compile.
 
         Returns:
             str: The rendered SurrealQL condition.
@@ -1219,9 +1225,10 @@ class QuerySet(Generic[T]):
         variables: dict[str, Any] = {}
         counter: list[int] = [0]
         parts: list[str] = []
-        # A "$name" filter value refers to a variable only if the query is
-        # sent with that variable; any other value is bound as data.
-        declared = frozenset(self._variables)
+        # A "$name" filter value refers to a variable only if it was declared
+        # through .variables(); any other value is bound as data. Not read
+        # from _variables, which also holds the bindings of earlier compiles.
+        declared = self._declared_variables
 
         # Keyword-based filters (always AND-joined)
         for field_name, lookup_name, value in self._filters:

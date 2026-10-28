@@ -113,3 +113,22 @@ async def test_declared_reference_still_works() -> None:
     inner = I327Item.objects().filter(name="$wanted").variables(wanted="bob").select("age")
     sub_rows = await I327Item.objects().filter(age__in=Subquery(inner)).exec()
     assert [r.name for r in sub_rows] == ["bob"]
+
+
+@pytest.mark.integration
+async def test_reused_queryset_binds_value_naming_an_orm_binding() -> None:
+    """``count()`` then ``exec()`` on one QuerySet agree, and ``$_f0`` stays data.
+
+    Compiling stores the ORM's own ``$_fN`` bindings on the QuerySet; a value
+    equal to one of them must not turn into a reference on the next compile.
+    """
+    # $_f0 holds "bob" once compiled: read back as a reference, the second
+    # filter would match the record named "bob".
+    qs = I327Item.objects().filter(name__startswith="bob", name="$_f0")
+    assert await qs.count() == 0
+    assert await qs.exec() == []
+    assert await qs.count() == 0
+
+    inner = I327Item.objects().filter(name__startswith="bob", name="$_f0").select("age")
+    assert await inner.exec() == []
+    assert await I327Item.objects().filter(age__in=Subquery(inner)).exec() == []

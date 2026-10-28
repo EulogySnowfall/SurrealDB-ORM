@@ -57,7 +57,8 @@ def is_declared_variable_reference(value: Any, declared: Collection[str]) -> boo
       deliberate: ``re.match`` with a ``$`` anchor would also accept a trailing
       newline, and anything else after the name would end up in the query text;
     - the name is in ``declared``: a variable passed through
-      ``QuerySet.variables()`` or bound by the ORM itself.
+      ``QuerySet.variables()``. Names the ORM binds while compiling
+      (``$_fN``, ...) are not declared.
 
     Any other value, including ``"$name"`` for an undeclared name, is data.
 

@@ -241,3 +241,75 @@ class TestForeignKeys:
     def test_record_link_has_no_dollar_exemption(self) -> None:
         """Write paths always bind; a ``$`` string is a bare ID like any other."""
         assert _to_record_link("$who", "u327_authors") == RecordId(table="u327_authors", id="$who")
+
+
+# ── Reusing a QuerySet ────────────────────────────────────────────────────
+
+
+class TestRecompile:
+    """Names the ORM binds while compiling are never declared variables.
+
+    Compiling a QuerySet stores its own ``_fN`` bindings in ``_variables``. If
+    those counted as declared, a value equal to one of them would bind on the
+    first compile and become a reference to another filter's value on the
+    second (``count()`` then ``exec()``, pagination, ``exists()`` then ``first()``).
+    """
+
+    def test_value_naming_an_orm_binding_is_bound_on_every_compile(self) -> None:
+        qs = U327Item.objects().filter(name="acme", age="$_f0")
+        for _ in range(2):
+            sql = qs._compile_query()
+            assert "age = $_f1" in sql
+            assert qs._variables["_f0"] == "acme"
+            assert qs._variables["_f1"] == "$_f0"
+
+    def test_value_naming_an_orm_binding_is_bound_in_q_on_recompile(self) -> None:
+        qs = U327Item.objects().filter(Q(name="acme") & Q(age="$_f0"))
+        qs._compile_query()
+        sql = qs._compile_query()
+        assert "age = $_f1" in sql
+        assert qs._variables["_f1"] == "$_f0"
+
+    def test_value_naming_an_orm_binding_is_bound_in_live_after_compile(self) -> None:
+        qs = U327Item.objects().filter(name="acme", age="$_f0")
+        qs._compile_query()
+        stream = qs.live()
+        assert stream._where == "name = $_f0 AND age = $_f1"
+        assert stream._params is not None
+        assert stream._params["_f1"] == "$_f0"
+
+    def test_inner_queryset_compiled_before_wrapping(self) -> None:
+        inner = U327Item.objects().filter(name="acme", age="$_f0").select("age")
+        inner._compile_query()
+        outer = U327Item.objects().filter(age__in=Subquery(inner))
+        for _ in range(2):
+            sql = outer._compile_query()
+            assert "age = $_f1" in sql
+            assert outer._variables["_f1"] == "$_f0"
+
+    def test_inner_compiled_bindings_are_not_carried_into_the_outer_query(self) -> None:
+        inner = U327Item.objects().filter(name="acme").select("age")
+        inner._compile_query()
+        assert "_f0" in inner._variables
+        outer = U327Item.objects().filter(name="$_f1", age__in=Subquery(inner))
+        sql = outer._compile_query()
+        # The outer value is data, and only the bindings rendered for this
+        # query reach the variables (no leftover from the inner compile).
+        assert "name = $_f0" in sql
+        assert outer._variables["_f0"] == "$_f1"
+        assert outer._variables["_f1"] == "acme"
+
+    def test_annotate_after_compile(self) -> None:
+        inner = U327Item.objects().filter(name="$_f0").select("count()")
+        qs = U327Item.objects().filter(name="acme").values("age").annotate(n=Subquery(inner))
+        qs._compile_annotate_query()
+        sql = qs._compile_annotate_query()
+        assert "WHERE name = $_f0" in sql
+        assert "$_f1" in sql
+        assert qs._variables["_f1"] == "$_f0"
+
+    def test_declared_variables_survive_recompile(self) -> None:
+        qs = U327Item.objects().filter(age__gte="$min_age").variables(min_age=18)
+        for _ in range(2):
+            assert "age >= $min_age" in qs._compile_query()
+            assert qs._variables["min_age"] == 18

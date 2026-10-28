@@ -86,12 +86,14 @@ class Subquery:
                 auto-increment counter.
             prelude: Mutable list collecting ``LET`` statements. ``None``
                 keeps the legacy inline form.
-            declared: Variable names the outer query is sent with. A ``$name``
-                filter value inside the subquery refers to a variable only if
-                ``name`` is declared here or on the inner QuerySet through
-                ``.variables()``; the inner QuerySet's own variables are then
-                added to ``variables`` (an outer variable of the same name
-                wins). Any other value is bound as ``$_fN``.
+            declared: Variable names the outer query declared through
+                ``.variables()``. A ``$name`` filter value inside the subquery
+                refers to a variable only if ``name`` is declared here or on
+                the inner QuerySet through ``.variables()``; the variables the
+                inner QuerySet declared are then added to ``variables`` (an
+                outer variable of the same name wins). Its ORM bindings from
+                an earlier compile (``$_fN``, ...) are neither declared nor
+                carried over. Any other value is bound as ``$_fN``.
 
         Returns:
             ``$_sqN`` when hoisted, otherwise the parenthesized sub-SELECT.
@@ -113,7 +115,9 @@ class Subquery:
         # WHERE clause — build parts using the shared counter
         parts: list[str] = []
         qs_class = type(qs)
-        inner_declared = frozenset(declared) | frozenset(qs._variables)
+        # Only the names the inner QuerySet declared itself: its _variables
+        # also hold the ORM bindings of any earlier compile ($_fN, ...).
+        inner_declared = frozenset(declared) | qs._declared_variables
 
         for field_name, lookup_name, value in qs._filters:
             parts.append(
@@ -127,9 +131,9 @@ class Subquery:
 
         # Send the inner QuerySet's own variables with the outer query, or a
         # reference to one of them would reach the server unbound.
-        for name, val in qs._variables.items():
+        for name in qs._declared_variables:
             if name not in declared:
-                variables.setdefault(name, val)
+                variables.setdefault(name, qs._variables[name])
 
         if parts:
             query += " WHERE " + " AND ".join(parts)
