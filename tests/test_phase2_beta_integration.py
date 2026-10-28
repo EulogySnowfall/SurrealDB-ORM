@@ -112,6 +112,7 @@ class TestRefreshTokenIntegration:
 
         class RefreshUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="RefreshUser",
                 identifier_field="email",

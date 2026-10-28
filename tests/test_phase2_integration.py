@@ -148,6 +148,7 @@ class TestAuthWithGrantDuration:
 
         class AuthUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="AuthUser",
                 identifier_field="email",
@@ -200,6 +201,7 @@ class TestAuthWithGrantDuration:
 
         class AuthUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="AuthUser",
                 identifier_field="email",
@@ -252,6 +254,7 @@ class TestAuthWithGrantDuration:
 
         class AuthUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="AuthUser",
                 identifier_field="email",
@@ -307,6 +310,7 @@ class TestAuthWithGrantDuration:
 
         class AuthUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="AuthUser",
                 identifier_field="email",
@@ -374,6 +378,7 @@ class TestRefreshTokenFlow:
 
         class AuthUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="AuthUser",
                 identifier_field="email",
@@ -427,6 +432,7 @@ class TestRefreshTokenFlow:
 
         class AuthUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="AuthUser",
                 identifier_field="email",
@@ -486,6 +492,7 @@ class TestRefreshTokenFlow:
 
         class AuthUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="AuthUser",
                 identifier_field="email",
@@ -560,6 +567,7 @@ class TestDefineTableMethod:
 
         class DefAccessUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_name="DefAccessUser",
                 table_type=TableType.USER,
                 access_name="defaccess_auth",
@@ -628,6 +636,7 @@ class TestDefineAccessMethod:
 
         class DefAccessUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="DefAccessUser",
                 access_name="defaccess_auth",
@@ -669,6 +678,7 @@ class TestDefineAccessMethod:
 
         class DefAccessUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="DefAccessUser",
                 access_name="defaccess_refresh",
@@ -711,6 +721,7 @@ class TestDefineAccessMethod:
 
         class DefAccessUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="DefAccessUser",
                 access_name="defaccess_auth",
@@ -755,6 +766,7 @@ class TestDefineAccessMethod:
 
         class DefAccessUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="DefAccessUser",
                 access_name="defaccess_auth",
