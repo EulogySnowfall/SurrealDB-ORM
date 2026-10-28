@@ -6,6 +6,90 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.12] - 2026-10-27
+
+**Fix release.** Change feeds deliver changes again (#281, #302), and record
+IDs containing a backtick or a backslash round-trip (#296, #301). One small
+SDK helper is added; change-feed errors now raise (see *Behaviour change*).
+The SurrealDB pin is unchanged (tested against 3.3.4, supported range 3.2.x –
+3.3.x).
+
+### Fixed
+
+- **Change feeds never delivered a change (#281).** `ChangeFeedStream` sent
+  `SINCE '<text>'`, which SurrealDB rejects at parse time, and its polling
+  loops swallowed the error, so `QuerySet.changes()`, `stream()` and
+  `stream_batch()` waited forever. `since` is now parsed and rendered as
+  `d'<UTC>'` or an unquoted versionstamp.
+- **Each change-feed entry is delivered once.** The cursor is now the last
+  versionstamp + 1; before, the last change came back on every poll.
+- **A stream no longer stalls** when at least `batch_size` entries of another
+  table follow the cursor (SurrealDB applies `LIMIT` before the table filter).
+  Each poll reads the table and the whole database over the same window.
+- `ChangeModelStream` yields the updates of a `CHANGEFEED ... INCLUDE ORIGINAL`
+  table (`{current, update: [patch]}` shape); they used to be dropped.
+- `MultiTableChangeFeed.stream()` keeps one advancing cursor per table,
+  honours `since` and raises its errors. Its docs import it from
+  `surreal_sdk.streaming.change_feed`.
+- `QuerySet.changes()` / `ChangeModelStream.cursor` no longer skips the
+  remaining events of a transaction (atomic `bulk_create`, multi-statement
+  transaction, multi-record `UPDATE`) when a consumer checkpoints after each
+  event and resumes later (#281).
+- **Record IDs containing a backtick or a backslash now round-trip (#296).**
+  Every ORM path that writes the ID into the query text — `merge()` with a
+  `SurrealFunc`, `atomic_append()` / `atomic_remove()` / `atomic_set_add()`,
+  `get_related()`, `remove_relation()`, `remove_all_relations()` and graph
+  traversals — used to fail with a parse error, or name a different record.
+  `escape_record_id()` now writes SurrealDB's `` \` `` and `\\` escape
+  sequences instead of doubling the backtick.
+
+### Added
+
+- `since` (change feeds) accepts an `int` versionstamp, a decimal
+  versionstamp string (the `cursor`), a `datetime` (naive = UTC, with a
+  warning), or an ISO 8601 date or date-time string. Anything else raises
+  `ValueError` before a query is sent.
+- `surreal_sdk.utils.unescape_record_id()`, the inverse of
+  `escape_record_id()`. `parse_record_id()` and the SDK connections' CBOR
+  thing conversion both use it.
+
+### Behaviour change
+
+- A failed change-feed request or a rejected statement now raises
+  `ChangeFeedError` from `get_changes()`, `stream()`, `stream_batch()`,
+  `MultiTableChangeFeed.stream()` and `QuerySet.changes()` iteration, instead
+  of being retried silently (`get_changes()` used to return `[]`).
+  `batch_size < 1` raises `ValueError`.
+- With `since=None`, a stream starts after the last entry already in the
+  feed, found by reading the retained feed once. The change feed reports a
+  create as an `UPDATE` event, never `CREATE` (server behaviour).
+- `ChangeModelStream.cursor` stays on a change-feed entry's versionstamp until
+  its last event has been yielded; resuming from a cursor taken
+  mid-transaction delivers that transaction again in full (at-least-once).
+  Make handlers idempotent per `record_id` + versionstamp.
+- Only record IDs containing `` ` `` or `\` produce different SurrealQL.
+  Every other ID is written exactly as before.
+- `parse_record_id()` and the SDK connections' handling of `table:id` strings
+  (`select()`, `create()`, `update()`, `upsert()`, `merge()`, `patch()`,
+  `delete()` and `relate()` on HTTP and WebSocket) now decode `\\` and
+  `` \` `` inside a backtick-delimited ID: ``t:`a\\b` `` now addresses the ID
+  `a\b`, where it used to address `a\\b`. A doubled backtick is still read as
+  one backtick, and any other backslash is kept as written.
+
+### Upgrading
+
+- Callers that relied on change-feed `stream()` never raising should now
+  handle `ChangeFeedError`. The cursor format (decimal versionstamp string) is
+  unchanged, and `ChangeFeedStream.cursor` at the SDK level still advances per
+  entry.
+- On SurrealDB 3.3 with in-memory storage, a datetime `since` selects nothing
+  (server behaviour); resume from a saved `cursor` or a versionstamp
+  (`since=0` reads the whole retained feed).
+- The `v2` line has both defects; the backports are tracked in #308 (change
+  feeds) and #310 (record IDs).
+
+---
+
 ## [0.34.11] - 2026-10-27
 
 **Fix release.** The `surreal-orm` CLI works on Python 3.14 and 3.15 (#280,

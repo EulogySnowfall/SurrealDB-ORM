@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.11)
+> Context document for Claude AI - Last updated: October 2026 (0.34.12)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.11 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.12 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,27 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.12
+
+Two fixes (#281 via #302, #296 via #301). Pin unchanged (3.3.4). `v2`: both
+defects present, backports tracked in #308 and #310.
+
+- **Change feeds never delivered anything.** `SINCE '<text>'` is a parse
+  error (it takes a bare versionstamp or `d'...'`), and every polling loop
+  caught the error and polled again. Same shape as the 0.32.6 migration
+  executor: an error swallowed in a loop looks like "no data", never a
+  failure. Errors raise `ChangeFeedError` now.
+- **`SINCE` is inclusive and `LIMIT` applies before `FOR TABLE`.** The cursor
+  is last versionstamp + 1, and each poll reads the table and the whole
+  database over the same window, so other tables' entries cannot stall it.
+  A create shows up as an `UPDATE` in the feed (server behaviour).
+- **`escape_record_id()` doubled backticks and left `\` alone**, which
+  SurrealQL does not read back. It writes `\\` then `` \` `` (backslash
+  first, so the one added before a backtick is not doubled);
+  `surreal_sdk.utils.unescape_record_id()` replaces three hand-copied
+  `replace("``", "`")` in `parse_record_id()` and both connections'
+  `_to_thing()`.
 
 ### What's New in 0.34.11
 
