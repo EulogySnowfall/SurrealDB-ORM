@@ -21,9 +21,8 @@ from src.surreal_orm.relations import RelationQuerySet
 from src.surreal_orm.utils import escape_record_id, format_thing, parse_record_id
 from surreal_sdk.connection.http import HTTPConnection
 from surreal_sdk.connection.websocket import WebSocketConnection
-from surreal_sdk.protocol.cbor import RecordId
+from surreal_sdk.protocol.cbor import RecordId, unescape_record_id
 from surreal_sdk.transaction import _validate_thing
-from surreal_sdk.protocol.cbor import unescape_record_id
 
 #: (raw ID, expected literal) — the literal is what SurrealDB must receive.
 ESCAPED: list[tuple[str, str]] = [
