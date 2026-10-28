@@ -383,6 +383,7 @@ class TestAuthWithModel:
 
         class AppUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="AppUser",
                 identifier_field="email",
@@ -506,6 +507,7 @@ class TestMixinAuthWorkflow:
 
         class MixinUser(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="MixinUser",
                 identifier_field="email",
@@ -798,6 +800,7 @@ class TestIssue332SessionRecord:
     def _model() -> type:
         class I332User(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(
+                signup_fields=["name"],
                 table_type=TableType.USER,
                 table_name="I332User",
                 identifier_field="email",

@@ -159,6 +159,7 @@ class TestAccessGenerator:
                 table_type=TableType.USER,
                 identifier_field="email",
                 password_field="password",
+                signup_fields=["name"],
             )
             id: str | None = None
             email: str
@@ -785,7 +786,7 @@ class TestBug1EphemeralConnection:
         """signup() must call _create_auth_client, not SurrealDBConnectionManager.get_client for the signup RPC."""
 
         class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, signup_fields=["name"])
             id: str | None = None
             email: str
             password: Encrypted
@@ -989,7 +990,7 @@ class TestBug3SignupReturnsToken:
         """signup() must return AuthResult (unpackable as 2-tuple)."""
 
         class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, signup_fields=["name"])
             id: str | None = None
             email: str
             password: Encrypted
