@@ -6,6 +6,65 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.20] - 2026-10-28
+
+**Bug fix release (V2 LTS).** One ORM fix (#294, #307), the `v2` port of #286
+from `main`: an optional `ForeignKey` is now converted to a record link like a
+required one. No new public API. Read *Behaviour change* and *Migration note*.
+The SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Fixed
+
+- **An optional `ForeignKey` was never converted to a record link (#294).**
+  With `ForeignKey("X") | None` or `Optional[ForeignKey("X")]`, `save()`,
+  `update()`, `merge()` and `bulk_update()` sent the value as a string, so
+  SurrealDB 2.x rejected the write on an `option<record<...>>` column and a
+  SCHEMALESS table stored the string instead of a link. `filter()` (`exact` /
+  `in` / `not_in`, including inside `Q`) bound a string and silently returned no
+  rows for records that exist. `get_foreign_key_targets()` read the marker from
+  `FieldInfo.metadata` only, and Pydantic leaves a union member's `Annotated`
+  marker on `FieldInfo.annotation`. It now finds the marker inside the union,
+  and `get_foreign_key_columns()` with it.
+
+### Behaviour change
+
+- Optional `ForeignKey` fields are now written as record links and bound as
+  `RecordId` in `exact` / `in` / `not_in` filters, the same as required
+  `ForeignKey` fields since 0.21.5. A model instance, a full `"table:id"` and a
+  bare id are all accepted. `None`, `isnull`, `$var` references and string
+  lookups are unchanged.
+
+### Migration note
+
+- Rows written through an optional `ForeignKey` before this release, into a
+  column that accepted a string (a SCHEMALESS table, or a field typed `any`),
+  hold a string: `'table:id'`, or the bare id when one was passed. A filter on
+  that field no longer matches them. Convert them once (SurrealDB 2.x syntax,
+  checked on 2.7.0):
+
+  ```sql
+  UPDATE <table> SET <field> = IF string::contains(<field>, ':')
+      THEN type::thing(<field>)
+      ELSE type::thing('<target_table>', <field>) END
+  WHERE type::is::string(<field>);
+  ```
+
+  `type::thing(<field>)` alone fails on a bare id, and the whole statement then
+  converts nothing.
+- A field declared `option<string>` now rejects the write: retype it
+  `option<record<target_table>>`. No DDL change in the ORM.
+
+### Known limitations
+
+- The exported helpers `is_foreign_key()`, `is_relation_field()`,
+  `is_many_to_many()`, `is_graph_relation()` and `get_relation_info()` still
+  look only at a top-level `Annotated`, so they report `ForeignKey("X") | None`
+  as not a relation, as in earlier releases. The migrations introspector has the
+  same union gap. Both are separate defects.
+
+---
+
 ## [0.21.19] - 2026-10-27
 
 **Security release (V2 LTS).** The declared `aiohttp` floor moves from

@@ -52,6 +52,19 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.20
+
+**Bug fix release (V2 LTS).** One ORM fix, the `v2` port of #286 from `main`; no new public API.
+
+- **An optional `ForeignKey` is now converted to a record link (#294).** With `ForeignKey("X") | None` or
+  `Optional[ForeignKey("X")]`, `save()`, `update()`, `merge()` and `bulk_update()` sent a string, so an
+  `option<record<...>>` column rejected the write, and `filter()` (`exact` / `in` / `not_in`, including
+  inside `Q`) silently returned no rows for records that exist. Optional foreign keys now behave like
+  required ones.
+- **Behaviour change:** rows previously written as strings through an optional `ForeignKey` (SCHEMALESS
+  table, or a field typed `any`) are no longer matched by a filter on that field, and a field declared
+  `option<string>` now rejects the write. The one-time conversion statement is in the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.19
 
 **Security release (V2 LTS).** No library code change; the declared `aiohttp` floor moves to `>=3.14.4`.
