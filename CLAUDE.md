@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.19)
+> Context document for Claude AI - Last updated: October 2026 (0.35.0)
 
 ## Project Vision
 
@@ -10,14 +10,42 @@
 
 ---
 
-## Current Version: 0.34.19 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.35.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.4**  | 0.34.x      | Active development              |
+| `main` | **3.3.4**  | 0.35.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.35.0
+
+Two fixes, #333 via #362 (`auth/access.py`, `auth/mixins.py`,
+`migrations/introspector.py`, `model_base.py`) and #329 via #365
+(`query_set.py`). Minor because #362 adds the public
+`SurrealConfigDict(signup_fields=[...])`; it is a fix, not a roadmap slot,
+so the roadmap shifts one slot (Graph Power → 0.36.0). Pin unchanged
+(3.3.4). `v2`: backport required for both (same code on the branch).
+
+- **The sign-up set is declared, never inferred.** One builder serves
+  `AccessGenerator.from_model()` and the introspector: identifier, password,
+  `signup_fields`, and `created_at = time::now()` only when the model has
+  it. Deriving the set from "fields without a default" was rejected: every
+  required field would silently become client-settable. Fields outside the
+  set are omitted from the clause (schema `DEFAULT` / model default apply),
+  never rendered as literals in DDL. `signup()` checks its keywords against
+  the same set before any request.
+- **The introspector had its own copy** with a hard-coded `argon2` and
+  `<table>_auth`, so it ignored `encryption_algorithm` and `access_name`.
+  Sharing the builder fixed that too; existing databases see one access
+  update (`REMOVE ACCESS` + `DEFINE ACCESS`) on the next diff.
+- **`_require_int()` guards values written into the query text.**
+  `limit()`, `offset()`, `similar_to()`, `hybrid_search()` take an `int`
+  that is not a `bool` (`TypeError` otherwise) at or above a minimum
+  (`ValueError`), checked at the call, stored as a plain `int` so an `int`
+  subclass with its own `__format__` renders as its number. The `int`
+  annotations had never been enforced at runtime.
 
 ### What's New in 0.34.19
 

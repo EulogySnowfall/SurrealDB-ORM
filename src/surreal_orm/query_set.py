@@ -43,6 +43,36 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound="BaseSurrealModel")
 
 
+def _require_int(name: str, value: object, *, minimum: int) -> int:
+    """
+    Check that ``value`` is an integer of at least ``minimum`` and return it.
+
+    Pagination and KNN arguments are written into the query text, so only an
+    ``int`` is accepted: a string (even a numeric one), a float or a ``bool``
+    raises ``TypeError``, and a value below ``minimum`` raises ``ValueError``.
+    The result is always a plain ``int``, so an ``int`` subclass with its own
+    ``__format__`` renders as its numeric value.
+
+    Args:
+        name: Argument name, used in the error message.
+        value: The value passed by the caller.
+        minimum: The smallest accepted value.
+
+    Returns:
+        int: ``value`` as a plain ``int``.
+
+    Raises:
+        TypeError: If ``value`` is not an ``int`` or is a ``bool``.
+        ValueError: If ``value`` is below ``minimum``.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} must be an int, got {type(value).__name__}")
+    number = int.__index__(value)
+    if number < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got {number}")
+    return number
+
+
 class QuerySet(Generic[T]):
     """
     A class used to build, execute, and manage queries on a SurrealDB table associated with a specific model.
@@ -249,17 +279,21 @@ class QuerySet(Generic[T]):
         or when only a subset of results is needed.
 
         Args:
-            value (int): The maximum number of records to retrieve.
+            value (int): The maximum number of records to retrieve (``>= 0``).
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
+
+        Raises:
+            TypeError: If ``value`` is not an ``int`` (``bool`` included).
+            ValueError: If ``value`` is negative.
 
         Example:
             ```python
             queryset.limit(10)
             ```
         """
-        self._limit = value
+        self._limit = _require_int("limit", value, minimum=0)
         return self
 
     def offset(self, value: int) -> Self:
@@ -270,17 +304,21 @@ class QuerySet(Generic[T]):
         It is commonly used in conjunction with `limit` for pagination purposes.
 
         Args:
-            value (int): The number of records to skip.
+            value (int): The number of records to skip (``>= 0``).
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
+
+        Raises:
+            TypeError: If ``value`` is not an ``int`` (``bool`` included).
+            ValueError: If ``value`` is negative.
 
         Example:
             ```python
             queryset.offset(20)
             ```
         """
-        self._offset = value
+        self._offset = _require_int("offset", value, minimum=0)
         return self
 
     def order_by(self, field_name: str, order_type: OrderBy = OrderBy.ASC) -> Self:
@@ -560,11 +598,16 @@ class QuerySet(Generic[T]):
         Args:
             field: Name of the vector field (e.g., ``"embedding"``).
             vector: Query vector as a list of floats.
-            limit: Maximum number of nearest neighbours (K). Defaults to 10.
-            ef: Optional HNSW search-time ``ef`` parameter for recall tuning.
+            limit: Maximum number of nearest neighbours (K, ``>= 1``). Defaults to 10.
+            ef: Optional HNSW search-time ``ef`` parameter for recall tuning (``>= 0``).
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
+
+        Raises:
+            ValueError: If ``field`` is not a valid identifier, or ``limit``/``ef``
+                is below its minimum.
+            TypeError: If ``limit`` or ``ef`` is not an ``int`` (``bool`` included).
 
         Example::
 
@@ -576,10 +619,12 @@ class QuerySet(Generic[T]):
         """
         if not _SAFE_IDENTIFIER_RE.fullmatch(field):
             raise ValueError(f"Invalid field name for similar_to(): {field!r}")
+        knn_limit = _require_int("limit", limit, minimum=1)
+        knn_ef = None if ef is None else _require_int("ef", ef, minimum=0)
         self._knn_field = field
         self._knn_vector = vector
-        self._knn_limit = limit
-        self._knn_ef = ef
+        self._knn_limit = knn_limit
+        self._knn_ef = knn_ef
         return self
 
     def search(self, **field_queries: str) -> Self:
@@ -687,15 +732,21 @@ class QuerySet(Generic[T]):
         Args:
             vector_field: Name of the vector field.
             vector: Query vector.
-            vector_limit: KNN limit (K neighbours).
+            vector_limit: KNN limit (K neighbours, ``>= 1``).
             text_field: Name of the FTS field.
             text_query: Search query string.
-            text_limit: Number of FTS results to consider.
-            rrf_k: Reciprocal Rank Fusion constant (default 60).
-            ef: HNSW search effort (default 100).
+            text_limit: Number of FTS results to consider (``>= 1``).
+            rrf_k: Reciprocal Rank Fusion constant (default 60, ``>= 1``).
+            ef: HNSW search effort (default 100, ``>= 0``).
 
         Returns:
             list[dict]: Results ordered by combined RRF score.
+
+        Raises:
+            ValueError: If a field name is not a valid identifier, or an integer
+                argument is below its minimum.
+            TypeError: If ``vector_limit``, ``text_limit``, ``rrf_k`` or ``ef`` is
+                not an ``int`` (``bool`` included).
 
         Example::
 
@@ -712,6 +763,10 @@ class QuerySet(Generic[T]):
             raise ValueError(f"Invalid field name for hybrid_search(): {vector_field!r}")
         if not _SAFE_IDENTIFIER_RE.fullmatch(text_field):
             raise ValueError(f"Invalid field name for hybrid_search(): {text_field!r}")
+        vector_limit = _require_int("vector_limit", vector_limit, minimum=1)
+        text_limit = _require_int("text_limit", text_limit, minimum=1)
+        rrf_k = _require_int("rrf_k", rrf_k, minimum=1)
+        ef = _require_int("ef", ef, minimum=0)
 
         # Build a raw query using LET bindings for each sub-query
         table = self._model_table
