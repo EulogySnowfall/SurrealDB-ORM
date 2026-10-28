@@ -436,7 +436,8 @@ class HTTPTransaction(BaseTransaction):
         from .types import RecordsResponse
 
         target, ref = _record_target(thing, "thing", "_ref", data)
-        fields = ", ".join(f"{k} = ${k}" for k in data)
+        # MERGE takes an object literal; ``{ k = $k }`` would be a block of comparisons.
+        fields = ", ".join(f"{k}: ${k}" for k in data)
         self._queue_statement(f"UPDATE {target} MERGE {{ {fields} }};", {**data, **ref})
         return RecordsResponse(records=[], raw=[])
 
