@@ -2,9 +2,16 @@
 Query cache for the ORM with TTL-based expiration and auto-invalidation.
 
 ``QueryCache`` is a class-level singleton that caches query results keyed by
-a SHA-256 hash of the query string, variables, and table name.  Cache entries
-are automatically invalidated when models are saved, updated, or deleted via
-the ``post_save``, ``post_update``, and ``post_delete`` signals.
+a SHA-256 hash of the query string, variables, table name, and the identity of
+the connection the query runs on (name, URL, namespace and database of its
+``ConnectionConfig`` — never the credentials).  Two named connections pointing
+at different databases therefore never share entries.
+
+Cache entries are automatically invalidated when models are saved, updated, or
+deleted via the ``post_save``, ``post_update``, and ``post_delete`` signals.
+The signal handlers only drop the entries of the database the write went to
+(every connection name pointing at that URL/namespace/database), so a write
+through one connection leaves another database's cached results in place.
 
 Example::
 
@@ -35,6 +42,14 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+ConnectionIdentity = tuple[str, str | None, str | None, str | None]
+"""``(name, url, namespace, database)`` of the connection a query runs on."""
+
+_Location = tuple[str | None, str | None, str | None]
+"""``(url, namespace, database)``: where the data lives, whatever the name."""
+
+_NO_LOCATION: _Location = (None, None, None)
+
 
 @dataclass(slots=True)
 class _CacheEntry:
@@ -43,6 +58,7 @@ class _CacheEntry:
     data: Any
     table: str
     expires_at: float
+    location: _Location = _NO_LOCATION
 
 
 class QueryCache:
@@ -62,7 +78,7 @@ class QueryCache:
     # ── State ────────────────────────────────────────────────────────────
 
     _cache: dict[str, _CacheEntry] = {}
-    _table_keys: dict[str, set[str]] = {}  # table → set of cache keys
+    _table_keys: dict[tuple[_Location, str], set[str]] = {}  # (location, table) → cache keys
     _signals_connected: bool = False
 
     # ── Public API ───────────────────────────────────────────────────────
@@ -92,7 +108,14 @@ class QueryCache:
         cls._connect_signals()
 
     @classmethod
-    def make_key(cls, query: str, variables: dict[str, Any], table: str) -> str:
+    def make_key(
+        cls,
+        query: str,
+        variables: dict[str, Any],
+        table: str,
+        *,
+        connection: ConnectionIdentity | None = None,
+    ) -> str:
         """
         Build a deterministic cache key from the query, variables, and table.
 
@@ -100,15 +123,18 @@ class QueryCache:
             query: The compiled SurrealQL query string.
             variables: The parameterized variable bindings.
             table: The table name.
+            connection: Identity of the connection the query runs on, as
+                returned by ``_connection_identity()``.  ``QuerySet.cache()``
+                always passes it, so the same query on two databases gets two
+                keys.  Omitted, the key depends on the query alone.
 
         Returns:
             A hex SHA-256 digest.
         """
-        payload = json.dumps(
-            {"q": query, "v": variables, "t": table},
-            sort_keys=True,
-            default=str,
-        )
+        body: dict[str, Any] = {"q": query, "v": variables, "t": table}
+        if connection is not None:
+            body["c"] = list(connection)
+        payload = json.dumps(body, sort_keys=True, default=str)
         return hashlib.sha256(payload.encode()).hexdigest()
 
     @classmethod
@@ -139,6 +165,8 @@ class QueryCache:
         data: Any,
         table: str,
         ttl: int | None = None,
+        *,
+        connection: ConnectionIdentity | None = None,
     ) -> None:
         """
         Store a query result in the cache.
@@ -148,25 +176,34 @@ class QueryCache:
             data: The query result to cache.
             table: The table name (used for targeted invalidation).
             ttl: Time-to-live in seconds.  Defaults to ``_default_ttl``.
+            connection: Identity of the connection the result came from, so a
+                write through that database invalidates it.  Should be the
+                identity passed to ``make_key``.
         """
         if not cls._enabled:
             return
+
+        # Re-setting an existing key must not leave it indexed under a stale bucket.
+        cls._remove_key(key)
 
         # Evict oldest entries if at capacity
         while len(cls._cache) >= cls._max_size:
             cls._evict_oldest()
 
+        location = _location_of(connection)
         expires_at = time.monotonic() + (ttl if ttl is not None else cls._default_ttl)
-        cls._cache[key] = _CacheEntry(data=copy.deepcopy(data), table=table, expires_at=expires_at)
-
-        if table not in cls._table_keys:
-            cls._table_keys[table] = set()
-        cls._table_keys[table].add(key)
+        cls._cache[key] = _CacheEntry(
+            data=copy.deepcopy(data),
+            table=table,
+            expires_at=expires_at,
+            location=location,
+        )
+        cls._table_keys.setdefault((location, table), set()).add(key)
 
     @classmethod
     def invalidate(cls, model: Any) -> int:
         """
-        Remove all cached entries for a model's table.
+        Remove all cached entries for a model's table, on every connection.
 
         Args:
             model: The model class whose table entries should be cleared.
@@ -175,10 +212,10 @@ class QueryCache:
             The number of entries removed.
         """
         table = model.get_table_name()
-        keys = cls._table_keys.pop(table, set())
-        for key in keys:
-            cls._cache.pop(key, None)
-        return len(keys)
+        removed = 0
+        for bucket in [b for b in cls._table_keys if b[1] == table]:
+            removed += cls._drop_bucket(bucket)
+        return removed
 
     @classmethod
     def clear(cls) -> None:
@@ -197,7 +234,7 @@ class QueryCache:
         """
         return {
             "entries": len(cls._cache),
-            "tables": len(cls._table_keys),
+            "tables": len({table for _, table in cls._table_keys}),
             "max_size": cls._max_size,
             "default_ttl": cls._default_ttl,
             "enabled": cls._enabled,
@@ -205,15 +242,47 @@ class QueryCache:
 
     # ── Internal ─────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _connection_identity(model: Any) -> ConnectionIdentity:
+        """
+        Resolve the identity of the connection *model* queries run on now.
+
+        Follows ``model.get_connection_name()`` (``using()`` override, then the
+        model's ``connection`` config, then ``"default"``) and reads the URL,
+        namespace and database of that name's ``ConnectionConfig``.  The
+        credentials are deliberately left out of the identity.  A name with no
+        registered config resolves to ``(name, None, None, None)``.
+        """
+        from .connection_manager import SurrealDBConnectionManager
+
+        name: str = model.get_connection_name()
+        config = SurrealDBConnectionManager.get_config(name)
+        if config is None:
+            return (name, None, None, None)
+        return (name, config.url, config.namespace, config.database)
+
+    @classmethod
+    def _invalidate_for_connection(cls, model: Any, connection: ConnectionIdentity) -> int:
+        """Remove *model*'s table entries cached from *connection*'s database."""
+        return cls._drop_bucket((_location_of(connection), model.get_table_name()))
+
+    @classmethod
+    def _drop_bucket(cls, bucket: tuple[_Location, str]) -> int:
+        keys = cls._table_keys.pop(bucket, set())
+        for key in keys:
+            cls._cache.pop(key, None)
+        return len(keys)
+
     @classmethod
     def _remove_key(cls, key: str) -> None:
         entry = cls._cache.pop(key, None)
         if entry is not None:
-            table_keys = cls._table_keys.get(entry.table)
+            bucket = (entry.location, entry.table)
+            table_keys = cls._table_keys.get(bucket)
             if table_keys is not None:
                 table_keys.discard(key)
                 if not table_keys:
-                    cls._table_keys.pop(entry.table, None)
+                    cls._table_keys.pop(bucket, None)
 
     @classmethod
     def _evict_oldest(cls) -> None:
@@ -232,14 +301,18 @@ class QueryCache:
 
         from .signals import SignalHandler, post_delete, post_save, post_update
 
+        # The identity is resolved while the signal is sent, i.e. still inside
+        # the ``using()`` context of the write, so only the database written to
+        # loses its entries.
+
         async def _invalidate_on_save(sender: type, **kwargs: Any) -> None:
-            cls.invalidate(sender)
+            cls._invalidate_for_connection(sender, cls._connection_identity(sender))
 
         async def _invalidate_on_delete(sender: type, **kwargs: Any) -> None:
-            cls.invalidate(sender)
+            cls._invalidate_for_connection(sender, cls._connection_identity(sender))
 
         async def _invalidate_on_update(sender: type, **kwargs: Any) -> None:
-            cls.invalidate(sender)
+            cls._invalidate_for_connection(sender, cls._connection_identity(sender))
 
         _on_save: SignalHandler = _invalidate_on_save
         _on_delete: SignalHandler = _invalidate_on_delete
@@ -250,6 +323,14 @@ class QueryCache:
         post_update.connect()(_on_update)
 
         cls._signals_connected = True
+
+
+def _location_of(connection: ConnectionIdentity | None) -> _Location:
+    """Drop the name: every name pointing at one database shares a bucket."""
+    if connection is None:
+        return _NO_LOCATION
+    _, url, namespace, database = connection
+    return (url, namespace, database)
 
 
 __all__ = ["QueryCache"]
