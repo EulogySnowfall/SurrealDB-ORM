@@ -146,6 +146,46 @@ def test_geo_distance_renders_int_and_float_as_numbers(point: Any, rendered: str
     assert GeoDistance("location", point).to_surql("dist") == f"geo::distance(location, {rendered}) AS dist"
 
 
+def test_geo_distance_renders_the_point_it_validated_after_the_list_is_mutated() -> None:
+    point: list[Any] = [1, 2]
+    geo = GeoDistance("location", point)  # type: ignore[arg-type]
+    point[0] = "0) AS d FROM t; SELECT (1"
+    assert geo.to_surql("d") == "geo::distance(location, (1, 2)) AS d"
+    assert geo.point == (1, 2)
+
+
+class _I417Float(float):
+    def __format__(self, spec: str) -> str:
+        return "0) AS d FROM t; SELECT (1"
+
+    def __repr__(self) -> str:
+        return "0) AS d FROM t; SELECT (1"
+
+    __str__ = __repr__
+
+
+class _I417Int(int):
+    def __format__(self, spec: str) -> str:
+        return "0) AS d FROM t; SELECT (1"
+
+    def __repr__(self) -> str:
+        return "0) AS d FROM t; SELECT (1"
+
+    __str__ = __repr__
+
+
+def test_geo_distance_renders_numeric_subclasses_as_plain_numbers() -> None:
+    geo = GeoDistance("location", (_I417Float(1.5), _I417Int(2)))
+    assert geo.to_surql("d") == "geo::distance(location, (1.5, 2)) AS d"
+    assert type(geo.point[0]) is float
+    assert type(geo.point[1]) is int
+
+
+def test_geo_distance_rejects_an_int_too_large_for_a_float() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        GeoDistance("location", (10**400, 0))
+
+
 # ------------------------------------------------------------- search ref
 
 
