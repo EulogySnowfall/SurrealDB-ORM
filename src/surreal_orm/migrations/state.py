@@ -5,7 +5,7 @@ This module provides classes to represent the current schema state
 and compute the differences between two states to generate migrations.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from .constants import MIGRATIONS_TABLE
@@ -405,9 +405,21 @@ class SchemaState:
                     if field_name not in target_table.fields:
                         operations.append(DropField(table=table_name, name=field_name))
 
-                # Indexes to add
+                # Indexes to add.  A database index that satisfies a target
+                # UNIQUE index under another name is kept as it is: proposing
+                # the same constraint a second time would double the write
+                # cost, and renaming it would mean an irreversible drop.
+                satisfied_by: set[str] = set()
                 for index_name, index_state in target_table.indexes.items():
                     if index_name not in current_table.indexes:
+                        equivalent = self._find_equivalent_unique_index(
+                            index_state,
+                            current_table.indexes,
+                            exclude=set(target_table.indexes) | satisfied_by,
+                        )
+                        if equivalent is not None:
+                            satisfied_by.add(equivalent)
+                            continue
                         operations.append(self._create_index_from_state(table_name, index_state))
                     elif current_table.indexes[index_name] != index_state:
                         # Index changed - drop and recreate
@@ -416,7 +428,7 @@ class SchemaState:
 
                 # Indexes to drop
                 for index_name in current_table.indexes:
-                    if index_name not in target_table.indexes:
+                    if index_name not in target_table.indexes and index_name not in satisfied_by:
                         operations.append(DropIndex(table=table_name, name=index_name))
 
                 # Access definition changes
@@ -482,6 +494,37 @@ class SchemaState:
         operations.extend(deferred_remove_analyzers)
 
         return operations
+
+    @staticmethod
+    def _find_equivalent_unique_index(
+        target: IndexState,
+        candidates: dict[str, IndexState],
+        exclude: set[str],
+    ) -> str | None:
+        """
+        Find a database index that already enforces a target UNIQUE index.
+
+        Only a ``UNIQUE`` target qualifies: its purpose is the constraint, which
+        any index with the same definition enforces whatever its name.  Other
+        indexes keep being matched by name, so renaming one is still a change.
+
+        Args:
+            target: The index the models require
+            candidates: The indexes the database holds for the table, by name
+            exclude: Names that must not be reused — indexes the models declare
+                themselves, or that already satisfy another target index
+
+        Returns:
+            The name of the equivalent database index, or None when there is none
+        """
+        if not target.unique:
+            return None
+        for name, candidate in candidates.items():
+            if name in exclude:
+                continue
+            if replace(candidate, name=target.name) == target:
+                return name
+        return None
 
     @staticmethod
     def _create_index_from_state(table_name: str, idx: IndexState) -> "CreateIndex":
