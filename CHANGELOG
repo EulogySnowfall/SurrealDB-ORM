@@ -6,6 +6,78 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.24] - 2026-10-28
+
+**Bug fix release (V2 LTS).** Two SDK fixes, the `v2` ports of #318 and #302
+from `main`: HTTP transactions parse record references strictly and bind
+non-identifier IDs (#322, #337), and change feeds work on SurrealDB 2.x
+(#308, #339). Read *Behaviour change* and *Migration*. The SurrealDB pin is
+unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`HTTPTransaction` record references are parsed strictly (#322).**
+  `create` / `update` / `upsert` / `merge` / `delete` / `relate` now parse
+  `table:id` references strictly. A record ID that is not a plain identifier,
+  a signed 64-bit integer or `rand()` / `ulid()` / `uuid()` is bound as a
+  parameter (`type::thing('table', $_ref)`). Previously, IDs with a space,
+  `-`, `;`, a backtick, a backslash or a leading digit failed to parse, and
+  `users:a-b` parsed as an expression and wrote nothing. The `format_thing()`
+  backtick form is read back once (never escaped twice). `relate()`'s relation
+  and `insert()`'s table must be identifiers. `WebSocketTransaction` applies
+  the same checks before each call.
+- **`HTTPTransaction.merge()` did nothing (#322).** It rendered
+  `MERGE { k = $k }`, which the server rejects, so a merge queued in an HTTP
+  transaction — including ORM `save(tx=)` / `merge(tx=)` over HTTP — was
+  dropped. It now renders `MERGE { k: $k }`.
+- **Change feeds work on SurrealDB 2.x (#308).** `ChangeFeedStream` sent
+  `SHOW CHANGES ... SINCE '<text>'`, which SurrealDB 2.7.0 rejects at parse
+  time, and the polling loops swallowed the error, so `QuerySet.changes()`
+  never delivered a change. `since` is now parsed and rendered as `d'<UTC>'`
+  or an unquoted versionstamp, converted to the 2.x `SINCE` scale (commit
+  version = versionstamp >> 16).
+- **Each change-feed entry is delivered once.** The cursor is the last
+  versionstamp + 1 and can be passed back as `since`. Entries of other tables
+  no longer stall a stream (the server applies `LIMIT` before the table
+  filter).
+- **The default `since` starts after the last entry already in the feed**;
+  a datetime "now" would have replayed the whole feed on 2.x. It now starts
+  even while other tables are being written (finding the starting point could
+  wait forever), and `get_changes()` returns under concurrent writes.
+- **`MultiTableChangeFeed.stream()`** keeps an advancing cursor per table,
+  honours `since` and no longer drops errors.
+- **`ChangeModelStream`** delivers updates on `CHANGEFEED ... INCLUDE ORIGINAL`
+  tables. Its `cursor` stays on a transaction until the transaction's last
+  event is yielded (a resume taken mid-transaction delivers that transaction
+  again in full: at-least-once).
+
+### Behaviour change
+
+- A malformed transaction reference (`':x'`, `'a b:c'`, an empty table or ID,
+  an array or object ID, an unclosed delimiter, a trailing newline) now raises
+  `ValueError` before anything is queued or sent; it used to reach the server.
+  ORM transactional merges over HTTP used to do nothing and now write the data.
+- A failed request or a statement the server rejects now raises
+  `ChangeFeedError` from `get_changes()`, `stream()`, `stream_batch()`,
+  `MultiTableChangeFeed.stream()` and `QuerySet.changes()` iteration, instead
+  of being retried silently forever. An invalid `since` raises `ValueError`
+  (`TypeError` for an unsupported type) before any query is sent.
+- A change-feed poll that reaches the end of the feed without a new entry for
+  the table now sleeps `poll_interval`, even when other tables wrote in the
+  meantime; before, those writes made it poll again with no pause.
+
+### Migration
+
+- Callers that passed array or object record IDs to transaction methods must
+  use `query()` instead. Plain-identifier, integer and table-only references
+  produce the same SQL as before.
+- `since` accepts `None` (from now on), an `int` or decimal-string
+  versionstamp (inclusive; `0` reads the whole retained feed), a `datetime`
+  (a naive one is read as UTC), or an ISO 8601 date or date-time string. A
+  cursor saved by an earlier version cannot be reused, because those streams
+  never produced one. On SurrealDB 2.x a datetime start may return earlier
+  changes, so prefer a versionstamp to resume.
+
 ## [0.21.23] - 2026-10-28
 
 **Bug fix release (V2 LTS).** One ORM fix (#315, #335), the `v2` port of #309

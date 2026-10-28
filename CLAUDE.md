@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.23)
+> Context document for Claude AI - Last updated: October 2026 (0.21.24)
 
 <!-- -->
 
@@ -19,12 +19,28 @@
 
 ---
 
-## Current Version: 0.21.23 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.24 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.24
+
+SDK fixes, the `v2` ports of #318 (#322, #337) and #302 (#308, #339). No new public API.
+
+- **Transactions:** `surreal_sdk/transaction.py` parses `table:id` strictly; a non-identifier ID is bound and
+  rendered `type::thing('table', $_ref)` (the 2.x spelling), `format_thing()` output is read back once,
+  `relate()`'s relation and `insert()`'s table must be identifiers, `WebSocketTransaction` validates before each
+  RPC call. `HTTPTransaction.merge()` renders `MERGE { k: $k }` (`k = $k` inside braces is a comparison and was
+  rejected; `commit()` does not inspect per-statement status, so it failed silently). Tests:
+  `tests/test_issue_322_unit.py`, `tests/test_issue_322_integration.py`.
+- **Change feeds on 2.x:** `SINCE` takes `d'<UTC>'` or the unquoted commit version (`versionstamp >> 16`,
+  inclusive). The server applies `LIMIT` to the whole database feed before `FOR TABLE`, so each poll reads the
+  table and database feeds over the same window in one transaction; a window shorter than the `LIMIT` is the end
+  of the feed. Errors raise `ChangeFeedError`. Tests: `tests/test_issue_308_v2_unit.py`,
+  `tests/test_issue_308_v2_integration.py`.
 
 ### What's New in 0.21.23
 
