@@ -866,3 +866,82 @@ class TestIssue353SessionRecord:
         # No string-keyed twin was created by the update.
         rows = await client.query("SELECT id FROM I353User WHERE email = 'int353@example.com'")
         assert len(rows.all_records) == 1
+
+
+@pytest.mark.integration
+class TestIssue372TokenCacheExpiryAndTable:
+    """#372 (backport of #331) — validate_token() honours the token's exp and the model's table."""
+
+    TABLES = ("I372Member", "I372Staff")
+
+    @pytest.fixture(autouse=True)
+    async def _schema(self):
+        clear_model_registry()
+        AuthenticatedUserMixin.invalidate_token_cache()
+        AuthenticatedUserMixin.configure_token_cache(ttl=300)
+        client = await surreal_orm.SurrealDBConnectionManager.reconnect()
+        assert client is not None
+
+        async def cleanup() -> None:
+            for table in self.TABLES:
+                await client.query(f"REMOVE ACCESS IF EXISTS {table.lower()}_ac ON DATABASE; REMOVE TABLE IF EXISTS {table};")
+
+        await cleanup()
+        for table in self.TABLES:
+            await client.query(f"""
+                DEFINE TABLE {table} SCHEMALESS;
+                DEFINE ACCESS {table.lower()}_ac ON DATABASE TYPE RECORD
+                    SIGNUP (CREATE {table} SET email = $email, password = crypto::argon2::generate($password))
+                    SIGNIN (SELECT * FROM {table} WHERE email = $email AND crypto::argon2::compare(password, $password))
+                    DURATION FOR TOKEN 2s, FOR SESSION 1h;
+            """)
+        yield
+        AuthenticatedUserMixin.invalidate_token_cache()
+        await cleanup()
+
+    @staticmethod
+    def _models() -> tuple[type, type]:
+        class I372Member(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="I372Member", access_name="i372member_ac")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        class I372Staff(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="I372Staff", access_name="i372staff_ac")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        return I372Member, I372Staff
+
+    async def test_cached_validation_ends_at_token_expiry(self) -> None:
+        """A token validated (and cached) once is rejected after its exp."""
+        import asyncio
+
+        member, _ = self._models()
+        _, token = await member.signup(email="exp372@example.com", password="pw")
+
+        record_id = await member.validate_token(token)
+        assert record_id is not None and record_id.startswith("I372Member:")
+        assert await member.validate_token(token) == record_id  # served from the cache
+
+        await asyncio.sleep(3.5)  # DURATION FOR TOKEN 2s (exp has 1 s resolution)
+
+        assert await member.validate_token(token, use_cache=False) is None  # the server agrees
+        assert await member.validate_token(token) is None
+
+    async def test_token_of_one_model_rejected_by_another(self) -> None:
+        """A token issued for one model's table is not valid for another model."""
+        member, staff = self._models()
+        _, token = await member.signup(email="tbl372@example.com", password="pw")
+
+        own = await member.validate_token(token)
+        assert own is not None and own.startswith("I372Member:")  # cached for I372Member
+
+        assert await staff.validate_token(token) is None
+        assert await staff.validate_token(token, use_cache=False) is None
+        assert await staff.authenticate_token(token) is None
+
+        result = await member.authenticate_token(token)
+        assert result is not None and result[1] == own
