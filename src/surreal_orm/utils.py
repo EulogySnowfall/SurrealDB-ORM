@@ -30,13 +30,35 @@ def validate_identifier(name: str, context: str = "identifier") -> None:
         )
 
 
-def escape_single_quotes(value: str) -> str:
-    """Escape single quotes for embedding in SurrealQL string literals.
+def surql_string_literal(value: str) -> str:
+    """Render *value* as a single-quoted SurrealQL string literal.
 
-    SurrealDB uses doubled single quotes (``''``) for escaping inside
-    single-quoted strings.
+    SurrealDB's lexer reads a backslash as an escape inside a string and does
+    not treat a doubled quote (``''``) as one: ``'it''s'`` ends after ``it``
+    and the statement fails to parse. So a backslash becomes ``\\\\`` and a
+    quote becomes ``\\'``. The backslash goes first, or the one added in front
+    of each quote would be doubled too.
+
+    Use it wherever a text is written into DDL rather than bound as a
+    parameter (``COMMENT``, a string ``DEFAULT``), so every site reads back
+    the same text.
+
+    Args:
+        value: The text to quote
+
+    Returns:
+        The literal, quotes included
     """
-    return value.replace("'", "''")
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def escape_single_quotes(value: str) -> str:
+    """Escape *value* for the inside of a single-quoted SurrealQL string.
+
+    The same rules as :func:`surql_string_literal`, without the surrounding
+    quotes.
+    """
+    return surql_string_literal(value)[1:-1]
 
 
 #: A whole value naming one query variable: ``$`` then an identifier, nothing else.
