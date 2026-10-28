@@ -277,9 +277,10 @@ def _to_record_link(value: Any, table: str | None) -> Any:
 
     value = record_link_to_str(value)
 
-    # A bare ID is only resolvable against a known target table. "$var"
-    # references stay untouched — they are user-supplied query variables.
-    if isinstance(value, str) and table and not value.startswith("$"):
+    # A bare ID is only resolvable against a known target table. A declared
+    # "$var" filter reference never gets here: QuerySet._coerce_filter_value
+    # leaves it alone, and every write path binds its values.
+    if isinstance(value, str) and table:
         value_table, id_part = parse_record_id(value)
         if value_table is None:
             return RecordId(table=table, id=id_part)
