@@ -52,6 +52,23 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.24
+
+**Bug fix release (V2 LTS).** Two SDK fixes, the `v2` ports of #318 and #302 from `main`; no new public API.
+
+- **HTTP transactions parse record references strictly (#322).** `HTTPTransaction` methods bind any record ID that
+  is not a plain identifier, a 64-bit integer or `rand()`/`ulid()`/`uuid()` as a parameter
+  (`type::thing('table', $_ref)`); IDs with a space, `-`, `;`, a backtick, a backslash or a leading digit used to
+  fail to parse, and `users:a-b` wrote nothing. `HTTPTransaction.merge()` rendered `MERGE { k = $k }`, which the
+  server rejects, so ORM `save(tx=)` / `merge(tx=)` over HTTP did nothing; it now writes the data.
+- **Change feeds work on SurrealDB 2.x (#308).** `SINCE` was rendered as a quoted string the server rejects and the
+  error was swallowed, so `QuerySet.changes()` never delivered a change. `since` now takes a `datetime`, an ISO 8601
+  string or a versionstamp; each entry is delivered once, the cursor can be passed back as `since`, and other
+  tables' writes no longer stall a stream.
+- **Behaviour change:** a malformed transaction reference raises `ValueError` before anything is sent; a failed
+  change-feed request raises `ChangeFeedError` instead of being retried silently forever. See the CHANGELOG for the
+  migration notes.
+
 ## What's New in 0.21.23
 
 **Bug fix release (V2 LTS).** One ORM fix, the `v2` port of #309 from `main`; no new public API.
