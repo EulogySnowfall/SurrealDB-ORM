@@ -6,6 +6,47 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.19] - 2026-10-27
+
+**Security release (V2 LTS).** The declared `aiohttp` floor moves from
+`>=3.14.0` to `>=3.14.4` (#245, #293). No library code change. The SurrealDB pin
+is unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Security
+
+- **The declared `aiohttp` floor is raised to `>=3.14.4` (#245, #293)**, in
+  both the package metadata and the bundled SDK's `pyproject.toml`. The `v2`
+  lock has resolved `aiohttp` 3.14.5 since 0.21.10, but downstream installs
+  read only the declared requirement, so `pip install -U surrealdb-orm` and
+  existing downstream lockfiles could keep an `aiohttp` 3.14.0 – 3.14.3.
+  3.14.4 is the first release patching GHSA-494j-54xm-rwp3,
+  GHSA-2g87-pp6c-29x5, GHSA-5wr8-gcqf-gqf3, GHSA-f9xw-jh8m-3mwq,
+  GHSA-gx76-c99x-2c96, GHSA-6cjc-53gc-5rqm, GHSA-pqxq-w44r-73xw and
+  GHSA-9xw5-w5jj-pvcg, which all affect `aiohttp <= 3.14.3`.
+- The new floor also excludes `aiohttp` 3.14.0 – 3.14.2, which the old floor
+  still admitted, and with them the 11 advisories fixed in 3.14.1 – 3.14.3:
+  GHSA-2fqr-mr3j-6wp8, GHSA-4fvr-rgm6-gqmc, GHSA-4m7w-qmgq-4wj5,
+  GHSA-63hw-fmq6-xxg2, GHSA-9x8q-7h8h-wcw9, GHSA-g3cq-j2xw-wf74,
+  GHSA-hpj7-wq8m-9hgp and GHSA-xcgm-r5h9-7989 (fixed in 3.14.1),
+  GHSA-mfx4-hv73-q22v and GHSA-mq44-7p77-q5h7 (fixed in 3.14.2), and
+  GHSA-cq5v-8q36-5273 (fixed in 3.14.3). Users still on 3.14.0 – 3.14.2 are
+  covered by the same upgrade.
+- The lock is unchanged: `aiohttp` stays at 3.14.5 and `cbor2` stays at 5.9.0
+  (`<6` on this line).
+
+### Behaviour change
+
+- Installing or upgrading `surrealdb-orm` now requires `aiohttp >= 3.14.4`. An
+  environment that pins `aiohttp < 3.14.4` now fails at resolution time instead
+  of installing alongside a vulnerable `aiohttp`. This is intended.
+
+### Migration note
+
+- This replaces the 0.21.10 advice to run `pip install -U aiohttp` by hand:
+  `pip install -U surrealdb-orm` now brings in the patched `aiohttp`.
+
+---
+
 ## [0.21.18] - 2026-10-27
 
 **Bug fix release (V2 LTS).** One SDK fix (#277, #285), the `v2` port of the
