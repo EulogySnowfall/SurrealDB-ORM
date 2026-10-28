@@ -19,7 +19,7 @@ from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
 from ..protocol.cbor import RecordId, format_decimal
 
-_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
 #: A ``$name`` parameter reference, read the way SurrealDB's lexer reads it.
 _PARAM_REF_RE = re.compile(r"\$([A-Za-z0-9_]+)", re.ASCII)
@@ -201,7 +201,7 @@ class LiveSelectStream:
         """
         self.connection = connection
         self.table = table
-        if not _SAFE_TABLE_RE.match(table):
+        if not _SAFE_TABLE_RE.fullmatch(table):
             raise ValueError(f"Invalid table name: {table!r}")
         self.where = where
         self.params = params or {}

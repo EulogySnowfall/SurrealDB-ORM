@@ -36,7 +36,7 @@ from typing import Any
 from ..connection.http import HTTPConnection
 from ..exceptions import ChangeFeedError
 
-_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 _VERSIONSTAMP_RE = re.compile(r"[0-9]+")
 _MAX_VERSIONSTAMP = 2**64 - 1
 
@@ -151,7 +151,7 @@ class ChangeFeedStream:
         """
         self.connection = connection
         self.table = table
-        if not _SAFE_TABLE_RE.match(table):
+        if not _SAFE_TABLE_RE.fullmatch(table):
             raise ValueError(f"Invalid table name: {table!r}")
         if batch_size < 1:
             raise ValueError(f"batch_size must be at least 1, got {batch_size}")

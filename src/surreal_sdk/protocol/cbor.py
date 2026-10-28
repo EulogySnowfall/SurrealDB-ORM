@@ -59,7 +59,7 @@ def needs_id_escaping(record_id: str) -> bool:
         return False
     if record_id[0].isdigit():
         return True
-    return not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", record_id)
+    return not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", record_id)
 
 
 def escape_record_id(record_id: str) -> str:
