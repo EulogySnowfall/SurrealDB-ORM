@@ -7,6 +7,8 @@ using mocks instead of real database connections.
 
 import inspect
 import sys
+import time
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1246,3 +1248,325 @@ class TestIssue353SessionRecordLookup:
                 await model.change_password("x@example.com", "old", "new")
 
         mock_root.query.assert_not_awaited()
+
+
+def _i372_jwt(claims: dict[str, object]) -> str:
+    """Build an unsigned JWT-shaped token carrying ``claims``."""
+    import base64
+    import json
+
+    def part(data: dict[str, object]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
+
+    return f"{part({'alg': 'HS512'})}.{part(claims)}.c2ln"
+
+
+def _i372_client(auth: object, *, success: bool = True) -> AsyncMock:
+    """Ephemeral connection mock whose ``RETURN $auth`` yields ``auth``."""
+    client = AsyncMock()
+    client.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=success, raw={}))
+    client.query = AsyncMock(return_value=MagicMock(first_result=MagicMock(result=auth)))
+    client.close = AsyncMock()
+    return client
+
+
+class TestIssue372TokenCacheExpiryAndTable:
+    """#372 (backport of #331) — validate_token() honours the token's exp and the model's table.
+
+    A cached entry lives until ``min(ttl, exp)``; a token whose ``exp`` cannot
+    be read is never cached. A ``$auth`` record from another table yields
+    ``None``, and cache entries are keyed per table so one model never reads
+    another model's entry.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self) -> Iterator[None]:
+        AuthenticatedUserMixin._token_cache.clear()
+        AuthenticatedUserMixin._token_cache_ttl = 300
+        AuthenticatedUserMixin._token_cache_max_size = 1000
+        yield
+        AuthenticatedUserMixin._token_cache.clear()
+
+    @staticmethod
+    def _models() -> tuple[type, type]:
+        class I372Member(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="i372_member")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        class I372Staff(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="i372_staff")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        return I372Member, I372Staff
+
+    async def test_cached_entry_not_returned_after_token_exp(self) -> None:
+        """An entry cached for a token is dropped once the token's exp passes."""
+        member, _ = self._models()
+        now_wall, now_mono = 1_900_000_000.0, 5_000.0
+        token = _i372_jwt({"ID": "i372_member:a", "exp": int(now_wall) + 10})
+
+        clock = MagicMock()
+        clock.time = MagicMock(return_value=now_wall)
+        clock.monotonic = MagicMock(return_value=now_mono)
+        first = _i372_client("i372_member:a")
+        with (
+            patch("src.surreal_orm.auth.mixins.time", clock),
+            patch.object(member, "_create_auth_client", new=AsyncMock(return_value=first)),
+        ):
+            assert await member.validate_token(token) == "i372_member:a"
+
+        # 20 s later (both clocks): the token expired 10 s ago, TTL is 300 s.
+        clock.time.return_value = now_wall + 20
+        clock.monotonic.return_value = now_mono + 20
+        second = _i372_client(None, success=False)
+        with (
+            patch("src.surreal_orm.auth.mixins.time", clock),
+            patch.object(member, "_create_auth_client", new=AsyncMock(return_value=second)),
+        ):
+            assert await member.validate_token(token) is None
+        second.authenticate.assert_awaited_once_with(token)
+
+    async def test_entry_deadline_is_bounded_by_exp(self) -> None:
+        """A token expiring before the TTL is cached only until its exp."""
+        member, _ = self._models()
+        exp = int(time.time()) + 30
+        token = _i372_jwt({"ID": "i372_member:a", "exp": exp})
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_member:a"))):
+            assert await member.validate_token(token) == "i372_member:a"
+
+        ((key, entry),) = AuthenticatedUserMixin._token_cache.items()
+        assert key == member._token_cache_key(token)
+        assert key[1:] == ("i372_member", token)
+        deadline = entry[1]
+        assert deadline - time.monotonic() <= 31
+
+    async def test_other_table_returns_none_and_is_not_cached(self) -> None:
+        """A token whose $auth is in another table is rejected, not cached."""
+        _, staff = self._models()
+        token = _i372_jwt({"ID": "i372_member:a", "exp": int(time.time()) + 600})
+        client = _i372_client("i372_member:a")
+        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=client)):
+            assert await staff.validate_token(token) is None
+        assert AuthenticatedUserMixin._token_cache == {}
+        client.close.assert_awaited_once()
+
+    async def test_other_table_record_id_object_returns_none(self) -> None:
+        """The table check reads the decoded RecordId, not a string prefix."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        _, staff = self._models()
+        token = _i372_jwt({"ID": "x", "exp": int(time.time()) + 600})
+        # A key that *starts with* the staff table name must not pass.
+        auth = RecordId(table="i372_member", id="i372_staff")
+        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=_i372_client(auth))):
+            assert await staff.validate_token(token) is None
+
+    async def test_same_table_record_id_object_is_accepted(self) -> None:
+        """A decoded RecordId of the model's own table is accepted."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        member, _ = self._models()
+        token = _i372_jwt({"ID": "x", "exp": int(time.time()) + 600})
+        auth = RecordId(table="i372_member", id="a")
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i372_client(auth))):
+            assert await member.validate_token(token) == "i372_member:a"
+
+    async def test_cache_entry_of_one_model_not_returned_to_another(self) -> None:
+        """The shared cache is keyed per table."""
+        member, staff = self._models()
+        token = _i372_jwt({"ID": "i372_member:a", "exp": int(time.time()) + 600})
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_member:a"))):
+            assert await member.validate_token(token) == "i372_member:a"
+
+        client = _i372_client("i372_member:a")
+        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=client)):
+            assert await staff.validate_token(token) is None
+        client.authenticate.assert_awaited_once_with(token)
+
+    @pytest.mark.parametrize(
+        "claims",
+        [None, {"ID": "i372_member:a"}, {"ID": "i372_member:a", "exp": "soon"}, {"ID": "i372_member:a", "exp": True}],
+        ids=["opaque", "no-exp", "string-exp", "bool-exp"],
+    )
+    async def test_unreadable_exp_is_validated_but_not_cached(self, claims: dict[str, object] | None) -> None:
+        """Without a readable exp the token is validated by the server every time."""
+        member, _ = self._models()
+        token = "opaque-token" if claims is None else _i372_jwt(claims)
+        client = _i372_client("i372_member:a")
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=client)):
+            assert await member.validate_token(token) == "i372_member:a"
+            assert await member.validate_token(token) == "i372_member:a"
+        assert AuthenticatedUserMixin._token_cache == {}
+        assert client.authenticate.await_count == 2
+
+    async def test_authenticate_token_other_table_returns_none(self) -> None:
+        """authenticate_token() rejects a $auth record of another table."""
+        _, staff = self._models()
+        fetch = AsyncMock(return_value=MagicMock())
+        with (
+            patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_member:a"))),
+            patch.object(staff, "_fetch_record_by_id", new=fetch),
+        ):
+            assert await staff.authenticate_token("tok") is None
+        fetch.assert_not_awaited()
+
+    async def test_cached_entry_of_another_table_is_not_returned(self) -> None:
+        """A hit whose cached record is in another table is dropped, not served."""
+        _, staff = self._models()
+        token = _i372_jwt({"ID": "i372_member:a", "exp": int(time.time()) + 600})
+        key = staff._token_cache_key(token)
+        AuthenticatedUserMixin._token_cache[key] = ("i372_member:a", time.monotonic() + 300, time.time() + 600)
+        client = _i372_client("i372_member:a")
+        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=client)):
+            assert await staff.validate_token(token) is None
+        assert AuthenticatedUserMixin._token_cache == {}
+        client.authenticate.assert_awaited_once_with(token)
+
+    async def test_authenticate_token_other_table_record_id_object_returns_none(self) -> None:
+        """authenticate_token() reads the decoded RecordId's table."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        _, staff = self._models()
+        fetch = AsyncMock(return_value=MagicMock())
+        auth = RecordId(table="i372_member", id="a")
+        with (
+            patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=_i372_client(auth))),
+            patch.object(staff, "_fetch_record_by_id", new=fetch),
+        ):
+            assert await staff.authenticate_token("tok") is None
+        fetch.assert_not_awaited()
+
+    async def test_invalidate_token_removes_every_table_entry(self) -> None:
+        """invalidate_token_cache(token) drops the token for every model."""
+        member, staff = self._models()
+        token = _i372_jwt({"ID": "i372_member:a", "exp": int(time.time()) + 600})
+        other = _i372_jwt({"ID": "i372_member:b", "exp": int(time.time()) + 600})
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_member:a"))):
+            await member.validate_token(token)
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_member:b"))):
+            await member.validate_token(other)
+        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_staff:a"))):
+            await staff.validate_token(token)
+        assert len(AuthenticatedUserMixin._token_cache) == 3
+
+        staff.invalidate_token_cache(token)
+
+        assert list(AuthenticatedUserMixin._token_cache) == [member._token_cache_key(other)]
+
+
+class TestIssue372TokenCachePerConnection:
+    """#372 (backport of #331) — cache entries are no longer shared between connections.
+
+    The same model (or two models sharing a table name) can be routed to
+    different databases via ``using()`` or ``connection=``.  A token validated
+    on one connection must be validated again by the server of another.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _registry_and_cache(self) -> Iterator[None]:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        mgr = SurrealDBConnectionManager
+        saved_configs = dict(mgr._configs)
+        for name, db in (("i372_a", "i372_db_a"), ("i372_b", "i372_db_b")):
+            mgr.add_connection(
+                name,
+                url="http://localhost:8000",
+                user="root",
+                password="root",
+                namespace="i372_ns",
+                database=db,
+            )
+        AuthenticatedUserMixin._token_cache.clear()
+        AuthenticatedUserMixin._token_cache_ttl = 300
+        AuthenticatedUserMixin._token_cache_max_size = 1000
+        yield
+        AuthenticatedUserMixin._token_cache.clear()
+        mgr._configs.clear()
+        mgr._configs.update(saved_configs)
+
+    @staticmethod
+    def _model() -> type:
+        class I372ConnUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="i372_conn_user")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        return I372ConnUser
+
+    async def test_entry_cached_on_one_connection_not_served_on_another(self) -> None:
+        """A token cached through connection A is re-validated through B."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        model = self._model()
+        token = _i372_jwt({"ID": "i372_conn_user:a", "exp": int(time.time()) + 600})
+        with patch.object(model, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_conn_user:a"))):
+            async with SurrealDBConnectionManager.using("i372_a"):
+                assert await model.validate_token(token) == "i372_conn_user:a"
+
+        refused = _i372_client(None, success=False)
+        with patch.object(model, "_create_auth_client", new=AsyncMock(return_value=refused)):
+            async with SurrealDBConnectionManager.using("i372_b"):
+                assert await model.validate_token(token) is None
+        refused.authenticate.assert_awaited_once_with(token)
+
+    async def test_entry_still_served_on_the_same_connection(self) -> None:
+        """Caching on one connection keeps working for that connection."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        model = self._model()
+        token = _i372_jwt({"ID": "i372_conn_user:a", "exp": int(time.time()) + 600})
+        client = _i372_client("i372_conn_user:a")
+        with patch.object(model, "_create_auth_client", new=AsyncMock(return_value=client)):
+            async with SurrealDBConnectionManager.using("i372_a"):
+                assert await model.validate_token(token) == "i372_conn_user:a"
+                assert await model.validate_token(token) == "i372_conn_user:a"
+        client.authenticate.assert_awaited_once_with(token)
+
+    async def test_invalidate_token_removes_entries_of_every_connection(self) -> None:
+        """invalidate_token_cache(token) drops the token on every connection."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        model = self._model()
+        token = _i372_jwt({"ID": "i372_conn_user:a", "exp": int(time.time()) + 600})
+        other = _i372_jwt({"ID": "i372_conn_user:b", "exp": int(time.time()) + 600})
+        for name in ("i372_a", "i372_b"):
+            async with SurrealDBConnectionManager.using(name):
+                with patch.object(model, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_conn_user:a"))):
+                    await model.validate_token(token)
+        async with SurrealDBConnectionManager.using("i372_a"):
+            with patch.object(model, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_conn_user:b"))):
+                await model.validate_token(other)
+            other_key = model._token_cache_key(other)
+        assert len(AuthenticatedUserMixin._token_cache) == 3
+
+        model.invalidate_token_cache(token)
+
+        assert list(AuthenticatedUserMixin._token_cache) == [other_key]
+
+    def test_model_connection_name_is_not_shadowed_by_the_mixin(self) -> None:
+        """Auth calls follow the model's connection (using(), then connection=)."""
+
+        class I372RoutedUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="i372_routed_user", connection="i372_b")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        assert I372RoutedUser.get_connection_name() == "i372_b"
+        assert I372RoutedUser._token_cache_key("t")[0] == ("i372_b", "http://localhost:8000", "i372_ns", "i372_db_b")
+        assert self._model().get_connection_name() == "default"
+
+    async def test_using_overrides_the_auth_connection(self) -> None:
+        """using() reroutes the auth connection and the cache key."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        model = self._model()
+        async with SurrealDBConnectionManager.using("i372_a"):
+            assert model.get_connection_name() == "i372_a"
+            assert model._token_cache_key("t")[0][3] == "i372_db_a"
