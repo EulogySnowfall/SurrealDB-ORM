@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.19)
+> Context document for Claude AI - Last updated: October 2026 (0.21.20)
 
 <!-- -->
 
@@ -19,12 +19,30 @@
 
 ---
 
-## Current Version: 0.21.19 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.20 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.20
+
+Bug fix, the `v2` port of #286 (#294, #307). No new public API; optional foreign keys change behaviour.
+
+- **The defect:** `get_foreign_key_targets()` read the `ForeignKey` marker from `FieldInfo.metadata`
+  only. Pydantic lifts a bare `Annotated` marker there but leaves a union member's marker on
+  `FieldInfo.annotation`, so `ForeignKey("X") | None` and `Optional[ForeignKey("X")]` were missing from
+  the map every record-link coercion reads: writes (`save()`, `update()`, `merge()`, `bulk_update()`)
+  sent a string and `exact` / `in` / `not_in` filters bound a string that matched nothing.
+- **The fix:** a private `_find_marker()` in `fields/relation.py` searches the `Annotated` members of a
+  union annotation, then the metadata; `get_foreign_key_targets()` (and so `get_foreign_key_columns()`)
+  uses it. Alias handling is unchanged.
+- **Behaviour change:** string rows written earlier through an optional FK no longer match a filter;
+  the CHANGELOG has the 2.x conversion statement (`type::thing()`, checked on 2.7.0).
+- **Still open:** the exported `is_foreign_key()` / `is_relation_field()` / `get_relation_info()`
+  helpers and the migrations introspector only look at a top-level `Annotated`, so they miss the union
+  form. Tests: `tests/test_issue_294_v2_unit.py`, `tests/test_issue_294_v2_integration.py`.
 
 ### What's New in 0.21.19
 
