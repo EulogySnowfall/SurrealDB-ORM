@@ -15,6 +15,7 @@ from src.surreal_orm.migrations.state import (
     SchemaState,
     TableState,
 )
+from src.surreal_orm.surreal_function import SurrealFunc
 
 
 @pytest.fixture
@@ -145,9 +146,10 @@ class TestGenerateField:
         assert "default=True" in line
 
     def test_field_with_default_function(self) -> None:
-        field = FieldState(name="created_at", field_type="datetime", nullable=False, default="time::now()")
+        field = FieldState(name="created_at", field_type="datetime", nullable=False, default=SurrealFunc("time::now()"))
         line, imports = self.gen._generate_field(field)
-        assert '"time::now()"' in line
+        assert "default=SurrealFunc('time::now()')" in line
+        assert "from surreal_orm import SurrealFunc" in imports
 
     def test_computed_field(self) -> None:
         field = FieldState(

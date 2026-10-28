@@ -5,12 +5,16 @@ Each operation represents a single schema modification that can be
 applied (forwards) or reverted (backwards).
 """
 
+import re
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ..surreal_function import SurrealFunc
 from ..types import FieldType
+from ..utils import surql_string_literal
 
 if TYPE_CHECKING:
     from .state import FieldState, TableState
@@ -132,14 +136,43 @@ def _previous_attr(name: str) -> str:
     return "previous_type" if name == "field_type" else f"previous_{name}"
 
 
+#: A ``str`` default still emitted as an expression, for older migration
+#: files: a whole no-argument function call (``time::now()``) or a whole bare
+#: parameter (``$value``). Deliberately narrow: no arguments, no spaces, no
+#: operators, so nothing but that one call or parameter can be emitted.
+_LEGACY_EXPRESSION_DEFAULT = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+\(\)|\$[A-Za-z_][A-Za-z0-9_]*",
+    re.ASCII,
+)
+
+#: The warning for a ``str`` default read as an expression, shared by the
+#: renderer and the model introspector.
+_LEGACY_EXPRESSION_DEFAULT_WARNING = (
+    "Passing a server-side expression as a str default is deprecated; wrap it in SurrealFunc(...)"
+)
+
+
 def _render_default(default: Any) -> str:
     """
     Render a DEFAULT value as SurrealQL.
 
-    A bare Python ``repr`` is wrong three ways: ``True`` is not ``true``, a
-    function call must not be quoted or it becomes a string literal, and an
-    apostrophe inside a quoted literal has to be doubled or the statement will
-    not parse.
+    A bare Python ``repr`` is wrong two ways: ``True`` is not ``true``, and a
+    quote or backslash inside a quoted literal has to be escaped the way the
+    server's lexer reads it (:func:`surql_string_literal`), or the statement
+    does not parse, or stores a different text.
+
+    A ``str`` is a text, whatever it contains: ``'fr::CA'`` is a string, not
+    a function. A server-side expression such as ``time::now()`` is a
+    :class:`~surreal_orm.SurrealFunc`, which is what ``_parse_default_value``,
+    the migration generator and ``inspectdb`` produce for an unquoted
+    default, and is emitted as written.
+
+    One deprecated exception keeps migration files written before
+    ``SurrealFunc`` defaults working: a ``str`` that is *exactly* a
+    no-argument function call (``time::now()``, ``rand::uuid()``) or a bare
+    parameter (``$value``) is still emitted unquoted, with a
+    ``DeprecationWarning``. Anything else (arguments, operators, spaces,
+    quotes, ``;``) is quoted.
 
     Args:
         default: The default value, as the model or the database reports it
@@ -147,14 +180,19 @@ def _render_default(default: Any) -> str:
     Returns:
         The SurrealQL literal or expression
     """
+    if isinstance(default, SurrealFunc):
+        return default.expression
     if isinstance(default, bool):
         return str(default).lower()
     if isinstance(default, str):
-        # `time::now()` and `$value` are expressions, not literals. This mirrors
-        # `_parse_default_value`, which returns them as bare strings.
-        if "::" in default or default.startswith("$"):
+        if _LEGACY_EXPRESSION_DEFAULT.fullmatch(default):
+            warnings.warn(
+                _LEGACY_EXPRESSION_DEFAULT_WARNING,
+                DeprecationWarning,
+                stacklevel=3,
+            )
             return default
-        return "'" + default.replace("'", "''") + "'"
+        return surql_string_literal(default)
     return str(default)
 
 
@@ -219,7 +257,7 @@ def _render_define_field(
         parts.append("READONLY")
 
     if comment:
-        parts.append(f"COMMENT '{comment.replace(chr(39), chr(39) * 2)}'")
+        parts.append(f"COMMENT {surql_string_literal(comment)}")
 
     # Last, where SurrealDB reports it. `DEFINE FIELD OVERWRITE` replaces the
     # whole definition, so a clause left out here is reset to FULL (#259).
@@ -435,7 +473,7 @@ def _render_define_table(
         parts.append(f"CHANGEFEED {changefeed}")
 
     if comment:
-        parts.append(f"COMMENT '{comment.replace(chr(39), chr(39) * 2)}'")
+        parts.append(f"COMMENT {surql_string_literal(comment)}")
 
     # PERMISSIONS is a clause of DEFINE TABLE. It used to be emitted as a
     # second `DEFINE TABLE ... PERMISSIONS ...`, which SurrealDB rejects once
@@ -1066,8 +1104,7 @@ class CreateIndex(Operation):
                 parts.append("CONCURRENTLY")
 
         if self.comment:
-            escaped_comment = self.comment.replace("'", "''")
-            parts.append(f"COMMENT '{escaped_comment}'")
+            parts.append(f"COMMENT {surql_string_literal(self.comment)}")
 
         return " ".join(parts) + ";"
 
@@ -1143,8 +1180,7 @@ class DefineAccess(Operation):
     DURATION FOR TOKEN {self.duration_token}, FOR SESSION {self.duration_session}"""
 
         if self.comment:
-            escaped_comment = self.comment.replace("'", "''")
-            sql += f"\n    COMMENT '{escaped_comment}'"
+            sql += f"\n    COMMENT {surql_string_literal(self.comment)}"
 
         return sql + ";"
 
@@ -1354,8 +1390,7 @@ class DefineEvent(Operation):
         parts.append(f"THEN ({self.then})")
 
         if self.comment:
-            escaped_comment = self.comment.replace("'", "''")
-            parts.append(f"COMMENT '{escaped_comment}'")
+            parts.append(f"COMMENT {surql_string_literal(self.comment)}")
 
         return " ".join(parts) + ";"
 

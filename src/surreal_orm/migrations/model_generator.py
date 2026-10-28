@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 
+from ..surreal_function import SurrealFunc
 from .state import FieldState, SchemaState, TableState
 
 # SurrealDB type → Python type annotation
@@ -221,6 +222,8 @@ class ModelCodeGenerator:
         field_kwargs: list[str] = []
 
         if field.default is not None:
+            if isinstance(field.default, SurrealFunc):
+                extra_imports.add("from surreal_orm import SurrealFunc")
             default_repr = self._format_default(field.default)
             field_kwargs.append(f"default={default_repr}")
 
@@ -287,11 +290,13 @@ class ModelCodeGenerator:
             imports.add("from surreal_orm.fields import GeoField")
 
     def _format_default(self, default: object) -> str:
-        """Format a default value for Python source code."""
+        """Format a default value for Python source code.
+
+        A ``str`` is a text and goes through ``repr``, which escapes it; a
+        server-side expression arrives as a ``SurrealFunc`` and renders as
+        ``SurrealFunc('time::now()')``.
+        """
         if isinstance(default, str):
-            # Check if it's a function call (e.g., time::now())
-            if "::" in default or "(" in default:
-                return f'"{default}"'
             return repr(default)
         if isinstance(default, bool):
             return "True" if default else "False"

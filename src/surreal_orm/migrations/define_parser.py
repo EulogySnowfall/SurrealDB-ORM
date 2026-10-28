@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..surreal_function import SurrealFunc
 from .operations import _effective_field_permissions
 from .state import EventState, FieldState, IndexState
 
@@ -56,6 +57,43 @@ _TABLE_KEYWORDS = [
     "AS",
     "DROP",
 ]
+
+
+#: What a backslash escape inside a SurrealQL string stands for. Any other
+#: escaped character stands for itself (``\\'``, ``\\"``, ``\\\\``).
+_STRING_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f"}
+
+
+def _unquote_surql_string(raw: str) -> str:
+    """Decode a quoted SurrealQL string as the server reports it.
+
+    The server echoes a text single-quoted, or double-quoted when the text
+    holds an apostrophe, and escapes with a backslash: ``"it's \\"x\\""``,
+    ``'C:\\\\temp'``, ``'line\\n'``. A text that is not quoted is returned
+    stripped and otherwise unchanged.
+
+    Args:
+        raw: The literal, quotes included
+
+    Returns:
+        The text it stands for
+    """
+    raw = raw.strip()
+    if len(raw) < 2 or raw[0] not in ("'", '"') or raw[-1] != raw[0]:
+        return raw
+    body = raw[1:-1]
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body):
+            escaped = body[i + 1]
+            out.append(_STRING_ESCAPES.get(escaped, escaped))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _extract_clauses(body: str, keywords: list[str]) -> dict[str, str]:
@@ -105,9 +143,12 @@ def _extract_clauses(body: str, keywords: list[str]) -> dict[str, str]:
 def _consume_until_keyword(text: str, keywords: list[str]) -> tuple[str, str]:
     """Consume text until the next recognized keyword boundary.
 
-    Respects parentheses, single-quoted strings, and angle brackets
-    so that expressions like ``string::concat(first_name, ' ', last_name)``
-    or ``array<string>`` are not split prematurely.
+    Respects parentheses, quoted strings, and angle brackets so that
+    expressions like ``string::concat(first_name, ' ', last_name)`` or
+    ``array<string>`` are not split prematurely. A string is single- or
+    double-quoted, as the server reports it, and a backslash escapes the
+    character after it: ``COMMENT "it's"`` must not open a single-quoted
+    string that swallows every later clause.
 
     Returns:
         (consumed_value, remaining_text)
@@ -115,24 +156,21 @@ def _consume_until_keyword(text: str, keywords: list[str]) -> tuple[str, str]:
     i = 0
     depth_paren = 0
     depth_angle = 0
-    in_quote = False
+    quote = ""
 
     while i < len(text):
         ch = text[i]
 
-        if ch == "'" and not in_quote:
-            in_quote = True
-            i += 1
-            continue
-        if ch == "'" and in_quote:
-            # Check for escaped quote
-            if i > 0 and text[i - 1] == "\\":
-                i += 1
+        if quote:
+            if ch == "\\":
+                i += 2
                 continue
-            in_quote = False
+            if ch == quote:
+                quote = ""
             i += 1
             continue
-        if in_quote:
+        if ch in ("'", '"'):
+            quote = ch
             i += 1
             continue
 
@@ -338,14 +376,9 @@ def parse_define_field(statement: str) -> FieldState:
     # Parse ASSERT clause
     assertion = clauses.get("ASSERT") or None
 
-    # Parse COMMENT clause — echoed back single-quoted, with '' for a quote
-    comment: str | None = None
+    # Parse COMMENT clause — single- or double-quoted, backslash-escaped
     raw_comment = clauses.get("COMMENT")
-    if raw_comment:
-        raw_comment = raw_comment.strip()
-        if raw_comment.startswith("'") and raw_comment.endswith("'") and len(raw_comment) >= 2:
-            raw_comment = raw_comment[1:-1]
-        comment = raw_comment.replace("''", "'")
+    comment = _unquote_surql_string(raw_comment) if raw_comment else None
 
     return FieldState(
         name=field_name,
@@ -364,7 +397,12 @@ def parse_define_field(statement: str) -> FieldState:
 
 
 def _parse_default_value(raw: str | None) -> Any:
-    """Parse a DEFAULT clause value into a Python object."""
+    """Parse a DEFAULT clause value into a Python object.
+
+    A quoted text becomes a ``str``; an unquoted expression such as
+    ``time::now()`` becomes a :class:`~surreal_orm.SurrealFunc`, so the two
+    are rendered back differently.
+    """
     if raw is None or raw == "":
         return None
 
@@ -381,8 +419,8 @@ def _parse_default_value(raw: str | None) -> Any:
         return False
 
     # Quoted string
-    if (raw.startswith("'") and raw.endswith("'")) or (raw.startswith('"') and raw.endswith('"')):
-        return raw[1:-1]
+    if len(raw) >= 2 and raw[0] in ("'", '"') and raw[-1] == raw[0]:
+        return _unquote_surql_string(raw)
 
     # Integer
     try:
@@ -396,8 +434,31 @@ def _parse_default_value(raw: str | None) -> Any:
     except ValueError:
         pass
 
-    # Function call or expression (e.g., time::now())
-    return raw
+    # Function call or expression (e.g., time::now()). Carried as a
+    # SurrealFunc so it is re-emitted as an expression, while every plain
+    # str is rendered back as a quoted text.
+    return _default_expression(raw)
+
+
+def _default_expression(raw: str) -> SurrealFunc:
+    """Wrap an unquoted DEFAULT expression the server reported.
+
+    ``SurrealFunc`` refuses a few keyword-and-semicolon shapes meant for
+    hand-written values. This text is the server's own definition, already
+    accepted by it, so it is carried as-is when that check would refuse it.
+
+    Args:
+        raw: The expression, as the server echoes it
+
+    Returns:
+        The expression, marked as such
+    """
+    try:
+        return SurrealFunc(raw)
+    except ValueError:
+        expression = SurrealFunc.__new__(SurrealFunc)
+        expression.expression = raw
+        return expression
 
 
 def parse_define_table(statement: str) -> dict[str, Any]:
@@ -468,14 +529,9 @@ def parse_define_table(statement: str) -> dict[str, Any]:
     # Permissions
     permissions = _parse_permissions(clauses.get("PERMISSIONS"))
 
-    # Comment — the server echoes it back single-quoted, with '' for a quote
-    comment: str | None = None
+    # Comment — single- or double-quoted, backslash-escaped
     raw_comment = clauses.get("COMMENT")
-    if raw_comment:
-        raw_comment = raw_comment.strip()
-        if raw_comment.startswith("'") and raw_comment.endswith("'") and len(raw_comment) >= 2:
-            raw_comment = raw_comment[1:-1]
-        comment = raw_comment.replace("''", "'")
+    comment = _unquote_surql_string(raw_comment) if raw_comment else None
 
     # Materialized view (AS SELECT ... or AS (SELECT ...))
     # We re-extract from the raw body because _extract_clauses may split on
@@ -682,7 +738,7 @@ def parse_define_index(statement: str) -> IndexState:
     # Strip COMMENT clause before keyword detection so that comment
     # text like 'COMMENT "Uses HNSW for speed"' doesn't cause false
     # matches on keywords like UNIQUE, BM25, or HNSW.
-    flags_str = re.sub(r"""COMMENT\s+(?:"[^"]*"|'[^']*')""", "", flags_str, flags=re.IGNORECASE)
+    flags_str = re.sub(r"""COMMENT\s+(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')""", "", flags_str, flags=re.IGNORECASE)
 
     upper_flags = flags_str.upper()
 

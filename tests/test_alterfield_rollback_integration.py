@@ -14,6 +14,7 @@ import pytest
 from src import surreal_orm
 from src.surreal_orm.migrations.operations import AddField, AlterField, CreateTable
 from src.surreal_orm.migrations.state import FieldState
+from src.surreal_orm.surreal_function import SurrealFunc
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_alterfield_rollback"
@@ -93,7 +94,7 @@ async def test_a_default_survives_the_rollback_unquoted() -> None:
     client = await surreal_orm.SurrealDBConnectionManager.get_client()
     await client.query(CreateTable(name=TABLE).forwards())
 
-    previous = FieldState(name="created", field_type="datetime", nullable=False, default="time::now()")
+    previous = FieldState(name="created", field_type="datetime", nullable=False, default=SurrealFunc("time::now()"))
     target = FieldState(name="created", field_type="datetime", nullable=False)
     op = AlterField.from_field_states(TABLE, previous, target)
 

@@ -6,6 +6,7 @@ a SchemaState that can be compared against the current database state.
 """
 
 import types
+import warnings
 from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 
 from pydantic.fields import FieldInfo
@@ -14,7 +15,9 @@ from pydantic_core import PydanticUndefined
 from ..fields.computed import _ComputedMarker, get_computed_expression, is_computed_field
 from ..fields.encrypted import is_encrypted_field
 from ..fields.relation import is_graph_relation, is_many_to_many
+from ..surreal_function import SurrealFunc
 from ..types import PYTHON_TO_SURREAL_TYPE, FieldType, TableType
+from .operations import _LEGACY_EXPRESSION_DEFAULT, _LEGACY_EXPRESSION_DEFAULT_WARNING
 from .state import AccessState, FieldState, SchemaState, TableState
 
 if TYPE_CHECKING:
@@ -191,6 +194,14 @@ class ModelIntrospector:
         if not computed_expression:
             if field_info.default is not None and field_info.default is not ... and field_info.default is not PydanticUndefined:
                 default = field_info.default
+                # A model written before SurrealFunc defaults carries a
+                # server-side expression as a str. The database reports that
+                # default unquoted, which the parser reads as SurrealFunc, so
+                # it is read the same way here (same allow-list and warning
+                # as _render_default) or the two states never compare equal.
+                if isinstance(default, str) and _LEGACY_EXPRESSION_DEFAULT.fullmatch(default):
+                    warnings.warn(_LEGACY_EXPRESSION_DEFAULT_WARNING, DeprecationWarning, stacklevel=2)
+                    default = SurrealFunc(default)
             elif field_info.default_factory is not None:
                 # Can't serialize factory, skip default
                 pass

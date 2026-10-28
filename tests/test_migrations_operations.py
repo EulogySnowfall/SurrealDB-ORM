@@ -17,6 +17,7 @@ from src.surreal_orm.migrations.operations import (
     RawSQL,
     RemoveAccess,
 )
+from src.surreal_orm.surreal_function import SurrealFunc
 
 
 class TestCreateTable:
@@ -107,7 +108,7 @@ class TestAddField:
 
     def test_add_field_with_function_default(self) -> None:
         """Test field with function default."""
-        op = AddField(table="users", name="created_at", field_type="datetime", default="time::now()")
+        op = AddField(table="users", name="created_at", field_type="datetime", default=SurrealFunc("time::now()"))
         sql = op.forwards()
         assert "DEFAULT time::now()" in sql
 
