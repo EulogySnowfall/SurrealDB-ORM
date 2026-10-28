@@ -10,7 +10,7 @@ from collections.abc import Container
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
-from .exceptions import TransactionError
+from .exceptions import TransactionConflictError, TransactionError
 from .protocol.cbor import _ESCAPED_ID_UNIT, unescape_record_id
 
 # A whole ``$name`` parameter reference. ASCII only, like SurrealDB's identifier
@@ -154,6 +154,31 @@ if TYPE_CHECKING:
         RecordResponse,
         RecordsResponse,
     )
+
+
+#: Errors SurrealDB reports for the statements a failed transaction cancelled,
+#: rather than for the statement that failed it. 2.x sends the first for every
+#: cancelled statement; the second is kept for servers that report the aborted
+#: ``COMMIT`` itself.
+_CANCELLED_STATEMENT_ERRORS = ("not executed due to a failed transaction", "Cannot COMMIT")
+
+
+def _failed_statement_error(response: "QueryResponse") -> tuple[str, bool] | None:
+    """The server's error for the statement that failed a batched transaction.
+
+    Once a statement fails, SurrealDB reports every other statement of the
+    transaction as not executed; those messages say nothing about the cause, so
+    the first error that is not one of them is returned, with ``True``. When
+    there are only such messages, the first one is returned with ``False``
+    (cause unknown). ``None`` when every statement succeeded.
+    """
+    errors = [str(statement.result) for statement in response.results if statement.is_error]
+    if not errors:
+        return None
+    for error in errors:
+        if not any(marker in error for marker in _CANCELLED_STATEMENT_ERRORS):
+            return error, True
+    return errors[0], False
 
 
 @dataclass
@@ -331,6 +356,17 @@ class HTTPTransaction(BaseTransaction):
         statement binds are renamed; built-ins such as ``$auth`` or ``$session`` and
         unbound references stay as written. The scan is textual, so a bound ``$k``
         written inside a quoted string literal is renamed too.
+
+        Returns:
+            The server's response, one result per statement.
+
+        Raises:
+            TransactionConflictError: The statement that failed the batch reported
+                a retryable conflict.
+            TransactionError: The request failed (the original exception is
+                chained), or the server rejected a statement; the message carries
+                that statement's own error. Nothing was written, ``is_committed``
+                is ``False`` and the transaction is no longer active.
         """
         from .types import QueryResponse
 
@@ -363,12 +399,26 @@ class HTTPTransaction(BaseTransaction):
 
         try:
             result = await self._connection.query(full_sql, all_vars)
-            self._committed = True
-            self._active = False
-            return result
         except Exception as e:
             self._active = False
-            raise TransactionError(f"Transaction commit failed: {e}")
+            raise TransactionError(f"Transaction commit failed: {e}") from e
+
+        self._active = False
+        # A statement the server rejects does not fail the request: it comes back
+        # inside a successful response as ``status: ERR``, the server cancels the
+        # rest of the batch, and nothing is written. Without this check the commit
+        # looked successful.
+        failure = _failed_statement_error(result)
+        if failure is not None:
+            error, is_cause = failure
+            message = f"Transaction commit failed: {error}"
+            # A cancellation message says "failed transaction", which would read as a
+            # retryable conflict; only the failing statement's own error is classified.
+            if is_cause and TransactionConflictError.is_conflict_error(Exception(error)):
+                raise TransactionConflictError(message)
+            raise TransactionError(message)
+        self._committed = True
+        return result
 
     async def rollback(self) -> None:
         """Discard queued statements (no server call needed for HTTP)."""
