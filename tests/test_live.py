@@ -309,6 +309,32 @@ class TestChangeModelStream:
         stream = ChangeModelStream(model=PlayerModel, connection=None, table="players")
         assert stream.__aiter__() is stream
 
+    def test_parse_change_include_original_update(self) -> None:
+        """``CHANGEFEED … INCLUDE ORIGINAL``: the record is under ``current``, ``update`` is a JSON patch (#281)."""
+        stream = ChangeModelStream(model=PlayerModel, connection=None, table="players")
+        change = {
+            "versionstamp": 117515406058782720,
+            "changes": [
+                {
+                    "current": {"id": RecordId("players", "abc"), "name": "Bob", "age": 31, "role": "admin"},
+                    "update": [{"op": "replace", "path": "/age", "value": 30}],
+                },
+            ],
+        }
+        events = stream._parse_change(change)
+        assert len(events) == 1
+        assert events[0].action == LiveAction.UPDATE
+        assert events[0].record_id == "players:abc"
+        assert events[0].instance.name == "Bob"
+        assert events[0].instance.age == 31
+
+    def test_parse_change_create_arrives_as_update(self) -> None:
+        """The change feed records a CREATE as ``{"update": record}`` (#281)."""
+        stream = ChangeModelStream(model=PlayerModel, connection=None, table="players")
+        change = {"versionstamp": 1, "changes": [{"update": {"id": RecordId("players", "new"), "name": "Neo"}}]}
+        events = stream._parse_change(change)
+        assert [(e.action, e.record_id, e.instance.name) for e in events] == [(LiveAction.UPDATE, "players:new", "Neo")]
+
 
 # ==================== QuerySet.live() ====================
 

@@ -237,9 +237,14 @@ class ChangeModelStream(Generic[T]):
     - Audit trails
     - Event sourcing
 
+    The change feed reports a create as an update, so events carry
+    ``LiveAction.UPDATE`` or ``LiveAction.DELETE``. ``since`` accepts the forms
+    of ``QuerySet.changes()``; ``cursor`` can be passed back as ``since`` to
+    resume. A rejected poll raises ``ChangeFeedError`` from the iteration.
+
     Usage::
 
-        async for event in User.objects().changes(since="2026-01-01"):
+        async for event in User.objects().changes(since=0):  # the whole retained feed
             await publish_to_queue({
                 "type": f"user.{event.action.value.lower()}",
                 "data": event.raw,
@@ -251,7 +256,7 @@ class ChangeModelStream(Generic[T]):
         model: type[T],
         connection: HTTPConnection | None,
         table: str,
-        since: str | datetime | None = None,
+        since: str | int | datetime | None = None,
         poll_interval: float = 0.1,
         batch_size: int = 100,
     ) -> None:
@@ -284,7 +289,11 @@ class ChangeModelStream(Generic[T]):
 
     @property
     def cursor(self) -> str | None:
-        """Current stream cursor (versionstamp or timestamp)."""
+        """The next versionstamp to read (decimal string), or ``None`` before the stream starts.
+
+        Pass it as ``since`` to a later ``changes()`` to resume after the last
+        delivered change.
+        """
         return self._feed.cursor if self._feed else None
 
     def stop(self) -> None:
@@ -301,10 +310,14 @@ class ChangeModelStream(Generic[T]):
             if not isinstance(item, dict):
                 continue
 
-            # Change feed format: {"define_table": {...}} or {"update": {...}} or {"delete": {...}} or {"create": {...}}
+            # Change feed format: {"define_table": {...}}, {"update": record}, {"delete": {...}},
+            # or, on a CHANGEFEED ... INCLUDE ORIGINAL table, {"current": record, "update": [patch]}.
+            # The server records a CREATE as an update; "create" is kept for older payloads.
             for action_key in ("create", "update", "delete"):
                 if action_key in item:
                     record = item[action_key]
+                    if action_key == "update" and isinstance(item.get("current"), dict):
+                        record = item["current"]
                     if not isinstance(record, dict):
                         continue
 
