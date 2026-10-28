@@ -182,8 +182,12 @@ class TestFilterCoercion:
         assert variables == {}
 
     def test_variable_reference_is_left_alone(self, model: type[BaseSurrealModel]) -> None:
-        """``$var`` is the caller's own binding, not a value to wrap."""
-        assert model.objects()._coerce_filter_value("author", "exact", "$who") == "$who"
+        """A declared ``$var`` is the caller's own binding, not a value to wrap."""
+        assert model.objects()._coerce_filter_value("author", "exact", "$who", {"who"}) == "$who"
+
+    def test_undeclared_variable_reference_is_a_bare_id(self, model: type[BaseSurrealModel]) -> None:
+        """An undeclared ``$who`` is data (#342), qualified like any other bare ID."""
+        assert model.objects()._coerce_filter_value("author", "exact", "$who") == RecordId(table=AUTHORS, id="$who")
 
     @pytest.mark.parametrize("lookup", ["contains", "startswith", "regex"])
     def test_string_lookups_are_left_alone(self, model: type[BaseSurrealModel], lookup: str) -> None:
