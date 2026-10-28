@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..surreal_function import SurrealFunc
 from ..utils import parse_surql_string
 from .state import ApiState, EventState, FieldState, GraphQLConfigState, IndexState
 
@@ -293,7 +294,12 @@ def parse_define_field(statement: str) -> FieldState:
 
 
 def _parse_default_value(raw: str | None) -> Any:
-    """Parse a DEFAULT clause value into a Python object."""
+    """Parse a DEFAULT clause value into a Python object.
+
+    A quoted text becomes a ``str``; an unquoted expression such as
+    ``time::now()`` becomes a :class:`~surreal_orm.SurrealFunc`, so the two
+    are rendered back differently and a text is never replayed as SurrealQL.
+    """
     if raw is None or raw == "":
         return None
 
@@ -325,8 +331,31 @@ def _parse_default_value(raw: str | None) -> Any:
     except ValueError:
         pass
 
-    # Function call or expression (e.g., time::now())
-    return raw
+    # Function call or expression (e.g., time::now()). Carried as a
+    # SurrealFunc so it is re-emitted as an expression, while every plain str
+    # is rendered back as a quoted text.
+    return _default_expression(raw)
+
+
+def _default_expression(raw: str) -> SurrealFunc:
+    """Wrap an unquoted DEFAULT expression the server reported.
+
+    ``SurrealFunc`` refuses a few keyword-and-semicolon shapes meant for
+    hand-written values. This text is the server's own definition, already
+    accepted by it, so it is carried as-is when that check would refuse it.
+
+    Args:
+        raw: The expression, as the server echoes it
+
+    Returns:
+        The expression, marked as such
+    """
+    try:
+        return SurrealFunc(raw)
+    except ValueError:
+        expression = SurrealFunc.__new__(SurrealFunc)
+        expression.expression = raw
+        return expression
 
 
 def parse_define_table(statement: str) -> dict[str, Any]:
