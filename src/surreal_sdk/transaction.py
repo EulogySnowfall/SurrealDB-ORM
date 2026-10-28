@@ -10,7 +10,7 @@ from collections.abc import Container
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
-from .exceptions import TransactionError
+from .exceptions import TransactionConflictError, TransactionError
 from .protocol.cbor import _ESCAPED_ID_UNIT, unescape_record_id
 
 # A whole ``$name`` parameter reference. ASCII only, like SurrealDB's identifier
@@ -66,6 +66,18 @@ def _validate_identifier(name: str, context: str) -> None:
     """Raise ``ValueError`` unless ``name`` is a plain SurrealQL identifier."""
     if not isinstance(name, str) or not _IDENTIFIER_RE.fullmatch(name):
         raise ValueError(f"Invalid {context}: {name!r} (expected an identifier)")
+
+
+def _validate_keys(data: dict[str, Any], context: str = "data") -> None:
+    """Raise ``ValueError`` unless every key of ``data`` is a plain SurrealQL identifier.
+
+    ``HTTPTransaction`` writes each key into the queued statement as the field
+    name and as the name of its parameter (``k = $k``), so a key must be valid
+    in both places. The value is always bound and is never checked here.
+    """
+    for key in data:
+        if not isinstance(key, str) or not _IDENTIFIER_RE.fullmatch(key):
+            raise ValueError(f"Invalid {context} key: {key!r} (expected an identifier)")
 
 
 def _raw_record_id(id_part: str, thing: str, context: str) -> str | None:
@@ -154,6 +166,31 @@ if TYPE_CHECKING:
         RecordResponse,
         RecordsResponse,
     )
+
+
+#: Errors SurrealDB reports for the statements a failed transaction cancelled,
+#: rather than for the statement that failed it. 2.x sends the first for every
+#: cancelled statement; the second is kept for servers that report the aborted
+#: ``COMMIT`` itself.
+_CANCELLED_STATEMENT_ERRORS = ("not executed due to a failed transaction", "Cannot COMMIT")
+
+
+def _failed_statement_error(response: "QueryResponse") -> tuple[str, bool] | None:
+    """The server's error for the statement that failed a batched transaction.
+
+    Once a statement fails, SurrealDB reports every other statement of the
+    transaction as not executed; those messages say nothing about the cause, so
+    the first error that is not one of them is returned, with ``True``. When
+    there are only such messages, the first one is returned with ``False``
+    (cause unknown). ``None`` when every statement succeeded.
+    """
+    errors = [str(statement.result) for statement in response.results if statement.is_error]
+    if not errors:
+        return None
+    for error in errors:
+        if not any(marker in error for marker in _CANCELLED_STATEMENT_ERRORS):
+            return error, True
+    return errors[0], False
 
 
 @dataclass
@@ -309,6 +346,12 @@ class HTTPTransaction(BaseTransaction):
 
     The statements are wrapped in BEGIN TRANSACTION / COMMIT TRANSACTION
     and sent as a single request.
+
+    ``create``, ``insert``, ``update``, ``upsert``, ``merge`` and ``relate``
+    write each key of ``data`` into the statement as a field name, so every
+    key must be a plain identifier (``[A-Za-z_][A-Za-z0-9_]*``); any other key
+    raises ``ValueError`` at the call and nothing is queued. Values are always
+    bound as parameters.
     """
 
     @property
@@ -331,6 +374,17 @@ class HTTPTransaction(BaseTransaction):
         statement binds are renamed; built-ins such as ``$auth`` or ``$session`` and
         unbound references stay as written. The scan is textual, so a bound ``$k``
         written inside a quoted string literal is renamed too.
+
+        Returns:
+            The server's response, one result per statement.
+
+        Raises:
+            TransactionConflictError: The statement that failed the batch reported
+                a retryable conflict.
+            TransactionError: The request failed (the original exception is
+                chained), or the server rejected a statement; the message carries
+                that statement's own error. Nothing was written, ``is_committed``
+                is ``False`` and the transaction is no longer active.
         """
         from .types import QueryResponse
 
@@ -363,12 +417,26 @@ class HTTPTransaction(BaseTransaction):
 
         try:
             result = await self._connection.query(full_sql, all_vars)
-            self._committed = True
-            self._active = False
-            return result
         except Exception as e:
             self._active = False
-            raise TransactionError(f"Transaction commit failed: {e}")
+            raise TransactionError(f"Transaction commit failed: {e}") from e
+
+        self._active = False
+        # A statement the server rejects does not fail the request: it comes back
+        # inside a successful response as ``status: ERR``, the server cancels the
+        # rest of the batch, and nothing is written. Without this check the commit
+        # looked successful.
+        failure = _failed_statement_error(result)
+        if failure is not None:
+            error, is_cause = failure
+            message = f"Transaction commit failed: {error}"
+            # A cancellation message says "failed transaction", which would read as a
+            # retryable conflict; only the failing statement's own error is classified.
+            if is_cause and TransactionConflictError.is_conflict_error(Exception(error)):
+                raise TransactionConflictError(message)
+            raise TransactionError(message)
+        self._committed = True
+        return result
 
     async def rollback(self) -> None:
         """Discard queued statements (no server call needed for HTTP)."""
@@ -394,6 +462,7 @@ class HTTPTransaction(BaseTransaction):
         """Queue a create operation (see :func:`_record_target` for ``thing``)."""
         from .types import RecordResponse
 
+        _validate_keys(data or {})
         target, ref = _record_target(thing, "thing", "_ref", data or {})
         if data:
             # Build CREATE statement with data
@@ -410,6 +479,9 @@ class HTTPTransaction(BaseTransaction):
         _validate_identifier(table, "table")
         if isinstance(data, dict):
             data = [data]
+        # Check every record first, so a bad key in a later one queues nothing.
+        for record in data:
+            _validate_keys(record)
 
         for i, record in enumerate(data):
             fields = ", ".join(f"{k} = $r{i}_{k}" for k in record)
@@ -423,6 +495,7 @@ class HTTPTransaction(BaseTransaction):
         """Queue an update operation (see :func:`_record_target` for ``thing``)."""
         from .types import RecordsResponse
 
+        _validate_keys(data)
         target, ref = _record_target(thing, "thing", "_ref", data)
         fields = ", ".join(f"{k} = ${k}" for k in data)
         self._queue_statement(f"UPDATE {target} SET {fields};", {**data, **ref})
@@ -432,6 +505,7 @@ class HTTPTransaction(BaseTransaction):
         """Queue an upsert operation, create or update (see :func:`_record_target` for ``thing``)."""
         from .types import RecordsResponse
 
+        _validate_keys(data)
         target, ref = _record_target(thing, "thing", "_ref", data)
         fields = ", ".join(f"{k} = ${k}" for k in data)
         self._queue_statement(f"UPSERT {target} SET {fields};", {**data, **ref})
@@ -441,6 +515,7 @@ class HTTPTransaction(BaseTransaction):
         """Queue a merge operation (see :func:`_record_target` for ``thing``)."""
         from .types import RecordsResponse
 
+        _validate_keys(data)
         target, ref = _record_target(thing, "thing", "_ref", data)
         # MERGE takes an object literal; ``{ k = $k }`` would be a block of comparisons.
         fields = ", ".join(f"{k}: ${k}" for k in data)
@@ -471,6 +546,7 @@ class HTTPTransaction(BaseTransaction):
         from .types import RecordResponse
 
         _validate_identifier(relation, "relation")
+        _validate_keys(data or {})
         bindings: dict[str, Any] = dict(data or {})
         source, source_ref = _record_target(from_thing, "from_thing", "_from", bindings)
         bindings.update(source_ref)
