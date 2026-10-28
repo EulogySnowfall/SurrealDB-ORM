@@ -204,6 +204,9 @@ USER tables automatically:
 
 - Enforce SCHEMAFULL schema mode
 - Generate `DEFINE ACCESS ... TYPE RECORD` for JWT authentication
+- Generate a `UNIQUE` index on the identifier field (`<table>_<identifier>_unique`),
+  so one identifier names one account; an existing single-field `UNIQUE` index on
+  that field is kept under its own name
 - Support `signup()` and `signin()` methods via `AuthenticatedUserMixin`
 
 ### STREAM Tables
