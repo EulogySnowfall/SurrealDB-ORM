@@ -52,6 +52,11 @@ class BaseSurrealConnection(ABC):
         self._connected = False
         self._authenticated = False
         self._token: str | None = None
+        # Incremented whenever the connection's auth state changes (a token is
+        # installed or dropped, the connection is closed). A task that started
+        # something on the strength of the old state, such as the HTTP
+        # transient-401 re-mint, compares it before acting on its result.
+        self._auth_generation = 0
 
     @property
     def is_connected(self) -> bool:
@@ -102,6 +107,10 @@ class BaseSurrealConnection(ABC):
         the arguments its transient-401 recovery replays.
         """
         return None
+
+    def _auth_changed(self) -> None:
+        """Record that the connection's auth state changed (see ``_auth_generation``)."""
+        self._auth_generation += 1
 
     # Context manager support
 
@@ -189,6 +198,7 @@ class BaseSurrealConnection(ABC):
             if response.token:
                 self._token = response.token
             self._authenticated = response.success
+            self._auth_changed()
             return response
         except Exception as e:
             raise AuthenticationError(f"Authentication failed: {e}")
@@ -229,6 +239,7 @@ class BaseSurrealConnection(ABC):
         if response.token:
             self._token = response.token
         self._authenticated = response.success
+        self._auth_changed()
         return response
 
     async def authenticate(self, token: str) -> AuthResponse:
@@ -264,6 +275,7 @@ class BaseSurrealConnection(ABC):
             # when *token* is later rejected. Cleared only after the RPC, so the
             # request carrying it can still recover from a transient 401.
             self._forget_signin_credentials()
+            self._auth_changed()
 
     async def use(self, namespace: str, database: str) -> None:
         """
