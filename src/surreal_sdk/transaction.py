@@ -35,6 +35,18 @@ def _validate_identifier(name: str, context: str) -> None:
         raise ValueError(f"Invalid {context}: {name!r} (expected an identifier)")
 
 
+def _validate_keys(data: dict[str, Any], context: str = "data") -> None:
+    """Raise ``ValueError`` unless every key of ``data`` is a plain SurrealQL identifier.
+
+    ``HTTPTransaction`` writes each key into the queued statement as the field
+    name and as the name of its parameter (``k = $k``), so a key must be valid
+    in both places. The value is always bound and is never checked here.
+    """
+    for key in data:
+        if not isinstance(key, str) or not _IDENTIFIER_RE.fullmatch(key):
+            raise ValueError(f"Invalid {context} key: {key!r} (expected an identifier)")
+
+
 def _raw_record_id(id_part: str, thing: str, context: str) -> str | None:
     r"""Return the raw ID of a delimited ID part, ``None`` when it is not delimited.
 
@@ -277,6 +289,12 @@ class HTTPTransaction(BaseTransaction):
     The statements are wrapped in BEGIN TRANSACTION / COMMIT TRANSACTION
     and sent as a single request.
 
+    ``create``, ``insert``, ``update``, ``upsert``, ``merge`` and ``relate``
+    write each key of ``data`` into the statement as a field name, so every
+    key must be a plain identifier (``[A-Za-z_][A-Za-z0-9_]*``); any other key
+    raises ``ValueError`` at the call and nothing is queued. Values are always
+    bound as parameters.
+
     While it is open, the transaction counts as using its ``HTTPConnection``
     even though nothing is sent yet, so that a connection being retired (see
     ``HTTPConnection._drain_and_close``) stays open until the commit.
@@ -396,6 +414,7 @@ class HTTPTransaction(BaseTransaction):
         """Queue a create operation (see :func:`_record_target` for ``thing``)."""
         from .types import RecordResponse
 
+        _validate_keys(data or {})
         target, ref = _record_target(thing, "thing", "_ref", data or {})
         if data:
             # Build CREATE statement with data
@@ -412,6 +431,9 @@ class HTTPTransaction(BaseTransaction):
         _validate_identifier(table, "table")
         if isinstance(data, dict):
             data = [data]
+        # Check every record first, so a bad key in a later one queues nothing.
+        for record in data:
+            _validate_keys(record)
 
         for i, record in enumerate(data):
             fields = ", ".join(f"{k} = $r{i}_{k}" for k in record)
@@ -425,6 +447,7 @@ class HTTPTransaction(BaseTransaction):
         """Queue an update operation (see :func:`_record_target` for ``thing``)."""
         from .types import RecordsResponse
 
+        _validate_keys(data)
         target, ref = _record_target(thing, "thing", "_ref", data)
         fields = ", ".join(f"{k} = ${k}" for k in data)
         self._queue_statement(f"UPDATE {target} SET {fields};", {**data, **ref})
@@ -434,6 +457,7 @@ class HTTPTransaction(BaseTransaction):
         """Queue an upsert operation, create or update (see :func:`_record_target` for ``thing``)."""
         from .types import RecordsResponse
 
+        _validate_keys(data)
         target, ref = _record_target(thing, "thing", "_ref", data)
         fields = ", ".join(f"{k} = ${k}" for k in data)
         self._queue_statement(f"UPSERT {target} SET {fields};", {**data, **ref})
@@ -443,6 +467,7 @@ class HTTPTransaction(BaseTransaction):
         """Queue a merge operation (see :func:`_record_target` for ``thing``)."""
         from .types import RecordsResponse
 
+        _validate_keys(data)
         target, ref = _record_target(thing, "thing", "_ref", data)
         # MERGE takes an object literal; ``{ k = $k }`` would be a block of comparisons.
         fields = ", ".join(f"{k}: ${k}" for k in data)
@@ -473,6 +498,7 @@ class HTTPTransaction(BaseTransaction):
         from .types import RecordResponse
 
         _validate_identifier(relation, "relation")
+        _validate_keys(data or {})
         bindings: dict[str, Any] = dict(data or {})
         source, source_ref = _record_target(from_thing, "from_thing", "_from", bindings)
         bindings.update(source_ref)
