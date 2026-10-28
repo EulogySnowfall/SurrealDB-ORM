@@ -6,6 +6,67 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.27] - 2026-10-28
+
+**Bug fix release (V2 LTS).** One fix, the `v2` port of #283 from `main`:
+string literals in migration DDL and schema introspection (#284, #395). Read
+*Behaviour change* and *Migration* if your models or migration files pass a
+server-side expression such as `"time::now()"` as a plain `str` default. The
+SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Fixed
+
+- **Migration DDL renders a `COMMENT` or a string `DEFAULT` containing an
+  apostrophe or a backslash with SurrealQL's backslash escapes**
+  (`'it\'s'`, `'C:\\temp'`). Before, the apostrophe was doubled
+  (`'it''s'`), which SurrealDB 2.x does not read as one quote: the literal
+  ended early and the statement failed to parse. A backslash was not escaped,
+  so `'C:\temp'` was stored as a different text. This covers field and table
+  `COMMENT`, string `DEFAULT`, and the `COMMENT` of `CreateIndex`,
+  `DefineAccess` and `DefineEvent` (#284).
+- **Schema introspection reads back the double-quoted strings SurrealDB
+  reports** for any text containing an apostrophe, and decodes their
+  escapes, for field and table `COMMENT` and quoted `DEFAULT` values. Before,
+  the quotes and escapes were kept, so `schema_diff()` / `makemigrations`
+  kept proposing changes, and an apostrophe in a comment made the parser
+  drop every clause after it, `PERMISSIONS` included (#284).
+- **`inspectdb` writes every string default with `repr()`.** A default
+  containing `::` or `(` used to be written as `"<text>"` without escaping,
+  which is invalid Python for a text containing `"` (#284).
+- **`surreal_orm.utils.escape_single_quotes()` escapes with backslashes**
+  instead of doubling the apostrophe. The new
+  `surreal_orm.utils.surql_string_literal()` renders a whole single-quoted
+  SurrealQL literal (#284).
+
+### Behaviour change
+
+- **Migration string literals:** the DDL generated for a comment or string
+  default containing `'` or `\` is different (escaped with a backslash).
+  Those already failed or were stored with different text; every other
+  literal renders as before.
+- **A `str` default is always written as a quoted string.** Server-side
+  expressions are carried as `SurrealFunc`: the parser, `makemigrations` and
+  `inspectdb` emit `SurrealFunc(...)` for an unquoted `DEFAULT`. Before, any
+  `str` containing `::` or starting with `$` was written unquoted, so a text
+  default such as `'fr::CA'` did not round-trip.
+- **Compatibility:** a `str` that is exactly a no-argument function call
+  (`"time::now()"`, `"rand::uuid()"`) or a bare `$parameter` is still
+  written as an expression, with a `DeprecationWarning`. Any other `str`
+  containing `::` or starting with `$` (for example `"time::now() + 1d"`) is
+  now stored as text. The same rule applies to model defaults:
+  `Field(default="time::now()")` is introspected as
+  `SurrealFunc("time::now()")`, so `schema_diff()` / `makemigrations`
+  converge for it.
+
+### Migration
+
+- In models and existing migration files, wrap expression values of
+  `default=` / `previous_default=` in `SurrealFunc(...)`
+  (`from surreal_orm import SurrealFunc`) to silence the
+  `DeprecationWarning`. Expressions with arguments or operators must be
+  wrapped, or they are written as text.
+
 ## [0.21.26] - 2026-10-28
 
 **Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #356, #365 and
