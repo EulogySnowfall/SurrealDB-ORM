@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.35.0)
+> Context document for Claude AI - Last updated: October 2026 (0.35.1)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.35.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.35.1 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,24 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.35.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.35.1
+
+One fix, #331 via #370 (`auth/mixins.py` only). Pin unchanged (3.3.4).
+`v2`: backport required, tracked in #372 (same code on the branch).
+
+- **Cache lifetime is `min(ttl, exp)`.** A hit checks a monotonic deadline
+  and the wall-clock `exp`; a token whose `exp` cannot be read is never
+  cached, only validated by the server.
+- **Cache key is `(connection identity, table, token)`**, reusing
+  `QueryCache._connection_identity`. The table check runs with and without a
+  cache hit, for both a CBOR `RecordId` and a string record id.
+- **The mixin's `get_connection_name()` stub exists only under
+  `TYPE_CHECKING` now.** At runtime it returned `"default"` and, with the
+  documented mixin-first MRO, shadowed `BaseSurrealModel.get_connection_name()`,
+  so every auth call ignored `using()` / `connection=`.
+- **Open:** `validate_token_local()` still skips the table check (review
+  suggestion on #370).
 
 ### What's New in 0.35.0
 
