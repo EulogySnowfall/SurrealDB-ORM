@@ -163,14 +163,30 @@ class ConnectionPool:
             idle = list(self._pool)
             self._pool.clear()
             kept: list[BaseSurrealConnection] = []
-            for conn in idle:
-                if await self._reset_auth(conn):
-                    kept.append(conn)
-                else:
-                    await self._close_quietly(conn)
-            # Extended, not replaced: a connection released while this ran
-            # went into ``_pool`` already.
-            self._pool.extend(kept)
+            closed: set[BaseSurrealConnection] = set()
+            try:
+                for conn in idle:
+                    if await self._reset_auth(conn):
+                        kept.append(conn)
+                    else:
+                        closed.add(conn)
+                        self._pool_auth.pop(conn, None)
+                        await self._close_quietly(conn)
+            finally:
+                # Runs on cancellation too: every idle connection ends up back
+                # in the pool or closed, never connected and untracked. One
+                # whose reset did not finish may still hold the previous
+                # identity, so it is closed rather than put back.
+                unfinished = [conn for conn in idle if conn not in closed and conn not in kept]
+                for conn in unfinished:
+                    self._pool_auth.pop(conn, None)
+                # Extended, not replaced: a connection released while this ran
+                # went into ``_pool`` already.
+                self._pool.extend(kept)
+                if unfinished:
+                    # Each close is shielded, so they complete even if this
+                    # task is cancelled again while waiting for them.
+                    await asyncio.gather(*(self._close_quietly(conn) for conn in unfinished))
 
     async def _reset_auth(self, conn: BaseSurrealConnection) -> bool:
         """

@@ -517,6 +517,49 @@ async def test_set_credentials_closes_connections_that_cannot_sign_in(kind: str)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("pending", [0, 1])
+async def test_cancelled_set_credentials_keeps_connections_tracked(kind: str, pending: int) -> None:
+    """
+    Cancelling ``set_credentials()`` while it signs idle connections in again
+    leaves every connection either back in the pool or closed.
+
+    *pending* is the position, in the idle queue, of the connection whose
+    sign-in is under way when the cancellation lands: the ones before it have
+    finished and go back to the pool; it, and the ones after it, are closed.
+    """
+    servers: list[_FakeServer] = []
+    pool = _pool(kind, servers, size=2)
+    await pool.set_credentials(POOL_USER, POOL_PASS)
+    async with pool.acquire() as a, pool.acquire() as b:
+        pass
+    conns = [a, b]
+    idle = list(pool._pool)
+    assert len(idle) == 2
+    answered, _resume = _hold_next_signin(idle[pending])
+
+    change = asyncio.create_task(pool.set_credentials("i391_new_user", "i391_new_pass"))
+    await answered.wait()
+    change.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await change
+
+    for conn in conns:
+        tracked = conn in pool._pool or conn in pool._in_use
+        assert tracked or not conn.is_connected, "a connected connection must stay tracked by the pool"
+    assert idle[pending] not in pool._pool
+    assert not idle[pending].is_connected
+    assert list(pool._pool) == idle[:pending]
+    for conn in idle[:pending]:
+        assert conn.token is not None and conn.token.startswith("token-for-i391_new_user")
+    assert set(pool._pool_auth) <= set(pool._pool)
+    assert pool._semaphore._value == pool.size
+
+    await pool.close()
+    assert not any(conn.is_connected for conn in conns)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
 async def test_connection_released_after_pool_close_is_closed(kind: str) -> None:
     servers: list[_FakeServer] = []
     pool = _pool(kind, servers)
