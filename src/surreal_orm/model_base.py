@@ -341,6 +341,14 @@ class SurrealConfigDict(ConfigDict):
         access_name: Custom DEFINE ACCESS name (USER type, default: "{table}_auth")
         token_duration: JWT token duration (USER type, default: "15m")
         session_duration: Session duration (USER type, default: "12h")
+        signup_fields: Fields a caller may set at sign-up, besides the
+            identifier and the password (USER type, e.g., ``["name"]``).  The
+            ``SIGNUP`` clause of the access definition assigns only the
+            identifier, the password, these fields and ``created_at``
+            (``time::now()``); every other field keeps its schema ``DEFAULT``
+            or model default, and ``signup()`` rejects any other keyword.
+            Computed, ``server_fields``, read-only, ``id``, identifier,
+            password and unknown names raise ``ValueError``.
         server_fields: List of field names that are server-generated and should
             be excluded from save/update operations (e.g., ["created_at", "updated_at"]).
             These fields are populated by SurrealDB's VALUE clause and should not be
@@ -378,6 +386,7 @@ class SurrealConfigDict(ConfigDict):
     access_name: str | None
     token_duration: str | None
     session_duration: str | None
+    signup_fields: list[str] | None
     server_fields: list[str] | None
     connection: str | None
     view_query: str | None
