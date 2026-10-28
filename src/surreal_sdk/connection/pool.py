@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Self
 
 from ..exceptions import ConnectionError
+from ..protocol.rpc import RPCMethod
 from ..types import DeleteResponse, QueryResponse, RecordResponse, RecordsResponse
 from .base import BaseSurrealConnection
 from .http import HTTPConnection
@@ -102,19 +103,69 @@ class ConnectionPool:
         """
         Set credentials for all pool connections.
 
+        Idle connections are signed in again with the new credentials; one that
+        fails to sign in is closed and dropped rather than kept with its
+        previous identity. Connections in use are signed in with the new
+        credentials when they are released (see ``acquire()``).
+
         Args:
             user: Username
             password: Password
         """
         self._credentials = (user, password)
 
-        # Re-authenticate existing connections
+        # Re-authenticate idle connections
         async with self._lock:
-            for conn in self._pool:
+            kept: deque[BaseSurrealConnection] = deque()
+            while self._pool:
+                conn = self._pool.popleft()
+                if await self._reset_auth(conn):
+                    kept.append(conn)
+                else:
+                    await self._close_quietly(conn)
+            self._pool = kept
+
+    async def _reset_auth(self, conn: BaseSurrealConnection) -> bool:
+        """
+        Return *conn* to the pool's own authentication state.
+
+        A caller holding a pooled connection may change its identity
+        (``signin()``, ``signup()``, ``authenticate()``, ``invalidate()``); the
+        next caller must not inherit it. With credentials, the connection is
+        signed in again with them; without, its session is invalidated so it
+        comes back unauthenticated. The token a ``WebSocketConnection`` replays
+        on reconnect is updated to match.
+
+        Returns:
+            True when the reset succeeded and the connection may be reused;
+            False when it failed and the connection must be closed instead.
+        """
+        try:
+            if self._credentials:
+                user, password = self._credentials
+                response = await conn.signin(user, password)
+                # ``signin()`` keeps the previous token when the server returns
+                # none; the token replayed on reconnect must be the pool's.
+                conn._token = response.token
+            elif isinstance(conn, HTTPConnection):
+                await conn.invalidate()
+            else:
                 try:
-                    await conn.signin(user, password)
-                except Exception:
-                    pass
+                    await conn.rpc(RPCMethod.INVALIDATE)
+                finally:
+                    conn._token = None
+                    conn._authenticated = False
+        except Exception:
+            return False
+        return conn.is_connected
+
+    @staticmethod
+    async def _close_quietly(conn: BaseSurrealConnection) -> None:
+        """Close *conn*, ignoring errors (it is being discarded)."""
+        try:
+            await conn.close()
+        except Exception:
+            pass  # Discarded connection; nothing left to do with the error
 
     @asynccontextmanager
     async def acquire(self) -> AsyncGenerator[BaseSurrealConnection, None]:
@@ -124,6 +175,12 @@ class ConnectionPool:
         Usage:
             async with pool.acquire() as conn:
                 result = await conn.query("SELECT * FROM users")
+
+        On release the connection is returned to the pool's own
+        authentication state (signed in again with the pool's credentials, or
+        invalidated when the pool has none), so an identity set by the caller
+        is never handed to the next one. A connection whose reset fails is
+        closed instead of being reused.
 
         Yields:
             A SurrealDB connection
@@ -165,16 +222,22 @@ class ConnectionPool:
         try:
             yield conn
         finally:
-            async with self._lock:
-                self._in_use.discard(conn)
+            # Reset the identity the caller may have left on the connection
+            # before anyone else can acquire it. Done outside the lock so a
+            # slow reset does not stall other acquisitions; the connection
+            # stays in ``_in_use`` meanwhile, so ``close()`` still sees it.
+            reusable = False
+            try:
                 if not self._closed and conn.is_connected:
-                    self._pool.append(conn)
-                else:
-                    try:
-                        await conn.close()
-                    except Exception:
-                        pass
-            self._semaphore.release()
+                    reusable = await self._reset_auth(conn)
+            finally:
+                async with self._lock:
+                    self._in_use.discard(conn)
+                    if reusable and not self._closed and conn.is_connected:
+                        self._pool.append(conn)
+                    else:
+                        await self._close_quietly(conn)
+                self._semaphore.release()
 
     async def close(self) -> None:
         """Close all connections in the pool."""
