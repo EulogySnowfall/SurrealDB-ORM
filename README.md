@@ -37,6 +37,26 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.35.4
+
+**Fix release.** String literals in migration DDL
+([#283](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/283)), a `UNIQUE` index on the identifier of USER tables
+([#354](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/354)) and `HTTPTransaction.commit()` raising on a
+rejected statement ([#251](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/251)). See [CHANGELOG.md](CHANGELOG.md)
+for the full notes.
+
+- **Apostrophes and backslashes in migration DDL.** A `COMMENT` or string `DEFAULT` renders as `'it\'s'` /
+  `'C:\\temp'` instead of `'it''s'` (rejected by SurrealDB) or a bare backslash. Introspection reads back the
+  double-quoted strings the server reports, so `schema_diff()` stops reporting a change on every run. New helpers
+  `surreal_orm.utils.surql_string()` / `parse_surql_string()`.
+- **USER tables get a `UNIQUE` index on the identifier field** (`<table>_<identifier>_unique`) from `makemigrations` /
+  `schema_diff`, so a second `signup()` with the same identifier is rejected. An existing equivalent `UNIQUE` index
+  under another name is kept.
+- **Behaviour change:** an HTTP transaction whose batch has a rejected statement now raises `TransactionError` (or
+  `TransactionConflictError` for a retryable conflict) from `commit()`; it used to return although nothing was written.
+- **Upgrading:** resolve duplicate identifiers before applying the new index (query in the CHANGELOG), and regenerate
+  any migration file containing a doubled apostrophe.
+
 ## What's New in 0.35.3
 
 **Fix release.** Key checks for `HTTPTransaction` data

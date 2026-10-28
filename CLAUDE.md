@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.35.3)
+> Context document for Claude AI - Last updated: October 2026 (0.35.4)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.35.3 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.35.4 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,30 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.35.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.35.4
+
+Three fixes, pin unchanged (3.3.4). `v2` backports: #284 (PR #395), #397, #399.
+
+- **#283 via #394 — one renderer, one reader for SurrealQL strings.**
+  `surql_string()` escapes `\` first, then `'` (order matters); every
+  migration `COMMENT`/string `DEFAULT` site uses it, no `replace("'", "''")`
+  left. `parse_surql_string()` reads both quote styles: the server reports a
+  string containing `'` in double quotes, which used to keep its quotes and
+  diff on every run. The clause scanner tracks quote char and escape state.
+- **#354 via #386 — `UNIQUE` index on the USER identifier**, built from
+  `get_identifier_field()` like `AccessGenerator.from_model`, so index and
+  `SIGNUP`/`SIGNIN` cover the same column. Migration path only.
+  `SchemaState.diff` matches a target `UNIQUE` index by definition, not just
+  name (`satisfied_by`), so an equivalent index under another name is kept.
+- **#251 via #396 — `HTTPTransaction.commit()` checks each statement.** A
+  rejected statement rides back as `status: ERR` in a successful RPC (same
+  trap as the 0.32.6 migration executor). The first non-cancellation error
+  is the cause; "failed transaction" / "cancelled transaction" / "Cannot
+  COMMIT" are the cascade.
+- **Open (review suggestions on #396):** the cancellation-only fallback
+  message still matches `retry_on_conflict`'s text check, and the "cancelled
+  transaction" wording is not in the marker tuple (ordering covers it today).
 
 ### What's New in 0.35.3
 

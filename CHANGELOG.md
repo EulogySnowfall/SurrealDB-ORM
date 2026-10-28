@@ -6,6 +6,89 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.35.4] - 2026-10-28
+
+**Fix release.** Three fixes: string literals in migration DDL (#283 via
+#394), a `UNIQUE` index on the identifier of USER tables (#354 via #386),
+and `HTTPTransaction.commit()` raising when the server rejects a statement
+(#251 via #396). Read *Behaviour change* and *Upgrading* below if you run
+`makemigrations` on a model with `TableType.USER`, or rely on an HTTP
+transaction returning after a rejected statement. The SurrealDB pin is
+unchanged (tested against 3.3.4, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **Migration DDL renders a `COMMENT` or a string `DEFAULT` containing an
+  apostrophe or a backslash with SurrealQL's backslash escapes**
+  (`'it\'s'`, `'C:\\temp'`). Before, the apostrophe was doubled
+  (`'it''s'`), which SurrealDB rejects, so `migrate` stopped on a model with
+  `comment="User's table"` or a default such as `"O'Brien"`. A backslash was
+  not escaped, so `'C:\temp'` was stored with a tab. This covers field and
+  table `COMMENT`, string `DEFAULT`, and the `COMMENT` of `CreateIndex`,
+  `DefineAccess`, `DefineBearerAccess`, `DefineEvent` and `DefineApi`
+  (#283).
+- **Introspection reads back the double-quoted strings SurrealDB reports**
+  for any text containing an apostrophe, and decodes their escapes (`\"`,
+  `\\`, `\n`, ...), for field and table `COMMENT` and quoted `DEFAULT`
+  values. Before, the comment kept its quotes: `schema_diff()` /
+  `makemigrations` reported a change on every run, and a rollback rendered a
+  literal the server rejected. A table `COMMENT` containing an apostrophe no
+  longer hides the `PERMISSIONS` clause that follows it (#283).
+- **`surreal_orm.utils.escape_single_quotes()` escapes with backslashes**
+  instead of doubling the apostrophe. New helpers
+  `surreal_orm.utils.surql_string()` and `parse_surql_string()` render and
+  read a SurrealQL string literal (#283).
+- **`makemigrations` / `schema_diff` add a `UNIQUE` index on the identifier
+  field of every `TableType.USER` table**
+  (`DEFINE INDEX <table>_<identifier>_unique ON <table> FIELDS <identifier> UNIQUE`;
+  the identifier is `identifier_field`, `email` by default). A second
+  `signup()` with an identifier already in use is rejected by the database
+  instead of creating a second account that `SIGNIN` cannot tell apart
+  (#354).
+- **The schema diff no longer proposes a second `UNIQUE` index (or a
+  `DropIndex`)** when the database already enforces the same `UNIQUE` index
+  under another name; it keeps the existing one. Other indexes are still
+  matched by name (#354).
+- **`HTTPTransaction.commit()` (SDK) raises when the server rejects a
+  statement of the batch.** It used to return normally: the server writes
+  nothing in that case, so the transaction looked committed while nothing
+  was saved. This affected `async with SurrealDBConnectionManager.transaction()`,
+  ORM `save(tx=)`, `update(tx=)`, `merge(tx=)` and `bulk_*(atomic=True)`
+  over HTTP (#251).
+
+### Behaviour change
+
+- **Migration string literals:** only strings containing `'` or `\` are
+  affected, and those already failed or were stored with different text.
+  Every other literal renders as before.
+- **USER tables:** the next `makemigrations` / `schema_diff` against an
+  existing database emits one additional `DEFINE INDEX` per USER table.
+  There is no setting to turn it off: the index is always part of the
+  generated schema of a USER table. `define_table()` and `define_access()`
+  do not create it; only the migration path does.
+- **HTTP transactions:** `commit()` raises `TransactionError` when any
+  statement of the batch returns `ERR`, with the failing statement's own
+  server error (not the "not executed due to a failed transaction" text). A
+  retryable conflict raises `TransactionConflictError`, so
+  `@retry_on_conflict` retries it. After the failure `is_committed` is
+  `False`, the transaction is inactive, and the connection is released. A
+  successful batch, an empty transaction and WebSocket transactions behave
+  as before.
+
+### Upgrading
+
+- Migration files generated before this release keep their old literals. A
+  file containing a doubled apostrophe (`'it''s'`) never applied: regenerate
+  it, or replace `''` with `\'` in it.
+- `DEFINE INDEX ... UNIQUE` fails (`MigrationStatementError`) while a USER
+  table holds duplicate identifiers. List them first, replacing the table
+  and field names with your own:
+  `SELECT * FROM (SELECT email, count() AS n FROM User GROUP BY email) WHERE n > 1;`,
+  resolve them, then apply the migration.
+- Code that relied on an HTTP `commit()` returning despite a rejected
+  statement now gets an exception. Nothing was ever written in that case,
+  so catch `TransactionError` where a rejection is expected.
+
 ## [0.35.3] - 2026-10-28
 
 **Fix release.** Key checks for `HTTPTransaction` data (#334 via #374).
