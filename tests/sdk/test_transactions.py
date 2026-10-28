@@ -177,6 +177,16 @@ class TestHTTPTransaction:
         assert "UPDATE users:1" in sql
 
     @pytest.mark.asyncio
+    async def test_transaction_merge_renders_an_object(self, mock_connection: MagicMock) -> None:
+        """``MERGE`` takes an object: ``{ k = $k }`` is a block the server rejects."""
+        tx = HTTPTransaction(mock_connection)
+        await tx._begin()
+
+        await tx.merge("users:1", {"name": "Bob", "age": 3})
+
+        assert tx._statements[-1].sql == "UPDATE users:1 MERGE { name: $name, age: $age };"
+
+    @pytest.mark.asyncio
     async def test_transaction_delete(self, mock_connection: MagicMock) -> None:
         """Test delete within transaction."""
         tx = HTTPTransaction(mock_connection)
@@ -291,8 +301,10 @@ class TestHTTPTransactionParamNamespacing:
 
         sent_sql, sent_vars = mock_connection.query.call_args[0]
         assert sent_vars == {"tx_0_amount": 1.5, f"tx_0_{key}": "x"}
-        assert "amount = $tx_0_amount" in sent_sql
-        assert f"{key} = $tx_0_{key}" in sent_sql
+        # merge() renders an object literal (``{ k: $k }``), the others a SET clause.
+        sep = ":" if builder == "merge" else " ="
+        assert f"amount{sep} $tx_0_amount" in sent_sql
+        assert f"{key}{sep} $tx_0_{key}" in sent_sql
         assert set(re.findall(r"\$(\w+)", sent_sql)) == set(sent_vars)
 
     @pytest.mark.asyncio
