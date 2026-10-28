@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.16)
+> Context document for Claude AI - Last updated: October 2026 (0.34.17)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.16 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.17 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,25 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.17
+
+One fix (#332 via #351), `surreal_orm/auth/mixins.py` only. Pin unchanged
+(3.3.4). `v2`: same identifier lookup in `signup()`/`signin()`/
+`change_password()`, backport tracked in #353.
+
+- **The user is resolved from `$auth`, not re-queried by identifier.**
+  `signin()`/`signup()` run `RETURN $auth` on the ephemeral connection before
+  closing it, then fetch `WHERE id = type::record($record_id)` — the shape
+  `authenticate_token()` already used. There is no fallback to the
+  identifier lookup; a missing session record is an error.
+- **`change_password()`** signs in through the same helper and runs
+  `UPDATE type::record($record_id) ... RETURN id`, raising unless exactly the
+  signed-in record was updated.
+- **Bind the decoded `RecordId`, never `str(RecordId)`.** The string form
+  drops the key's escaping, and `type::record("t:000000")` reads the key as
+  the number `0`. `authenticate_token()` shares the fetch helper and gains
+  this fix.
 
 ### What's New in 0.34.16
 
