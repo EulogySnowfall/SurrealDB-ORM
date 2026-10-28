@@ -110,8 +110,8 @@ class TestRecordIdUtils:
         assert escape_record_id("test_id") == "test_id"
 
     def test_escape_record_id_backtick_in_id(self) -> None:
-        """Escape backticks within IDs."""
-        assert escape_record_id("test`id") == "`test``id`"
+        """Escape backticks within IDs with a backslash (SurrealDB has no doubled-backtick escape)."""
+        assert escape_record_id("test`id") == "`test\\`id`"
 
     def test_format_thing_normal(self) -> None:
         """Format normal thing references."""

@@ -24,6 +24,7 @@ import builtins
 from ..exceptions import ConnectionError, LiveQueryError, TimeoutError
 from ..protocol import cbor as cbor_module
 from ..protocol.rpc import RPCRequest, RPCResponse
+from ..utils import unescape_record_id
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
@@ -617,9 +618,7 @@ class WebSocketConnection(BaseSurrealConnection):
             from ..protocol.cbor import RecordId
 
             table, id_part = thing.split(":", 1)
-            if id_part.startswith("`") and id_part.endswith("`"):
-                id_part = id_part[1:-1].replace("``", "`")
-            return RecordId(table=table, id=id_part)
+            return RecordId(table=table, id=unescape_record_id(id_part))
         return thing
 
     async def select(self, thing: str) -> Any:
