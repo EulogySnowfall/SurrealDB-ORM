@@ -52,6 +52,24 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.25
+
+**Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #347, #341 and #351 from `main`; one SDK method added.
+
+- **`HTTPConnection` signs in again only for the identity it signed in as (#349).** When a token installed by
+  `authenticate()` or `signup()` was rejected, the transient-`401` recovery signed in again with the credentials of
+  an earlier `signin()`; the request now fails with `QueryError` (code 401). New `HTTPConnection.invalidate()`
+  clears the token and the retained sign-in arguments.
+- **`$`-prefixed filter values are bound unless they name a declared variable (#342).** A filter value is a
+  variable reference only when it is exactly `$name` and `name` was declared with `.variables()`; any other value,
+  such as an email starting with `$`, is matched as text. Variables declared on a `Subquery`'s inner QuerySet or a
+  `Prefetch` queryset are now sent with the query.
+- **`signin()`, `signup()` and `change_password()` act on the session's own record (#353).** With duplicate
+  identifier values, `signin()` / `signup()` could return a different record from the token's, and
+  `change_password()` updated every matching record. `authenticate_token()` now finds keys that look like numbers.
+- **Behaviour change:** see the CHANGELOG — an undeclared `$name` filter value is compared as text, and a rejected
+  `authenticate()` / `signup()` token raises instead of signing in again.
+
 ## What's New in 0.21.24
 
 **Bug fix release (V2 LTS).** Two SDK fixes, the `v2` ports of #318 and #302 from `main`; no new public API.

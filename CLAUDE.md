@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.24)
+> Context document for Claude AI - Last updated: October 2026 (0.21.25)
 
 <!-- -->
 
@@ -19,12 +19,31 @@
 
 ---
 
-## Current Version: 0.21.24 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.25 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
-| `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+| `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.35.x   | Active development              |
+
+### What's New in 0.21.25
+
+Fixes, the `v2` ports of #347 (#349, #376), #341 (#342, #379) and #351 (#353, #381). One SDK method added.
+
+- **SDK re-sign-in:** `_signin_args` (kept for the #101 transient-`401` re-mint) was only ever written by
+  `signin()`, so it outlived the identity it described. `BaseSurrealConnection._forget_signin_credentials()` (no-op
+  on the base and WebSocket) is called by `authenticate()` (after the RPC) and `signup()`; `HTTPConnection`
+  overrides it, and a failed `signin()`, `close()` and the new `invalidate()` clear it too. Tests:
+  `tests/sdk/test_http_connection.py`, `tests/sdk/test_issue_349_integration.py`.
+- **`$` filter values:** `surreal_orm.utils.is_declared_variable_reference(value, declared)` (anchored full match
+  of `$identifier`, name in `QuerySet._declared_variables`, kept apart from `_variables` which also holds the ORM's
+  own `$_fN` bindings) is the one rule for keyword filters, `Q`, `count()`/bulk WHERE, `Subquery`, `annotate()`,
+  `live()` and `ForeignKey` coercion. `Subquery` and `Prefetch` forward inner declared variables. Tests:
+  `tests/test_issue_342_unit.py`, `tests/test_issue_342_integration.py`.
+- **Auth:** `_signin_session()` reads `RETURN $auth` on the ephemeral connection, then fetches by
+  `type::thing($record_id)` with the decoded `RecordId` (`str()` loses key escaping: `t:000000` read as `0`).
+  `change_password()` updates `type::thing($record_id)` only. Tests: `tests/test_auth_unit.py`,
+  `tests/test_auth_integration.py`.
 
 ### What's New in 0.21.24
 

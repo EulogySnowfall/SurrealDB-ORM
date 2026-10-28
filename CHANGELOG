@@ -6,6 +6,87 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.25] - 2026-10-28
+
+**Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #347, #341 and
+#351 from `main`: the HTTP connection signs in again only for the identity it
+signed in as (#349, #376), `$`-prefixed filter values are bound unless they
+name a declared variable (#342, #379), and `signin()` / `signup()` /
+`change_password()` act on the session's own record (#353, #381). Read
+*Behaviour change* and *Migration*. The SurrealDB pin is unchanged (tested
+against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`HTTPConnection` signs in again only for the identity it signed in as
+  (#349).** The transient-`401` recovery (#101) re-mints a token with the
+  arguments of the last successful `signin()`. Nothing cleared them, so when a
+  token installed by `authenticate()` or `signup()` was rejected (for example
+  once it ran out), the connection signed in again with the earlier
+  credentials and the request went through under that earlier identity. The
+  request now fails with `QueryError` (code 401). The retained arguments are
+  also cleared by `authenticate()`, `signup()`, a failed `signin()` and
+  `close()`. Recovery after `signin()` is unchanged.
+- **`$`-prefixed filter values are bound unless they name a declared variable
+  (#342).** A `QuerySet` filter value starting with `$` was always written into
+  the query as a variable reference, so a value that merely starts with `$`
+  (an email, a search term) changed the condition instead of being matched as
+  text. A value is now a reference only when it is exactly `$name` and `name`
+  was declared with `.variables()` on the QuerySet (or on the inner QuerySet of
+  a `Subquery`); every other value is bound as a parameter. This covers keyword
+  filters, `Q` / `~Q`, `Subquery` in filters and `annotate()`, `live()`,
+  `count()`, the bulk operations and `ForeignKey` filter values.
+- **Variables declared on a `Subquery`'s inner QuerySet or on a `Prefetch`
+  queryset are sent with the query (#342).** A reference to them used to reach
+  the server unbound.
+- **`signin()` and `signup()` return the session's own record (#353).**
+  `AuthenticatedUserMixin` looked the user up a second time by
+  `identifier_field` and took the first row, so when several records shared an
+  identifier value the returned user could be a different record from the one
+  the token was issued for. They now read `$auth` on the sign-in connection and
+  fetch that record by ID.
+- **`change_password()` updates only the record that signed in (#353).** It
+  used to update every record sharing the identifier value.
+- **`authenticate_token()` finds records whose key looks like a number
+  (#353).** The record ID is bound as decoded, so `users:⟨000000⟩` is found
+  instead of returning `None`.
+
+### Added
+
+- **`HTTPConnection.invalidate()`** sends the `invalidate` RPC, then clears
+  the token, the authenticated flag and the retained sign-in arguments, even
+  when the RPC fails (that error is raised). Later requests carry no
+  credentials until the next `signin()` or `authenticate()`.
+
+### Behaviour change
+
+- On an HTTP connection whose token came from `authenticate()` or `signup()`,
+  a `401` is now raised as `QueryError` (code 401) instead of being answered by
+  signing in again with credentials from an earlier `signin()`.
+- `filter(name="$undeclared")` now matches records whose field is literally
+  `"$undeclared"`; it used to compare the field against an unset variable. Any
+  `$`-prefixed value that is not exactly a declared name (trailing text, a
+  trailing newline, `$auth.id`, a name such as `$_f0`) is compared as text. On
+  a `ForeignKey` field such a value is treated as a bare ID of the target
+  table. Built-in server parameters such as `$auth` can no longer be referenced
+  from `filter()`.
+- `signin()` / `signup()` raise `SurrealDbError` if `$auth` cannot be read
+  after a successful access call, and `DoesNotExist` if that record no longer
+  exists; there is no fallback to the identifier lookup. `identifier_field` no
+  longer has to be among the credentials passed to them. `change_password()`
+  raises `SurrealDbError` unless exactly the signed-in record was updated.
+  Nothing changes for applications whose identifier values are unique; the
+  `(user, token)` return shape is unchanged.
+
+### Migration
+
+- To keep an HTTP connection usable past a record token's lifetime, call
+  `authenticate()` again with a fresh token, or call `signin()` again
+  explicitly.
+- If a filter relied on a `$name` never passed to `.variables()`, declare it:
+  `.filter(age__gte="$min_age").variables(min_age=18)`. Use `raw_query()` for
+  built-in server parameters such as `$auth`.
+
 ## [0.21.24] - 2026-10-28
 
 **Bug fix release (V2 LTS).** Two SDK fixes, the `v2` ports of #318 and #302
