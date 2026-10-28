@@ -434,46 +434,19 @@ class AuthenticatedUserMixin:
         return AuthResult(user=user, token=token, refresh_token=refresh_token)
 
     @classmethod
-    async def signin(
-        cls,
-        **credentials: Any,
-    ) -> AuthResult[Self]:
+    async def _signin_session(cls, **credentials: Any) -> tuple[str, str | None, Any]:
         """
-        Authenticate a user via DEFINE ACCESS signin.
+        Sign in on an ephemeral connection and read the session's ``$auth``.
 
-        This method uses SurrealDB's native signin functionality, which:
-        1. Validates credentials against the ACCESS definition
-        2. Compares the password using the configured algorithm
-        3. Returns JWT access and refresh tokens (SurrealDB 3.0+)
-
-        An ephemeral connection is used so the root singleton is not affected.
-
-        Args:
-            **credentials: User credentials (identifier and password)
+        Shared by :meth:`signin` and :meth:`change_password` so both act on
+        the record the ACCESS ``SIGNIN`` clause selected, bound exactly as the
+        server returned it (see :meth:`_read_session_record`).
 
         Returns:
-            :class:`AuthResult` containing user instance, access token, and
-            refresh token.  Backward-compatible with tuple unpacking::
-
-                user, token = await User.signin(...)          # still works
-                result = await User.signin(...)
-                result.refresh_token                          # new in 0.30
-
-        The returned ``user`` is the record the session token was issued
-        for (``$auth``), fetched by its record ID — the record the ACCESS
-        ``SIGNIN`` clause selected, even when the identifier is not unique.
+            ``(token, refresh_token, session_record)``.
 
         Raises:
-            SurrealDbError: If signin fails (invalid credentials), or the
-                session record cannot be read after signin
-            DoesNotExist: If the session record no longer exists
-
-        Example:
-            result = await User.signin(
-                email="user@example.com",
-                password="secure_password",
-            )
-            print(result.token, result.refresh_token)
+            SurrealDbError: If signin fails, or ``$auth`` is empty afterwards.
         """
         from ..connection_manager import SurrealDBConnectionManager
         from ..model_base import SurrealDbError
@@ -519,6 +492,52 @@ class AuthenticatedUserMixin:
 
         if session_record is None:
             raise SurrealDbError("Signin succeeded but the session record could not be read ($auth is empty).")
+
+        return token, refresh_token, session_record
+
+    @classmethod
+    async def signin(
+        cls,
+        **credentials: Any,
+    ) -> AuthResult[Self]:
+        """
+        Authenticate a user via DEFINE ACCESS signin.
+
+        This method uses SurrealDB's native signin functionality, which:
+        1. Validates credentials against the ACCESS definition
+        2. Compares the password using the configured algorithm
+        3. Returns JWT access and refresh tokens (SurrealDB 3.0+)
+
+        An ephemeral connection is used so the root singleton is not affected.
+
+        Args:
+            **credentials: User credentials (identifier and password)
+
+        Returns:
+            :class:`AuthResult` containing user instance, access token, and
+            refresh token.  Backward-compatible with tuple unpacking::
+
+                user, token = await User.signin(...)          # still works
+                result = await User.signin(...)
+                result.refresh_token                          # new in 0.30
+
+        The returned ``user`` is the record the session token was issued
+        for (``$auth``), fetched by its record ID — the record the ACCESS
+        ``SIGNIN`` clause selected, even when the identifier is not unique.
+
+        Raises:
+            SurrealDbError: If signin fails (invalid credentials), or the
+                session record cannot be read after signin
+            DoesNotExist: If the session record no longer exists
+
+        Example:
+            result = await User.signin(
+                email="user@example.com",
+                password="secure_password",
+            )
+            print(result.token, result.refresh_token)
+        """
+        token, refresh_token, session_record = await cls._signin_session(**credentials)
 
         # Fetch the record the token was issued for, via the root singleton.
         # Never look the user up again by identifier_field: the ACCESS clause
@@ -778,7 +797,8 @@ class AuthenticatedUserMixin:
             True if password was changed successfully
 
         Raises:
-            SurrealDbError: If old password is incorrect
+            SurrealDbError: If old password is incorrect, or the update did
+                not change exactly the signed-in record
         """
         from ..connection_manager import SurrealDBConnectionManager
         from ..model_base import SurrealDbError
@@ -789,26 +809,26 @@ class AuthenticatedUserMixin:
         password_field = config.get("password_field", "password")
 
         try:
-            signed_in = await cls.signin(**{identifier_field: identifier_value, password_field: old_password})
+            _, _, session_record = await cls._signin_session(
+                **{identifier_field: identifier_value, password_field: old_password}
+            )
         except SurrealDbError:
             raise SurrealDbError("Invalid current password") from None
 
-        # Update only the record the signin authenticated — never every record
-        # sharing the identifier value, which need not be unique.
-        record_id = signed_in.user.record_id  # type: ignore[attr-defined]
-        if record_id is None:
-            raise SurrealDbError("Signin returned a user without a record ID")
-
-        # Update the password via root singleton (needs root permissions)
+        # Update only the record the signin authenticated, bound as the
+        # session returned it: a RecordId rebuilt from the model stringifies
+        # the key, so an integer key (``t:42``) would target ``t:⟨42⟩``.
         client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
 
         # Get encryption algorithm
         algorithm = config.get("encryption_algorithm", "argon2")
 
-        await client.query(
-            f"UPDATE $record_id SET {password_field} = crypto::{algorithm}::generate($new_password)",
-            {"record_id": record_id, "new_password": new_password},
+        result = await client.query(
+            f"UPDATE type::record($record_id) SET {password_field} = crypto::{algorithm}::generate($new_password) RETURN id",
+            {"record_id": session_record, "new_password": new_password},
         )
+        if len(result.all_records) != 1:
+            raise SurrealDbError(f"Password change did not update the signed-in record {session_record}")
 
         return True
 

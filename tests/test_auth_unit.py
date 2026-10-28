@@ -1295,3 +1295,62 @@ class TestIssue332SessionRecordLookup:
             result = await model.signin(username="x", password="pw")
 
         assert result.user.id == "u1"
+
+    @pytest.mark.asyncio
+    async def test_change_password_binds_session_record(self) -> None:
+        """The UPDATE targets $auth as decoded, never an ID rebuilt from the model."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        model = self._model()
+        session_record = RecordId(table="U332User", id=42)
+        mock_ephemeral = self._ephemeral(session_record)
+        mock_root = AsyncMock()
+        mock_root.query = AsyncMock(return_value=MagicMock(all_records=[{"id": session_record}]))
+
+        with (
+            patch.object(model, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)),
+            patch("src.surreal_orm.connection_manager.SurrealDBConnectionManager", new=self._manager(mock_root)),
+        ):
+            assert await model.change_password("int@example.com", "old", "new") is True
+
+        mock_ephemeral.close.assert_awaited_once()
+        # One root query: the UPDATE. No user fetch, no identifier lookup.
+        mock_root.query.assert_awaited_once()
+        sql, variables = mock_root.query.await_args.args
+        assert sql.startswith("UPDATE type::record($record_id) SET password = crypto::argon2::generate($new_password)")
+        assert sql.endswith("RETURN id")
+        assert "email" not in sql
+        assert variables == {"record_id": session_record, "new_password": "new"}
+        assert variables["record_id"].id == 42
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rows", [[], [{"id": "U332User:a"}, {"id": "U332User:b"}]])
+    async def test_change_password_raises_unless_one_row_updated(self, rows: list[dict[str, str]]) -> None:
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        model = self._model()
+        mock_ephemeral = self._ephemeral(RecordId(table="U332User", id="gone"))
+        mock_root = AsyncMock()
+        mock_root.query = AsyncMock(return_value=MagicMock(all_records=rows))
+
+        with (
+            patch.object(model, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)),
+            patch("src.surreal_orm.connection_manager.SurrealDBConnectionManager", new=self._manager(mock_root)),
+        ):
+            with pytest.raises(SurrealDbError, match="did not update"):
+                await model.change_password("x@example.com", "old", "new")
+
+    @pytest.mark.asyncio
+    async def test_change_password_empty_session_is_invalid_password(self) -> None:
+        model = self._model()
+        mock_ephemeral = self._ephemeral(None)
+        mock_root = AsyncMock()
+
+        with (
+            patch.object(model, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)),
+            patch("src.surreal_orm.connection_manager.SurrealDBConnectionManager", new=self._manager(mock_root)),
+        ):
+            with pytest.raises(SurrealDbError, match="Invalid current password"):
+                await model.change_password("x@example.com", "old", "new")
+
+        mock_root.query.assert_not_awaited()

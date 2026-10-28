@@ -879,3 +879,24 @@ class TestIssue332SessionRecord:
         # The other record keeps its own password.
         first = await model.signin(email="shared332@example.com", password="first-password")
         assert first.user.id == "000000"
+
+    async def test_change_password_on_integer_keyed_record(self) -> None:
+        """A numeric record key must reach the UPDATE as a number, not a string."""
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        await client.query("""
+            CREATE I332User:42 SET
+                email = 'int332@example.com',
+                password = crypto::argon2::generate('old-password'),
+                name = 'int';
+        """)
+        model = self._model()
+
+        assert await model.change_password("int332@example.com", "old-password", "new-password")
+
+        updated = await model.signin(email="int332@example.com", password="new-password")
+        assert updated.user.id == "42"
+        with pytest.raises(SurrealDbError):
+            await model.signin(email="int332@example.com", password="old-password")
+        # No string-keyed twin was created by the update.
+        rows = await client.query("SELECT id FROM I332User WHERE email = 'int332@example.com'")
+        assert len(rows.all_records) == 1
