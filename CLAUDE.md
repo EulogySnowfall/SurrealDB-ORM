@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.15)
+> Context document for Claude AI - Last updated: October 2026 (0.34.16)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.15 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.16 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,28 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.16
+
+One fix (#330 via #347), SDK `HTTPConnection` only. Pin unchanged (3.3.4).
+`v2`: same retained sign-in arguments in `http.py`/`base.py`, backport tracked
+in #349.
+
+- **`_signin_args` outlived the identity it described.** Only `signin()` wrote
+  it and nothing cleared it, so after `authenticate(token)` or `signup()` the
+  #101 transient-`401` re-mint signed in again with the earlier credentials
+  once the new token was rejected (e.g. expired).
+- **`BaseSurrealConnection._forget_signin_credentials()`** is the hook: a
+  no-op on the base class (WebSocket), overridden by `HTTPConnection`.
+  `authenticate()` calls it in a `finally` *after* the RPC, so the request
+  carrying the token can still recover from a transient `401`; `signup()`
+  after a successful RPC. A failed `signin()` (including a failed re-mint
+  inside `_post_rpc`) and `close()` clear it too.
+- **New `HTTPConnection.invalidate()`** — clears local state before and after
+  the `invalidate` RPC, and raises the RPC's error if it fails.
+- **Behaviour change:** a `401` on a token from `authenticate()`/`signup()` is
+  raised as `QueryError` (code 401). If the re-mint fails, the retry with the
+  existing token is the last attempt.
 
 ### What's New in 0.34.15
 
