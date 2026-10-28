@@ -6,6 +6,7 @@ Provides stateless HTTP-based connection, ideal for microservices and serverless
 
 import asyncio
 import logging
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 import httpx
@@ -28,6 +29,14 @@ logger = logging.getLogger(__name__)
 # settles; the number of entries bounds how long genuine auth failures take to
 # surface.
 _AUTH_RETRY_BACKOFFS_S: tuple[float, ...] = (0.1, 0.25, 0.5, 1.0)
+
+# Set, for the duration of the ``signin()`` call, by the transient-401 re-mint
+# in ``_post_rpc``: the connection's auth generation when the rejected request
+# was sent. ``signin()`` installs the re-minted token only if the generation is
+# still that one; otherwise another task changed the auth state meanwhile and
+# the result is discarded. Task-local, so a concurrent ``signin()`` from another
+# task is unaffected.
+_REMINT_FOR_GENERATION: ContextVar[int | None] = ContextVar("_REMINT_FOR_GENERATION", default=None)
 
 
 class HTTPConnection(BaseSurrealConnection):
@@ -163,6 +172,7 @@ class HTTPConnection(BaseSurrealConnection):
         self._connected = False
         self._authenticated = False
         self._signin_args = None
+        self._auth_changed()
         self._close_pending = False
         self._close_after_transactions_of = None
         self._close_when_idle_pending = False
@@ -343,8 +353,21 @@ class HTTPConnection(BaseSurrealConnection):
         # arguments are retained; otherwise (no signin, or a token installed by
         # ``authenticate()`` / ``signup()``) a 401 is treated as a genuine
         # credentials problem and raised immediately.
+        #
+        # The connection may be shared between tasks. If another task re-minted
+        # the token of the same ``signin()`` after this request was sent, the
+        # request is retried with that token, without signing in again. If the
+        # connection now acts as someone else (another task called
+        # ``signin()``, ``authenticate()``, ``signup()``, ``invalidate()`` or
+        # ``close()``), the request is never replayed: the 401 is raised. A
+        # re-mint started here installs its token only if the auth state is
+        # still the one the request was sent with (see ``signin()``).
         last_status_error: httpx.HTTPStatusError | None = None
         for attempt in range(len(_AUTH_RETRY_BACKOFFS_S) + 1):
+            # Read together with the headers below, with no await in between.
+            sent_token = self._token
+            sent_generation = self._auth_generation
+            sent_identity = self._auth_identity
             try:
                 if self.protocol == "cbor":
                     # Use CBOR encoding which properly handles all data types
@@ -373,21 +396,34 @@ class HTTPConnection(BaseSurrealConnection):
 
             except httpx.HTTPStatusError as e:
                 last_status_error = e
-                can_reauth = (
-                    e.response.status_code == 401 and self._signin_args is not None and attempt < len(_AUTH_RETRY_BACKOFFS_S)
-                )
-                if can_reauth:
-                    await asyncio.sleep(_AUTH_RETRY_BACKOFFS_S[attempt])
-                    try:
-                        # Re-mint a token aligned with the current server clock.
-                        await self.signin(**self._signin_args)  # type: ignore[arg-type]
-                    except Exception:
-                        # Best-effort: if re-auth fails, retry with the existing
-                        # token anyway (the skew window may simply have passed).
-                        # The failed signin dropped the retained arguments, so
-                        # that retry is the last one.
-                        pass
-                    continue
+                if (
+                    e.response.status_code == 401
+                    and attempt < len(_AUTH_RETRY_BACKOFFS_S)
+                    and self._auth_identity == sent_identity
+                ):
+                    if self._auth_generation != sent_generation or self._token != sent_token:
+                        # Another task renewed the token of the same signin()
+                        # since this request was sent: retry with it.
+                        continue
+                    signin_args = self._signin_args
+                    if signin_args is not None:
+                        await asyncio.sleep(_AUTH_RETRY_BACKOFFS_S[attempt])
+                        remint = _REMINT_FOR_GENERATION.set(sent_generation)
+                        try:
+                            # Re-mint a token aligned with the current server clock.
+                            await self.signin(**signin_args)
+                        except Exception:
+                            # Best-effort: if re-auth fails, retry with the existing
+                            # token anyway (the skew window may simply have passed).
+                            # The failed signin dropped the retained arguments, so
+                            # that retry is the last one.
+                            pass
+                        finally:
+                            _REMINT_FOR_GENERATION.reset(remint)
+                        if self._auth_identity == sent_identity:
+                            continue
+                        # Another task changed the identity during the re-mint
+                        # (whose token was then discarded): do not replay.
                 raise QueryError(
                     message=f"HTTP error: {e.response.status_code} - {e.response.text}",
                     code=e.response.status_code,
@@ -429,14 +465,41 @@ class HTTPConnection(BaseSurrealConnection):
         transient ``401`` (see ``_post_rpc``). On failure the previously
         retained arguments are dropped, so a later ``401`` is raised rather
         than answered by signing in again as an earlier identity.
-        """
-        try:
-            return await self._signin(user, password, namespace, database, access, **credentials)
-        except BaseException:
-            self._signin_args = None
-            raise
 
-    async def _signin(
+        When called by the transient-401 re-mint, the token is installed only
+        if the auth state has not changed since the rejected request was sent;
+        otherwise the response is returned and the connection left as it is.
+        """
+        remint_for = _REMINT_FOR_GENERATION.get()
+        try:
+            response = await self._fetch_signin(user, password, namespace, database, access, **credentials)
+        except BaseException:
+            if remint_for is None or remint_for == self._auth_generation:
+                self._signin_args = None
+                self._auth_changed(same_identity=remint_for is not None)
+            raise
+        if remint_for is not None and remint_for != self._auth_generation:
+            # Another task changed the auth state while this re-mint was
+            # pending: installing it would undo that change.
+            return response
+        self._token = response.token
+        self._authenticated = True
+        # Retain credentials so a transient auth failure can re-mint a token
+        # (see the clock-skew handling in ``_post_rpc``).
+        self._signin_args = {
+            "user": user,
+            "password": password,
+            "namespace": namespace,
+            "database": database,
+            "access": access,
+            **credentials,
+        }
+        # A re-mint renews the token of the same arguments; any other signin()
+        # may be a different principal.
+        self._auth_changed(same_identity=remint_for is not None)
+        return response
+
+    async def _fetch_signin(
         self,
         user: str | None,
         password: str | None,
@@ -445,7 +508,7 @@ class HTTPConnection(BaseSurrealConnection):
         access: str | None,
         **credentials: Any,
     ) -> AuthResponse:
-        """POST to ``/signin`` and install the token; see ``signin()``."""
+        """POST to ``/signin`` and return the token, without installing it; see ``signin()``."""
         if not self._client:
             raise ConnectionError("Not connected. Call connect() first.")
 
@@ -494,18 +557,6 @@ class HTTPConnection(BaseSurrealConnection):
             else:
                 token = None
 
-            self._token = token
-            self._authenticated = True
-            # Retain credentials so a transient auth failure can re-mint a token
-            # (see the clock-skew handling in ``_send_rpc``).
-            self._signin_args = {
-                "user": user,
-                "password": password,
-                "namespace": namespace,
-                "database": database,
-                "access": access,
-                **credentials,
-            }
             return AuthResponse(token=token, refresh_token=refresh_token, success=True, raw=data)
 
         except httpx.RequestError as e:
@@ -536,6 +587,7 @@ class HTTPConnection(BaseSurrealConnection):
             self._token = None
             self._authenticated = False
             self._signin_args = None
+            self._auth_changed()
 
     async def sql(self, query: str, vars: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """
