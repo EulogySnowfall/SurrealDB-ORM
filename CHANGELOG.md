@@ -6,6 +6,65 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.35.1] - 2026-10-28
+
+**Fix release.** `validate_token()` cache and auth connection routing (#331
+via #370). Read *Behaviour change* below if you validate a token through a
+model other than the one whose table issued it, or route an
+`AuthenticatedUserMixin` model to a connection other than `default`. The
+SurrealDB pin is unchanged (tested against 3.3.4, supported range
+3.2.x – 3.3.x).
+
+### Fixed
+
+- **`validate_token()` no longer returns a cached result after the token's
+  own `exp` (#331).** A cached entry now lasts until `min(ttl, exp)`, so a
+  token with a shorter lifetime than the cache TTL is checked against the
+  server again once its `exp` has passed. Before, a cache hit only checked
+  the cache TTL.
+- **`validate_token()` and `authenticate_token()` return `None` for a token
+  whose `$auth` record is not in the model's table**, with or without a
+  cache hit, and the validation cache is keyed per model table, so an entry
+  cached through one model is never returned by another (#331).
+- **`validate_token()` cache entries are no longer shared between
+  connections.** The cache is keyed by connection (name, URL, namespace,
+  database), model table and token (#331).
+- **`invalidate_token_cache(token)` removes the token's entries for every
+  model table and every connection** (#331).
+- **Auth methods on `AuthenticatedUserMixin` models honour the model's
+  `connection=` setting and `SurrealDBConnectionManager.using()`** —
+  `signup`, `signin`, `authenticate_token`, `validate_token`,
+  `define_access` and the bearer-key methods. Before, with the documented
+  `class User(AuthenticatedUserMixin, BaseSurrealModel)` order, the mixin's
+  runtime `get_connection_name()` stub shadowed the model's and they always
+  used the `default` connection (#331).
+
+### Behaviour change
+
+- A token whose `exp` claim cannot be read (opaque token, no `exp` claim,
+  or a non-numeric one) is validated against the server on every call and
+  never cached.
+- Validating a token through a model other than the one whose table issued
+  it returns `None`: validate it through the model it belongs to.
+- A mixin-first model declared with `connection="x"`, or used inside
+  `using("x")`, sends its auth calls to connection `x` instead of
+  `default`.
+
+### Upgrading
+
+- No schema, DDL or public signature change.
+- Code that wrote directly into the private `_token_cache` must use the new
+  `(connection identity, table, token)` key.
+- If your access is defined only on the `default` database while the model
+  is routed elsewhere, define the access on the routed database or remove
+  the `connection=` setting.
+
+### Known limitation
+
+- `validate_token_local()` (local decode, no network call) does not apply
+  the new model-table check: it still returns the record id whatever its
+  table. Use `validate_token()` when the table matters.
+
 ## [0.35.0] - 2026-10-28
 
 **Minor release.** Two fixes (#333 via #362, #329 via #365); the sign-up fix
