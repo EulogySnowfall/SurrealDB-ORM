@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.25)
+> Context document for Claude AI - Last updated: October 2026 (0.21.26)
 
 <!-- -->
 
@@ -19,12 +19,32 @@
 
 ---
 
-## Current Version: 0.21.25 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.26 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.35.x   | Active development              |
+
+### What's New in 0.21.26
+
+Fixes, the `v2` ports of #356 (#358, #384), #365 (#368, #385) and #370 (#372, #389). No new public API.
+
+- **Cache invalidation:** the three post-write signal handlers in `surreal_orm/cache.py` call
+  `QueryCache.invalidate(sender)` (every location bucket of the table); `_invalidate_for_connection()` is gone. A
+  connection's location is not a reliable database identity, so reads stay keyed per connection while writes drop
+  the table everywhere. Tests: `tests/test_issue_358_v2_unit.py`, `tests/test_issue_358_v2_integration.py`; the
+  #335 tests (`tests/test_issue_315_v2_*`) were inverted on the write side only.
+- **Integer arguments:** a private `_require_int()` in `query_set.py` checks `limit()`, `offset()`,
+  `similar_to(limit, ef)` and `hybrid_search(vector_limit, text_limit, rrf_k)` before anything is stored (bool
+  rejected, `int` subclasses normalised to a plain `int`). `hybrid_search()` has no `ef` on this branch. Tests:
+  `tests/test_issue_368_unit.py`, `tests/test_issue_368_integration.py`.
+- **Auth cache:** `AuthenticatedUserMixin._token_cache` is keyed `(QueryCache._connection_identity(cls), table,
+  token)` → `(record_id, monotonic_deadline, exp)`; only a token with a readable `exp` is cached, for
+  `min(ttl, exp - now)`. The table check covers decoded `RecordId` and `"table:id"` strings. The runtime
+  `get_connection_name()` stub exists only under `TYPE_CHECKING`, so `BaseSurrealModel`'s routing applies.
+  `validate_token_local()` does not check the table (known limitation, same as `main`). Tests:
+  `tests/test_auth_unit.py`, `tests/test_auth_integration.py`, `tests/test_fixes_0_14_2.py`.
 
 ### What's New in 0.21.25
 

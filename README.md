@@ -52,6 +52,23 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.26
+
+**Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #356, #365 and #370 from `main`; no new public API.
+
+- **`QueryCache` invalidation on write reaches every connection (#358).** Since 0.21.23 a write only dropped the
+  writing connection's entries, so the same database reached through another URL spelling, or a `save(tx=...)` on
+  another connection, could keep stale `.cache()` results until their TTL expired.
+- **Pagination and KNN arguments accept only integers (#368).** `limit()`, `offset()`, `similar_to(limit, ef)` and
+  `hybrid_search(vector_limit, text_limit, rrf_k)` used to write any value into the query; a non-integer now raises
+  `TypeError`, a value below the minimum `ValueError`, and no query is sent.
+- **`validate_token()` cache bounded by the token's `exp`, the model table and the connection (#372).** A cached
+  result no longer outlives the token's `exp`, a token whose `$auth` record is in another table returns `None`, and
+  entries are not shared between connections. Auth calls on a mixin-first model now follow `connection=` and
+  `using()` instead of always using `default`.
+- **Behaviour change:** see the CHANGELOG — convert request parameters with `int(...)` before `limit()` / `offset()`,
+  and define the access on the routed database for a model routed away from `default`.
+
 ## What's New in 0.21.25
 
 **Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #347, #341 and #351 from `main`; one SDK method added.
