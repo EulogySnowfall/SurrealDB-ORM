@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .utils import surql_string
+from .utils import surql_string, validate_identifier
 
 
 class SearchScore:
@@ -47,6 +47,7 @@ class SearchScore:
 
     def to_surql(self, alias: str) -> str:
         """Render as ``search::score(N) AS alias``."""
+        validate_identifier(alias, "annotation alias")
         return f"search::score({self.ref}) AS {alias}"
 
     def __repr__(self) -> str:
@@ -94,6 +95,7 @@ class SearchHighlight:
         :func:`~surreal_orm.utils.surql_string`, which escapes the backslash
         as well as the apostrophe, so a tag is always read back as written.
         """
+        validate_identifier(alias, "annotation alias")
         return f"search::highlight({surql_string(self.open_tag)}, {surql_string(self.close_tag)}, {int(self.ref)}) AS {alias}"
 
     def __repr__(self) -> str:

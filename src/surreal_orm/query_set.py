@@ -422,7 +422,15 @@ class QuerySet(Generic[T]):
                 snippet=SearchHighlight("<b>", "</b>", 0),
             ).exec()
             ```
+
+        Raises:
+            ValueError: If an alias is not an identifier (letters, digits and
+                underscores, starting with a letter or underscore). Aliases are
+                written into the query as ``... AS <alias>``, so they are checked
+                here, before the queryset changes.
         """
+        for alias in aggregations:
+            validate_identifier(alias, "annotation alias")
         self._annotations = aggregations
         return self
 
