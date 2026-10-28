@@ -52,6 +52,17 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.23
+
+**Bug fix release (V2 LTS).** One ORM fix, the `v2` port of #309 from `main`; no new public API.
+
+- **`.cache()` queries no longer share entries across connections (#315).** The same cached query run under two
+  named connections (`using()`, `SurrealConfigDict(connection=...)`) on different databases returned the rows
+  cached from the first one. Keys now include the connection's name, URL, namespace and database (never
+  credentials), and a write invalidates only the cached entries of the database it went to.
+- **Behaviour change:** `QueryCache.make_key()` and `QueryCache.set()` gain an optional keyword-only
+  `connection=` argument; existing calls keep working. Nothing persisted changes: the cache is in memory only.
+
 ## What's New in 0.21.22
 
 **Bug fix release (V2 LTS).** One ORM fix, the `v2` port of #301 from `main`; one small SDK helper added.
