@@ -9,9 +9,13 @@ at different databases therefore never share entries.
 
 Cache entries are automatically invalidated when models are saved, updated, or
 deleted via the ``post_save``, ``post_update``, and ``post_delete`` signals.
-The signal handlers only drop the entries of the database the write went to
-(every connection name pointing at that URL/namespace/database), so a write
-through one connection leaves another database's cached results in place.
+Reads are scoped by connection, but invalidation fails safe: a write drops the
+written table's entries cached from *every* connection.  The location of a
+cached entry is the raw URL/namespace/database of its connection, so one
+database reached through two URL spellings (``http://host:8000`` and
+``http://host:8000/``) is two buckets, and a ``save(tx=...)`` may not run on the
+connection the model routes to.  Over-invalidating only costs a cache miss;
+under-invalidating would serve stale rows.
 
 Example::
 
@@ -262,21 +266,6 @@ class QueryCache:
         return (name, config.url, config.namespace, config.database)
 
     @classmethod
-    def _invalidate_for_connection(cls, model: Any, connection: ConnectionIdentity) -> int:
-        """
-        Remove *model*'s table entries cached from *connection*'s database.
-
-        Entries stored without a connection (a direct :meth:`set` with no
-        ``connection=``) carry no database, so a write to the table may have
-        made them stale whichever connection it ran on: they are dropped too.
-        """
-        table = model.get_table_name()
-        removed = cls._drop_bucket((_location_of(connection), table))
-        if _location_of(connection) != _NO_LOCATION:
-            removed += cls._drop_bucket((_NO_LOCATION, table))
-        return removed
-
-    @classmethod
     def _drop_bucket(cls, bucket: tuple[_Location, str]) -> int:
         keys = cls._table_keys.pop(bucket, set())
         for key in keys:
@@ -311,18 +300,19 @@ class QueryCache:
 
         from .signals import SignalHandler, post_delete, post_save, post_update
 
-        # The identity is resolved while the signal is sent, i.e. still inside
-        # the ``using()`` context of the write, so only the database written to
-        # loses its entries.
+        # A write drops the table in every bucket, never only the writer's:
+        # the writer's location cannot be trusted to name the database (URL
+        # spellings differ, and a ``tx=`` write runs on the transaction's client
+        # whatever ``using()`` or the model's ``connection`` says).
 
         async def _invalidate_on_save(sender: type, **kwargs: Any) -> None:
-            cls._invalidate_for_connection(sender, cls._connection_identity(sender))
+            cls.invalidate(sender)
 
         async def _invalidate_on_delete(sender: type, **kwargs: Any) -> None:
-            cls._invalidate_for_connection(sender, cls._connection_identity(sender))
+            cls.invalidate(sender)
 
         async def _invalidate_on_update(sender: type, **kwargs: Any) -> None:
-            cls._invalidate_for_connection(sender, cls._connection_identity(sender))
+            cls.invalidate(sender)
 
         _on_save: SignalHandler = _invalidate_on_save
         _on_delete: SignalHandler = _invalidate_on_delete

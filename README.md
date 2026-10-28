@@ -37,6 +37,19 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.18
+
+**Fix release.** `QueryCache` automatic invalidation only. If you use `.cache()` with several named connections, see
+the behaviour change below and [CHANGELOG.md](CHANGELOG.md).
+
+- **A write no longer leaves stale `.cache()` results behind**
+  ([#338](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/338)). `save()`, `merge()`, `update()` and
+  `delete()` only invalidated the writing connection's URL/namespace/database, so one database reached through two URL
+  spellings (e.g. a trailing `/`), or a `save(tx=...)` running on another connection's client, could serve stale rows
+  until their TTL expired.
+- **Behaviour change:** `.cache()` reads are still scoped per connection, but a write now invalidates the table's
+  cached entries for all connections. With several connections this means more cache misses after a write.
+
 ## What's New in 0.34.17
 
 **Fix release.** `AuthenticatedUserMixin` only. If your identifier values are not unique, or you handle errors from

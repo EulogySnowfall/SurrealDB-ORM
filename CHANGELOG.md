@@ -6,6 +6,38 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.18] - 2026-10-28
+
+**Fix release.** `QueryCache` automatic invalidation only (#338, #356). Read
+*Behaviour change* below if your application uses several named connections
+with `.cache()`. The SurrealDB pin is unchanged (tested against 3.3.4,
+supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **A write could leave stale `.cache()` results in place (#338).** Since
+  0.34.13 (#309), `save()` / `merge()` / `update()` / `delete()` only dropped
+  the cached entries of the writing connection's `(url, namespace, database)`.
+  That location does not reliably identify the database: one database reached
+  through two URL spellings (e.g. `http://host:8000` and `http://host:8000/`,
+  `http` and `ws`, `localhost` and `127.0.0.1`) is two cache buckets, and a
+  `save(tx=...)` runs on the transaction's client whatever `using()` or the
+  model's `connection` config says. Stale rows were served until their TTL
+  expired. A write now drops the written table's cached entries for every
+  connection.
+- This also removes the 0.34.13 *Known limitation*: calling
+  `QueryCache.invalidate(Model)` after a `save(tx=tx)` on a model configured
+  with another connection is no longer needed.
+
+### Behaviour change
+
+- `.cache()` reads are still keyed per connection (two databases never share a
+  cached result), but a write now invalidates the table's cached entries for
+  **all** connections. Applications with several connections will see more
+  cache misses after a write; over-invalidating costs a re-query, while the
+  previous rule could serve stale rows.
+- The `v2` line has the same defect; the backport is tracked in #358.
+
 ## [0.34.17] - 2026-10-28
 
 **Fix release.** `AuthenticatedUserMixin` only (#332, #351). Read *Behaviour

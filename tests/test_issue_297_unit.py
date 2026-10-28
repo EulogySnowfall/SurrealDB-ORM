@@ -2,8 +2,8 @@
 
 A ``.cache()`` query run under ``using("b")`` must never be answered from an
 entry stored under ``using("a")`` when the two connections point at different
-databases, and a write through one connection must invalidate the entries of
-the database it went to.
+databases.  A write through any connection invalidates the table's entries for
+every connection (issue #338).
 """
 
 from __future__ import annotations
@@ -132,12 +132,15 @@ class TestPerConnectionInvalidation:
         return k_a, k_b
 
     @pytest.mark.parametrize("signal", [post_save, post_update, post_delete])
-    async def test_signal_invalidates_only_the_active_connection(self, signal: object) -> None:
+    async def test_signal_invalidates_every_connection(self, signal: object) -> None:
+        # Issue #338: reads stay per connection, but a write fails safe and drops
+        # the table's entries for every database (the writer's location cannot be
+        # trusted: URL spellings differ, and a tx= write may run elsewhere).
         k_a, k_b = self._fill()
         async with SurrealDBConnectionManager.using("i297_a"):
             await signal.send(sender=I297UnitItem, instance=I297UnitItem(id="r1"))  # type: ignore[attr-defined]
         assert QueryCache.get(k_a) is None
-        assert QueryCache.get(k_b) == ["from-B"]
+        assert QueryCache.get(k_b) is None
 
     async def test_signal_invalidates_every_name_on_the_same_database(self) -> None:
         SurrealDBConnectionManager.add_connection(
@@ -152,7 +155,7 @@ class TestPerConnectionInvalidation:
             await post_save.send(sender=I297UnitItem, instance=I297UnitItem(id="r1"))
         assert QueryCache.get(k_a) is None
         assert QueryCache.get(k_alias) is None
-        assert QueryCache.get(k_b) == ["from-B"]
+        assert QueryCache.get(k_b) is None
 
     @pytest.mark.parametrize("signal", [post_save, post_update, post_delete])
     async def test_signal_invalidates_entries_set_without_connection(self, signal: object) -> None:
@@ -165,7 +168,7 @@ class TestPerConnectionInvalidation:
             await signal.send(sender=I297UnitItem, instance=I297UnitItem(id="r1"))  # type: ignore[attr-defined]
         assert QueryCache.get("no-conn") is None
         assert QueryCache.get(k_a) is None
-        assert QueryCache.get(k_b) == ["from-B"]
+        assert QueryCache.get(k_b) is None
         assert QueryCache.get("no-conn-other") == "x"
 
     def test_public_invalidate_clears_the_table_for_every_connection(self) -> None:
