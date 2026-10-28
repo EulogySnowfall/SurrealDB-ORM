@@ -274,9 +274,11 @@ class TestTokenCache:
         mock_auth_result = MagicMock(first_result=mock_first_qr)
         mock_ephemeral.query = AsyncMock(return_value=mock_auth_result)
         mock_ephemeral.close = AsyncMock()
+        mock_ephemeral.namespace, mock_ephemeral.database = "test", "test"
 
-        # Only a token with a readable ``exp`` claim is cached (#331).
-        token = TestValidateTokenLocal._make_jwt(TestValidateTokenLocal(), {"ID": "TestUser:abc"})
+        # Only a token with a readable ``exp`` claim is cached (#331), and only
+        # a token of the model's own access (#393).
+        token = _own_token("TestUser:abc")
 
         with patch.object(TestUser, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)):
             # First call should hit the server
@@ -301,7 +303,8 @@ class TestTokenCache:
             password: Encrypted
 
         # Pre-populate cache
-        TestUser._token_cache[TestUser._token_cache_key("my_token")] = (
+        token = _own_token("TestUser:abc")
+        TestUser._token_cache[TestUser._token_cache_key(token)] = (
             "TestUser:cached",
             time.monotonic() + 300,
             time.time() + 3600,
@@ -313,9 +316,10 @@ class TestTokenCache:
         mock_auth_result = MagicMock(first_result=mock_first_qr)
         mock_ephemeral.query = AsyncMock(return_value=mock_auth_result)
         mock_ephemeral.close = AsyncMock()
+        mock_ephemeral.namespace, mock_ephemeral.database = "test", "test"
 
         with patch.object(TestUser, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)):
-            result = await TestUser.validate_token("my_token", use_cache=False)
+            result = await TestUser.validate_token(token, use_cache=False)
             assert result == "TestUser:fresh"
             mock_ephemeral.authenticate.assert_called_once()
 
@@ -330,7 +334,8 @@ class TestTokenCache:
             password: Encrypted
 
         # Pre-populate cache with expired entry
-        TestUser._token_cache[TestUser._token_cache_key("my_token")] = (
+        token = _own_token("TestUser:abc")
+        TestUser._token_cache[TestUser._token_cache_key(token)] = (
             "TestUser:old",
             time.monotonic() - 10,
             time.time() + 3600,
@@ -342,9 +347,10 @@ class TestTokenCache:
         mock_auth_result = MagicMock(first_result=mock_first_qr)
         mock_ephemeral.query = AsyncMock(return_value=mock_auth_result)
         mock_ephemeral.close = AsyncMock()
+        mock_ephemeral.namespace, mock_ephemeral.database = "test", "test"
 
         with patch.object(TestUser, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)):
-            result = await TestUser.validate_token("my_token")
+            result = await TestUser.validate_token(token)
             assert result == "TestUser:new"
             mock_ephemeral.authenticate.assert_called_once()
 
@@ -360,6 +366,7 @@ class TestTokenCache:
         TestUser._token_cache.clear()
         TestUser._token_cache_max_size = 0
         TestUser._token_cache_ttl = 300
+        token = _own_token("TestUser:abc")
 
         mock_ephemeral = AsyncMock()
         mock_ephemeral.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=True, raw={}))
@@ -367,15 +374,23 @@ class TestTokenCache:
         mock_auth_result = MagicMock(first_result=mock_first_qr)
         mock_ephemeral.query = AsyncMock(return_value=mock_auth_result)
         mock_ephemeral.close = AsyncMock()
+        mock_ephemeral.namespace, mock_ephemeral.database = "test", "test"
 
         with patch.object(TestUser, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)):
-            result = await TestUser.validate_token("my_token")
+            result = await TestUser.validate_token(token)
             assert result == "TestUser:abc"
             # Cache should remain empty (caching disabled)
             assert len(TestUser._token_cache) == 0
 
         # Reset
         TestUser._token_cache_max_size = 1000
+
+
+def _own_token(record_id: str) -> str:
+    """A token of ``TestUser``'s default access on namespace/database ``test`` (#393)."""
+    return TestValidateTokenLocal._make_jwt(
+        TestValidateTokenLocal(), {"ID": record_id, "AC": "testuser_auth", "NS": "test", "DB": "test"}
+    )
 
 
 class TestValidateTokenLocal:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.surreal_orm import SurrealFunc
 from src.surreal_orm.migrations.define_parser import (
     parse_define_access,
     parse_define_config_graphql,
@@ -96,7 +97,8 @@ class TestParseDefineField:
 
     def test_field_with_default_function(self) -> None:
         result = parse_define_field("DEFINE FIELD created_at ON users TYPE datetime DEFAULT time::now()")
-        assert result.default == "time::now()"
+        # An unquoted default is an expression, not a text (#401)
+        assert result.default == SurrealFunc("time::now()")
 
     def test_field_with_assert(self) -> None:
         result = parse_define_field("DEFINE FIELD email ON users TYPE string ASSERT is::email($value)")

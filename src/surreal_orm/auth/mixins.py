@@ -36,7 +36,7 @@ class AuthenticatedUserMixin:
     Token validation results are cached in-memory (TTL-based) to avoid
     creating an ephemeral connection on every request.  Configure via
     :meth:`configure_token_cache`.  An entry never outlives the token's own
-    ``exp`` claim, and entries are kept per model table.
+    ``exp`` claim, and entries are kept per model table and access definition.
 
     Example:
         class User(AuthenticatedUserMixin, BaseSurrealModel):
@@ -72,15 +72,17 @@ class AuthenticatedUserMixin:
     """
 
     # --- Token cache (shared across all subclasses) ---
-    # Key: (connection identity, model table, token).
+    # Key: (connection identity, model table, access name, token).
     # Value: (record ID, monotonic deadline, exp).
-    # The table is part of the key because this dict is shared by every
-    # subclass: a token validated for one model must never be served to
-    # another one.  The connection identity (name, url, namespace, database,
-    # as for QueryCache) is part of it because the same model can be routed
-    # to another database: a token validated by one database must never be
-    # served for another one.
-    _token_cache: ClassVar[dict[tuple[ConnectionIdentity, str, str], tuple[str, float, float]]] = {}
+    # The table and the access name are part of the key because this dict is
+    # shared by every subclass: a token validated for one model must never be
+    # served to another one, including another model on the same table with
+    # its own access definition.  The connection identity (name, url,
+    # namespace, database, as for QueryCache) is part of it because the same
+    # model can be routed to another database: a token validated by one
+    # database must never be served for another one.  The token is always the
+    # last element (see invalidate_token_cache()).
+    _token_cache: ClassVar[dict[tuple[ConnectionIdentity, str, str, str], tuple[str, float, float]]] = {}
     _token_cache_ttl: ClassVar[int] = 300  # seconds
     _token_cache_max_size: ClassVar[int] = 1000  # max cached tokens
 
@@ -121,21 +123,22 @@ class AuthenticatedUserMixin:
         if token is None:
             cls._token_cache.clear()
         else:
-            for key in [key for key in cls._token_cache if key[2] == token]:
+            for key in [key for key in cls._token_cache if key[-1] == token]:
                 cls._token_cache.pop(key, None)
 
     @classmethod
-    def _token_cache_key(cls, token: str) -> tuple[ConnectionIdentity, str, str]:
+    def _token_cache_key(cls, token: str) -> tuple[ConnectionIdentity, str, str, str]:
         """
         Return the cache key of *token* for this model, on its current connection.
 
         The connection identity follows :meth:`get_connection_name`
         (``using()`` override, then the model's ``connection`` config, then
         ``"default"``), exactly like :class:`~surreal_orm.cache.QueryCache`.
+        The access name keeps two models on the same table apart.
         """
         from ..cache import QueryCache
 
-        return (QueryCache._connection_identity(cls), cls._auth_table_name(), token)
+        return (QueryCache._connection_identity(cls), cls._auth_table_name(), cls.get_access_name(), token)
 
     @staticmethod
     def _decode_jwt_claims(token: str) -> dict[str, Any] | None:
@@ -208,6 +211,32 @@ class AuthenticatedUserMixin:
             # module paths, each with its own class object).
             table = getattr(record_id, "table", None)
         return isinstance(table, str) and table == cls._auth_table_name()
+
+    @classmethod
+    def _is_own_token(cls, token: str, client: HTTPConnection) -> bool:
+        """
+        Tell whether *token* was issued by this model's access definition.
+
+        Called once the server has accepted the token.  The server accepts
+        a token issued by any access definition of the database (and the
+        token itself names its namespace and database), so a token signed
+        in through another model's access on the same table would otherwise
+        pass.  The ``AC`` claim must equal :meth:`get_access_name`, and the
+        ``NS`` / ``DB`` claims the namespace and database of *client*, the
+        ephemeral connection built from the model's connection config.
+
+        A token whose claims cannot be read, or lack any of the three, is
+        not this model's token.
+        """
+        claims = cls._decode_jwt_claims(token)
+        if claims is None:
+            return False
+        expected = {
+            "AC": cls.get_access_name(),
+            "NS": getattr(client, "namespace", None),
+            "DB": getattr(client, "database", None),
+        }
+        return all(isinstance(value, str) and claims.get(claim) == value for claim, value in expected.items())
 
     @classmethod
     def validate_token_local(cls, token: str) -> str | None:
@@ -678,7 +707,10 @@ class AuthenticatedUserMixin:
         Authenticate using an existing JWT token.
 
         Validates the token with SurrealDB, retrieves the ``$auth`` record ID,
-        and fetches the full user record.
+        and fetches the full user record.  As in :meth:`validate_token`, the
+        record must be in this model's table and the token's ``AC``, ``NS``
+        and ``DB`` claims must name this model's access definition and the
+        namespace and database of its connection; otherwise ``None``.
 
         An ephemeral connection is used so the root singleton is not affected.
 
@@ -713,6 +745,10 @@ class AuthenticatedUserMixin:
             if not cls._is_own_record(raw_auth):
                 # The token is valid but belongs to another model's table.
                 return None
+            if not cls._is_own_token(token, client):
+                # The token is valid but was issued by another access
+                # definition, namespace or database.
+                return None
             record_id = str(raw_auth)
         except (SurrealDBError, AuthenticationError, QueryError):
             return None
@@ -745,11 +781,14 @@ class AuthenticatedUserMixin:
         ``use_cache=False`` or ``configure_token_cache(ttl=0)``.  A cached
         entry expires at the token's ``exp`` claim if that comes first; a
         token whose ``exp`` cannot be read is validated on every call and
-        never cached.  Entries are kept per model table and per connection
-        (name, URL, namespace, database).
+        never cached.  Entries are kept per model table, per access
+        definition and per connection (name, URL, namespace, database).
 
         A token whose ``$auth`` record is not in this model's table returns
-        ``None`` (validate it through the model it was issued for).
+        ``None`` (validate it through the model it was issued for), and so
+        does a token whose ``AC`` claim is not this model's
+        :meth:`get_access_name` or whose ``NS`` / ``DB`` claims are not the
+        namespace and database of the model's connection.
 
         An ephemeral connection is used on cache miss so the root singleton
         is not affected.
@@ -797,6 +836,10 @@ class AuthenticatedUserMixin:
 
             if not cls._is_own_record(first_qr.result):
                 # The token is valid but belongs to another model's table.
+                return None
+            if not cls._is_own_token(token, client):
+                # The token is valid but was issued by another access
+                # definition, namespace or database.
                 return None
             record_id = str(first_qr.result)
 
