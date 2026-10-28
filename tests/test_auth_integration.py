@@ -749,3 +749,154 @@ class TestMixinAuthWorkflow:
         client = await surreal_orm.SurrealDBConnectionManager.get_client()
         result = await client.query("SELECT count() FROM MixinUser GROUP ALL;")
         assert result is not None
+
+
+@pytest.mark.integration
+class TestIssue332SessionRecord:
+    """#332 — signin()/signup() return the record the issued token belongs to.
+
+    The table has no UNIQUE index on ``email``, so two records can share it.
+    The first one is created with a key that sorts before any generated key,
+    which is the record an identifier lookup returns first.
+    """
+
+    @pytest.fixture(autouse=True)
+    async def _schema(self) -> None:
+        client = await surreal_orm.SurrealDBConnectionManager.reconnect()
+        assert client is not None
+        await client.query("REMOVE ACCESS IF EXISTS i332_auth ON DATABASE; REMOVE TABLE IF EXISTS I332User;")
+        await client.query("""
+            DEFINE TABLE I332User SCHEMAFULL;
+            DEFINE FIELD email ON I332User TYPE string;
+            DEFINE FIELD password ON I332User TYPE string;
+            DEFINE FIELD name ON I332User TYPE string;
+
+            DEFINE ACCESS i332_auth ON DATABASE TYPE RECORD
+                SIGNUP (CREATE I332User SET
+                    email = $email,
+                    password = crypto::argon2::generate($password),
+                    name = $name
+                )
+                SIGNIN (SELECT * FROM I332User WHERE
+                    email = $email AND
+                    crypto::argon2::compare(password, $password)
+                )
+                WITH REFRESH
+                DURATION FOR TOKEN 1h, FOR SESSION 24h;
+
+            CREATE I332User:⟨000000⟩ SET
+                email = 'shared332@example.com',
+                password = crypto::argon2::generate('first-password'),
+                name = 'first';
+        """)
+        yield
+        client = await surreal_orm.SurrealDBConnectionManager.reconnect()
+        if client is not None:
+            await client.query("REMOVE ACCESS IF EXISTS i332_auth ON DATABASE; REMOVE TABLE IF EXISTS I332User;")
+
+    @staticmethod
+    def _model() -> type:
+        class I332User(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(
+                table_type=TableType.USER,
+                table_name="I332User",
+                identifier_field="email",
+                password_field="password",
+                access_name="i332_auth",
+            )
+            id: str | None = None
+            email: str
+            password: Encrypted
+            name: str
+
+        return I332User
+
+    async def test_signin_returns_record_matching_password(self) -> None:
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        await client.query("""
+            CREATE I332User:zzzzzz SET
+                email = 'shared332@example.com',
+                password = crypto::argon2::generate('second-password'),
+                name = 'second';
+        """)
+        model = self._model()
+
+        result = await model.signin(email="shared332@example.com", password="second-password")
+
+        assert result.user.id == "zzzzzz"
+        assert result.user.name == "second"
+        assert model.validate_token_local(result.token) == "I332User:zzzzzz"
+        assert result.refresh_token
+
+        # The other record is still reachable with its own password.
+        first = await model.signin(email="shared332@example.com", password="first-password")
+        assert first.user.id == "000000"
+        assert first.user.name == "first"
+
+    async def test_signup_returns_created_record(self) -> None:
+        model = self._model()
+
+        result = await model.signup(email="shared332@example.com", password="second-password", name="second")
+
+        token_record = model.validate_token_local(result.token)
+        assert token_record is not None
+        assert result.user.id != "000000"
+        assert token_record == f"I332User:{result.user.id}"
+        assert result.user.name == "second"
+
+    async def test_authenticate_token_returns_token_record(self) -> None:
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        await client.query("""
+            CREATE I332User:zzzzzz SET
+                email = 'shared332@example.com',
+                password = crypto::argon2::generate('second-password'),
+                name = 'second';
+        """)
+        model = self._model()
+        signed_in = await model.signin(email="shared332@example.com", password="second-password")
+
+        authenticated = await model.authenticate_token(signed_in.token)
+
+        assert authenticated is not None
+        user, record_id = authenticated
+        assert user.id == "zzzzzz"
+        assert record_id == "I332User:zzzzzz"
+
+    async def test_change_password_updates_only_the_signed_in_record(self) -> None:
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        await client.query("""
+            CREATE I332User:zzzzzz SET
+                email = 'shared332@example.com',
+                password = crypto::argon2::generate('second-password'),
+                name = 'second';
+        """)
+        model = self._model()
+
+        assert await model.change_password("shared332@example.com", "second-password", "new-second-password")
+
+        updated = await model.signin(email="shared332@example.com", password="new-second-password")
+        assert updated.user.id == "zzzzzz"
+        # The other record keeps its own password.
+        first = await model.signin(email="shared332@example.com", password="first-password")
+        assert first.user.id == "000000"
+
+    async def test_change_password_on_integer_keyed_record(self) -> None:
+        """A numeric record key must reach the UPDATE as a number, not a string."""
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        await client.query("""
+            CREATE I332User:42 SET
+                email = 'int332@example.com',
+                password = crypto::argon2::generate('old-password'),
+                name = 'int';
+        """)
+        model = self._model()
+
+        assert await model.change_password("int332@example.com", "old-password", "new-password")
+
+        updated = await model.signin(email="int332@example.com", password="new-password")
+        assert updated.user.id == "42"
+        with pytest.raises(SurrealDbError):
+            await model.signin(email="int332@example.com", password="old-password")
+        # No string-keyed twin was created by the update.
+        rows = await client.query("SELECT id FROM I332User WHERE email = 'int332@example.com'")
+        assert len(rows.all_records) == 1
