@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.35.1)
+> Context document for Claude AI - Last updated: October 2026 (0.35.2)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.35.1 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.35.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,25 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.35.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.35.2
+
+One fix, #328 via #367 (`utils.py`, `query_set.py`, `q.py`, `relations.py`,
+`model_base.py`, SDK stream table-name checks). Pin unchanged (3.3.4).
+`v2`: backport required, tracked in #377 (same code on the branch).
+
+- **`parse_filter_key()` is the single split point** for `filter()`, `Q` and
+  relation filters; `_render_condition()` re-checks hand-built `Q` children,
+  so `live()`, subqueries and the bulk WHERE clauses go through it too.
+  `values()` uses `validate_field_path()` (dotted paths allowed).
+- **Every identifier pattern ends in `\Z` and is tested with `fullmatch()`**
+  — `^…$` with `.match` accepted a trailing newline. That also changes
+  `needs_id_escaping()` / `format_thing()` / `to_record_id()` for such IDs.
+- **Unknown lookups raise** instead of falling back to `=`, in `QuerySet` and
+  in relation filters (which render only ten lookups).
+- **Open:** a hand-built `Q` child such as `("a__b", "exact")` is rejected
+  with a message naming `b__exact` rather than the caller's field (review
+  suggestion on #367).
 
 ### What's New in 0.35.1
 
