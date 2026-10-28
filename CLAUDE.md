@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.12)
+> Context document for Claude AI - Last updated: October 2026 (0.34.13)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.12 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.13 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,26 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.13
+
+One fix (#297 via #309). Pin unchanged (3.3.4). `v2`: same cache key,
+backport tracked in #315.
+
+- **`QueryCache` keys ignored the connection.** `make_key()` hashed query,
+  variables and table, so `using("a")` and `using("b")` on two databases
+  shared one entry. The key carries `(name, url, namespace, database)` from
+  the effective `ConnectionConfig` now, resolved through
+  `model.get_connection_name()` like every read; credentials stay out.
+- **Invalidation is indexed by `(url, namespace, database)` + table**, so a
+  write clears that database's entries under every connection name pointing
+  at it. Entries stored by `set()` without `connection=` sit in a
+  connection-less bucket that every write to the table clears; the first
+  review round caught the version that left them stale.
+- **Known gap, pre-existing:** `transaction()` binds to the `using()`
+  connection or `"default"`, not the model's `connection` config, so a
+  `save(tx=)` on a model routed elsewhere invalidates the wrong bucket.
+  Resolving the identity from the transaction's connection is the fix.
 
 ### What's New in 0.34.12
 
