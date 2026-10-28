@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.17)
+> Context document for Claude AI - Last updated: October 2026 (0.34.18)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.17 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.18 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,22 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.18
+
+One fix (#338 via #356), `surreal_orm/cache.py` only. Pin unchanged (3.3.4).
+`v2`: same per-location invalidation since #335, backport tracked in #358.
+
+- **Reads are scoped per connection, writes invalidate everywhere.** The
+  `post_save`/`post_update`/`post_delete` handlers call
+  `QueryCache.invalidate(sender)`; the private `_invalidate_for_connection()`
+  is gone. A connection's `(url, namespace, database)` is not a reliable
+  identity for a database — URL spellings differ (`/`, `http`/`ws`,
+  `localhost`/`127.0.0.1`) and `save(tx=)` writes on the transaction's
+  client, not on the model's routed connection — so matching on it left
+  stale entries. Over-invalidating only costs a re-query.
+- **This retires the 0.34.13 known limitation** about `save(tx=)` on a model
+  with its own `connection` config.
 
 ### What's New in 0.34.17
 
