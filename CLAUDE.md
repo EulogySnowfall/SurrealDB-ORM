@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.20)
+> Context document for Claude AI - Last updated: October 2026 (0.21.21)
 
 <!-- -->
 
@@ -19,12 +19,29 @@
 
 ---
 
-## Current Version: 0.21.20 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.21 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.21
+
+CLI fix, the `v2` port of #298 (#303, #317). No new public API.
+
+- **The defect:** `run_async()` in `cli/commands.py` called
+  `asyncio.get_event_loop().run_until_complete()`. A click command has no current loop, so Python 3.14
+  raised `RuntimeError` and 3.12 – 3.13 warned; every CLI command that reaches the database failed on 3.14.
+  CI stayed green because every CLI test patched `run_async`, so the real helper never ran.
+- **The fix:** `run_async()` uses `asyncio.run()` (new loop per call, closed on return). `shell` keeps one
+  `asyncio.Runner` for the session and runs the blocking prompt outside it, so Ctrl+C at the prompt is no longer turned into the
+  cancellation of a running coroutine.
+  `HTTPConnection` keeps no pooled connection, so the client the connection manager keeps after a command
+  is not tied to the closed loop.
+- **Tests:** the real `run_async` runs from a thread with no current loop, `DeprecationWarning` as an
+  error; `status`, `makemigrations` and `shell` go through `CliRunner` with only the database layer mocked.
+  `TestFR5RemoveAllRelationsList` no longer swallows the 3.14 `RuntimeError` as a connection error.
 
 ### What's New in 0.21.20
 
