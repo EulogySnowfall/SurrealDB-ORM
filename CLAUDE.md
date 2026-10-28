@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.10)
+> Context document for Claude AI - Last updated: October 2026 (0.34.11)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.10 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.11 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,25 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.11
+
+One CLI fix (#280, #298). Pin unchanged (3.3.4). `v2`: same defect, backport
+tracked in #303. Unit 2,527 on 3.12/3.13/3.14/3.15; integration on 3.3.4 572
+passed, 1 skipped, 1 xfailed (#147 still XFAIL).
+
+- **`run_async()` used the thread's current event loop.** A click command
+  starts with none: 3.12–3.13 created one with a `DeprecationWarning`, 3.14+
+  raises `RuntimeError`, so every database command failed on 3.14 and 3.15.
+  It is `asyncio.run()` now. The cached HTTP client survives the closed loop
+  because `HTTPConnection` keeps no pooled connection alive.
+- **`shell` keeps one `asyncio.Runner`**, entered only to connect and to run
+  each query. With the blocking prompt inside a coroutine, asyncio would turn
+  Ctrl+C into a cancellation the prompt only sees at its next await.
+- **CI never ran the real helper**: every CLI test patched `run_async`. Two
+  `remove_all_relations` unit tests also caught every non-`ValueError` as
+  "connection error expected", so on 3.14+ they passed without calling the
+  method. Mock the database layer, not the event-loop glue.
 
 ### What's New in 0.34.10
 

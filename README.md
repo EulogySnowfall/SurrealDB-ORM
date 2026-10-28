@@ -37,6 +37,16 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.11
+
+**Fix release.** No new public API and nothing to change on upgrade.
+
+- **The `surreal-orm` CLI works on Python 3.14 and 3.15**
+  ([#280](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/280)). Every command that reaches the database
+  (`makemigrations`, `migrate`, `upgrade`, `rollback`, `status`, `sqlmigrate`, `inspectdb`, `schemadiff`, `shell`)
+  failed with `RuntimeError: There is no current event loop`. Commands now run on a fresh event loop with
+  `asyncio.run()`, and on Python 3.12 – 3.13 they no longer emit an event-loop `DeprecationWarning`.
+
 ## What's New in 0.34.10
 
 **Fix release.** No new public API, but optional foreign keys change behaviour: see [CHANGELOG.md](CHANGELOG.md)
