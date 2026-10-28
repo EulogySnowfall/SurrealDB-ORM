@@ -37,6 +37,22 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.16
+
+**Fix release.** SDK `HTTPConnection` only. If you call `authenticate()` or `signup()` on an HTTP connection that was
+signed in with `signin()` first, see the behaviour change below and [CHANGELOG.md](CHANGELOG.md).
+
+- **A rejected token is no longer answered with an earlier `signin()`**
+  ([#330](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/330)). The transient-`401` recovery replayed the
+  credentials of the last `signin()` even after `authenticate()` or `signup()` had installed a different token, so
+  once that token expired the request went through under the earlier identity. The retained sign-in arguments are now
+  dropped by `authenticate()`, `signup()`, a failed `signin()` and `close()`.
+- **New `HTTPConnection.invalidate()`**: sends the `invalidate` RPC and clears the token and the retained sign-in
+  arguments, even when the RPC fails.
+- **Behaviour change:** on a connection whose token came from `authenticate()` or `signup()`, a `401` is now raised as
+  `QueryError` (code 401). Call `signin()` again or supply a fresh token. Transient-`401` recovery after `signin()` is
+  unchanged.
+
 ## What's New in 0.34.15
 
 **Fix release.** `QuerySet` filters only. If you reference query variables from `filter()`, see the behaviour change

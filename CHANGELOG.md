@@ -6,6 +6,44 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.16] - 2026-10-28
+
+**Fix release.** SDK `HTTPConnection` sign-in state only (#330, #347). Read
+*Behaviour change* below if you call `authenticate()` or `signup()` on an HTTP
+connection that was signed in with `signin()` first. The SurrealDB pin is
+unchanged (tested against 3.3.4, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`HTTPConnection` no longer signs in again with the credentials of an
+  earlier `signin()` when a token installed by `authenticate()` or `signup()`
+  is rejected (#330).** The transient-`401` recovery added in 0.31.4 (#101)
+  replays the arguments of the last successful `signin()`. Nothing cleared
+  them, so once a later token was rejected (for example after it expired),
+  the request was answered by signing in again with those earlier
+  credentials and went through under that earlier identity instead of
+  failing. The retained sign-in arguments now describe only the current
+  identity: `authenticate()` and `signup()` drop them, and so do a failed
+  `signin()` and `close()`.
+
+### Added
+
+- **`HTTPConnection.invalidate()`** sends the `invalidate` RPC, then clears
+  the token, the authenticated flag and the retained sign-in arguments, even
+  when the RPC fails (that error is raised). Later requests carry no
+  credentials until the next `signin()` or `authenticate()`.
+
+### Behaviour change
+
+- On an HTTP connection whose token came from `authenticate()` or
+  `signup()`, a `401` is now raised as `QueryError` (code 401) instead of
+  being answered by signing in again. Recovery from a transient `401` (#101)
+  is unchanged for tokens obtained by `signin()`. If the re-mint itself
+  fails, the retry with the existing token is now the last attempt.
+- **Migration:** code that called `authenticate()` or `signup()` on a
+  connection after `signin()`, and relied on later requests succeeding once
+  that token had run out, must call `signin()` again or supply a fresh token.
+
 ## [0.34.15] - 2026-10-28
 
 **Fix release.** `QuerySet` filters only (#327, #341). Read *Behaviour
