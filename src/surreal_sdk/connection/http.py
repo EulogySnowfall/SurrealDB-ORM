@@ -354,18 +354,20 @@ class HTTPConnection(BaseSurrealConnection):
         # ``authenticate()`` / ``signup()``) a 401 is treated as a genuine
         # credentials problem and raised immediately.
         #
-        # The connection may be shared between tasks. If its auth state changed
-        # after this request was sent (another task re-minted the token, called
-        # ``authenticate()``, ``signup()``, ``invalidate()`` or ``close()``), the
-        # 401 says nothing about the current state: the request is retried with
-        # the current token, without signing in. A re-mint started here installs
-        # its token only if the state is still the one the request was sent
-        # with (see ``signin()``).
+        # The connection may be shared between tasks. If another task re-minted
+        # the token of the same ``signin()`` after this request was sent, the
+        # request is retried with that token, without signing in again. If the
+        # connection now acts as someone else (another task called
+        # ``signin()``, ``authenticate()``, ``signup()``, ``invalidate()`` or
+        # ``close()``), the request is never replayed: the 401 is raised. A
+        # re-mint started here installs its token only if the auth state is
+        # still the one the request was sent with (see ``signin()``).
         last_status_error: httpx.HTTPStatusError | None = None
         for attempt in range(len(_AUTH_RETRY_BACKOFFS_S) + 1):
             # Read together with the headers below, with no await in between.
             sent_token = self._token
             sent_generation = self._auth_generation
+            sent_identity = self._auth_identity
             try:
                 if self.protocol == "cbor":
                     # Use CBOR encoding which properly handles all data types
@@ -394,10 +396,14 @@ class HTTPConnection(BaseSurrealConnection):
 
             except httpx.HTTPStatusError as e:
                 last_status_error = e
-                if e.response.status_code == 401 and attempt < len(_AUTH_RETRY_BACKOFFS_S):
+                if (
+                    e.response.status_code == 401
+                    and attempt < len(_AUTH_RETRY_BACKOFFS_S)
+                    and self._auth_identity == sent_identity
+                ):
                     if self._auth_generation != sent_generation or self._token != sent_token:
-                        # The auth state changed since this request was sent:
-                        # retry with the current token, without signing in.
+                        # Another task renewed the token of the same signin()
+                        # since this request was sent: retry with it.
                         continue
                     signin_args = self._signin_args
                     if signin_args is not None:
@@ -414,7 +420,10 @@ class HTTPConnection(BaseSurrealConnection):
                             pass
                         finally:
                             _REMINT_FOR_GENERATION.reset(remint)
-                        continue
+                        if self._auth_identity == sent_identity:
+                            continue
+                        # Another task changed the identity during the re-mint
+                        # (whose token was then discarded): do not replay.
                 raise QueryError(
                     message=f"HTTP error: {e.response.status_code} - {e.response.text}",
                     code=e.response.status_code,
@@ -467,7 +476,7 @@ class HTTPConnection(BaseSurrealConnection):
         except BaseException:
             if remint_for is None or remint_for == self._auth_generation:
                 self._signin_args = None
-                self._auth_changed()
+                self._auth_changed(same_identity=remint_for is not None)
             raise
         if remint_for is not None and remint_for != self._auth_generation:
             # Another task changed the auth state while this re-mint was
@@ -485,7 +494,9 @@ class HTTPConnection(BaseSurrealConnection):
             "access": access,
             **credentials,
         }
-        self._auth_changed()
+        # A re-mint renews the token of the same arguments; any other signin()
+        # may be a different principal.
+        self._auth_changed(same_identity=remint_for is not None)
         return response
 
     async def _fetch_signin(

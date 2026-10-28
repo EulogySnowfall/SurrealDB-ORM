@@ -57,6 +57,11 @@ class BaseSurrealConnection(ABC):
         # something on the strength of the old state, such as the HTTP
         # transient-401 re-mint, compares it before acting on its result.
         self._auth_generation = 0
+        # Incremented whenever the connection may now act as a different
+        # principal: every auth change except the HTTP transient-401 re-mint,
+        # which only renews the token of the same ``signin()`` arguments. A
+        # request rejected under one identity is never replayed under another.
+        self._auth_identity = 0
 
     @property
     def is_connected(self) -> bool:
@@ -108,9 +113,15 @@ class BaseSurrealConnection(ABC):
         """
         return None
 
-    def _auth_changed(self) -> None:
-        """Record that the connection's auth state changed (see ``_auth_generation``)."""
+    def _auth_changed(self, *, same_identity: bool = False) -> None:
+        """Record that the connection's auth state changed.
+
+        Bumps ``_auth_generation`` and, unless *same_identity* (a re-mint of the
+        same ``signin()`` arguments), ``_auth_identity`` too.
+        """
         self._auth_generation += 1
+        if not same_identity:
+            self._auth_identity += 1
 
     # Context manager support
 
