@@ -6,6 +6,36 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.21] - 2026-10-28
+
+**Bug fix release (V2 LTS).** One CLI fix (#303, #317), the `v2` port of #298
+from `main`. No new public API. The SurrealDB pin is unchanged (tested against
+2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **CLI database commands failed on Python 3.14 (#303).** The CLI ran each
+  command's coroutine with `asyncio.get_event_loop().run_until_complete()`. A
+  click command starts with no current event loop: Python 3.12 – 3.13 created
+  one with a `DeprecationWarning`, and Python 3.14 raises `RuntimeError`
+  ("There is no current event loop"), so `makemigrations` (reading the schema),
+  `migrate`, `upgrade`, `rollback`, `status`, `sqlmigrate`, `inspectdb`,
+  `schemadiff` and `shell` failed before doing anything. The CLI now runs its
+  coroutines with `asyncio.run()`.
+- **`surreal-orm shell`** keeps a single `asyncio.Runner` for the session and
+  prompts outside it, so Ctrl+C at the prompt still exits the shell.
+
+### Behaviour change
+
+- Each CLI command runs on a fresh event loop that is closed when the command
+  returns. No public API change.
+
+### Migration note
+
+- None.
+
+---
+
 ## [0.21.20] - 2026-10-28
 
 **Bug fix release (V2 LTS).** One ORM fix (#294, #307), the `v2` port of #286

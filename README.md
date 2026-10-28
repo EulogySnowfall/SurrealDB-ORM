@@ -52,6 +52,17 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.21
+
+**Bug fix release (V2 LTS).** One CLI fix, the `v2` port of #298 from `main`; no new public API.
+
+- **CLI database commands work on Python 3.14 (#303).** `makemigrations` (reading the schema), `migrate`,
+  `upgrade`, `rollback`, `status`, `sqlmigrate`, `inspectdb`, `schemadiff` and `shell` failed with "There is
+  no current event loop" on Python 3.14 and emitted a `DeprecationWarning` on 3.12 – 3.13. The CLI now runs
+  its coroutines with `asyncio.run()`; `surreal-orm shell` keeps one `asyncio.Runner` per session, and Ctrl+C
+  at the prompt still exits.
+- **Behaviour change:** each CLI command runs on a fresh event loop that is closed when it returns.
+
 ## What's New in 0.21.20
 
 **Bug fix release (V2 LTS).** One ORM fix, the `v2` port of #286 from `main`; no new public API.
