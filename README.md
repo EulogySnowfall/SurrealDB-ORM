@@ -52,6 +52,20 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.27
+
+**Bug fix release (V2 LTS).** One fix, the `v2` port of #283 from `main`; no new public API on the model side.
+
+- **Migration DDL keeps apostrophes and backslashes in comments and string defaults (#284).** A `COMMENT` or
+  string `DEFAULT` such as `it's` used to be rendered with a doubled quote, which SurrealDB 2.x fails to parse, and
+  `C:\temp` was stored as a different text. Both are now escaped with a backslash and stored exactly as written.
+- **Introspection reads those texts back (#284).** Double-quoted comments and defaults reported by the server are
+  decoded, so `schema_diff()` / `makemigrations` stop proposing changes, and an apostrophe in a table comment no
+  longer hides its `PERMISSIONS` clause. `inspectdb` writes every string default with `repr()`.
+- **Behaviour change:** a `str` default is always a text; server-side expressions are `SurrealFunc(...)`. A `str`
+  that is exactly `"time::now()"`-style or a bare `$parameter` still works, with a `DeprecationWarning`. See the
+  CHANGELOG for the migration note.
+
 ## What's New in 0.21.26
 
 **Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #356, #365 and #370 from `main`; no new public API.

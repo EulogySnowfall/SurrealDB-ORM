@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.26)
+> Context document for Claude AI - Last updated: October 2026 (0.21.27)
 
 <!-- -->
 
@@ -19,12 +19,27 @@
 
 ---
 
-## Current Version: 0.21.26 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.27 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.35.x   | Active development              |
+
+### What's New in 0.21.27
+
+Fix, the `v2` port of #283 (#284, #395). No new public API on the model side.
+
+- **DDL string literals:** `surreal_orm.utils.surql_string_literal()` escapes `\` then `'` with a backslash; every
+  renderer that writes a text into DDL (`_render_default`, `_render_define_field`, `_render_define_table`,
+  `CreateIndex`, `DefineAccess`, `DefineEvent`) uses it. `escape_single_quotes()` delegates to it.
+- **Reading back:** `define_parser._unquote_surql_string()` decodes single- and double-quoted strings for comments
+  and string defaults; the clause scanner honours both quote characters and backslash escapes. An unquoted `DEFAULT`
+  parses to `SurrealFunc`; `MigrationGenerator` and `inspectdb` import it when they emit one.
+- **Legacy `str` expressions:** `_LEGACY_EXPRESSION_DEFAULT` (whole no-argument call or bare `$identifier`) keeps
+  such a `str` unquoted with a `DeprecationWarning`, in the renderer and in `ModelIntrospector`, so old migration
+  files roll back and legacy models converge. Tests: `tests/test_issue_284_v2_unit.py`,
+  `tests/test_issue_284_v2_integration.py`.
 
 ### What's New in 0.21.26
 
