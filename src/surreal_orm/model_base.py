@@ -652,8 +652,10 @@ class BaseSurrealModel(BaseModel):
         """
         Map each :func:`ForeignKey` field to the table it points at.
 
-        These fields hold record links, so their values must reach SurrealDB as
-        ``RecordId`` objects rather than strings.  The table is ``None`` when
+        Optional foreign keys (``ForeignKey("X") | None``,
+        ``Optional[ForeignKey("X")]``) are included.  These fields hold record
+        links, so their values must reach SurrealDB as ``RecordId`` objects
+        rather than strings.  The table is ``None`` when
         the target model is not registered, in which case only fully-qualified
         ``"table:id"`` values can be resolved.
 
@@ -662,16 +664,16 @@ class BaseSurrealModel(BaseModel):
         """
         # Local import: fields.relation imports record_link_to_str from this
         # module at load time, so importing it at the top would be circular.
-        from .fields.relation import _ForeignKeyMarker
+        from .fields.relation import _find_marker, _ForeignKeyMarker
 
-        # Pydantic strips Annotated metadata off `annotation`, so the marker
-        # is read from FieldInfo.metadata instead.
+        # A bare ForeignKey's marker is in FieldInfo.metadata; an optional one
+        # (`ForeignKey(...) | None`) keeps it on the union member of
+        # FieldInfo.annotation, so both places are searched.
         targets: dict[str, str | None] = {}
         for name, field_info in cls.model_fields.items():
-            for meta in field_info.metadata:
-                if isinstance(meta, _ForeignKeyMarker):
-                    targets[name] = _resolve_target_table(meta.to)
-                    break
+            marker = _find_marker(field_info.annotation, field_info.metadata, _ForeignKeyMarker)
+            if marker is not None:
+                targets[name] = _resolve_target_table(marker.to)
         return targets
 
     @classmethod

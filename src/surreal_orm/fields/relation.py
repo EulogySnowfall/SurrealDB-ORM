@@ -21,8 +21,10 @@ Example:
         groups: ManyToMany("Group", through="membership")
 """
 
+import types
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic.json_schema import JsonSchemaValue
@@ -383,6 +385,66 @@ def Relation(
         - followers: SELECT * FROM user:id<-follows<-User
     """
     return Annotated[list, _RelationMarker(edge, to, reverse)]
+
+
+def _unwrap_union(annotation: Any) -> list[Any]:
+    """
+    Expand a union annotation into its members, dropping ``None``.
+
+    Args:
+        annotation: A field's type annotation
+
+    Returns:
+        The union's non-None members, or the annotation itself when not a union
+    """
+    if get_origin(annotation) in (types.UnionType, Union):
+        return [arg for arg in get_args(annotation) if arg is not type(None)]
+    return [annotation]
+
+
+def _find_marker[MarkerT](
+    annotation: Any,
+    metadata: Iterable[Any],
+    marker_types: type[MarkerT] | tuple[type[MarkerT], ...],
+) -> MarkerT | None:
+    """
+    Find the marker of the given type(s) attached to a field.
+
+    A field type such as :func:`ForeignKey` is an ``Annotated`` type whose
+    metadata is a marker — ``Annotated[str | None, _ForeignKeyMarker(...)]``.
+    Where the marker ends up depends on how the field is annotated:
+
+    - **Bare** (``author: ForeignKey("User")``): Pydantic moves it into
+      ``FieldInfo.metadata`` and strips the ``Annotated`` off
+      ``FieldInfo.annotation``.
+    - **Inside a union** (``ForeignKey("User") | None``,
+      ``Optional[ForeignKey("User")]``): it stays on the union member, in
+      ``FieldInfo.annotation``.  Pydantic does not lift a union member's
+      metadata into ``FieldInfo.metadata``, so a metadata-only lookup misses
+      every optional foreign key.
+
+    Both places are searched.
+
+    Args:
+        annotation: The field's type annotation (``FieldInfo.annotation``)
+        metadata: The field's ``FieldInfo.metadata``
+        marker_types: The marker class, or a tuple of marker classes, to find
+
+    Returns:
+        The first matching marker instance, or None when the field carries none
+    """
+    for candidate in _unwrap_union(annotation):
+        if get_origin(candidate) is Annotated:
+            # The first argument is the annotated type itself, never a marker
+            for arg in get_args(candidate)[1:]:
+                if isinstance(arg, marker_types):
+                    return arg
+
+    for meta in metadata:
+        if isinstance(meta, marker_types):
+            return meta
+
+    return None
 
 
 def is_relation_field(field_type: Any) -> bool:
