@@ -188,50 +188,56 @@ class ConnectionPool:
         credentials, the connection is left unauthenticated. The token a
         ``WebSocketConnection`` replays on reconnect, and the credentials an
         ``HTTPConnection`` replays on a transient ``401``, follow the reset.
+        When ``set_credentials()`` runs while the reset is pending, the reset
+        is redone for the new credentials.
 
         Returns:
             True when the reset succeeded and the connection may be reused;
             False when it failed and the connection must be closed instead.
         """
         try:
-            if self._credentials:
-                record = self._current_pool_auth(conn)
-                if isinstance(conn, HTTPConnection):
-                    token, args, generation = record if record is not None else (None, None, 0)
-                    if token is not None and args is not None:
-                        if conn._token and conn._authenticated and conn._signin_args == args:
-                            # Still the pool's identity, possibly with a token
-                            # re-minted after a 401: keep the newer one.
-                            self._pool_auth[conn] = (conn._token, args, generation)
+            # Any branch below may await; ``set_credentials()`` running
+            # meanwhile skips this connection (it is in use), so the reset is
+            # redone until it completed under the credentials still current.
+            while True:
+                generation = self._credentials_generation
+                if self._credentials:
+                    record = self._current_pool_auth(conn)
+                    if isinstance(conn, HTTPConnection):
+                        token, args, minted = record if record is not None else (None, None, 0)
+                        if token is not None and args is not None:
+                            if conn._token and conn._authenticated and conn._signin_args == args:
+                                # Still the pool's identity, possibly with a
+                                # token re-minted after a 401: keep the newer
+                                # one.
+                                self._pool_auth[conn] = (conn._token, args, minted)
+                            else:
+                                conn._token = token
+                                conn._authenticated = True
+                                conn._signin_args = dict(args)
                         else:
-                            conn._token = token
-                            conn._authenticated = True
-                            conn._signin_args = dict(args)
-                    else:
-                        await self._sign_in_as_pool(conn)
-                elif record is not None:
-                    try:
-                        await conn.authenticate(record[0])
-                    except Exception:
-                        await self._sign_in_as_pool(conn)
-                    else:
-                        if self._current_pool_auth(conn) is not record:
-                            # The credentials changed while the token was
-                            # being checked: sign in with the new ones.
                             await self._sign_in_as_pool(conn)
-                else:
-                    await self._sign_in_as_pool(conn)
-            elif isinstance(conn, HTTPConnection):
-                # Stateless: no token sent means an unauthenticated request.
-                conn._token = None
-                conn._authenticated = False
-                conn._signin_args = None
-            else:
-                try:
-                    await conn.rpc(RPCMethod.INVALIDATE)
-                finally:
+                    elif record is not None:
+                        try:
+                            await conn.authenticate(record[0])
+                        except Exception:
+                            await self._sign_in_as_pool(conn)
+                    else:
+                        await self._sign_in_as_pool(conn)
+                elif isinstance(conn, HTTPConnection):
+                    # Stateless: no token sent means an unauthenticated
+                    # request.
                     conn._token = None
                     conn._authenticated = False
+                    conn._signin_args = None
+                else:
+                    try:
+                        await conn.rpc(RPCMethod.INVALIDATE)
+                    finally:
+                        conn._token = None
+                        conn._authenticated = False
+                if generation == self._credentials_generation:
+                    break
         except Exception:
             return False
         return conn.is_connected

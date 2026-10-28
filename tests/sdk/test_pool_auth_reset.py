@@ -435,6 +435,41 @@ async def test_credentials_changed_while_release_signin_is_pending(kind: str) ->
 
 
 @pytest.mark.asyncio
+async def test_credentials_set_while_release_invalidates_are_the_ones_handed_out() -> None:
+    """Credentials set while a release without credentials invalidates the session apply to the next caller."""
+    servers: list[_FakeServer] = []
+    async with _pool("websocket", servers) as pool:
+        reached, resume = asyncio.Event(), asyncio.Event()
+
+        async def use() -> None:
+            async with pool.acquire() as conn:
+                await conn.authenticate(CALLER_TOKEN)
+                real = conn._send_rpc
+
+                async def held(request: RPCRequest) -> RPCResponse:
+                    if str(request.method) == "invalidate":
+                        reached.set()
+                        await resume.wait()
+                    return await real(request)
+
+                conn._send_rpc = held  # type: ignore[method-assign]
+
+        user = asyncio.create_task(use())
+        await reached.wait()
+        # The connection is still in use: set_credentials() leaves it to the release.
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        resume.set()
+        await user
+        assert pool.in_use == 0 and pool.available == 1
+
+        async with pool.acquire() as conn:
+            assert conn.is_authenticated
+            assert conn.token is not None and conn.token.startswith(f"token-for-{POOL_USER}")
+        assert servers[0].identity is not None and POOL_USER in servers[0].identity
+        assert servers[0].methods[-1] != "invalidate"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("credentials", [True, False])
 @pytest.mark.parametrize("change", [False, True])
