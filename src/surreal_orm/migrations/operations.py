@@ -6,12 +6,14 @@ applied (forwards) or reverted (backwards).
 """
 
 import re
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from ..fields.relation import on_delete_to_surql
+from ..surreal_function import SurrealFunc
 from ..types import FieldType
 from ..utils import surql_string
 
@@ -134,14 +136,41 @@ def _previous_attr(name: str) -> str:
     return "previous_type" if name == "field_type" else f"previous_{name}"
 
 
+#: A ``str`` default still emitted as an expression, for migration files and
+#: models written before ``SurrealFunc`` defaults: a whole no-argument function
+#: call (``time::now()``) or a whole bare parameter (``$value``). Deliberately
+#: narrow: no arguments, no spaces, no operators, so nothing but that one call
+#: or parameter is ever emitted unquoted.
+_LEGACY_EXPRESSION_DEFAULT = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+\(\)|\$[A-Za-z_][A-Za-z0-9_]*",
+    re.ASCII,
+)
+
+#: The warning for a ``str`` default read as an expression, shared by the
+#: renderer and the model introspector.
+_LEGACY_EXPRESSION_DEFAULT_WARNING = (
+    "Passing a server-side expression as a str default is deprecated; wrap it in SurrealFunc(...)"
+)
+
+
 def _render_default(default: Any) -> str:
     """
     Render a DEFAULT value as SurrealQL.
 
-    A bare Python ``repr`` is wrong three ways: ``True`` is not ``true``, a
-    function call must not be quoted or it becomes a string literal, and a
+    A bare Python ``repr`` is wrong two ways: ``True`` is not ``true``, and a
     string needs SurrealQL's backslash escapes (``'it\\'s'``, ``'C:\\\\temp'``).
     Doubling the apostrophe, as SQL does, is a parse error in SurrealQL.
+
+    A ``str`` is a text, whatever it contains: ``'fr::CA'`` is a string, not a
+    function. A server-side expression such as ``time::now()`` is a
+    :class:`~surreal_orm.SurrealFunc`, which is what ``_parse_default_value``
+    and the model introspector produce for one, and is emitted as written.
+
+    One deprecated exception keeps older migration files working: a ``str``
+    that is *exactly* a no-argument function call (``time::now()``) or a bare
+    parameter (``$value``) is still emitted unquoted, with a
+    ``DeprecationWarning``. Anything else (arguments, operators, spaces,
+    quotes, ``;``) is quoted.
 
     Args:
         default: The default value, as the model or the database reports it
@@ -149,12 +178,13 @@ def _render_default(default: Any) -> str:
     Returns:
         The SurrealQL literal or expression
     """
+    if isinstance(default, SurrealFunc):
+        return default.expression
     if isinstance(default, bool):
         return str(default).lower()
     if isinstance(default, str):
-        # `time::now()` and `$value` are expressions, not literals. This mirrors
-        # `_parse_default_value`, which returns them as bare strings.
-        if "::" in default or default.startswith("$"):
+        if _LEGACY_EXPRESSION_DEFAULT.fullmatch(default):
+            warnings.warn(_LEGACY_EXPRESSION_DEFAULT_WARNING, DeprecationWarning, stacklevel=3)
             return default
         return surql_string(default)
     return str(default)

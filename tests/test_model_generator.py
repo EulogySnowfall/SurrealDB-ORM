@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.surreal_orm import SurrealFunc
 from src.surreal_orm.migrations.model_generator import ModelCodeGenerator
 from src.surreal_orm.migrations.state import (
     FieldState,
@@ -145,9 +146,11 @@ class TestGenerateField:
         assert "default=True" in line
 
     def test_field_with_default_function(self) -> None:
-        field = FieldState(name="created_at", field_type="datetime", nullable=False, default="time::now()")
+        # The parser reports an unquoted default as SurrealFunc (#401)
+        field = FieldState(name="created_at", field_type="datetime", nullable=False, default=SurrealFunc("time::now()"))
         line, imports = self.gen._generate_field(field)
-        assert '"time::now()"' in line
+        assert "default=SurrealFunc('time::now()')" in line
+        assert "from surreal_orm import SurrealFunc" in imports
 
     def test_computed_field(self) -> None:
         field = FieldState(
