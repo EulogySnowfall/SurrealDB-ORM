@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from pydantic import Field
 
 from src import surreal_orm
 from src.surreal_orm.introspection import schema_diff
@@ -38,6 +39,7 @@ SURREALDB_DATABASE = "test_issue_284_v2"
 NOTE = "i284_note"
 DOC = "i284_doc"
 ACCESS = "i284_access"
+STAMPED = "i284_stamped"
 
 #: Quotes, backslashes, and text that reads like the rest of a statement.
 TEXTS = [
@@ -138,6 +140,41 @@ async def test_model_with_apostrophes_migrates_and_converges() -> None:
     assert table.fields["path"].default == "C:\\temp"
 
     assert _on_note(await schema_diff(models=[I284Note])) == []
+
+
+class I284Stamped(BaseSurrealModel):
+    """A model written before SurrealFunc defaults: the expression is a ``str``."""
+
+    model_config = SurrealConfigDict(table_name=STAMPED, schema_mode="SCHEMAFULL")
+
+    id: str | None = None
+    created_at: datetime = Field(default="time::now()")  # type: ignore[assignment]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_model_with_legacy_str_expression_default_converges() -> None:
+    """A model ``str`` default such as ``"time::now()"`` migrates, then diffs to nothing.
+
+    The server reports the default unquoted and the parser reads it as a
+    ``SurrealFunc``; the model side reads the same way, with a warning.
+    """
+
+    def on_stamped(operations: list[Operation]) -> list[Operation]:
+        return [op for op in operations if getattr(op, "table", getattr(op, "name", None)) == STAMPED]
+
+    with pytest.warns(DeprecationWarning, match=r"wrap it in SurrealFunc"):
+        operations = on_stamped(SchemaState().diff(introspect_models([I284Stamped])))
+    assert operations
+    for op in operations:
+        await _run(op.forwards())
+
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    table_info = (await client.query(f"INFO FOR TABLE {STAMPED};")).first_result.result
+    assert "DEFAULT time::now()" in table_info["fields"]["created_at"], table_info["fields"]["created_at"]
+
+    with pytest.warns(DeprecationWarning, match=r"wrap it in SurrealFunc"):
+        assert on_stamped(await schema_diff(models=[I284Stamped])) == []
 
 
 @pytest.mark.integration

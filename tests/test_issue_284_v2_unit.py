@@ -17,9 +17,12 @@ never closed, swallowed every clause after it.
 Run with: pytest tests/test_issue_284_v2_unit.py
 """
 
+import copy
 import warnings
+from datetime import datetime
 
 import pytest
+from pydantic import Field
 
 from src.surreal_orm.migrations.define_parser import (
     _parse_default_value,
@@ -28,6 +31,7 @@ from src.surreal_orm.migrations.define_parser import (
     parse_define_table,
 )
 from src.surreal_orm.migrations.generator import MigrationGenerator
+from src.surreal_orm.migrations.introspector import introspect_models
 from src.surreal_orm.migrations.model_generator import ModelCodeGenerator
 from src.surreal_orm.migrations.operations import (
     AlterField,
@@ -39,6 +43,7 @@ from src.surreal_orm.migrations.operations import (
     _render_define_table,
 )
 from src.surreal_orm.migrations.state import FieldState
+from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from src.surreal_orm.surreal_function import SurrealFunc
 from src.surreal_orm.utils import escape_single_quotes, surql_string_literal
 
@@ -300,3 +305,47 @@ class TestDefaultExpressions:
         line, _ = ModelCodeGenerator()._generate_field(FieldState(name="f", field_type="string", default=text))
         default_source = line[line.index("default=") + len("default=") : -1]
         assert eval(default_source) == text
+
+
+class U284Stamped(BaseSurrealModel):
+    """A model written before ``SurrealFunc`` defaults: the expression is a ``str``."""
+
+    model_config = SurrealConfigDict(table_name="u284_stamped", schema_mode="SCHEMAFULL")
+
+    id: str | None = None
+    created_at: datetime = Field(default="time::now()")  # type: ignore[assignment]
+
+
+class TestModelLegacyExpressionDefault:
+    """A model ``str`` default that is a legacy expression reads as ``SurrealFunc``.
+
+    The parser reads an unquoted DEFAULT back as ``SurrealFunc``, so a model
+    still carrying ``default="time::now()"`` as a ``str`` never compared
+    equal to its own column and every diff re-emitted an ``AlterField``.
+    """
+
+    def test_legacy_str_expression_default_converges(self) -> None:
+        with pytest.warns(DeprecationWarning, match=r"wrap it in SurrealFunc"):
+            model_state = introspect_models([U284Stamped])
+        field = model_state.tables["u284_stamped"].fields["created_at"]
+        assert field.default == SurrealFunc("time::now()")
+
+        db_state = copy.deepcopy(model_state)
+        db_state.tables["u284_stamped"].fields["created_at"] = parse_define_field(
+            "DEFINE FIELD created_at ON u284_stamped TYPE datetime DEFAULT time::now() PERMISSIONS FULL"
+        )
+        assert model_state.diff(db_state) == []
+
+    @pytest.mark.parametrize("text", ["fr::CA", "time::now() + 1d", "$x y", "a::b(1)"])
+    def test_other_str_default_stays_a_text(self, text: str) -> None:
+        class U284Text(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="u284_text", schema_mode="SCHEMAFULL")
+
+            id: str | None = None
+            label: str = text
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            field = introspect_models([U284Text]).tables["u284_text"].fields["label"]
+        assert field.default == text
+        assert isinstance(field.default, str)

@@ -145,6 +145,12 @@ _LEGACY_EXPRESSION_DEFAULT = re.compile(
     re.ASCII,
 )
 
+#: The warning for a ``str`` default read as an expression, shared by the
+#: renderer and the model introspector.
+_LEGACY_EXPRESSION_DEFAULT_WARNING = (
+    "Passing a server-side expression as a str default is deprecated; wrap it in SurrealFunc(...)"
+)
+
 
 def _render_default(default: Any) -> str:
     """
@@ -181,7 +187,7 @@ def _render_default(default: Any) -> str:
     if isinstance(default, str):
         if _LEGACY_EXPRESSION_DEFAULT.fullmatch(default):
             warnings.warn(
-                "Passing a server-side expression as a str default is deprecated; wrap it in SurrealFunc(...)",
+                _LEGACY_EXPRESSION_DEFAULT_WARNING,
                 DeprecationWarning,
                 stacklevel=3,
             )
