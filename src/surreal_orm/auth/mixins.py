@@ -33,7 +33,8 @@ class AuthenticatedUserMixin:
 
     Token validation results are cached in-memory (TTL-based) to avoid
     creating an ephemeral connection on every request.  Configure via
-    :meth:`configure_token_cache`.
+    :meth:`configure_token_cache`.  An entry never outlives the token's own
+    ``exp`` claim, and entries are kept per model table.
 
     Example:
         class User(AuthenticatedUserMixin, BaseSurrealModel):
@@ -68,7 +69,11 @@ class AuthenticatedUserMixin:
     """
 
     # --- Token cache (shared across all subclasses) ---
-    _token_cache: ClassVar[dict[str, tuple[str, float]]] = {}
+    # Key: (model table, token).  Value: (record ID, monotonic deadline, exp).
+    # The table is part of the key because this dict is shared by every
+    # subclass: a token validated for one model must never be served to
+    # another one.
+    _token_cache: ClassVar[dict[tuple[str, str], tuple[str, float, float]]] = {}
     _token_cache_ttl: ClassVar[int] = 300  # seconds
     _token_cache_max_size: ClassVar[int] = 1000  # max cached tokens
 
@@ -97,13 +102,86 @@ class AuthenticatedUserMixin:
         Invalidate cached token validation results.
 
         Args:
-            token: Specific token to invalidate.  If ``None``, clears the
-                   entire cache.
+            token: Specific token to invalidate (for every model that cached
+                   it).  If ``None``, clears the entire cache.
         """
         if token is None:
             cls._token_cache.clear()
         else:
-            cls._token_cache.pop(token, None)
+            for key in [key for key in cls._token_cache if key[1] == token]:
+                cls._token_cache.pop(key, None)
+
+    @staticmethod
+    def _decode_jwt_claims(token: str) -> dict[str, Any] | None:
+        """
+        Decode the payload of a JWT without verifying its signature.
+
+        Returns:
+            The claims object, or ``None`` when the token is not a
+            three-part JWT whose payload is a base64url-encoded JSON object.
+        """
+        try:
+            parts = token.split(".")
+            if len(parts) != 3:
+                return None
+
+            # Decode the payload (second part) with padding fix
+            payload_b64 = parts[1]
+            padding = 4 - len(payload_b64) % 4
+            if padding != 4:
+                payload_b64 += "=" * padding
+
+            claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        except Exception:
+            return None
+        return claims if isinstance(claims, dict) else None
+
+    @classmethod
+    def _token_expiry(cls, token: str) -> float | None:
+        """
+        Return the token's ``exp`` claim (seconds since the epoch).
+
+        Returns:
+            The expiry, or ``None`` when it cannot be read (opaque token, no
+            ``exp`` claim, or a non-numeric one).
+        """
+        claims = cls._decode_jwt_claims(token)
+        if claims is None:
+            return None
+        exp = claims.get("exp")
+        if isinstance(exp, bool) or not isinstance(exp, int | float):
+            return None
+        return float(exp)
+
+    @classmethod
+    def _auth_table_name(cls) -> str:
+        """Return the table this model's records live in."""
+        config = getattr(cls, "model_config", {})
+        table_name: str = config.get("table_name") or cls.__name__
+        return table_name
+
+    @classmethod
+    def _is_own_record(cls, record_id: Any) -> bool:
+        """
+        Tell whether a ``$auth`` record ID belongs to this model's table.
+
+        A decoded ``RecordId`` (CBOR) is compared by its ``table``
+        attribute; a ``"table:id"`` string (JSON) by the part before the
+        first ``:``, with SurrealDB's identifier quoting removed.  Anything
+        else is not a record of this table.
+        """
+        table: Any
+        if isinstance(record_id, str):
+            if ":" not in record_id:
+                return False
+            table = record_id.split(":", 1)[0]
+            if len(table) >= 2 and (table[0], table[-1]) in (("`", "`"), ("\u27e8", "\u27e9")):
+                table = table[1:-1]
+        else:
+            # RecordId (duck-typed: the SDK may be importable under two
+            # module paths, each with its own class object).
+            table = getattr(record_id, "table", None)
+        return isinstance(table, str) and table == cls._auth_table_name()
 
     @classmethod
     def validate_token_local(cls, token: str) -> str | None:
@@ -126,20 +204,10 @@ class AuthenticatedUserMixin:
             Record ID string (e.g., ``"users:abc123"``) or ``None`` if the
             token is malformed or expired.
         """
+        claims = cls._decode_jwt_claims(token)
+        if claims is None:
+            return None
         try:
-            parts = token.split(".")
-            if len(parts) != 3:
-                return None
-
-            # Decode the payload (second part) with padding fix
-            payload_b64 = parts[1]
-            padding = 4 - len(payload_b64) % 4
-            if padding != 4:
-                payload_b64 += "=" * padding
-
-            payload_bytes = base64.urlsafe_b64decode(payload_b64)
-            claims = json.loads(payload_bytes)
-
             # Check expiry
             exp = claims.get("exp")
             if exp is not None and time.time() > exp:
@@ -589,6 +657,9 @@ class AuthenticatedUserMixin:
                 return None
 
             raw_auth = first_qr.result  # RecordId object from CBOR
+            if not cls._is_own_record(raw_auth):
+                # The token is valid but belongs to another model's table.
+                return None
             record_id = str(raw_auth)
         except (SurrealDBError, AuthenticationError, QueryError):
             return None
@@ -618,7 +689,13 @@ class AuthenticatedUserMixin:
 
         Results are cached in-memory (default TTL 300 s) to avoid creating an
         ephemeral HTTP connection on every call.  Disable with
-        ``use_cache=False`` or ``configure_token_cache(ttl=0)``.
+        ``use_cache=False`` or ``configure_token_cache(ttl=0)``.  A cached
+        entry expires at the token's ``exp`` claim if that comes first; a
+        token whose ``exp`` cannot be read is validated on every call and
+        never cached.  Entries are kept per model table.
+
+        A token whose ``$auth`` record is not in this model's table returns
+        ``None`` (validate it through the model it was issued for).
 
         An ephemeral connection is used on cache miss so the root singleton
         is not affected.
@@ -628,22 +705,28 @@ class AuthenticatedUserMixin:
             use_cache: Whether to use the in-memory cache (default ``True``)
 
         Returns:
-            Record ID string (e.g., ``"users:johndoe"``) if valid, None otherwise
+            Record ID string (e.g., ``"users:johndoe"``) if valid and in this
+            model's table, None otherwise
 
         Example:
             record_id = await User.validate_token(token)
             if record_id:
                 print(f"Token belongs to {record_id}")
         """
+        cache_key = (cls._auth_table_name(), token)
+
         # --- Cache hit ---
         if use_cache and cls._token_cache_ttl > 0:
-            cached = cls._token_cache.get(token)
+            cached = cls._token_cache.get(cache_key)
             if cached is not None:
-                record_id, expires_at = cached
-                if time.monotonic() < expires_at:
+                record_id, expires_at, cached_exp = cached
+                # Both clocks: the monotonic deadline guards against wall-clock
+                # jumps, the exp check against a deadline computed from a
+                # wall clock that has since moved.
+                if time.monotonic() < expires_at and time.time() < cached_exp:
                     return record_id
                 # Expired — remove stale entry
-                cls._token_cache.pop(token, None)
+                cls._token_cache.pop(cache_key, None)
 
         # --- Cache miss — ephemeral connection ---
         client = await cls._create_auth_client()
@@ -658,15 +741,27 @@ class AuthenticatedUserMixin:
             if first_qr is None or first_qr.result is None:
                 return None
 
+            if not cls._is_own_record(first_qr.result):
+                # The token is valid but belongs to another model's table.
+                return None
             record_id = str(first_qr.result)
 
             # --- Store in cache (with eviction) ---
-            if use_cache and cls._token_cache_ttl > 0 and cls._token_cache_max_size > 0:
+            # Only a token with a readable exp is cached, and never past it.
+            token_exp = cls._token_expiry(token)
+            if (
+                use_cache
+                and cls._token_cache_ttl > 0
+                and cls._token_cache_max_size > 0
+                and token_exp is not None
+                and (remaining := token_exp - time.time()) > 0
+            ):
                 # Evict oldest entry if cache is full
                 if len(cls._token_cache) >= cls._token_cache_max_size and cls._token_cache:
                     oldest_key = next(iter(cls._token_cache))
                     cls._token_cache.pop(oldest_key, None)
-                cls._token_cache[token] = (record_id, time.monotonic() + cls._token_cache_ttl)
+                lifetime = min(float(cls._token_cache_ttl), remaining)
+                cls._token_cache[cache_key] = (record_id, time.monotonic() + lifetime, token_exp)
 
             return record_id
         except (SurrealDBError, AuthenticationError, QueryError):
