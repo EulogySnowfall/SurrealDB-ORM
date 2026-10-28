@@ -52,6 +52,20 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.22
+
+**Bug fix release (V2 LTS).** One ORM fix, the `v2` port of #301 from `main`; one small SDK helper added.
+
+- **Record IDs containing a backtick or a backslash now round-trip (#310).** `merge()` with a `SurrealFunc`,
+  the atomic array helpers, `relate()`, `get_related()`, `remove_relation()`, `remove_all_relations()`, graph
+  traversals and `delete()` failed with a parse error on SurrealDB 2.x, or named a different record, for such an
+  ID (including one ending in a backslash). `escape_record_id()` now writes SurrealDB's `` \` `` and `\\`
+  sequences instead of doubling the backtick.
+- **Added:** `surreal_sdk.protocol.cbor.unescape_record_id()`, the inverse of `escape_record_id()`.
+- **Behaviour change:** only IDs containing `` ` `` or `\` produce different SurrealQL. `parse_record_id()` and
+  the SDK connections now decode `\\` and `` \` `` inside a backtick-delimited `table:id` string; a doubled
+  backtick is still read as one backtick.
+
 ## What's New in 0.21.21
 
 **Bug fix release (V2 LTS).** One CLI fix, the `v2` port of #298 from `main`; no new public API.
