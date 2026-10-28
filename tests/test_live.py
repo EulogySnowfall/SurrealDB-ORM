@@ -993,3 +993,52 @@ class TestModuleExports:
         assert "ModelChangeEvent" in __all__
         assert "LiveModelStream" in __all__
         assert "ChangeModelStream" in __all__
+
+
+class _FakeFeed:
+    """Stands in for ``ChangeFeedStream``: moves its cursor past an entry before yielding it."""
+
+    def __init__(self, entries: list[dict[str, Any]]) -> None:
+        self._entries = entries
+        self.cursor: str | None = "10"
+
+    async def stream(self, since: Any = None) -> Any:
+        for entry in self._entries:
+            self.cursor = str(entry["versionstamp"] + 1)
+            yield entry
+
+    def stop(self) -> None:
+        pass
+
+
+class TestChangeModelStreamCursor:
+    """#281: a checkpoint taken mid-entry must not skip the entry's remaining events."""
+
+    async def test_cursor_stays_on_an_entry_until_its_last_event(self) -> None:
+        stream = ChangeModelStream(model=PlayerModel, connection=None, table="players")
+        stream._feed = _FakeFeed(  # type: ignore[assignment]
+            [
+                {"versionstamp": 20, "changes": [{"update": {"id": f"players:{k}"}} for k in "abc"]},
+                {"versionstamp": 30, "changes": [{"update": {"id": "players:d"}}]},
+            ]
+        )
+        seen = []
+        async for event in stream:
+            seen.append((event.record_id, stream.cursor))
+        assert seen == [
+            ("players:a", "20"),
+            ("players:b", "20"),
+            ("players:c", "21"),
+            ("players:d", "31"),
+        ]
+
+    async def test_cursor_after_an_entry_without_model_events_is_the_feeds(self) -> None:
+        stream = ChangeModelStream(model=PlayerModel, connection=None, table="players")
+        stream._feed = _FakeFeed(  # type: ignore[assignment]
+            [
+                {"versionstamp": 20, "changes": [{"define_table": {"name": "players"}}]},
+                {"versionstamp": 30, "changes": [{"update": {"id": "players:d"}}]},
+            ]
+        )
+        events = [(event.record_id, stream.cursor) async for event in stream]
+        assert events == [("players:d", "31")]

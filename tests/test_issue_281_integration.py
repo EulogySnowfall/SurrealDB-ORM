@@ -164,6 +164,27 @@ class TestQuerySetChanges:
         finally:
             resumed.stop()
 
+    async def test_cursor_mid_transaction_resumes_the_rest_of_it(self) -> None:
+        """One transaction is one entry; a checkpoint after its first event must not skip the others."""
+        stream = I281Item.objects().changes(since=await _now(), poll_interval=0.05)
+        await _write("BEGIN; CREATE i281_items:ta; CREATE i281_items:tb; CREATE i281_items:tc; COMMIT;")
+        try:
+            first = await _next(stream)
+            cursor = stream.cursor
+        finally:
+            stream.stop()
+        assert first.record_id == "i281_items:ta"
+        assert cursor is not None
+
+        resumed = I281Item.objects().changes(since=cursor, poll_interval=0.05)
+        try:
+            ids = [(await _next(resumed)).record_id for _ in range(3)]
+            after_entry = resumed.cursor
+        finally:
+            resumed.stop()
+        assert ids == ["i281_items:ta", "i281_items:tb", "i281_items:tc"]
+        assert after_entry is not None and int(after_entry) == int(cursor) + 1
+
     async def test_a_change_behind_a_page_of_other_tables_is_delivered(self) -> None:
         """``LIMIT`` counts the entries of every table; ``batch_size`` of them used to stall the stream."""
         stream = I281Item.objects().changes(poll_interval=0.05, batch_size=5)

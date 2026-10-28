@@ -2329,7 +2329,8 @@ class QuerySet(Generic[T]):
                   feed, so only changes written from now on are delivered;
                 - a versionstamp, as an ``int`` or a decimal string — the
                   stream's ``cursor``, to resume after the last delivered
-                  change;
+                  event (a transaction cut short mid-way is delivered again
+                  whole: at-least-once);
                 - a ``datetime`` (a naive one is read as UTC, with a
                   ``RuntimeWarning``);
                 - an ISO 8601 date or date-time string (``"2026-01-01"``,

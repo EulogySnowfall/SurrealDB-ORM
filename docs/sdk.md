@@ -739,6 +739,11 @@ statement the server rejects raises `ChangeFeedError` from the iteration; it is 
 retried. On SurrealDB 3.3 with in-memory storage a datetime start selects nothing,
 so prefer a versionstamp (`since=0` reads the whole retained feed).
 
+An entry holds every change one transaction made to the table. `QuerySet.changes()`
+yields one event per change, so its `cursor` stays on the entry until the entry's
+last event is delivered: a resume from a cursor taken mid-transaction delivers that
+transaction again, whole (at-least-once).
+
 ### Multi-Table Change Feed
 
 ```python

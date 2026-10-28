@@ -268,6 +268,9 @@ class ChangeModelStream(Generic[T]):
         self._batch_size = batch_size
         self._feed: ChangeFeedStream | None = None
         self._iterator: AsyncIterator[ModelChangeEvent[T]] | None = None
+        # Versionstamp of the entry being yielded while it still has events to
+        # deliver; ``None`` between entries, where the feed's cursor applies.
+        self._entry_cursor: str | None = None
 
     async def _ensure_feed(self) -> ChangeFeedStream:
         """Lazily create the ChangeFeedStream, resolving connection if needed."""
@@ -289,11 +292,18 @@ class ChangeModelStream(Generic[T]):
 
     @property
     def cursor(self) -> str | None:
-        """The next versionstamp to read (decimal string), or ``None`` before the stream starts.
+        """Where to resume (decimal versionstamp), or ``None`` before the stream starts.
 
         Pass it as ``since`` to a later ``changes()`` to resume after the last
-        delivered change.
+        delivered event. A change-feed entry holds every change one transaction
+        made to the table, and a resume can only start at an entry boundary:
+        while an entry still has events to deliver, the cursor stays at that
+        entry's versionstamp, so a resume delivers the whole entry again
+        (at-least-once). Once its last event is delivered, the cursor moves
+        past it.
         """
+        if self._entry_cursor is not None:
+            return self._entry_cursor
         return self._feed.cursor if self._feed else None
 
     def stop(self) -> None:
@@ -361,7 +371,11 @@ class ChangeModelStream(Generic[T]):
         feed = await self._ensure_feed()
         async for change in feed.stream(since=self._since):
             events = self._parse_change(change)
-            for event in events:
+            for index, event in enumerate(events):
+                # The feed's cursor is already past this entry; until its last
+                # event is out, a checkpoint must point back at the entry.
+                last = index == len(events) - 1
+                self._entry_cursor = None if last else str(change["versionstamp"])
                 yield event
 
 
