@@ -13,7 +13,7 @@ from typing import Any
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
 
-_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+_SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
 
 class LiveAction(StrEnum):
@@ -94,7 +94,7 @@ class LiveQuery:
         """
         self.connection = connection
         self.table = table
-        if not _SAFE_TABLE_RE.match(table):
+        if not _SAFE_TABLE_RE.fullmatch(table):
             raise ValueError(f"Invalid table name: {table!r}")
         self.where = where
         self.diff = diff
