@@ -618,12 +618,10 @@ class WebSocketConnection(BaseSurrealConnection):
     def _to_thing(self, thing: str) -> Any:
         """Convert "table:id" to RecordId for CBOR protocol."""
         if self.protocol == "cbor" and ":" in thing:
-            from ..protocol.cbor import RecordId
+            from ..protocol.cbor import RecordId, unescape_record_id
 
             table, id_part = thing.split(":", 1)
-            if id_part.startswith("`") and id_part.endswith("`"):
-                id_part = id_part[1:-1].replace("``", "`")
-            return RecordId(table=table, id=id_part)
+            return RecordId(table=table, id=unescape_record_id(id_part))
         return thing
 
     async def select(self, thing: str) -> Any:
