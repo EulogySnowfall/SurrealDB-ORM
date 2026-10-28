@@ -37,6 +37,25 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.10
+
+**Fix release.** No new public API, but optional foreign keys change behaviour: see [CHANGELOG.md](CHANGELOG.md)
+before upgrading.
+
+- **An optional `ForeignKey` is now written and filtered as a record link**
+  ([#268](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/268)). `ForeignKey("X") | None` and
+  `Optional[ForeignKey("X")]` got none of the coercion added in 0.32.7: `save()` / `update()` / `merge()` and the bulk
+  and upsert paths sent a string, which an `option<record<...>>` column rejects, and `filter()` (`exact` / `in` /
+  `not_in`, including inside `Q`) silently returned no rows for records that exist. They now behave like a required
+  `ForeignKey`: a model instance, a full `"table:id"` or a bare id is accepted.
+- **Rows written before this release into a column that accepted a string** (a SCHEMALESS table, or a field typed
+  `any`) hold `'table:id'` or the bare id, and a filter no longer matches them. Convert them once:
+  `UPDATE <table> SET <field> = IF !type::is_string(<field>) THEN <field> ELSE IF string::contains(<field>, ':') THEN type::record(<field>) ELSE type::record('<target_table>', <field>) END WHERE type::is_string(<field>);`
+  (keep the first `IF`: SurrealDB 3.2.6 needs it). A field declared `option<string>` now rejects the write: retype it
+  `option<record<target_table>>`, then convert.
+- **Known limitation:** `is_foreign_key()`, `get_relation_info()` and the other exported detection helpers still
+  report `ForeignKey("X") | None` as not a relation, as in earlier releases.
+
 ## What's New in 0.34.9
 
 **Maintenance release.** Python 3.15 support; no library code changes and no new public API.

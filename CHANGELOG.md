@@ -6,6 +6,80 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.10] - 2026-10-27
+
+**Fix release.** An optional `ForeignKey` is now written and filtered as a
+record link (#268, #286). No new public API, but rows written through an
+optional `ForeignKey` into a column that accepted a string need a one-time
+conversion: read *Behaviour change* and *Upgrading*. The SurrealDB pin is
+unchanged (tested against 3.3.4, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **An optional `ForeignKey` was never converted to a record link (#268,
+  #286).** A field declared `ForeignKey("X") | None` or
+  `Optional[ForeignKey("X")]` got none of the record-link coercion added in
+  0.32.7. `save()`, `update()`, `merge()`, `bulk_update()`, `upsert()` and
+  `bulk_upsert()` sent it as a string, so an `option<record<...>>` column
+  rejected the write (`Expected none | record<...> but found '...'`) and a
+  SCHEMALESS table stored the string instead of a link. `filter()` (`exact` /
+  `in` / `not_in`, including inside `Q`) bound a string and silently returned
+  no rows for records that exist. `get_foreign_key_targets()` read only
+  `FieldInfo.metadata`, and Pydantic leaves the marker of a union member on
+  `FieldInfo.annotation`. `get_foreign_key_targets()` /
+  `get_foreign_key_columns()` now find the marker inside the union through the
+  lookup the migrations introspector already used (0.33.0, #170); both share
+  it now, so they cannot drift apart. The `DEFINE FIELD` the migrations emit
+  is unchanged.
+
+### Behaviour change
+
+- **Optional `ForeignKey` fields are written as record links and bound as
+  `RecordId` in `exact` / `in` / `not_in` filters (#268, #286)**, the same as
+  required `ForeignKey` fields since 0.32.7. The model instance, a full
+  `"table:id"` and a bare id are all accepted. `None`, `isnull`, `$var`
+  references and string lookups are unchanged.
+- In a column that accepted a string (a SCHEMALESS table, or a field typed
+  `any`), rows written through an optional `ForeignKey` before this release
+  hold a string — `'table:id'`, or the bare id when one was passed — and a
+  filter on that field no longer matches them. A field declared
+  `option<string>` now rejects the write. See *Upgrading*.
+
+### Known limitations
+
+- The exported helpers `is_foreign_key()`, `is_relation_field()`,
+  `is_many_to_many()`, `is_graph_relation()` and `get_relation_info()` still
+  look only at a top-level `Annotated`, so they report `ForeignKey("X") | None`
+  as not a relation (`False` / `None`) while the ORM now treats it as a
+  foreign key. This is unchanged from earlier releases.
+
+### Changed
+
+- **Tests.** 2,521 unit tests pass on each of Python 3.12, 3.13, 3.14 and
+  3.15. On SurrealDB 3.3.4 (pin), 572 integration tests passed, 1 skipped,
+  1 expected failure, 0 failed; the new optional-`ForeignKey` integration
+  tests also pass on 3.2.6 (3.2 floor line). The skip is the refresh token the
+  test server does not return; the expected failure is the upstream #147
+  check, still failing, so `Subquery` keeps its `LET` prelude.
+
+### Upgrading
+
+- Convert the strings stored by earlier releases once, for each table and
+  optional `ForeignKey` field:
+  `UPDATE <table> SET <field> = IF !type::is_string(<field>) THEN <field> ELSE IF string::contains(<field>, ':') THEN type::record(<field>) ELSE type::record('<target_table>', <field>) END WHERE type::is_string(<field>);`
+  Keep the first `IF`: on SurrealDB 3.2.6 the statement without it fails as
+  soon as one row has no value or a record link in that field, even though
+  the `WHERE` clause excludes those rows, and then converts nothing.
+  `type::record(<field>)` alone fails on a bare id, with the same result. The
+  statement was checked on SurrealDB 3.3.4 and 3.2.6: full-id and bare-id
+  strings become record links, other rows are left as they are.
+- A field declared `option<string>` for an optional `ForeignKey`: retype it
+  `option<record<target_table>>`, then run the conversion above.
+- No DDL change: the `DEFINE FIELD` the migrations emit is identical.
+- The `v2` line has the same defect; the backport is tracked in #294.
+
+---
+
 ## [0.34.9] - 2026-10-27
 
 **Maintenance release.** Python 3.15 is supported (#235, #288). No library code
