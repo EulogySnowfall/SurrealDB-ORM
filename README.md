@@ -37,6 +37,21 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.35.2
+
+**Fix release.** Field-name checks for filter keys and `values()`
+([#328](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/328)). See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+- **Filter keys must name a field.** `QuerySet.filter()`, `Q` and relation filter keys whose field part is not a field
+  name or a dotted path of field names (`"name x"`, `"a-b"`) now raise `ValueError` naming the key, before any query is
+  sent. `QuerySet.values()` checks each grouping name the same way. Dotted paths (`"address.city"`) keep working.
+- **Identifier checks require a full match.** A name ending in a newline no longer passes `validate_identifier()` or the
+  other identifier checks; `needs_id_escaping()` now returns `True` for such an ID, so `format_thing()` escapes it.
+- **Behaviour change:** an unknown lookup (`name__iexact`) raises `ValueError` instead of being treated as an exact
+  match, and a relation filter accepts only the lookups it renders (`exact`, `gt`, `gte`, `lt`, `lte`, `in`,
+  `contains`, `startswith`, `endswith`, `isnull`).
+- **Upgrading:** use plain field names or dotted paths, `raw_query()` for SurrealQL expressions, and a supported lookup.
+
 ## What's New in 0.35.1
 
 **Fix release.** `validate_token()` cache and auth connection routing
