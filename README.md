@@ -37,6 +37,19 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.19
+
+**Fix release.** SDK change feeds only. If you call `get_changes()` while other tables are written, see the behaviour
+change below and [CHANGELOG.md](CHANGELOG.md).
+
+- **Change-feed reads return while other tables are being written**
+  ([#346](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/346)). Under a steady writer on another table,
+  `ChangeFeedStream.get_changes()` never returned, the default start of `stream()` / `MultiTableChangeFeed.stream()`
+  never resolved, and a caught-up stream polled without sleeping. `QuerySet.changes()` is fixed through the SDK. On
+  SurrealDB 3.3, a window cut inside a multi-table transaction is never taken for the end of the feed.
+- **Behaviour change:** `get_changes()` is a snapshot read. It stops at the end of the feed as it stood when read and
+  does not chase writes made meanwhile; each entry is still delivered once.
+
 ## What's New in 0.34.18
 
 **Fix release.** `QueryCache` automatic invalidation only. If you use `.cache()` with several named connections, see
