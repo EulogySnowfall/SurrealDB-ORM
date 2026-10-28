@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import Field
 
-from src.surreal_orm import BaseSurrealModel, Q, SurrealConfigDict, SurrealDBConnectionManager
+from src.surreal_orm import BaseSurrealModel, Prefetch, Q, SurrealConfigDict, SurrealDBConnectionManager
 from src.surreal_orm.fields import ForeignKey
 from src.surreal_orm.model_base import _to_record_link
 from src.surreal_orm.subquery import Subquery
@@ -333,3 +333,39 @@ class TestRecompile:
         for _ in range(2):
             assert "age >= $min_age" in qs._compile_query()
             assert qs._variables["min_age"] == 18
+
+
+# ── Prefetch ──────────────────────────────────────────────────────────────
+
+
+async def _prefetch_query(custom_qs: Any) -> tuple[str, dict[str, Any]]:
+    """Run ``_execute_prefetch()`` with a custom queryset against a fake client.
+
+    Returns the SQL and the variables sent for the edge-table query.
+    """
+    client = MagicMock()
+    client.query = AsyncMock(return_value=MagicMock(all_records=[]))
+    parent = U342Author.from_db({"id": "alice", "name": "Alice"})
+    qs = U342Author.objects().prefetch_related(Prefetch("u342_wrote", queryset=custom_qs))
+    with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+        await qs._execute_prefetch([parent])
+    sql, variables = client.query.call_args.args
+    return sql, dict(variables)
+
+
+class TestPrefetch:
+    """A ``Prefetch`` queryset's filters follow the same rule as ``exec()``."""
+
+    async def test_declared_variable_is_a_reference_and_is_sent(self) -> None:
+        custom = U342Item.objects().filter(name="$k").variables(k="acme")
+        sql, variables = await _prefetch_query(custom)
+        assert "AND name = $k" in sql
+        assert variables["k"] == "acme"
+
+    @pytest.mark.parametrize("value", ["$k", TAUTOLOGY, MULTI])
+    async def test_undeclared_value_is_bound(self, value: str) -> None:
+        custom = U342Item.objects().filter(name=value)
+        sql, variables = await _prefetch_query(custom)
+        assert "AND name = $_f0" in sql
+        assert variables["_f0"] == value
+        assert value not in sql
