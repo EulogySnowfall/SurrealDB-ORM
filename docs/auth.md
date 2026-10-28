@@ -359,6 +359,11 @@ else:
     print("Invalid or expired token")
 ```
 
+`validate_token()` and `authenticate_token()` accept only a token issued for the model itself: its `$auth` record
+must be in the model's table, its `AC` claim must be the model's access name (`get_access_name()`), and its `NS` /
+`DB` claims the namespace and database of the model's connection. Two models on one table with different
+`access_name` values therefore each accept only their own tokens, and cached results are kept per access name.
+
 ### change_password()
 
 Change a user's password (verifies old password first):
