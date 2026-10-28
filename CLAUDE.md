@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.27)
+> Context document for Claude AI - Last updated: October 2026 (0.21.28)
 
 <!-- -->
 
@@ -19,12 +19,28 @@
 
 ---
 
-## Current Version: 0.21.27 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.28 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.35.x   | Active development              |
+
+### What's New in 0.21.28
+
+Fixes, the `v2` ports of #396 (#399, #411), #334 (#382, #414) and #367 (#377, #416). No new public API.
+
+- **`HTTPTransaction.commit()`** checks every per-statement result and raises `TransactionError` with the failing
+  statement's own error (the 2.x "not executed due to a failed transaction" cancellations are skipped). Only that
+  error is classified for `TransactionConflictError`: the cancellation text contains "failed transaction", one of
+  v2's conflict markers. Tests: `tests/test_issue_399_v2_unit.py`, `tests/test_issue_399_v2_integration.py`.
+- **`HTTPTransaction` data keys:** `_validate_keys()` applies the table-name identifier rule to every key in
+  `create/insert/update/upsert/merge/relate` before queueing; `insert()` checks all records first. Tests:
+  `tests/test_issue_382_unit.py`, `tests/test_issue_382_integration.py`.
+- **Field names:** `surreal_orm.utils.parse_filter_key()` and `validate_field_path()` check filter, `Q`, relation
+  filter keys and `values()` names; unknown lookups raise. `SAFE_IDENTIFIER_RE` ends with `\Z` and every identifier
+  check (ORM and SDK) uses `fullmatch`, as does `needs_id_escaping()`. Tests: `tests/test_issue_377_unit.py`,
+  `tests/test_issue_377_integration.py`.
 
 ### What's New in 0.21.27
 

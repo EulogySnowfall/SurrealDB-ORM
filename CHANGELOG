@@ -6,6 +6,85 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.28] - 2026-10-28
+
+**Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #334, #367 and
+#396 from `main`: `HTTPTransaction.commit()` raises when the server rejects a
+statement of the batch (#399, #411), `HTTPTransaction` methods check the keys
+of `data` when a statement is queued (#382, #414), and filter keys and
+`values()` names must be field names (#377, #416). Read *Behaviour change*
+and *Migration*. The SurrealDB pin is unchanged (tested against 2.7.0,
+supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`HTTPTransaction.commit()` reported success when SurrealDB rejected a
+  statement of the batch.** The server cancels the whole batch and writes
+  nothing, but `is_committed` was `True`. `commit()` now raises
+  `TransactionError` carrying the rejected statement's own server error.
+  After the failure `is_committed` is `False` and the transaction is
+  inactive (#399, backport of #396).
+- **A retryable conflict in an HTTP transaction commit raises
+  `TransactionConflictError`**, so `@retry_on_conflict` retries it. The
+  generic "not executed due to a failed transaction" cancellation message is
+  no longer mistaken for a conflict (#399).
+- **When the commit request itself fails**, the `TransactionError` now chains
+  the original exception (`raise … from e`) (#399).
+- **`HTTPTransaction.create/insert/update/upsert/merge/relate` check each key
+  of `data` when the statement is queued.** A key that is not a plain
+  SurrealQL identifier (`[A-Za-z_][A-Za-z0-9_]*`) raises `ValueError` naming
+  the key and nothing is queued; `insert()` checks every record before
+  queueing any (#382, backport of #334).
+- **`QuerySet.filter()`, `Q` and relation filter
+  (`instance.<relation>.filter()`) keys, and `QuerySet.values()` names, must
+  be a field name or a dotted path of field names** (`"address.city"`,
+  `"address.zip__startswith"`). Anything else (for example `"name x"` or
+  `"a-b"`) raises `ValueError` naming the key before any query is sent.
+  Before, they reached the server, which either reported a parse error or
+  read them as a different condition (#377, backport of #367).
+- **Trailing whitespace was accepted in identifiers:** a name ending in a
+  newline passed `validate_identifier()` and the other identifier checks
+  (model field and relation names, `bulk_update()` keys,
+  `atomic_append()`/`atomic_remove()`/`atomic_set_add()` fields, SDK live
+  query / live select / change feed table names). These checks now require a
+  full match. `format_thing()` now backtick-escapes a record ID ending in a
+  newline (#377).
+
+### Changed
+
+- **Docs:** the `QuerySet.select()` docstring says its arguments are
+  SurrealQL expressions rendered as written (#377).
+
+### Behaviour change
+
+- **HTTP transactions:** `async with SurrealDBConnectionManager.transaction()`,
+  ORM `save(tx=)`, `update(tx=)`, `merge(tx=)` and `bulk_*(atomic=True)` now
+  raise `TransactionError` over HTTP when the server rejects a statement.
+  Before, they returned normally and nothing was written. WebSocket
+  transactions, successful batches and empty transactions are unchanged.
+- **`HTTPTransaction` data keys:** a non-identifier key used to fail only at
+  `commit()` (`TransactionError`). It now raises `ValueError` at the call.
+  Valid keys produce exactly the same SurrealQL. `WebSocketTransaction` is
+  unchanged.
+- **Filter lookups:** an unknown filter lookup (for example `name__iexact`)
+  now raises `ValueError`; it used to be rendered silently as `=`. In
+  relation filters, only `exact`, `gt`, `gte`, `lt`, `lte`, `in`, `contains`,
+  `startswith`, `endswith` and `isnull` are rendered; any other lookup
+  (`iregex`, `not_in`, …) now raises `ValueError` instead of falling back to
+  `=`.
+
+### Migration
+
+- Code that ran HTTP transactions and assumed success without checking the
+  database will now see a `TransactionError` (or `TransactionConflictError`)
+  where a write was rejected. Catch it, or wrap the call in
+  `@retry_on_conflict` for conflicts.
+- Rename any `HTTPTransaction` data key that is not a plain identifier.
+- Replace an unsupported filter lookup with a supported one (the error
+  message lists them), and use plain field names or dotted paths in filter
+  keys and `values()`, `raw_query()` for expressions. Keys that are field
+  names, dotted paths or aliased foreign-key columns render as before.
+
 ## [0.21.27] - 2026-10-28
 
 **Bug fix release (V2 LTS).** One fix, the `v2` port of #283 from `main`:

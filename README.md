@@ -52,6 +52,19 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.28
+
+**Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #334, #367 and #396 from `main`; no new public API.
+
+- **HTTP transactions report a rejected batch (#399).** When SurrealDB rejected a statement, the whole batch was
+  cancelled but `commit()` returned normally and `is_committed` was `True`. It now raises `TransactionError` with the
+  statement's own server error; a retryable conflict raises `TransactionConflictError` for `@retry_on_conflict`.
+- **`HTTPTransaction` checks the keys of `data` when a statement is queued (#382).** A key that is not a plain
+  identifier raises `ValueError` naming it, and nothing is queued; valid keys render as before.
+- **Filter keys and `values()` names must be field names or dotted paths (#377).** Anything else, and any unknown
+  lookup, raises `ValueError` before a query is sent; identifier checks no longer accept trailing whitespace.
+- **Behaviour change:** see the CHANGELOG for the transaction, data-key and lookup changes and the migration notes.
+
 ## What's New in 0.21.27
 
 **Bug fix release (V2 LTS).** One fix, the `v2` port of #283 from `main`; no new public API on the model side.
