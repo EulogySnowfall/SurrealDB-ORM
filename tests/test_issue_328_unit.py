@@ -12,6 +12,7 @@ accepted as an identifier.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -240,3 +241,49 @@ class TestValidFormsUnchanged:
     def test_values_group_by(self) -> None:
         qs = U328Item.objects().values("name", "age").annotate(n=Count())
         assert qs._compile_annotate_query() == "SELECT name, age, count() AS n FROM u328_item GROUP BY name, age;"
+
+
+class U328Person(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="u328_person")
+
+    id: str | None = None
+    name: str = ""
+    age: int = 0
+
+
+def _relation_qs() -> Any:
+    from src.surreal_orm.fields.relation import RelationInfo
+    from src.surreal_orm.relations import RelationManager
+
+    person = U328Person(id="alice", name="Alice")
+    info = RelationInfo(to_model="U328Person", relation_type="relation", edge_table="u328_follows")
+    return RelationManager(person, info, "following")
+
+
+class TestRelationFilterKeys:
+    """``instance.<relation>.filter()`` writes its keys into the traversal query too."""
+
+    @pytest.mark.parametrize("key", ["a b", "true OR name", "name\n", "a-b", "name x__gt"])
+    def test_non_identifier_key_raises(self, key: str) -> None:
+        with pytest.raises(ValueError, match=re.escape(repr(key))):
+            _relation_qs().filter(**{key: 1})
+
+    @pytest.mark.parametrize("key", ["name__foo", "name__b__gt"])
+    def test_unknown_lookup_raises(self, key: str) -> None:
+        with pytest.raises(ValueError, match=re.escape(repr(key))):
+            _relation_qs().filter(**{key: 1})
+
+    def test_lookup_not_rendered_for_relations_raises(self) -> None:
+        # A lookup the ORM knows but the traversal renderer does not handle
+        # used to fall back to ``=`` silently.
+        with pytest.raises(ValueError, match="iregex"):
+            _relation_qs().filter(name__iregex="^a")
+
+    def test_valid_keys_render_as_before(self) -> None:
+        qs = _relation_qs().filter(name="Bob", age__gte=18, deleted__isnull=True, **{"address.city": "x"})
+        query, variables = qs._build_traversal_query()
+        assert query == (
+            "SELECT * FROM u328_person:alice->u328_follows->U328Person WHERE "
+            "name = $filter_0 AND age >= $filter_1 AND deleted IS NULL AND address.city = $filter_3;"
+        )
+        assert variables == {"filter_0": "Bob", "filter_1": 18, "filter_3": "x"}
