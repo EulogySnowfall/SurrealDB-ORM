@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.35.4)
+> Context document for Claude AI - Last updated: October 2026 (0.35.5)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.35.4 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.35.5 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,30 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.35.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.35.5
+
+One fix, #390 via #398 (`src/surreal_sdk/connection/http.py`,
+`src/surreal_sdk/connection/base.py`). Pin unchanged (3.3.4). `v2`: backport
+required, tracked in #405.
+
+- **The 401 re-mint (0.31.4) installed its result unconditionally.** On a
+  connection shared between tasks, an `authenticate()`/`signup()`/
+  `invalidate()`/`close()` that completed during the backoff or the `/signin`
+  round trip was overwritten, and the connection went back to the earlier
+  `signin()` identity.
+- **Two private counters.** An auth *generation*, bumped on every token
+  install/drop and on `close()`, gates installing the re-minted token. An
+  *identity* counter, bumped by every auth change except the re-mint itself,
+  decides the retry: same identity (another task only renewed the token) →
+  retry with the current token, no new signin; changed identity → raise the
+  original `401` as `QueryError`, never resend under the new credentials.
+- **`signin()` fetches and installs in two steps** so the re-mint can discard
+  its result. The v2 port differs: `v2` posts through `self._client` and its
+  `close()` has no drain step.
+- **Tests order the steps with gated fake responses**
+  (`TestReauthDoesNotOverrideConcurrentAuthChange`, 8 tests; 6 fail on the
+  pre-fix `src`).
 
 ### What's New in 0.35.4
 

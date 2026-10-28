@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..surreal_function import SurrealFunc
 from .migration import generate_migration_name
 
 if TYPE_CHECKING:
@@ -137,6 +138,9 @@ class MigrationGenerator:
         op_types = set(type(op).__name__ for op in operations)
         imports = sorted(op_types)
 
+        # A server-side DEFAULT is a SurrealFunc; its repr needs the import.
+        if any(isinstance(value, SurrealFunc) for op in operations for value in vars(op).values()):
+            lines.append("from surreal_orm import SurrealFunc")
         lines.append("from surreal_orm.migrations import Migration")
         lines.append("from surreal_orm.migrations.operations import (")
         for op_type in imports:

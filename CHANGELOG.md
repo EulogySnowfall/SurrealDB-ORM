@@ -6,6 +6,39 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.35.5] - 2026-10-28
+
+**Fix release.** One fix in the SDK's HTTP connection: a transient `401`
+re-mint no longer overrides an authentication change made concurrently by
+another task on the same `HTTPConnection` (#390 via #398). Read *Behaviour
+change* below if you share one HTTP connection between tasks that change
+its credentials. The SurrealDB pin is unchanged (tested against 3.3.4,
+supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`HTTPConnection`: a transient `401` re-mint no longer overrides a
+  concurrent authentication change.** When a re-mint completed after another
+  task on the same connection had called `authenticate()`, `signup()`,
+  `invalidate()` or `close()`, the re-mint overwrote that change and restored
+  the earlier `signin()` token and credentials. The re-minted token is now
+  installed only if the connection's auth state is unchanged since the
+  rejected request was sent, and is discarded otherwise (#390).
+- **`HTTPConnection`: a `401` on a request whose credentials have since been
+  changed by another task** (`signin()` with other arguments,
+  `authenticate()`, `signup()`, `invalidate()`, `close()`) is now raised as
+  `QueryError` instead of being answered by a new signin; the request is
+  never resent under the new credentials. When another task only renewed the
+  token of the same `signin()`, the request is retried with that token
+  without signing in again (#390).
+
+### Behaviour change
+
+- In that concurrent case, the caller whose request got the `401` now
+  receives `QueryError` (code 401) instead of a result produced under the
+  other task's credentials. Single-task use is unchanged: a lone transient
+  `401` still re-mints the token and retries.
+
 ## [0.35.4] - 2026-10-28
 
 **Fix release.** Three fixes: string literals in migration DDL (#283 via

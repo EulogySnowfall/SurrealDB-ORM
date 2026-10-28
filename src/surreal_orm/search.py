@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .utils import surql_string
+
 
 class SearchScore:
     """
@@ -86,10 +88,13 @@ class SearchHighlight:
         self.ref = ref
 
     def to_surql(self, alias: str) -> str:
-        """Render as ``search::highlight('open', 'close', N) AS alias``."""
-        safe_open = self.open_tag.replace("'", "\\'")
-        safe_close = self.close_tag.replace("'", "\\'")
-        return f"search::highlight('{safe_open}', '{safe_close}', {self.ref}) AS {alias}"
+        """Render as ``search::highlight('open', 'close', N) AS alias``.
+
+        Both tags are rendered as SurrealQL string literals by
+        :func:`~surreal_orm.utils.surql_string`, which escapes the backslash
+        as well as the apostrophe, so a tag is always read back as written.
+        """
+        return f"search::highlight({surql_string(self.open_tag)}, {surql_string(self.close_tag)}, {int(self.ref)}) AS {alias}"
 
     def __repr__(self) -> str:
         return f"SearchHighlight({self.open_tag!r}, {self.close_tag!r}, {self.ref})"
