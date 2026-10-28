@@ -93,6 +93,16 @@ class BaseSurrealConnection(ABC):
         """
         ...
 
+    def _forget_signin_credentials(self) -> None:
+        """Drop any credentials kept to sign in again on this connection's behalf.
+
+        Called whenever the connection's identity changes outside ``signin()``
+        (``authenticate()``, ``signup()``), so that nothing later re-creates the
+        previous identity. No-op here; ``HTTPConnection`` overrides it to clear
+        the arguments its transient-401 recovery replays.
+        """
+        return None
+
     # Context manager support
 
     async def __aenter__(self) -> Self:
@@ -192,6 +202,9 @@ class BaseSurrealConnection(ABC):
         """
         Sign up a new user.
 
+        The connection switches to the new user's token, and credentials kept
+        from an earlier ``signin()`` are dropped (see ``authenticate()``).
+
         Args:
             namespace: Namespace
             database: Database
@@ -208,6 +221,9 @@ class BaseSurrealConnection(ABC):
             **credentials,
         }
         result = await self.rpc("signup", params)
+        # The connection now speaks for the new record user, not for whoever
+        # signed in before.
+        self._forget_signin_credentials()
         response = AuthResponse.from_rpc_result(result)
         if response.token:
             self._token = response.token
@@ -220,6 +236,9 @@ class BaseSurrealConnection(ABC):
 
         This validates the token with SurrealDB and sets the connection's
         auth state so that subsequent queries run under the token's identity.
+        Credentials kept from an earlier ``signin()`` are dropped, whether or
+        not the token is accepted: once the token expires or is rejected,
+        requests fail instead of signing in again with them.
 
         Args:
             token: JWT token from a previous signup/signin
@@ -238,6 +257,12 @@ class BaseSurrealConnection(ABC):
             self._token = None
             self._authenticated = False
             raise AuthenticationError(f"Token authentication failed: {e}") from e
+        finally:
+            # Either way the connection no longer holds the identity of an
+            # earlier ``signin()``: credentials kept for it must not be replayed
+            # when *token* is later rejected. Cleared only after the RPC, so the
+            # request carrying it can still recover from a transient 401.
+            self._forget_signin_credentials()
 
     async def use(self, namespace: str, database: str) -> None:
         """

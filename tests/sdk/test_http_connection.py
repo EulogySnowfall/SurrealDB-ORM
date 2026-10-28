@@ -1,11 +1,13 @@
 """Tests for HTTP connection module."""
 
 from collections.abc import AsyncGenerator
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from src.surreal_sdk.connection.http import HTTPConnection
-from src.surreal_sdk.exceptions import ConnectionError
+from src.surreal_sdk.exceptions import AuthenticationError, ConnectionError, QueryError
 
 
 class TestHTTPConnection:
@@ -201,3 +203,185 @@ class TestHTTPConnectionIntegration:
 
         # Delete table
         await connection.query("DELETE test_users")
+
+
+class _FakeHTTPClient:
+    """Stand-in for ``httpx.AsyncClient`` routing ``/signin`` and ``/rpc`` posts.
+
+    ``/signin`` mints ``root-token-<n>`` (or answers *signin_status*). ``/rpc``
+    answers 401 for any bearer token in *rejected_tokens* and otherwise a
+    JSON-RPC result chosen by method: ``signup`` returns ``signup-token``.
+    Every call is recorded as ``(path, method_or_None, authorization)``.
+    """
+
+    def __init__(self, rejected_tokens: set[str] | None = None, signin_status: int = 200) -> None:
+        self.rejected_tokens = rejected_tokens if rejected_tokens is not None else set()
+        self.signin_status = signin_status
+        self.calls: list[tuple[str, str | None, str | None]] = []
+        self._minted = 0
+
+    def signin_count(self) -> int:
+        return sum(1 for path, _, _ in self.calls if path == "/signin")
+
+    def rpc_methods(self) -> list[str | None]:
+        return [method for path, method, _ in self.calls if path == "/rpc"]
+
+    async def post(
+        self, path: str, json: object = None, content: bytes | str | None = None, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        import json as json_module
+
+        request = httpx.Request("POST", f"http://localhost:8000{path}")
+        authorization = (headers or {}).get("Authorization")
+        if path == "/signin":
+            self.calls.append((path, None, authorization))
+            if self.signin_status != 200:
+                return httpx.Response(self.signin_status, request=request, text="No signin target")
+            self._minted += 1
+            return httpx.Response(200, request=request, json={"token": f"root-token-{self._minted}"})
+        body = json_module.loads(content or b"{}")
+        method = body.get("method")
+        self.calls.append((path, method, authorization))
+        token = authorization.removeprefix("Bearer ") if authorization else None
+        if token in self.rejected_tokens:
+            return httpx.Response(401, request=request, text="There was a problem with authentication")
+        result: object = "signup-token" if method == "signup" else [{"result": [], "status": "OK"}]
+        return httpx.Response(200, request=request, json={"id": body.get("id"), "result": result})
+
+    async def aclose(self) -> None:
+        return None
+
+
+class TestReauthOnlyForSigninIdentity:
+    """Issue #349: the 401 re-mint only replays the credentials the current token came from.
+
+    ``authenticate()`` and ``signup()`` switch the connection to another identity; a
+    later 401 on that identity's token must surface instead of signing in again with
+    the arguments of an earlier ``signin()``.
+    """
+
+    def _conn(self, monkeypatch: pytest.MonkeyPatch, fake: _FakeHTTPClient) -> HTTPConnection:
+        conn = HTTPConnection("http://localhost:8000", "ns", "db", protocol="json")
+        conn._connected = True
+        conn._client = fake  # type: ignore[assignment]
+        monkeypatch.setattr("src.surreal_sdk.connection.http.asyncio.sleep", AsyncMock())
+        return conn
+
+    async def test_401_after_authenticate_raises_without_new_signin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeHTTPClient()
+        conn = self._conn(monkeypatch, fake)
+        await conn.signin("root", "root")
+        await conn.authenticate("record-token")
+        fake.rejected_tokens.add("record-token")  # the record token expires
+
+        with pytest.raises(QueryError, match="401"):
+            await conn.query("RETURN 1")
+
+        assert fake.signin_count() == 1  # only the explicit signin, never replayed
+        assert conn.token == "record-token"
+        assert conn._signin_args is None
+
+    async def test_401_after_signup_raises_without_new_signin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeHTTPClient()
+        conn = self._conn(monkeypatch, fake)
+        await conn.signin("root", "root")
+        await conn.signup("ns", "db", "account", email="a@b.c", password="pw")
+        assert conn.token == "signup-token"
+        fake.rejected_tokens.add("signup-token")
+
+        with pytest.raises(QueryError, match="401"):
+            await conn.query("RETURN 1")
+
+        assert fake.signin_count() == 1
+        assert conn._signin_args is None
+
+    async def test_failed_signin_clears_retained_arguments(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeHTTPClient()
+        conn = self._conn(monkeypatch, fake)
+        await conn.signin("root", "root")
+        fake.signin_status = 401
+
+        with pytest.raises(AuthenticationError):
+            await conn.signin("someone", "wrong")
+
+        assert conn._signin_args is None
+
+    async def test_failed_authenticate_clears_retained_arguments(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeHTTPClient()
+        conn = self._conn(monkeypatch, fake)
+        await conn.signin("root", "root")
+        # The authenticate RPC is rejected, and so is the token it travels with.
+        fake.rejected_tokens.add("root-token-1")
+        fake.signin_status = 401
+
+        with pytest.raises(AuthenticationError):
+            await conn.authenticate("bad-token")
+
+        assert conn._signin_args is None
+        assert conn.token is None
+        assert not conn.is_authenticated
+
+    async def test_transient_401_after_signin_still_remints(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeHTTPClient()
+        conn = self._conn(monkeypatch, fake)
+        await conn.signin("root", "root")
+        fake.rejected_tokens.add("root-token-1")  # nbf momentarily in the future
+
+        response = await conn.query("RETURN 1")
+
+        assert response.is_ok
+        assert fake.signin_count() == 2  # re-minted once
+        assert conn.token == "root-token-2"
+        assert conn._signin_args is not None
+
+    async def test_failed_remint_makes_the_retry_the_last_attempt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeHTTPClient()
+        conn = self._conn(monkeypatch, fake)
+        await conn.signin("root", "root")
+        fake.rejected_tokens.add("root-token-1")
+        fake.signin_status = 401  # the re-mint itself is refused
+
+        with pytest.raises(QueryError, match="401"):
+            await conn.query("RETURN 1")
+
+        assert fake.signin_count() == 2  # explicit signin + one failed re-mint
+        assert fake.rpc_methods() == ["query", "query"]  # first attempt + one retry
+        assert conn._signin_args is None
+
+    async def test_close_clears_retained_arguments(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeHTTPClient()
+        conn = self._conn(monkeypatch, fake)
+        await conn.signin("root", "root")
+
+        await conn.close()
+
+        assert conn._signin_args is None
+
+    async def test_invalidate_sends_rpc_and_resets_auth_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeHTTPClient()
+        conn = self._conn(monkeypatch, fake)
+        await conn.signin("root", "root")
+
+        await conn.invalidate()
+
+        assert fake.calls[-1] == ("/rpc", "invalidate", "Bearer root-token-1")
+        assert conn.token is None
+        assert not conn.is_authenticated
+        assert conn._signin_args is None
+
+        await conn.query("RETURN 1")
+        assert fake.calls[-1][2] is None  # next request carries no credentials
+
+    async def test_invalidate_resets_state_even_when_rpc_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeHTTPClient()
+        conn = self._conn(monkeypatch, fake)
+        await conn.signin("root", "root")
+        fake.rejected_tokens.add("root-token-1")  # token already expired
+
+        with pytest.raises(QueryError, match="401"):
+            await conn.invalidate()
+
+        assert fake.signin_count() == 1  # invalidate never signs in again
+        assert conn.token is None
+        assert not conn.is_authenticated
+        assert conn._signin_args is None

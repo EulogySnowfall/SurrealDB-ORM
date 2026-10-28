@@ -14,7 +14,7 @@ from .base import BaseSurrealConnection
 if TYPE_CHECKING:
     from ..transaction import HTTPTransaction
 from ..exceptions import ConnectionError, QueryError
-from ..protocol.rpc import RPCRequest, RPCResponse
+from ..protocol.rpc import RPCMethod, RPCRequest, RPCResponse
 from ..types import AuthResponse
 
 # Backoff delays (seconds) between attempts when recovering from a transient
@@ -73,8 +73,11 @@ class HTTPConnection(BaseSurrealConnection):
         self._client: httpx.AsyncClient | None = None
         self._request_id = 0
         self.protocol: Literal["json", "cbor"] = protocol
-        # Retained signin credentials so ``_send_rpc`` can transparently
-        # re-mint a token after a transient clock-skew 401 (see below).
+        # Arguments of the ``signin()`` the current token came from, retained so
+        # ``_send_rpc`` can transparently re-mint a token after a transient
+        # clock-skew 401. ``None`` whenever the current identity did not come
+        # from a successful ``signin()``: after ``authenticate()``, ``signup()``,
+        # ``invalidate()``, ``close()`` or a failed ``signin()``.
         self._signin_args: dict[str, Any] | None = None
 
     @property
@@ -136,6 +139,11 @@ class HTTPConnection(BaseSurrealConnection):
             self._client = None
         self._connected = False
         self._authenticated = False
+        self._signin_args = None
+
+    def _forget_signin_credentials(self) -> None:
+        """Stop the transient-401 recovery from replaying the last ``signin()``."""
+        self._signin_args = None
 
     async def _send_rpc(self, request: RPCRequest) -> RPCResponse:
         """
@@ -170,8 +178,10 @@ class HTTPConnection(BaseSurrealConnection):
         # under load. We recover by re-minting the token (a fresh signin produces
         # an ``nbf`` aligned with the *current* clock, so it is valid regardless
         # of the jump magnitude) and retrying with a short backoff. Re-minting is
-        # only possible when we have retained signin credentials; otherwise a 401
-        # is treated as a genuine credentials problem and raised immediately.
+        # only possible when the current token came from a ``signin()`` whose
+        # arguments are retained; otherwise (no signin, or a token installed by
+        # ``authenticate()`` / ``signup()``) a 401 is treated as a genuine
+        # credentials problem and raised immediately.
         last_status_error: httpx.HTTPStatusError | None = None
         for attempt in range(len(_AUTH_RETRY_BACKOFFS_S) + 1):
             try:
@@ -213,6 +223,8 @@ class HTTPConnection(BaseSurrealConnection):
                     except Exception:
                         # Best-effort: if re-auth fails, retry with the existing
                         # token anyway (the skew window may simply have passed).
+                        # The failed signin dropped the retained arguments, so
+                        # that retry is the last one.
                         pass
                     continue
                 raise QueryError(
@@ -251,7 +263,28 @@ class HTTPConnection(BaseSurrealConnection):
             database: Optional database scope
             access: Optional access method (for record access auth)
             **credentials: Additional credentials for record access (email, password, etc.)
+
+        On success the arguments are retained to re-mint the token on a
+        transient ``401`` (see ``_send_rpc``). On failure the previously
+        retained arguments are dropped, so a later ``401`` is raised rather
+        than answered by signing in again as an earlier identity.
         """
+        try:
+            return await self._signin(user, password, namespace, database, access, **credentials)
+        except BaseException:
+            self._signin_args = None
+            raise
+
+    async def _signin(
+        self,
+        user: str | None,
+        password: str | None,
+        namespace: str | None,
+        database: str | None,
+        access: str | None,
+        **credentials: Any,
+    ) -> AuthResponse:
+        """POST to ``/signin`` and install the token; see ``signin()``."""
         if not self._client:
             raise ConnectionError("Not connected. Call connect() first.")
 
@@ -304,6 +337,32 @@ class HTTPConnection(BaseSurrealConnection):
 
         except httpx.RequestError as e:
             raise AuthenticationError(f"Authentication request failed: {e}")
+
+    async def invalidate(self) -> None:
+        """
+        Return the connection to an unauthenticated state.
+
+        Sends the ``invalidate`` RPC with the current token, then clears the
+        token, the authenticated flag and the credentials retained by
+        ``signin()``. The local state is cleared even when the RPC fails (for
+        example with a ``401`` on an expired token), and that error is raised.
+        Subsequent requests carry no credentials until the next ``signin()`` or
+        ``authenticate()``.
+
+        Raises:
+            QueryError: If the server rejects the ``invalidate`` RPC.
+            ConnectionError: If the request cannot be sent.
+        """
+        # Dropped before the RPC so that a 401 on it is not answered by
+        # signing in again.
+        self._signin_args = None
+        try:
+            if self._client is not None:
+                await self.rpc(RPCMethod.INVALIDATE)
+        finally:
+            self._token = None
+            self._authenticated = False
+            self._signin_args = None
 
     async def sql(self, query: str, vars: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """
