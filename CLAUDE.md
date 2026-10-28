@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.13)
+> Context document for Claude AI - Last updated: October 2026 (0.34.14)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.13 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.14 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,28 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.14
+
+One fix (#306 via #318), SDK transactions only. Pin unchanged (3.3.4). `v2`:
+same defects, backport tracked in #322.
+
+- **`HTTPTransaction` references are parsed strictly.** Table (and
+  `relate()`'s relation, `insert()`'s table) must be an identifier, matched
+  with `fullmatch` (a trailing newline otherwise passes `$`). Identifier IDs,
+  signed 64-bit integers and `rand()`/`ulid()`/`uuid()` stay inline; anything
+  else is bound and rendered `type::record('t', $_ref)`, so `commit()`'s
+  `$name` namespacing never reaches inside an ID. The `format_thing()` /
+  angle-bracket forms are read back once. Integers beyond i64 bind as string
+  IDs, which is how the server reads them inline; the first review round
+  caught the version that rebound `t:-5` as a string.
+- **`HTTPTransaction.merge()` rendered `MERGE { k = $k }`**, rejected by the
+  server inside a successful batch, so ORM `save(tx=)`/`merge(tx=)` over HTTP
+  wrote nothing. Object form `{ k: $k }` now.
+- **`WebSocketTransaction` validates the same way** before each RPC.
+  **Known gap, pre-existing:** `WebSocketConnection._to_thing()` turns every
+  `table:id` into a string `RecordId` under CBOR, so integer IDs over
+  WebSocket hit `` t:`1` ``; recorded as a strict `xfail`.
 
 ### What's New in 0.34.13
 

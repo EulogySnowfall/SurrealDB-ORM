@@ -6,6 +6,55 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.14] - 2026-10-28
+
+**Fix release.** SDK transactions only (#306, #318). ORM users have nothing
+to change; direct SDK callers that passed array or object IDs to transaction
+methods should read *Changed* below. The SurrealDB pin is unchanged (tested
+against 3.3.4, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`HTTPTransaction` handles record IDs that are not plain identifiers
+  (#306).** `create` / `update` / `upsert` / `merge` / `delete` / `relate`
+  wrote each `table:id` reference into the batched SQL as given, so an ID with
+  a space, `-`, `;`, a backtick, a backslash or a leading digit produced a
+  statement that failed to parse, and `users:a-b` was read as an expression
+  and wrote nothing. Such IDs are now bound as parameters
+  (`type::record('table', $_ref)`). The backtick form written by
+  `format_thing()` keeps working and is read back once.
+- **`HTTPTransaction.merge()` did nothing (#306).** It rendered
+  `MERGE { k = $k }`, which the server rejects, so a merge queued in an HTTP
+  transaction (including ORM `save()` / `merge()` with `tx=` on an HTTP
+  connection) silently had no effect. It now renders `MERGE { k: $k }`.
+
+### Changed
+
+- **Malformed references raise `ValueError`** in `HTTPTransaction` and
+  `WebSocketTransaction`, before anything is queued or sent: an empty or
+  non-identifier table (`:x`, `a b:c`, a backtick-quoted table), an empty ID,
+  an unclosed or malformed delimited ID, an array or object ID (`t:[1,2]`,
+  `t:{a:1}`). `relate()`'s `relation` and `insert()`'s `table` must be
+  identifiers, and a trailing newline in any of them is rejected.
+- Plain IDs, `rand()` / `ulid()` / `uuid()`, table-only references and
+  integer IDs are unchanged: any signed 64-bit integer (`t:1`, `t:-5`) stays
+  an integer ID, and a larger one stays a string ID, as the server reads it.
+
+### Known limitation
+
+- Integer IDs through `WebSocketTransaction` still reach the server as string
+  IDs over CBOR, the default protocol (`t:1` targets `` t:`1` ``):
+  `WebSocketConnection` converts every `table:id` to a string `RecordId`. This
+  is unchanged and connection-level.
+
+### Upgrading
+
+- Direct SDK callers that passed array or object IDs to transaction methods
+  should use `tx.query()` with a bound `RecordId`. The `v2` line has the same
+  defects; the backport is tracked in #322.
+
+---
+
 ## [0.34.13] - 2026-10-28
 
 **Fix release.** `QuerySet.cache()` no longer shares results between

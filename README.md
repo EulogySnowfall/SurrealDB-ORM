@@ -37,6 +37,19 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.14
+
+**Fix release.** SDK transactions only; nothing to change for ORM users. Direct SDK callers: see
+[CHANGELOG.md](CHANGELOG.md) for the references that now raise `ValueError`.
+
+- **`HTTPTransaction` works with record IDs that are not plain identifiers**
+  ([#306](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/306)). An ID with a space, `-`, `;`, a backtick, a
+  backslash or a leading digit produced a statement that failed to parse (or, for `users:a-b`, wrote nothing). Such
+  IDs are now bound as parameters; the `format_thing()` backtick form keeps working.
+- **`HTTPTransaction.merge()` applies its changes again.** It rendered `MERGE { k = $k }`, which the server rejects,
+  so a merge queued in an HTTP transaction, including ORM `save()` / `merge()` with `tx=` over HTTP, silently did
+  nothing.
+
 ## What's New in 0.34.13
 
 **Fix release.** Nothing to change on upgrade for single-connection apps.
