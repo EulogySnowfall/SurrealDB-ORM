@@ -6,6 +6,72 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.35.0] - 2026-10-28
+
+**Minor release.** Two fixes (#333 via #362, #329 via #365); the sign-up fix
+adds one setting, `SurrealConfigDict(signup_fields=[...])`, hence the minor
+bump. **Both change behaviour** — read *Behaviour change* and *Upgrading*
+below if your `TableType.USER` models take extra fields at sign-up, or if you
+pass anything other than an `int` to `limit()`, `offset()`, `similar_to()` or
+`hybrid_search()`. The SurrealDB pin is unchanged (tested against 3.3.4,
+supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **The generated `DEFINE ACCESS ... SIGNUP` clause assigns only an explicit
+  sign-up set (#333).** For a `TableType.USER` model, `define_access()`,
+  `makemigrations` and `schema_diff` used to assign every model field from
+  the sign-up request (`field = $field`), so model defaults were lost at
+  sign-up and fields excluded from every other write path (computed,
+  `server_fields`, read-only) were still taken from the request. The clause
+  now assigns the identifier, the password (`crypto::<alg>::generate`), the
+  fields listed in `signup_fields`, and `created_at = time::now()` when the
+  model has that field. Every other field keeps its schema `DEFAULT` or model
+  default.
+- **`makemigrations` / `schema_diff` build the access definition from the
+  same code as `define_access()`**, so they now honour
+  `encryption_algorithm` and `access_name` (previously always `argon2` and
+  `<table>_auth`).
+- **`QuerySet.limit()`, `offset()`, `similar_to(limit, ef)` and
+  `hybrid_search(vector_limit, ef, text_limit, rrf_k)` accept only integers
+  and check them at the call, before any query is built (#329).** Their
+  `int` annotations were never enforced, and these values are written into
+  the query text, so a numeric string, a float or a `bool` produced a
+  malformed query. Valid integers produce exactly the same SurrealQL as
+  before.
+
+### Added
+
+- **`SurrealConfigDict(signup_fields=[...])`** — the fields a caller may set
+  at sign-up, besides the identifier and the password. An entry that is
+  `id`, the identifier, the password, `created_at`, a computed field, a
+  `server_fields` entry, a read-only field or not a model field raises
+  `ValueError` naming the field and the reason.
+
+### Behaviour change
+
+- `signup()` accepts only the identifier, the password and the
+  `signup_fields` entries; any other keyword raises `SurrealDbError` before
+  any request. A model with no `signup_fields` signs up with the identifier
+  and password only.
+- The emitted access definition changes, so on an existing database
+  `makemigrations` / `schema_diff` emit an access update
+  (`REMOVE ACCESS` + `DEFINE ACCESS`).
+- A non-`int` argument to `limit()`, `offset()`, `similar_to()` or
+  `hybrid_search()` — including a numeric string such as `"10"`, a float or
+  a `bool` — raises `TypeError`. A value below the minimum raises
+  `ValueError`: the minimum is 0 for `limit`, `offset` and `ef`, and 1 for
+  the KNN `limit`, `vector_limit`, `text_limit` and `rrf_k`.
+
+### Upgrading
+
+- List in `signup_fields` the fields your sign-up form sets, then re-apply
+  the access definition (`makemigrations` + `migrate`, or `define_access()`)
+  so an existing database picks up the new `SIGNUP` clause.
+- Convert request or query-string values with `int(...)` before passing them
+  to `limit()` / `offset()` / `similar_to()` / `hybrid_search()`. Code that
+  already passes `int` needs no change.
+
 ## [0.34.19] - 2026-10-28
 
 **Fix release.** SDK change feeds only (#346, #361). Read *Behaviour change*
