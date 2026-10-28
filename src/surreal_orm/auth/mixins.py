@@ -286,6 +286,53 @@ class AuthenticatedUserMixin:
 
         return sql
 
+    @staticmethod
+    async def _read_session_record(client: HTTPConnection) -> Any:
+        """
+        Return the ``$auth`` record ID of an authenticated session.
+
+        ``client`` must still be open and carry the token returned by
+        signin/signup/authenticate.  The value is returned as decoded (a
+        ``RecordId`` under CBOR, a ``"table:id"`` string under JSON) so it can
+        be bound back unchanged: stringifying a ``RecordId`` drops the key's
+        escaping, and ``type::record("t:000000")`` would read the key as the
+        number ``0``.
+
+        Returns:
+            The record ID, or ``None`` when the session has no ``$auth`` record.
+        """
+        auth_result = await client.query("RETURN $auth")
+        first_qr = auth_result.first_result
+        if first_qr is None:
+            return None
+        return first_qr.result
+
+    @classmethod
+    async def _fetch_record_by_id(cls, record_id: Any) -> Self | None:
+        """
+        Fetch the user record with this exact record ID via the root connection.
+
+        Args:
+            record_id: Record ID as returned by :meth:`_read_session_record`.
+
+        Returns:
+            The model instance, or ``None`` when no such record exists.
+        """
+        from ..connection_manager import SurrealDBConnectionManager
+
+        config = getattr(cls, "model_config", {})
+        table_name = config.get("table_name") or cls.__name__
+
+        root_client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
+        result = await root_client.query(
+            f"SELECT * FROM {table_name} WHERE id = type::record($record_id)",
+            {"record_id": record_id},
+        )
+        if result.is_empty:
+            return None
+        user: Self = cls.from_db(result.first)  # type: ignore[attr-defined]
+        return user
+
     @classmethod
     async def signup(
         cls,
@@ -313,8 +360,13 @@ class AuthenticatedUserMixin:
                 result = await User.signup(...)
                 result.refresh_token                          # new in 0.30
 
+        The returned ``user`` is the record the session token was issued
+        for (``$auth``), fetched by its record ID.
+
         Raises:
-            SurrealDbError: If signup fails (e.g., duplicate identifier)
+            SurrealDbError: If signup fails (e.g., duplicate identifier), or
+                the session record cannot be read after signup
+            DoesNotExist: If the session record no longer exists
 
         Example:
             result = await User.signup(
@@ -362,29 +414,23 @@ class AuthenticatedUserMixin:
                 raise SurrealDbError("Signup succeeded but no JWT token was returned by the server.")
 
             refresh_token = response.refresh_token
+            # Read $auth while the ephemeral session is still open.
+            session_record = await cls._read_session_record(client)
         except (SurrealDBError, AuthenticationError, QueryError) as e:
             raise SurrealDbError(f"Signup failed: {e}") from e
         finally:
             await client.close()
 
-        # Fetch the created user via the root singleton (guaranteed access)
-        root_client = await SurrealDBConnectionManager.get_client(conn_name)
+        if session_record is None:
+            raise SurrealDbError("Signup succeeded but the session record could not be read ($auth is empty).")
 
-        identifier_field = config.get("identifier_field", "email")
-        identifier_value = credentials.get(identifier_field)
+        # Fetch the record the token was issued for, via the root singleton.
+        # Never look the user up again by identifier_field: the ACCESS clause
+        # already chose the record, and the identifier may not be unique.
+        user = await cls._fetch_record_by_id(session_record)
+        if user is None:
+            raise cls.DoesNotExist(f"User {session_record} not found after signup")  # type: ignore[attr-defined]
 
-        if not identifier_value:
-            raise SurrealDbError(f"Missing required field: {identifier_field}")
-
-        result = await root_client.query(
-            f"SELECT * FROM {table_name} WHERE {identifier_field} = $identifier",
-            {"identifier": identifier_value},
-        )
-
-        if result.is_empty:
-            raise cls.DoesNotExist("User not found after signup")  # type: ignore[attr-defined]
-
-        user = cls.from_db(result.first)  # type: ignore[attr-defined]
         return AuthResult(user=user, token=token, refresh_token=refresh_token)
 
     @classmethod
@@ -413,8 +459,14 @@ class AuthenticatedUserMixin:
                 result = await User.signin(...)
                 result.refresh_token                          # new in 0.30
 
+        The returned ``user`` is the record the session token was issued
+        for (``$auth``), fetched by its record ID — the record the ACCESS
+        ``SIGNIN`` clause selected, even when the identifier is not unique.
+
         Raises:
-            SurrealDbError: If signin fails (invalid credentials)
+            SurrealDbError: If signin fails (invalid credentials), or the
+                session record cannot be read after signin
+            DoesNotExist: If the session record no longer exists
 
         Example:
             result = await User.signin(
@@ -458,29 +510,23 @@ class AuthenticatedUserMixin:
 
             token = response.token
             refresh_token = response.refresh_token
+            # Read $auth while the ephemeral session is still open.
+            session_record = await cls._read_session_record(client)
         except (SurrealDBError, AuthenticationError, QueryError) as e:
             raise SurrealDbError(f"Signin failed: {e}") from e
         finally:
             await client.close()
 
-        # Fetch user via root singleton (guaranteed access)
-        root_client = await SurrealDBConnectionManager.get_client(conn_name)
+        if session_record is None:
+            raise SurrealDbError("Signin succeeded but the session record could not be read ($auth is empty).")
 
-        identifier_field = config.get("identifier_field", "email")
-        identifier_value = credentials.get(identifier_field)
+        # Fetch the record the token was issued for, via the root singleton.
+        # Never look the user up again by identifier_field: the ACCESS clause
+        # already chose the record, and the identifier may not be unique.
+        user = await cls._fetch_record_by_id(session_record)
+        if user is None:
+            raise cls.DoesNotExist(f"User {session_record} not found after signin")  # type: ignore[attr-defined]
 
-        if not identifier_value:
-            raise SurrealDbError(f"Missing required field: {identifier_field}")
-
-        result = await root_client.query(
-            f"SELECT * FROM {table_name} WHERE {identifier_field} = $identifier",
-            {"identifier": identifier_value},
-        )
-
-        if result.is_empty:
-            raise cls.DoesNotExist("User not found after signin")  # type: ignore[attr-defined]
-
-        user = cls.from_db(result.first)  # type: ignore[attr-defined]
         return AuthResult(user=user, token=token, refresh_token=refresh_token)
 
     @classmethod
@@ -508,7 +554,6 @@ class AuthenticatedUserMixin:
                 user, record_id = result
                 print(f"Authenticated as {user.email} ({record_id})")
         """
-        from ..connection_manager import SurrealDBConnectionManager
 
         client = await cls._create_auth_client()
         try:
@@ -531,20 +576,11 @@ class AuthenticatedUserMixin:
         finally:
             await client.close()
 
-        # Fetch the full user record via root singleton
-        config = getattr(cls, "model_config", {})
-        table_name = config.get("table_name") or cls.__name__
-
-        root_client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
-        result = await root_client.query(
-            f"SELECT * FROM {table_name} WHERE id = type::record($record_id)",
-            {"record_id": record_id},
-        )
-
-        if result.is_empty:
+        # Fetch the full user record via root singleton, binding the decoded
+        # record ID rather than its string form (see _read_session_record).
+        user = await cls._fetch_record_by_id(raw_auth)
+        if user is None:
             return None
-
-        user = cls.from_db(result.first)  # type: ignore[attr-defined]
         return user, record_id
 
     @classmethod
@@ -730,7 +766,8 @@ class AuthenticatedUserMixin:
         Change a user's password.
 
         Validates the old password by attempting signin (uses ephemeral
-        connection), then updates the password via the root singleton.
+        connection), then updates the password of the record that signin
+        authenticated, via the root singleton.
 
         Args:
             identifier_value: Value of the identifier field (e.g., email)
@@ -752,24 +789,25 @@ class AuthenticatedUserMixin:
         password_field = config.get("password_field", "password")
 
         try:
-            await cls.signin(**{identifier_field: identifier_value, password_field: old_password})
+            signed_in = await cls.signin(**{identifier_field: identifier_value, password_field: old_password})
         except SurrealDbError:
             raise SurrealDbError("Invalid current password") from None
 
+        # Update only the record the signin authenticated — never every record
+        # sharing the identifier value, which need not be unique.
+        record_id = signed_in.user.record_id  # type: ignore[attr-defined]
+        if record_id is None:
+            raise SurrealDbError("Signin returned a user without a record ID")
+
         # Update the password via root singleton (needs root permissions)
         client = await SurrealDBConnectionManager.get_client(cls.get_connection_name())
-        table_name = config.get("table_name") or cls.__name__
 
         # Get encryption algorithm
         algorithm = config.get("encryption_algorithm", "argon2")
 
         await client.query(
-            f"""
-            UPDATE {table_name}
-            SET {password_field} = crypto::{algorithm}::generate($new_password)
-            WHERE {identifier_field} = $identifier
-            """,
-            {"identifier": identifier_value, "new_password": new_password},
+            f"UPDATE $record_id SET {password_field} = crypto::{algorithm}::generate($new_password)",
+            {"record_id": record_id, "new_password": new_password},
         )
 
         return True
