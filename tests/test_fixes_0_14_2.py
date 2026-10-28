@@ -237,18 +237,20 @@ class TestTokenCache:
 
     def test_invalidate_cache_specific_token(self) -> None:
         """invalidate_token_cache(token) should remove only that token."""
-        AuthenticatedUserMixin._token_cache["tok1"] = ("users:1", time.monotonic() + 300)
-        AuthenticatedUserMixin._token_cache["tok2"] = ("users:2", time.monotonic() + 300)
+        far = time.time() + 3600
+        AuthenticatedUserMixin._token_cache[("users", "tok1")] = ("users:1", time.monotonic() + 300, far)
+        AuthenticatedUserMixin._token_cache[("users", "tok2")] = ("users:2", time.monotonic() + 300, far)
 
         AuthenticatedUserMixin.invalidate_token_cache("tok1")
 
-        assert "tok1" not in AuthenticatedUserMixin._token_cache
-        assert "tok2" in AuthenticatedUserMixin._token_cache
+        assert ("users", "tok1") not in AuthenticatedUserMixin._token_cache
+        assert ("users", "tok2") in AuthenticatedUserMixin._token_cache
 
     def test_invalidate_cache_all(self) -> None:
         """invalidate_token_cache() without args should clear all."""
-        AuthenticatedUserMixin._token_cache["tok1"] = ("users:1", time.monotonic() + 300)
-        AuthenticatedUserMixin._token_cache["tok2"] = ("users:2", time.monotonic() + 300)
+        far = time.time() + 3600
+        AuthenticatedUserMixin._token_cache[("users", "tok1")] = ("users:1", time.monotonic() + 300, far)
+        AuthenticatedUserMixin._token_cache[("users", "tok2")] = ("users:2", time.monotonic() + 300, far)
 
         AuthenticatedUserMixin.invalidate_token_cache()
 
@@ -271,15 +273,18 @@ class TestTokenCache:
         mock_ephemeral.query = AsyncMock(return_value=mock_auth_result)
         mock_ephemeral.close = AsyncMock()
 
+        # Only a token with a readable ``exp`` claim is cached (#331).
+        token = TestValidateTokenLocal._make_jwt(TestValidateTokenLocal(), {"ID": "TestUser:abc"})
+
         with patch.object(TestUser, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)):
             # First call should hit the server
-            result = await TestUser.validate_token("my_token")
+            result = await TestUser.validate_token(token)
             assert result == "TestUser:abc"
             assert mock_ephemeral.authenticate.call_count == 1
 
             # Second call should hit the cache (no new connection)
             mock_ephemeral.authenticate.reset_mock()
-            result2 = await TestUser.validate_token("my_token")
+            result2 = await TestUser.validate_token(token)
             assert result2 == "TestUser:abc"
             mock_ephemeral.authenticate.assert_not_called()
 
@@ -294,7 +299,7 @@ class TestTokenCache:
             password: Encrypted
 
         # Pre-populate cache
-        TestUser._token_cache["my_token"] = ("TestUser:cached", time.monotonic() + 300)
+        TestUser._token_cache[("TestUser", "my_token")] = ("TestUser:cached", time.monotonic() + 300, time.time() + 3600)
 
         mock_ephemeral = AsyncMock()
         mock_ephemeral.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=True, raw={}))
@@ -319,7 +324,7 @@ class TestTokenCache:
             password: Encrypted
 
         # Pre-populate cache with expired entry
-        TestUser._token_cache["my_token"] = ("TestUser:old", time.monotonic() - 10)
+        TestUser._token_cache[("TestUser", "my_token")] = ("TestUser:old", time.monotonic() - 10, time.time() + 3600)
 
         mock_ephemeral = AsyncMock()
         mock_ephemeral.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=True, raw={}))

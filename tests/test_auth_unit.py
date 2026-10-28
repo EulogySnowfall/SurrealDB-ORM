@@ -7,6 +7,8 @@ using mocks instead of real database connections.
 
 import inspect
 import sys
+import time
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1354,3 +1356,184 @@ class TestIssue332SessionRecordLookup:
                 await model.change_password("x@example.com", "old", "new")
 
         mock_root.query.assert_not_awaited()
+
+
+def _i331_jwt(claims: dict[str, object]) -> str:
+    """Build an unsigned JWT-shaped token carrying ``claims``."""
+    import base64
+    import json
+
+    def part(data: dict[str, object]) -> str:
+        return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
+
+    return f"{part({'alg': 'HS512'})}.{part(claims)}.c2ln"
+
+
+def _i331_client(auth: object, *, success: bool = True) -> AsyncMock:
+    """Ephemeral connection mock whose ``RETURN $auth`` yields ``auth``."""
+    client = AsyncMock()
+    client.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=success, raw={}))
+    client.query = AsyncMock(return_value=MagicMock(first_result=MagicMock(result=auth)))
+    client.close = AsyncMock()
+    return client
+
+
+class TestIssue331TokenCacheExpiryAndTable:
+    """#331 — validate_token() honours the token's exp and the model's table.
+
+    A cached entry lives until ``min(ttl, exp)``; a token whose ``exp`` cannot
+    be read is never cached. A ``$auth`` record from another table yields
+    ``None``, and cache entries are keyed per table so one model never reads
+    another model's entry.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self) -> Iterator[None]:
+        AuthenticatedUserMixin._token_cache.clear()
+        AuthenticatedUserMixin._token_cache_ttl = 300
+        AuthenticatedUserMixin._token_cache_max_size = 1000
+        yield
+        AuthenticatedUserMixin._token_cache.clear()
+
+    @staticmethod
+    def _models() -> tuple[type, type]:
+        class I331Member(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="i331_member")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        class I331Staff(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="i331_staff")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        return I331Member, I331Staff
+
+    async def test_cached_entry_not_returned_after_token_exp(self) -> None:
+        """An entry cached for a token is dropped once the token's exp passes."""
+        member, _ = self._models()
+        now_wall, now_mono = 1_900_000_000.0, 5_000.0
+        token = _i331_jwt({"ID": "i331_member:a", "exp": int(now_wall) + 10})
+
+        clock = MagicMock()
+        clock.time = MagicMock(return_value=now_wall)
+        clock.monotonic = MagicMock(return_value=now_mono)
+        first = _i331_client("i331_member:a")
+        with (
+            patch("src.surreal_orm.auth.mixins.time", clock),
+            patch.object(member, "_create_auth_client", new=AsyncMock(return_value=first)),
+        ):
+            assert await member.validate_token(token) == "i331_member:a"
+
+        # 20 s later (both clocks): the token expired 10 s ago, TTL is 300 s.
+        clock.time.return_value = now_wall + 20
+        clock.monotonic.return_value = now_mono + 20
+        second = _i331_client(None, success=False)
+        with (
+            patch("src.surreal_orm.auth.mixins.time", clock),
+            patch.object(member, "_create_auth_client", new=AsyncMock(return_value=second)),
+        ):
+            assert await member.validate_token(token) is None
+        second.authenticate.assert_awaited_once_with(token)
+
+    async def test_entry_deadline_is_bounded_by_exp(self) -> None:
+        """A token expiring before the TTL is cached only until its exp."""
+        member, _ = self._models()
+        exp = int(time.time()) + 30
+        token = _i331_jwt({"ID": "i331_member:a", "exp": exp})
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_member:a"))):
+            assert await member.validate_token(token) == "i331_member:a"
+
+        ((key, entry),) = AuthenticatedUserMixin._token_cache.items()
+        assert key == ("i331_member", token)
+        deadline = entry[1]
+        assert deadline - time.monotonic() <= 31
+
+    async def test_other_table_returns_none_and_is_not_cached(self) -> None:
+        """A token whose $auth is in another table is rejected, not cached."""
+        _, staff = self._models()
+        token = _i331_jwt({"ID": "i331_member:a", "exp": int(time.time()) + 600})
+        client = _i331_client("i331_member:a")
+        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=client)):
+            assert await staff.validate_token(token) is None
+        assert AuthenticatedUserMixin._token_cache == {}
+        client.close.assert_awaited_once()
+
+    async def test_other_table_record_id_object_returns_none(self) -> None:
+        """The table check reads the decoded RecordId, not a string prefix."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        _, staff = self._models()
+        token = _i331_jwt({"ID": "x", "exp": int(time.time()) + 600})
+        # A key that *starts with* the staff table name must not pass.
+        auth = RecordId(table="i331_member", id="i331_staff")
+        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=_i331_client(auth))):
+            assert await staff.validate_token(token) is None
+
+    async def test_same_table_record_id_object_is_accepted(self) -> None:
+        """A decoded RecordId of the model's own table is accepted."""
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        member, _ = self._models()
+        token = _i331_jwt({"ID": "x", "exp": int(time.time()) + 600})
+        auth = RecordId(table="i331_member", id="a")
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i331_client(auth))):
+            assert await member.validate_token(token) == "i331_member:a"
+
+    async def test_cache_entry_of_one_model_not_returned_to_another(self) -> None:
+        """The shared cache is keyed per table."""
+        member, staff = self._models()
+        token = _i331_jwt({"ID": "i331_member:a", "exp": int(time.time()) + 600})
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_member:a"))):
+            assert await member.validate_token(token) == "i331_member:a"
+
+        client = _i331_client("i331_member:a")
+        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=client)):
+            assert await staff.validate_token(token) is None
+        client.authenticate.assert_awaited_once_with(token)
+
+    @pytest.mark.parametrize(
+        "claims",
+        [None, {"ID": "i331_member:a"}, {"ID": "i331_member:a", "exp": "soon"}, {"ID": "i331_member:a", "exp": True}],
+        ids=["opaque", "no-exp", "string-exp", "bool-exp"],
+    )
+    async def test_unreadable_exp_is_validated_but_not_cached(self, claims: dict[str, object] | None) -> None:
+        """Without a readable exp the token is validated by the server every time."""
+        member, _ = self._models()
+        token = "opaque-token" if claims is None else _i331_jwt(claims)
+        client = _i331_client("i331_member:a")
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=client)):
+            assert await member.validate_token(token) == "i331_member:a"
+            assert await member.validate_token(token) == "i331_member:a"
+        assert AuthenticatedUserMixin._token_cache == {}
+        assert client.authenticate.await_count == 2
+
+    async def test_authenticate_token_other_table_returns_none(self) -> None:
+        """authenticate_token() rejects a $auth record of another table."""
+        _, staff = self._models()
+        fetch = AsyncMock(return_value=MagicMock())
+        with (
+            patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_member:a"))),
+            patch.object(staff, "_fetch_record_by_id", new=fetch),
+        ):
+            assert await staff.authenticate_token("tok") is None
+        fetch.assert_not_awaited()
+
+    async def test_invalidate_token_removes_every_table_entry(self) -> None:
+        """invalidate_token_cache(token) drops the token for every model."""
+        member, staff = self._models()
+        token = _i331_jwt({"ID": "i331_member:a", "exp": int(time.time()) + 600})
+        other = _i331_jwt({"ID": "i331_member:b", "exp": int(time.time()) + 600})
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_member:a"))):
+            await member.validate_token(token)
+        with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_member:b"))):
+            await member.validate_token(other)
+        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_staff:a"))):
+            await staff.validate_token(token)
+        assert len(AuthenticatedUserMixin._token_cache) == 3
+
+        staff.invalidate_token_cache(token)
+
+        assert list(AuthenticatedUserMixin._token_cache) == [("i331_member", other)]
