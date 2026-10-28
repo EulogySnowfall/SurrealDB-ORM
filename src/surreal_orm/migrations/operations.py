@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..fields.relation import on_delete_to_surql
 from ..types import FieldType
+from ..utils import surql_string
 
 if TYPE_CHECKING:
     from .state import FieldState, TableState
@@ -138,9 +139,9 @@ def _render_default(default: Any) -> str:
     Render a DEFAULT value as SurrealQL.
 
     A bare Python ``repr`` is wrong three ways: ``True`` is not ``true``, a
-    function call must not be quoted or it becomes a string literal, and an
-    apostrophe inside a quoted literal has to be doubled or the statement will
-    not parse.
+    function call must not be quoted or it becomes a string literal, and a
+    string needs SurrealQL's backslash escapes (``'it\\'s'``, ``'C:\\\\temp'``).
+    Doubling the apostrophe, as SQL does, is a parse error in SurrealQL.
 
     Args:
         default: The default value, as the model or the database reports it
@@ -155,7 +156,7 @@ def _render_default(default: Any) -> str:
         # `_parse_default_value`, which returns them as bare strings.
         if "::" in default or default.startswith("$"):
             return default
-        return "'" + default.replace("'", "''") + "'"
+        return surql_string(default)
     return str(default)
 
 
@@ -172,7 +173,7 @@ def _render_comment(comment: str) -> str:
     Returns:
         The quoted literal
     """
-    return "'" + comment.replace("'", "''") + "'"
+    return surql_string(comment)
 
 
 def _render_define_field(
@@ -805,7 +806,7 @@ def _render_define_table(
         parts.append(f"CHANGEFEED {changefeed}")
 
     if comment:
-        parts.append(f"COMMENT '{comment.replace(chr(39), chr(39) * 2)}'")
+        parts.append(f"COMMENT {surql_string(comment)}")
 
     # PERMISSIONS is a clause of DEFINE TABLE. It used to be emitted as a
     # second `DEFINE TABLE ... PERMISSIONS ...`, which SurrealDB rejects once
@@ -1425,8 +1426,7 @@ class CreateIndex(Operation):
                 parts.append("CONCURRENTLY")
 
         if self.comment:
-            escaped_comment = self.comment.replace("'", "''")
-            parts.append(f"COMMENT '{escaped_comment}'")
+            parts.append(f"COMMENT {surql_string(self.comment)}")
 
         return " ".join(parts) + ";"
 
@@ -1502,8 +1502,7 @@ class DefineAccess(Operation):
     DURATION FOR TOKEN {self.duration_token}, FOR SESSION {self.duration_session}"""
 
         if self.comment:
-            escaped_comment = self.comment.replace("'", "''")
-            sql += f"\n    COMMENT '{escaped_comment}'"
+            sql += f"\n    COMMENT {surql_string(self.comment)}"
 
         return sql + ";"
 
@@ -1573,8 +1572,7 @@ class DefineBearerAccess(Operation):
             sql += f"\n    DURATION FOR GRANT {self.duration_grant}, FOR SESSION {self.duration_session}"
 
         if self.comment:
-            escaped_comment = self.comment.replace("'", "''")
-            sql += f"\n    COMMENT '{escaped_comment}'"
+            sql += f"\n    COMMENT {surql_string(self.comment)}"
 
         return sql + ";"
 
@@ -1757,8 +1755,7 @@ class DefineEvent(Operation):
         parts.append(f"THEN ({self.then})")
 
         if self.comment:
-            escaped_comment = self.comment.replace("'", "''")
-            parts.append(f"COMMENT '{escaped_comment}'")
+            parts.append(f"COMMENT {surql_string(self.comment)}")
 
         return " ".join(parts) + ";"
 
@@ -1838,8 +1835,7 @@ class DefineApi(Operation):
             parts.append(f"THEN {{ {self.handler}; }}")
 
         if self.comment:
-            escaped_comment = self.comment.replace("'", "''")
-            parts.append(f"COMMENT '{escaped_comment}'")
+            parts.append(f"COMMENT {surql_string(self.comment)}")
 
         return " ".join(parts) + ";"
 
