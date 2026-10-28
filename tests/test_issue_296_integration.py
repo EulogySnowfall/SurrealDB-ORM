@@ -142,9 +142,7 @@ async def test_record_ids_with_special_characters_round_trip(rid: str) -> None:
     # relate() in both directions, then read them back
     await loaded.relate(LINKS, peer)
     await peer.relate(LINKS, loaded)
-    sources = await _query(
-        f"SELECT VALUE record::id(in) FROM {LINKS} WHERE out = $peer;", {"peer": RecordId(NODES, "peer")}
-    )
+    sources = await _query(f"SELECT VALUE record::id(in) FROM {LINKS} WHERE out = $peer;", {"peer": RecordId(NODES, "peer")})
     assert sources == [rid]
 
     out_related = await loaded.get_related(LINKS, direction="out", model_class=I296Node)
