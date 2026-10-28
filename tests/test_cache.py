@@ -7,6 +7,7 @@ import pytest
 
 from src.surreal_orm.cache import QueryCache
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
+from src.surreal_orm.signals import Signal, post_delete, post_save, post_update
 
 # ── Test model ───────────────────────────────────────────────────────────────
 
@@ -119,6 +120,42 @@ class TestQueryCacheInvalidate:
     def test_invalidate_unknown_table(self) -> None:
         count = QueryCache.invalidate(CacheUser)
         assert count == 0
+
+
+class TestSignalInvalidationEveryBucket:
+    """Issue #338 — a write drops the table's entries cached from every connection.
+
+    The bucket a read was cached in is a raw ``(url, namespace, database)``
+    triple, so one database reached through two URL spellings is two buckets,
+    and a ``tx=`` write may not run on the connection the model routes to.
+    Invalidation therefore never trusts the writer's location.
+    """
+
+    _SPELLINGS = (
+        ("i338_plain", "http://localhost:8000", "ns", "db"),
+        ("i338_slash", "http://localhost:8000/", "ns", "db"),
+        ("i338_other", "ws://127.0.0.1:8000", "ns", "db"),
+    )
+
+    def _fill(self) -> list[str]:
+        keys = []
+        for identity in self._SPELLINGS:
+            key = QueryCache.make_key("q", {}, "cache_users", connection=identity)
+            QueryCache.set(key, [identity[1]], "cache_users", connection=identity)
+            keys.append(key)
+        QueryCache.set("no-conn", ["unknown"], "cache_users")
+        keys.append("no-conn")
+        QueryCache.set("other-table", "x", "orders", connection=self._SPELLINGS[0])
+        return keys
+
+    @pytest.mark.parametrize("signal", [post_save, post_update, post_delete], ids=lambda s: s.name)
+    async def test_signal_drops_the_table_in_every_bucket(self, signal: Signal) -> None:
+        QueryCache._connect_signals()
+        keys = self._fill()
+        await signal.send(sender=CacheUser, instance=CacheUser(id="r1"))
+        assert [QueryCache.get(k) for k in keys] == [None] * len(keys)
+        assert QueryCache.get("other-table") == "x"
+        assert set(QueryCache._table_keys) == {(("http://localhost:8000", "ns", "db"), "orders")}
 
 
 class TestQueryCacheClear:
@@ -274,3 +311,86 @@ class TestQueryCacheIntegration:
         await alice.delete()
 
         assert QueryCache.stats()["entries"] == 0
+
+
+# ── Issue #338: invalidation reaches every connection ───────────────────────
+
+_I338_DB = "test_cache_i338"
+_I338_OTHER_DB = "test_cache_i338_other"
+
+
+class I338CacheItem(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="i338_cache_items")
+    id: str | None = None
+    label: str = ""
+
+
+class I338RoutedItem(BaseSurrealModel):
+    """Same table, but routed to a connection on another database."""
+
+    model_config = SurrealConfigDict(table_name="i338_cache_items", connection="i338_other")
+    id: str | None = None
+    label: str = ""
+
+
+async def _i338_labels(connection: str) -> list[str]:
+    from src.surreal_orm import SurrealDBConnectionManager
+
+    async with SurrealDBConnectionManager.using(connection):
+        rows = await I338CacheItem.objects().cache(ttl=60).exec()
+    return sorted(row.label for row in rows)
+
+
+@pytest.mark.integration
+class TestQueryCacheInvalidationEveryConnection:
+    """Issue #338 — a write never leaves a stale ``.cache()`` result behind."""
+
+    @pytest.fixture(autouse=True)
+    async def i338_connections(self) -> AsyncGenerator[None, None]:
+        from src.surreal_orm import SurrealDBConnectionManager
+        from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
+
+        # One database, two spellings of its URL: two cache buckets.
+        connections = {
+            "i338_plain": (SURREALDB_URL.rstrip("/"), _I338_DB),
+            "i338_slash": (SURREALDB_URL.rstrip("/") + "/", _I338_DB),
+            "i338_other": (SURREALDB_URL, _I338_OTHER_DB),
+        }
+        for name, (url, database) in connections.items():
+            SurrealDBConnectionManager.add_connection(
+                name,
+                url=url,
+                user=SURREALDB_USER,
+                password=SURREALDB_PASS,
+                namespace=SURREALDB_NAMESPACE,
+                database=database,
+            )
+        for name in ("i338_plain", "i338_other"):
+            client = await SurrealDBConnectionManager.get_client(name)
+            await client.query("DELETE FROM i338_cache_items;")
+        client = await SurrealDBConnectionManager.get_client("i338_plain")
+        await client.query("CREATE i338_cache_items:r1 SET label = 'one';")
+        QueryCache.configure(enabled=True, default_ttl=60)
+        QueryCache.clear()
+        yield
+        QueryCache.clear()
+        for name in connections:
+            await SurrealDBConnectionManager.remove_connection(name)
+
+    async def test_save_through_one_spelling_invalidates_the_other(self) -> None:
+        from src.surreal_orm import SurrealDBConnectionManager
+
+        assert await _i338_labels("i338_slash") == ["one"]
+        async with SurrealDBConnectionManager.using("i338_plain"):
+            await I338CacheItem(id="r2", label="two").save()
+        assert await _i338_labels("i338_slash") == ["one", "two"]
+
+    async def test_save_in_a_transaction_invalidates_whatever_the_routing(self) -> None:
+        from src.surreal_orm import SurrealDBConnectionManager
+
+        assert await _i338_labels("i338_plain") == ["one"]
+        # The model routes to i338_other; the transaction runs on i338_plain.
+        client = await SurrealDBConnectionManager.get_client("i338_plain")
+        async with client.transaction() as tx:
+            await I338RoutedItem(id="r3", label="three").save(tx=tx)
+        assert await _i338_labels("i338_plain") == ["one", "three"]
