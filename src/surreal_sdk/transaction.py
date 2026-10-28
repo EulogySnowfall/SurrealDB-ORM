@@ -11,8 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
 from .exceptions import TransactionError
-
-_SAFE_THING_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(:[a-zA-Z0-9_`]+)?$")
+from .protocol.cbor import _ESCAPED_ID_UNIT, unescape_record_id
 
 # A whole ``$name`` parameter reference. ASCII only, like SurrealDB's identifier
 # lexer: ``$a-b`` is ``$a`` followed by ``-b``, and a non-ASCII name is rejected.
@@ -47,12 +46,104 @@ def _namespace_params(sql: str, keys: Container[str], prefix: str) -> str:
     return _PARAM_REFERENCE_RE.sub(_rename, sql)
 
 
+#: A table, relation or field name SurrealQL reads without delimiters.
+#: Always used with ``fullmatch``: ``$`` would also accept a trailing newline.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+#: A record ID part that SurrealQL reads as an integer when written inline
+#: (``users:1``, ``users:-5``), provided it fits in a signed 64-bit integer;
+#: outside that range the server reads it as a string ID.
+_INTEGER_ID_RE = re.compile(r"-?(?:0|[1-9][0-9]*)")
+
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
+
+#: ID generators SurrealQL accepts after ``table:`` (``CREATE users:ulid()``).
+_ID_GENERATORS = frozenset({"rand()", "ulid()", "uuid()"})
+
+
+def _validate_identifier(name: str, context: str) -> None:
+    """Raise ``ValueError`` unless ``name`` is a plain SurrealQL identifier."""
+    if not isinstance(name, str) or not _IDENTIFIER_RE.fullmatch(name):
+        raise ValueError(f"Invalid {context}: {name!r} (expected an identifier)")
+
+
+def _raw_record_id(id_part: str, thing: str, context: str) -> str | None:
+    r"""Return the raw ID of a delimited ID part, ``None`` when it is not delimited.
+
+    Two delimited forms are read back: backticks, as ``format_thing()`` writes
+    them (``\\`` and ``\``` inside), and Unicode angle brackets without
+    escapes. A delimited form that is not closed, or that holds its own closing
+    delimiter without an escape, raises ``ValueError``.
+    """
+    if id_part.startswith("`"):
+        closed = len(id_part) >= 2 and id_part.endswith("`")
+        units = _ESCAPED_ID_UNIT.findall(id_part[1:-1]) if closed else ["`"]
+        if "`" in units:
+            raise ValueError(f"Invalid {context}: {thing!r} (malformed backtick-delimited ID)")
+        return unescape_record_id(id_part)
+    if id_part.startswith("\u27e8"):
+        body = id_part[1:-1]
+        if len(id_part) < 2 or not id_part.endswith("\u27e9") or "\u27e9" in body or "\\" in body:
+            raise ValueError(f"Invalid {context}: {thing!r} (malformed angle-bracket ID)")
+        return body
+    return None
+
+
+def _record_target(thing: str, context: str, binding: str, taken: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Render a ``table`` or ``table:id`` reference for a queued statement.
+
+    The table must be an identifier. An ID that is an identifier, an integer in
+    the signed 64-bit range (``users:-5``, as SurrealQL reads it inline) or
+    ``rand()``/``ulid()``/``uuid()`` is written as it is; any other ID is bound
+    as a string parameter and rendered ``type::thing('table', $binding)``, so
+    no part of it is ever read as SurrealQL. A delimited ID (``users:`a b```, as
+    ``format_thing()`` writes it, or ``users:\u27e8a b\u27e9``) is read back first and
+    bound, so it is never escaped twice. Array and object IDs are not accepted.
+
+    Args:
+        thing: The ``table`` or ``table:id`` reference.
+        context: The argument name, for the error message.
+        binding: The preferred parameter name for a bound ID.
+        taken: Parameters the statement already binds; the name avoids them.
+
+    Returns:
+        The SQL fragment and the parameters it binds (empty when written as is).
+
+    Raises:
+        ValueError: If the reference is malformed.
+    """
+    if not isinstance(thing, str):
+        raise ValueError(f"Invalid {context}: {thing!r} (expected a 'table' or 'table:id' string)")
+    table, sep, id_part = thing.partition(":")
+    if not _IDENTIFIER_RE.fullmatch(table):
+        raise ValueError(f"Invalid {context}: {thing!r} (the table must be an identifier)")
+    if not sep:
+        return table, {}
+    if not id_part:
+        raise ValueError(f"Invalid {context}: {thing!r} (empty record ID)")
+    raw = _raw_record_id(id_part, thing, context)
+    if raw is None:
+        if id_part in _ID_GENERATORS or _IDENTIFIER_RE.fullmatch(id_part):
+            return f"{table}:{id_part}", {}
+        if len(id_part) <= 20 and _INTEGER_ID_RE.fullmatch(id_part) and _I64_MIN <= int(id_part) <= _I64_MAX:
+            return f"{table}:{int(id_part)}", {}
+        if id_part[0] in "[{":
+            raise ValueError(f"Invalid {context}: {thing!r} (array and object IDs are not supported; use query())")
+        raw = id_part
+    if not raw:
+        raise ValueError(f"Invalid {context}: {thing!r} (empty record ID)")
+    name = binding
+    suffix = 0
+    while name in taken:
+        suffix += 1
+        name = f"{binding}{suffix}"
+    return f"type::thing('{table}', ${name})", {name: raw}
+
+
 def _validate_thing(thing: str, context: str = "thing") -> None:
-    """Validate a table or thing reference."""
-    # Allow table:id format with backtick-escaped IDs
-    clean = thing.replace("`", "")
-    if not _SAFE_THING_RE.match(clean) and ":" not in thing:
-        raise ValueError(f"Invalid {context}: {thing!r}")
+    """Raise ``ValueError`` unless ``thing`` is a valid ``table`` or ``table:id`` reference."""
+    _record_target(thing, context, "_ref", {})
 
 
 if TYPE_CHECKING:
@@ -300,25 +391,23 @@ class HTTPTransaction(BaseTransaction):
         return QueryResponse(results=[], raw=[])
 
     async def create(self, thing: str, data: dict[str, Any] | None = None) -> "RecordResponse":
-        """Queue a create operation."""
+        """Queue a create operation (see :func:`_record_target` for ``thing``)."""
         from .types import RecordResponse
 
-        _validate_thing(thing, "thing")
+        target, ref = _record_target(thing, "thing", "_ref", data or {})
         if data:
             # Build CREATE statement with data
             fields = ", ".join(f"{k} = ${k}" for k in data)
-            sql = f"CREATE {thing} SET {fields};"
-            self._queue_statement(sql, data)
+            self._queue_statement(f"CREATE {target} SET {fields};", {**data, **ref})
         else:
-            sql = f"CREATE {thing};"
-            self._queue_statement(sql)
+            self._queue_statement(f"CREATE {target};", ref)
         return RecordResponse(record=None, raw=None)
 
     async def insert(self, table: str, data: list[dict[str, Any]] | dict[str, Any]) -> "RecordsResponse":
-        """Queue an insert operation."""
+        """Queue an insert operation (``table`` must be an identifier)."""
         from .types import RecordsResponse
 
-        _validate_thing(table, "table")
+        _validate_identifier(table, "table")
         if isinstance(data, dict):
             data = [data]
 
@@ -331,42 +420,39 @@ class HTTPTransaction(BaseTransaction):
         return RecordsResponse(records=[], raw=[])
 
     async def update(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
-        """Queue an update operation."""
+        """Queue an update operation (see :func:`_record_target` for ``thing``)."""
         from .types import RecordsResponse
 
-        _validate_thing(thing, "thing")
+        target, ref = _record_target(thing, "thing", "_ref", data)
         fields = ", ".join(f"{k} = ${k}" for k in data)
-        sql = f"UPDATE {thing} SET {fields};"
-        self._queue_statement(sql, data)
+        self._queue_statement(f"UPDATE {target} SET {fields};", {**data, **ref})
         return RecordsResponse(records=[], raw=[])
 
     async def upsert(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
-        """Queue an upsert operation (create or update)."""
+        """Queue an upsert operation, create or update (see :func:`_record_target` for ``thing``)."""
         from .types import RecordsResponse
 
-        _validate_thing(thing, "thing")
+        target, ref = _record_target(thing, "thing", "_ref", data)
         fields = ", ".join(f"{k} = ${k}" for k in data)
-        sql = f"UPSERT {thing} SET {fields};"
-        self._queue_statement(sql, data)
+        self._queue_statement(f"UPSERT {target} SET {fields};", {**data, **ref})
         return RecordsResponse(records=[], raw=[])
 
     async def merge(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
-        """Queue a merge operation."""
+        """Queue a merge operation (see :func:`_record_target` for ``thing``)."""
         from .types import RecordsResponse
 
-        _validate_thing(thing, "thing")
-        fields = ", ".join(f"{k} = ${k}" for k in data)
-        sql = f"UPDATE {thing} MERGE {{ {fields} }};"
-        self._queue_statement(sql, data)
+        target, ref = _record_target(thing, "thing", "_ref", data)
+        # MERGE takes an object literal; ``{ k = $k }`` would be a block of comparisons.
+        fields = ", ".join(f"{k}: ${k}" for k in data)
+        self._queue_statement(f"UPDATE {target} MERGE {{ {fields} }};", {**data, **ref})
         return RecordsResponse(records=[], raw=[])
 
     async def delete(self, thing: str) -> "DeleteResponse":
-        """Queue a delete operation."""
+        """Queue a delete operation (see :func:`_record_target` for ``thing``)."""
         from .types import DeleteResponse
 
-        _validate_thing(thing, "thing")
-        sql = f"DELETE {thing};"
-        self._queue_statement(sql)
+        target, ref = _record_target(thing, "thing", "_ref", {})
+        self._queue_statement(f"DELETE {target};", ref)
         return DeleteResponse(deleted=[], raw=[])
 
     async def relate(
@@ -376,19 +462,30 @@ class HTTPTransaction(BaseTransaction):
         to_thing: str,
         data: dict[str, Any] | None = None,
     ) -> "RecordResponse":
-        """Queue a relate operation."""
+        """Queue a relate operation.
+
+        ``relation`` must be an identifier; ``from_thing`` and ``to_thing`` follow
+        :func:`_record_target`. A bound end is parenthesized, which ``RELATE``
+        requires for an expression.
+        """
         from .types import RecordResponse
 
-        _validate_thing(from_thing, "from_thing")
-        _validate_thing(relation, "relation")
-        _validate_thing(to_thing, "to_thing")
+        _validate_identifier(relation, "relation")
+        bindings: dict[str, Any] = dict(data or {})
+        source, source_ref = _record_target(from_thing, "from_thing", "_from", bindings)
+        bindings.update(source_ref)
+        target, target_ref = _record_target(to_thing, "to_thing", "_to", bindings)
+        bindings.update(target_ref)
+        if source_ref:
+            source = f"({source})"
+        if target_ref:
+            target = f"({target})"
         if data:
             fields = ", ".join(f"{k} = ${k}" for k in data)
-            sql = f"RELATE {from_thing}->{relation}->{to_thing} SET {fields};"
-            self._queue_statement(sql, data)
+            sql = f"RELATE {source}->{relation}->{target} SET {fields};"
         else:
-            sql = f"RELATE {from_thing}->{relation}->{to_thing};"
-            self._queue_statement(sql)
+            sql = f"RELATE {source}->{relation}->{target};"
+        self._queue_statement(sql, bindings)
         return RecordResponse(record=None, raw=None)
 
 
@@ -446,36 +543,42 @@ class WebSocketTransaction(BaseTransaction):
         """Execute create immediately within transaction."""
         if not self.is_active:
             raise TransactionError("Transaction not active")
+        _validate_thing(thing, "thing")
         return await self._connection.create(thing, data)
 
     async def insert(self, table: str, data: list[dict[str, Any]] | dict[str, Any]) -> "RecordsResponse":
         """Execute insert immediately within transaction."""
         if not self.is_active:
             raise TransactionError("Transaction not active")
+        _validate_identifier(table, "table")
         return await self._connection.insert(table, data)
 
     async def update(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
         """Execute update immediately within transaction."""
         if not self.is_active:
             raise TransactionError("Transaction not active")
+        _validate_thing(thing, "thing")
         return await self._connection.update(thing, data)
 
     async def upsert(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
         """Execute upsert immediately within transaction (create or update)."""
         if not self.is_active:
             raise TransactionError("Transaction not active")
+        _validate_thing(thing, "thing")
         return await self._connection.upsert(thing, data)
 
     async def merge(self, thing: str, data: dict[str, Any]) -> "RecordsResponse":
         """Execute merge immediately within transaction."""
         if not self.is_active:
             raise TransactionError("Transaction not active")
+        _validate_thing(thing, "thing")
         return await self._connection.merge(thing, data)
 
     async def delete(self, thing: str) -> "DeleteResponse":
         """Execute delete immediately within transaction."""
         if not self.is_active:
             raise TransactionError("Transaction not active")
+        _validate_thing(thing, "thing")
         return await self._connection.delete(thing)
 
     async def relate(
@@ -488,4 +591,7 @@ class WebSocketTransaction(BaseTransaction):
         """Execute relate immediately within transaction."""
         if not self.is_active:
             raise TransactionError("Transaction not active")
+        _validate_thing(from_thing, "from_thing")
+        _validate_identifier(relation, "relation")
+        _validate_thing(to_thing, "to_thing")
         return await self._connection.relate(from_thing, relation, to_thing, data)
