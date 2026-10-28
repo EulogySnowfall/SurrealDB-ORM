@@ -21,12 +21,35 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .connection_manager import SurrealDBConnectionManager
 from .fields.relation import RelationInfo
-from .utils import format_thing
+from .utils import format_thing, parse_filter_key
 
 if TYPE_CHECKING:
     from .model_base import BaseSurrealModel
 
 logger = logging.getLogger(__name__)
+
+#: Lookups ``RelationQuerySet._get_filter_clause`` renders.
+_RELATION_LOOKUPS = frozenset({"exact", "gt", "gte", "lt", "lte", "in", "contains", "startswith", "endswith", "isnull"})
+
+
+def _parse_relation_filter_key(key: str) -> tuple[str, str]:
+    """Split a relation ``filter()`` key into its field path and lookup.
+
+    The key is checked by :func:`~surreal_orm.utils.parse_filter_key`, then the
+    lookup must be one the traversal query renders: an ORM lookup it does not
+    handle used to become ``=`` without notice.
+
+    Raises:
+        ValueError: If the key is invalid or its lookup is not rendered for
+            relation traversals. The message names the key.
+    """
+    field_name, lookup_name = parse_filter_key(key)
+    if lookup_name not in _RELATION_LOOKUPS:
+        raise ValueError(
+            f"Invalid relation filter key {key!r}: lookup {lookup_name!r} is not supported in relation filters. "
+            f"Supported lookups: {', '.join(sorted(_RELATION_LOOKUPS))}."
+        )
+    return field_name, lookup_name
 
 
 class RelationQuerySet:
@@ -70,11 +93,21 @@ class RelationQuerySet:
         Add filters to the current traversal level.
 
         Args:
-            **kwargs: Filter conditions (field=value or field__lookup=value)
+            **kwargs: Filter conditions (field=value or field__lookup=value).
+                The field part is a field name or a dotted path of field
+                names; the lookup is one of ``_RELATION_LOOKUPS``.
 
         Returns:
             RelationQuerySet for chaining
+
+        Raises:
+            ValueError: If a key's field part is not a field name or dotted
+                path, or its lookup is not supported here. The message names
+                the key.
         """
+        for key in kwargs:
+            _parse_relation_filter_key(key)
+
         # Update filters for the current level
         new_path = self._traversal_path.copy()
         if new_path:
@@ -162,22 +195,16 @@ class RelationQuerySet:
                 pass
 
             # Add filters for this level
-            for field, value in filters.items():
+            for key, value in filters.items():
                 var_name = f"filter_{var_counter}"
                 var_counter += 1
 
-                # Handle lookup operators
-                if "__" in field:
-                    parts = field.split("__", 1)
-                    field_name = parts[0]
-                    operator = parts[1]
-                    clause = self._get_filter_clause(field_name, operator, var_name, value)
-                    # isnull doesn't need a bound variable
-                    if operator == "isnull":
-                        where_clauses.append(clause)
-                        continue
-                else:
-                    clause = f"{field} = ${var_name}"
+                field_name, operator = _parse_relation_filter_key(key)
+                clause = self._get_filter_clause(field_name, operator, var_name, value)
+                # isnull doesn't need a bound variable
+                if operator == "isnull":
+                    where_clauses.append(clause)
+                    continue
 
                 where_clauses.append(clause)
                 variables[var_name] = value
@@ -190,7 +217,11 @@ class RelationQuerySet:
         return query + ";", variables
 
     def _get_filter_clause(self, field: str, operator: str, var_name: str, value: Any = None) -> str:
-        """Convert filter operator to SurrealQL."""
+        """Convert filter operator to SurrealQL.
+
+        Raises:
+            ValueError: If ``operator`` is not in ``_RELATION_LOOKUPS``.
+        """
         if operator == "isnull":
             # True -> IS NULL, False -> IS NOT NULL
             return f"{field} IS NOT NULL" if not value else f"{field} IS NULL"
@@ -205,7 +236,12 @@ class RelationQuerySet:
             "startswith": f"string::starts_with({field}, ${var_name})",
             "endswith": f"string::ends_with({field}, ${var_name})",
         }
-        return operator_map.get(operator, f"{field} = ${var_name}")
+        if operator not in operator_map:
+            raise ValueError(
+                f"Lookup {operator!r} is not supported in relation filters. "
+                f"Supported lookups: {', '.join(sorted(_RELATION_LOOKUPS))}."
+            )
+        return operator_map[operator]
 
     async def all(self) -> list[Any]:
         """

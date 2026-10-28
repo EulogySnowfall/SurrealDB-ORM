@@ -7,12 +7,16 @@ import re
 from collections.abc import Callable, Collection
 from typing import Any, TypeVar
 
+from .constants import VALID_LOOKUPS
+
 logger = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
 # Shared identifier validation regex — used by query_set, model_base, aggregations, etc.
-SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# Ends with ``\Z``, not ``$``: ``$`` also matches before a final newline, so
+# ``"name\n"`` passed ``.match()``. Call sites use ``fullmatch()`` all the same.
+SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
 
 def validate_identifier(name: str, context: str = "identifier") -> None:
@@ -20,14 +24,67 @@ def validate_identifier(name: str, context: str = "identifier") -> None:
 
     Raises:
         ValueError: If the name contains characters outside ``[a-zA-Z0-9_]``
-            or does not start with a letter/underscore.
+            (whitespace and a trailing newline included) or does not start
+            with a letter/underscore.
     """
-    if not SAFE_IDENTIFIER_RE.match(name):
+    if not isinstance(name, str) or not SAFE_IDENTIFIER_RE.fullmatch(name):
         raise ValueError(
             f"Invalid {context}: {name!r}. "
             "Only letters, digits, and underscores are allowed "
             "(must start with a letter or underscore)."
         )
+
+
+def validate_field_path(path: str, context: str = "field name") -> None:
+    """Validate a field name, or a dotted path into nested objects.
+
+    ``"address.city"`` is accepted: each segment between dots must be an
+    identifier (see :func:`validate_identifier`). Nothing else is — no empty
+    segment, whitespace, backticks, brackets or ``*``.
+
+    Raises:
+        ValueError: If any segment of ``path`` is not an identifier. The
+            message names the whole path.
+    """
+    if not isinstance(path, str) or not all(SAFE_IDENTIFIER_RE.fullmatch(part) for part in path.split(".")):
+        raise ValueError(
+            f"Invalid {context}: {path!r}. "
+            "Expected a field name or a dotted path of field names "
+            "(letters, digits and underscores, each starting with a letter or underscore)."
+        )
+
+
+def parse_filter_key(key: str) -> tuple[str, str]:
+    """Split a ``filter()`` / ``Q`` key into its field path and lookup.
+
+    ``"age__gte"`` gives ``("age", "gte")``; a key without ``__`` is an
+    ``exact`` lookup. The field part is checked with
+    :func:`validate_field_path` (dotted paths into nested objects allowed) and
+    the lookup must be one the ORM knows, because the field part is written
+    into the query as given and an unknown lookup used to be rendered as ``=``.
+
+    Raises:
+        ValueError: If the field part is not a field name or dotted path, or
+            the lookup is unknown. The message names the key.
+    """
+    if not isinstance(key, str):
+        raise ValueError(f"Invalid filter key {key!r}: expected a string.")
+    field_name, sep, lookup_name = key.partition("__")
+    if not sep:
+        lookup_name = "exact"
+    try:
+        validate_field_path(field_name)
+    except ValueError:
+        raise ValueError(
+            f"Invalid filter key {key!r}: {field_name!r} is not a field name. "
+            "Expected a field name or a dotted path of field names, optionally followed by '__<lookup>'."
+        ) from None
+    if lookup_name not in VALID_LOOKUPS:
+        raise ValueError(
+            f"Invalid filter key {key!r}: unknown lookup {lookup_name!r}. "
+            f"Supported lookups: {', '.join(sorted(VALID_LOOKUPS))}."
+        )
+    return field_name, lookup_name
 
 
 def surql_string_literal(value: str) -> str:

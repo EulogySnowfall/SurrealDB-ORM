@@ -21,8 +21,10 @@ from .utils import (
 from .utils import (
     format_thing,
     is_declared_variable_reference,
+    parse_filter_key,
     parse_record_id,
     remove_quotes_for_variables,
+    validate_field_path,
     validate_identifier,
 )
 
@@ -149,8 +151,15 @@ class QuerySet(Generic[T]):
         By default, all fields are selected (`SELECT *`). This method allows you to specify
         a subset of fields to be retrieved, which can improve performance by fetching only necessary data.
 
+        Each argument is a SurrealQL expression, not just a field name
+        (``"count()"``, ``"name AS label"``, ``"address.city"``), and is rendered
+        into the query exactly as written, without validation or escaping. Map
+        caller choices to a fixed set of field names rather than passing
+        arbitrary text.
+
         Args:
-            *fields (str): Variable length argument list of field names to select.
+            *fields (str): Variable length argument list of SurrealQL expressions
+                (usually field names) to select, rendered as written.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
@@ -248,17 +257,19 @@ class QuerySet(Generic[T]):
         Returns:
             tuple[str, str]: A tuple containing the field name and the lookup type.
 
+        Raises:
+            ValueError: If the field part is not a field name or a dotted path
+                of field names, or the lookup is unknown
+                (see :func:`~surreal_orm.utils.parse_filter_key`).
+
         Example:
             ```python
             _parse_lookup('age__gt')  # Returns ('age', 'gt')
             _parse_lookup('status')    # Returns ('status', 'exact')
+            _parse_lookup('address.city__startswith')  # Returns ('address.city', 'startswith')
             ```
         """
-        if "__" in key:
-            field_name, lookup_name = key.split("__", 1)
-        else:
-            field_name, lookup_name = key, "exact"
-        return field_name, lookup_name
+        return parse_filter_key(key)
 
     def limit(self, value: int) -> Self:
         """
@@ -349,9 +360,13 @@ class QuerySet(Generic[T]):
 
         Args:
             *fields (str): Variable length argument list of field names to group by.
+                Each one is a field name or a dotted path into a nested object.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
+
+        Raises:
+            ValueError: If a name is not a field name or a dotted path of field names.
 
         Example:
             ```python
@@ -363,6 +378,8 @@ class QuerySet(Generic[T]):
             # Result: [{"status": "paid", "count": 42, "total": 5000}, ...]
             ```
         """
+        for field in fields:
+            validate_field_path(field, "values() field")
         self._group_by_fields = list(fields)
         return self
 
@@ -443,7 +460,7 @@ class QuerySet(Generic[T]):
             ValueError: If any relation name is not a valid SurrealQL identifier.
         """
         for r in relations:
-            if not _SAFE_IDENTIFIER_RE.match(r):
+            if not _SAFE_IDENTIFIER_RE.fullmatch(r):
                 raise ValueError(
                     f"Invalid FETCH target: {r!r}. "
                     "Only valid SurrealQL identifiers are allowed "
@@ -519,7 +536,7 @@ class QuerySet(Generic[T]):
             ValueError: If any field name is not a valid SurrealQL identifier.
         """
         for f in fields:
-            if not _SAFE_IDENTIFIER_RE.match(f):
+            if not _SAFE_IDENTIFIER_RE.fullmatch(f):
                 raise ValueError(
                     f"Invalid FETCH target: {f!r}. "
                     "Only valid SurrealQL identifiers are allowed "
@@ -600,7 +617,7 @@ class QuerySet(Generic[T]):
             for doc in docs:
                 print(doc.title, doc._knn_distance)
         """
-        if not _SAFE_IDENTIFIER_RE.match(field):
+        if not _SAFE_IDENTIFIER_RE.fullmatch(field):
             raise ValueError(f"Invalid field name for similar_to(): {field!r}")
         knn_limit = _require_int("limit", limit, minimum=1)
         knn_ef = None if ef is None else _require_int("ef", ef, minimum=0)
@@ -646,7 +663,7 @@ class QuerySet(Generic[T]):
         """
         ref = len(self._search_fields)
         for field_name, query_text in field_queries.items():
-            if not _SAFE_IDENTIFIER_RE.match(field_name):
+            if not _SAFE_IDENTIFIER_RE.fullmatch(field_name):
                 raise ValueError(f"Invalid field name for search(): {field_name!r}")
             self._search_fields.append((field_name, query_text, ref))
             ref += 1
@@ -677,7 +694,7 @@ class QuerySet(Generic[T]):
                 "location", (-73.98, 40.74), max_distance=5000,
             ).exec()
         """
-        if not _SAFE_IDENTIFIER_RE.match(field):
+        if not _SAFE_IDENTIFIER_RE.fullmatch(field):
             raise ValueError(f"Invalid field name for nearby(): {field!r}")
         if not isinstance(point, (tuple, list)) or len(point) != 2 or not all(isinstance(c, (int, float)) for c in point):
             raise TypeError(f"point must be a (longitude, latitude) tuple of numbers, got {point!r}")
@@ -739,9 +756,9 @@ class QuerySet(Generic[T]):
                 text_limit=10,
             )
         """
-        if not _SAFE_IDENTIFIER_RE.match(vector_field):
+        if not _SAFE_IDENTIFIER_RE.fullmatch(vector_field):
             raise ValueError(f"Invalid field name for hybrid_search(): {vector_field!r}")
-        if not _SAFE_IDENTIFIER_RE.match(text_field):
+        if not _SAFE_IDENTIFIER_RE.fullmatch(text_field):
             raise ValueError(f"Invalid field name for hybrid_search(): {text_field!r}")
         vector_limit = _require_int("vector_limit", vector_limit, minimum=1)
         text_limit = _require_int("text_limit", text_limit, minimum=1)
@@ -953,7 +970,7 @@ class QuerySet(Generic[T]):
                 to_attr = item
                 custom_qs = None
 
-            if not _SAFE_IDENTIFIER_RE.match(relation_name):
+            if not _SAFE_IDENTIFIER_RE.fullmatch(relation_name):
                 raise ValueError(f"Invalid prefetch relation name: {relation_name!r}")
 
             # Collect source IDs
@@ -1088,6 +1105,10 @@ class QuerySet(Generic[T]):
         Returns:
             str: The rendered SurrealQL condition.
         """
+
+        # The field part is written into the query, so it is checked here as
+        # well as when the key is parsed: Q children can be built by hand.
+        parse_filter_key(f"{field_name}__{lookup_name}")
 
         # ── Helper: bind a value as $_fN and return the var name ──────
         def _bind(val: Any) -> str:
