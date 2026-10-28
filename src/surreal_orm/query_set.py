@@ -28,6 +28,7 @@ from .utils import (
 if TYPE_CHECKING:
     from surreal_sdk.streaming.live_select import ReconnectCallback
 
+    from .cache import ConnectionIdentity
     from .live import ChangeModelStream, LiveModelStream
 
 import logging
@@ -1369,6 +1370,7 @@ class QuerySet(Generic[T]):
 
         # ── Cache: check for hit ────────────────────────────────────────
         cache_key: str | None = None
+        cache_connection: ConnectionIdentity | None = None
         if self._cache_ttl is not None:
             from .cache import QueryCache
 
@@ -1385,7 +1387,9 @@ class QuerySet(Generic[T]):
                 prefetch_fp = "|".join(parts)
 
             key_vars = {**self._variables, "_pfp": prefetch_fp} if prefetch_fp else self._variables
-            cache_key = QueryCache.make_key(query, key_vars, self._model_table)
+            # The same query on two databases must not share an entry (#297).
+            cache_connection = QueryCache._connection_identity(self.model)
+            cache_key = QueryCache.make_key(query, key_vars, self._model_table, connection=cache_connection)
             cached = QueryCache.get(cache_key)
             if cached is not None:
                 return cached  # type: ignore[no-any-return]
@@ -1432,7 +1436,7 @@ class QuerySet(Generic[T]):
         if cache_key is not None:
             from .cache import QueryCache
 
-            QueryCache.set(cache_key, parsed, self._model_table, self._cache_ttl)
+            QueryCache.set(cache_key, parsed, self._model_table, self._cache_ttl, connection=cache_connection)
 
         return parsed  # type: ignore[return-value]
 
