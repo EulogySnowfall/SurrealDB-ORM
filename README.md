@@ -52,6 +52,19 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.19
+
+**Security release (V2 LTS).** No library code change; the declared `aiohttp` floor moves to `>=3.14.4`.
+
+- **Upgrading `surrealdb-orm` now brings the patched `aiohttp` (#245).** The package declared
+  `aiohttp>=3.14.0`, so `pip install -U surrealdb-orm` and existing downstream lockfiles could keep an
+  `aiohttp` 3.14.0 – 3.14.3. 3.14.4 is the first release patching eight advisories affecting
+  `aiohttp <= 3.14.3`; the new floor also drops 3.14.0 – 3.14.2 and the 11 more advisories fixed in
+  3.14.1 – 3.14.3. The full list is in the [CHANGELOG](CHANGELOG).
+- **Behaviour change:** an environment pinning `aiohttp < 3.14.4` now fails at resolution time instead of
+  installing alongside a vulnerable `aiohttp`. This replaces the 0.21.10 advice to run
+  `pip install -U aiohttp` by hand.
+
 ## What's New in 0.21.18
 
 **Bug fix release (V2 LTS).** One SDK fix, the `v2` port of the live-stream half of #276 from `main`; no

@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.18)
+> Context document for Claude AI - Last updated: October 2026 (0.21.19)
 
 <!-- -->
 
@@ -19,12 +19,28 @@
 
 ---
 
-## Current Version: 0.21.18 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.19 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.19
+
+Security, dependency metadata only (#245, #293). No library code change.
+
+- **The defect:** the `v2` lock has resolved `aiohttp` 3.14.5 since 0.21.10, but downstream installs
+  never read `uv.lock`; they honour the declared requirement, which still read `aiohttp>=3.14.0`. An
+  only-if-needed `pip install -U surrealdb-orm` or an existing downstream lockfile kept 3.14.0 – 3.14.3,
+  which eight advisories first patched in 3.14.4 affect (19 on 3.14.0), so 0.21.10's notes had to ask
+  users to upgrade `aiohttp` by hand.
+- **The fix:** `aiohttp>=3.14.4` in both `pyproject.toml` and the bundled SDK's
+  `src/surreal_sdk/pyproject.toml`, so the two declarations cannot disagree. The lock only records the
+  new specifier; no package moves and `cbor2` stays `<6`.
+- **Guard:** `tests/test_issue_245_v2_unit.py` fails on the old floor (both files admit 3.14.3) and checks
+  that the two declarations agree and that `cbor2` stays below 6 on this line.
+- **Behaviour change:** a downstream pin of `aiohttp < 3.14.4` now fails at resolution time.
 
 ### What's New in 0.21.18
 
@@ -1764,8 +1780,8 @@ surreal-orm rollback 0001_initial
 
 - `pydantic >= 2.10.5` - Model validation
 - `httpx >= 0.27.0` - HTTP client
-- `aiohttp >= 3.9.0` - WebSocket client
-- `cbor2 >= 5.6.0` - CBOR protocol (required, default for WebSocket)
+- `aiohttp >= 3.14.4` - WebSocket client (floor raised in 0.21.19 for security advisories)
+- `cbor2 >= 5.9.0, < 6` - CBOR protocol (required, default for WebSocket; capped below 6 on this line)
 - `click >= 8.1.0` - CLI (optional, with `[cli]`)
 
 **No dependency on the official `surrealdb` package!**
