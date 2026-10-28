@@ -4,7 +4,7 @@ import json
 import logging
 import random
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from typing import Any, TypeVar
 
 from surreal_sdk.protocol.cbor import _warn_naive_datetime
@@ -40,6 +40,40 @@ def escape_single_quotes(value: str) -> str:
     single-quoted strings.
     """
     return value.replace("'", "''")
+
+
+#: A whole value naming one query variable: ``$`` then an identifier, nothing else.
+_VARIABLE_REFERENCE_RE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+
+
+def is_declared_variable_reference(value: Any, declared: Collection[str]) -> bool:
+    """
+    Tell whether a filter value is a reference to a declared query variable.
+
+    A filter value is normally bound as a ``$_fN`` parameter. It is written
+    into the query text as a variable reference instead only when both hold:
+
+    - the whole value is ``$`` followed by an identifier. ``re.fullmatch`` is
+      deliberate: ``re.match`` with a ``$`` anchor would also accept a trailing
+      newline, and anything else after the name would end up in the query text;
+    - the name is in ``declared``: a variable passed through
+      ``QuerySet.variables()`` or bound by the ORM itself.
+
+    Any other value, including ``"$name"`` for an undeclared name, is data.
+
+    Args:
+        value: The filter value as supplied by the caller.
+        declared: The variable names the query will be sent with.
+
+    Returns:
+        True if the value should be rendered as a variable reference.
+
+    Examples:
+        is_declared_variable_reference("$min_age", {"min_age"})    # True
+        is_declared_variable_reference("$min_age", set())           # False
+        is_declared_variable_reference("$min_age\\n", {"min_age"})  # False
+    """
+    return isinstance(value, str) and _VARIABLE_REFERENCE_RE.fullmatch(value) is not None and value[1:] in declared
 
 
 def remove_quotes_for_variables(query: str) -> str:

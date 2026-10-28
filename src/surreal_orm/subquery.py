@@ -18,6 +18,7 @@ Example::
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -56,6 +57,7 @@ class Subquery:
         variables: dict[str, Any],
         counter: list[int],
         prelude: list[str] | None = None,
+        declared: Collection[str] = frozenset(),
     ) -> str:
         """
         Compile the inner QuerySet to a sub-SELECT.
@@ -84,6 +86,12 @@ class Subquery:
                 auto-increment counter.
             prelude: Mutable list collecting ``LET`` statements. ``None``
                 keeps the legacy inline form.
+            declared: Variable names the outer query is sent with. A ``$name``
+                filter value inside the subquery refers to a variable only if
+                ``name`` is declared here or on the inner QuerySet through
+                ``.variables()``; the inner QuerySet's own variables are then
+                added to ``variables`` (an outer variable of the same name
+                wins). Any other value is bound as ``$_fN``.
 
         Returns:
             ``$_sqN`` when hoisted, otherwise the parenthesized sub-SELECT.
@@ -105,14 +113,23 @@ class Subquery:
         # WHERE clause — build parts using the shared counter
         parts: list[str] = []
         qs_class = type(qs)
+        inner_declared = frozenset(declared) | frozenset(qs._variables)
 
         for field_name, lookup_name, value in qs._filters:
-            parts.append(qs_class._render_condition(field_name, lookup_name, value, variables, counter, prelude))
+            parts.append(
+                qs_class._render_condition(field_name, lookup_name, value, variables, counter, prelude, inner_declared)
+            )
 
         for q in qs._q_filters:
-            rendered = qs._render_q(q, variables, counter, prelude)
+            rendered = qs._render_q(q, variables, counter, prelude, inner_declared)
             if rendered:
                 parts.append(rendered)
+
+        # Send the inner QuerySet's own variables with the outer query, or a
+        # reference to one of them would reach the server unbound.
+        for name, val in qs._variables.items():
+            if name not in declared:
+                variables.setdefault(name, val)
 
         if parts:
             query += " WHERE " + " AND ".join(parts)
