@@ -709,26 +709,60 @@ price = await db.call("get_price", return_type=float)
 ## Change Feeds
 
 Change Feeds provide a stateless alternative to Live Queries for CDC patterns (HTTP).
+The table needs a change feed (`DEFINE TABLE users CHANGEFEED 7d`).
 
 ```python
 from surreal_sdk import ChangeFeedStream
 
 stream = ChangeFeedStream(conn, "users")
 
-# Stream changes
+# Stream changes written from now on
 async for change in stream.stream():
-    print(f"Change: {change}")
+    print(change["versionstamp"], change["changes"])
+    checkpoint = stream.cursor  # pass back as since= to resume after this change
 ```
+
+Each entry is `{"versionstamp": int, "changes": [...]}` and is delivered once. A
+change is `{"update": record}`, `{"delete": {...}}` or `{"define_table": {...}}`;
+the change feed records a **create as an update**. On a table defined with
+`CHANGEFEED ... INCLUDE ORIGINAL`, an update is `{"current": record, "update": [<JSON patch>]}`.
+
+`since` (on `stream()`, `stream_batch()`, `get_changes()`) accepts:
+
+| `since` | Meaning |
+| --- | --- |
+| `None` (default) | after the last entry already in the feed: only new changes |
+| `int` or decimal string (`"393217"`) | an entry versionstamp, inclusive (`0` reads the whole retained feed); `stream.cursor` is one |
+| `datetime` | that instant; a naive one is read as UTC |
+| ISO 8601 string (`"2026-01-01"`, `"2026-10-27T12:00:00Z"`) | that instant, UTC when it has no offset |
+
+Anything else raises `ValueError` (`TypeError` for an unsupported type) before a
+query is sent. A failed request or a statement the server rejects raises
+`ChangeFeedError` from the iteration; it is not retried.
+
+On SurrealDB 2.x an entry's versionstamp is its commit version shifted left by
+16 bits, while `SHOW CHANGES ... SINCE` takes the commit version; the SDK does
+the conversion, so always pass versionstamps as they appear in entries (or the
+`cursor`). A datetime start is resolved by the server through a coarse
+timestamp map and may return earlier changes (on a fresh in-memory server, the
+whole feed), so prefer a versionstamp to resume.
+
+An entry holds every change one transaction made to the table. `QuerySet.changes()`
+yields one event per change, so its `cursor` stays on the entry until the entry's
+last event is delivered: a resume from a cursor taken mid-transaction delivers that
+transaction again, whole (at-least-once).
 
 ### Multi-Table Change Feed
 
 ```python
-from surreal_sdk import MultiTableChangeFeed
+from surreal_sdk.streaming.change_feed import MultiTableChangeFeed
 
 feed = MultiTableChangeFeed(conn, ["users", "orders", "products"])
-async for table, changes in feed.stream():
-    print(f"Table {table}: {changes}")
+async for table, change in feed.stream():  # one entry at a time
+    print(f"Table {table}: {change['changes']}")
 ```
+
+Each table keeps its own cursor; `since` applies to every table.
 
 ---
 

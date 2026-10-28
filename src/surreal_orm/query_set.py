@@ -2000,7 +2000,7 @@ class QuerySet(Generic[T]):
     def changes(
         self,
         *,
-        since: str | datetime | None = None,
+        since: str | int | datetime | None = None,
         poll_interval: float = 0.1,
         batch_size: int = 100,
     ) -> ChangeModelStream[T]:
@@ -2015,25 +2015,47 @@ class QuerySet(Generic[T]):
         .. note::
 
             Change Feeds must be enabled on the table (``DEFINE TABLE ... CHANGEFEED ...``)
-            before this method will yield results.
+            before this method will yield results. The change feed records a
+            create as an update: events carry ``LiveAction.UPDATE`` or
+            ``LiveAction.DELETE``, never ``CREATE``.
 
         Args:
-            since: Starting point as an ISO 8601 timestamp string or
-                ``datetime`` object. If None, streams from "now".
+            since: Where to start. One of:
+
+                - ``None`` (default): after the last change already in the
+                  feed, so only changes written from now on are delivered;
+                - a versionstamp, as an ``int`` or a decimal string, inclusive
+                  (``0`` reads the whole retained feed) — the stream's
+                  ``cursor``, to resume after the last delivered event (a
+                  transaction cut short mid-way is delivered again whole:
+                  at-least-once);
+                - a ``datetime`` (a naive one is read as UTC);
+                - an ISO 8601 date or date-time string (``"2026-01-01"``,
+                  ``"2026-10-27T12:00:00Z"``; UTC when it has no offset).
+
+                Any other value raises ``ValueError`` (``TypeError`` for an
+                unsupported type) before a query is sent. SurrealDB 2.x
+                resolves a datetime start through a coarse timestamp map and
+                may return earlier changes (on a fresh in-memory server, the
+                whole feed); prefer a versionstamp to resume.
             poll_interval: Seconds between polls when no changes are
                 available. Defaults to 0.1.
-            batch_size: Maximum changes per poll. Defaults to 100.
+            batch_size: Maximum changes handed over per poll. Defaults to 100.
 
         Returns:
             ``ChangeModelStream`` — async iterator yielding ``ModelChangeEvent``.
+            A poll the server rejects, or a failed request, raises
+            ``ChangeFeedError`` from the iteration; it is not retried.
 
         Example::
 
-            async for event in User.objects().changes(since="2026-01-01"):
+            stream = User.objects().changes()
+            async for event in stream:
                 await publish_to_queue({
                     "type": f"user.{event.action.value.lower()}",
                     "data": event.raw,
                 })
+                checkpoint(stream.cursor)  # resume later with changes(since=...)
         """
         from .live import ChangeModelStream
 
