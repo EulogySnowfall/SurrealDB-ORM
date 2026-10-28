@@ -10,6 +10,7 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ..surreal_function import SurrealFunc
 from ..types import FieldType
 from ..utils import surql_string_literal
 
@@ -137,11 +138,16 @@ def _render_default(default: Any) -> str:
     """
     Render a DEFAULT value as SurrealQL.
 
-    A bare Python ``repr`` is wrong three ways: ``True`` is not ``true``, a
-    function call must not be quoted or it becomes a string literal, and a
+    A bare Python ``repr`` is wrong two ways: ``True`` is not ``true``, and a
     quote or backslash inside a quoted literal has to be escaped the way the
     server's lexer reads it (:func:`surql_string_literal`), or the statement
     does not parse, or stores a different text.
+
+    A ``str`` is always a text, whatever it contains: ``'fr::CA'`` is a
+    string, not a function. A server-side expression such as ``time::now()``
+    is a :class:`~surreal_orm.SurrealFunc`, which is what
+    ``_parse_default_value`` returns for an unquoted default, and is emitted
+    as written.
 
     Args:
         default: The default value, as the model or the database reports it
@@ -149,13 +155,11 @@ def _render_default(default: Any) -> str:
     Returns:
         The SurrealQL literal or expression
     """
+    if isinstance(default, SurrealFunc):
+        return default.expression
     if isinstance(default, bool):
         return str(default).lower()
     if isinstance(default, str):
-        # `time::now()` and `$value` are expressions, not literals. This mirrors
-        # `_parse_default_value`, which returns them as bare strings.
-        if "::" in default or default.startswith("$"):
-            return default
         return surql_string_literal(default)
     return str(default)
 

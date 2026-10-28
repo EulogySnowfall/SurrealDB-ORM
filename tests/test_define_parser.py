@@ -17,6 +17,7 @@ from src.surreal_orm.migrations.define_parser import (
     parse_define_table,
 )
 from src.surreal_orm.migrations.state import FieldState, IndexState
+from src.surreal_orm.surreal_function import SurrealFunc
 
 # ==================== parse_define_field ====================
 
@@ -76,7 +77,7 @@ class TestParseDefineField:
 
     def test_field_with_default_function(self) -> None:
         result = parse_define_field("DEFINE FIELD created_at ON users TYPE datetime DEFAULT time::now()")
-        assert result.default == "time::now()"
+        assert result.default == SurrealFunc("time::now()")
 
     def test_field_with_assert(self) -> None:
         result = parse_define_field("DEFINE FIELD email ON users TYPE string ASSERT is::email($value)")

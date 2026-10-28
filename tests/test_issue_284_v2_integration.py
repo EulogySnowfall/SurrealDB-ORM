@@ -44,6 +44,8 @@ TEXTS = [
     "C:\\temp",
     "a\\' ; DEFINE TABLE i284_other; -- b",
     "end\\",
+    "x::y; DEFINE TABLE i284_other; -- z",
+    "$value",
 ]
 
 
@@ -175,3 +177,29 @@ async def test_comment_text_round_trips(text: str) -> None:
     assert set(db_info["accesses"]) == {ACCESS}
     for kind in ("analyzers", "functions", "params", "users", "models"):
         assert db_info.get(kind, {}) == {}, kind
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", TEXTS)
+async def test_default_text_replays_unchanged(text: str) -> None:
+    """A string DEFAULT read back from the server re-renders as the same text.
+
+    ``schema_diff`` and ``AlterField`` (forwards, and backwards through
+    ``previous_default``) render what the parser read from ``INFO FOR TABLE``.
+    A text containing ``::`` or starting with ``$`` must stay a text there.
+    """
+    await _run(_render_define_table(DOC, overwrite=False, schema_mode="SCHEMAFULL"))
+    await _run(_render_define_field(DOC, "body", overwrite=False, field_type="string", default=text))
+
+    read_back = (await DatabaseIntrospector().introspect()).tables[DOC].fields["body"].default
+    assert read_back == text
+
+    await _run(_render_define_field(DOC, "body", overwrite=True, field_type="string", default=read_back))
+
+    assert (await DatabaseIntrospector().introspect()).tables[DOC].fields["body"].default == text
+    db_info = await _info_for_db()
+    assert set(db_info["tables"]) == {DOC}
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    table_info = (await client.query(f"INFO FOR TABLE {DOC};")).first_result.result
+    assert set(table_info["fields"]) == {"body"}

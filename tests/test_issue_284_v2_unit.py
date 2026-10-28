@@ -25,7 +25,10 @@ from src.surreal_orm.migrations.define_parser import (
     parse_define_field,
     parse_define_table,
 )
+from src.surreal_orm.migrations.generator import MigrationGenerator
+from src.surreal_orm.migrations.model_generator import ModelCodeGenerator
 from src.surreal_orm.migrations.operations import (
+    AlterField,
     CreateIndex,
     DefineAccess,
     DefineEvent,
@@ -33,6 +36,8 @@ from src.surreal_orm.migrations.operations import (
     _render_define_field,
     _render_define_table,
 )
+from src.surreal_orm.migrations.state import FieldState
+from src.surreal_orm.surreal_function import SurrealFunc
 from src.surreal_orm.utils import escape_single_quotes, surql_string_literal
 
 #: The texts of the acceptance criteria, plus a mix of everything.
@@ -197,3 +202,68 @@ class TestParser:
         assert (field.comment, field.default) == (text, text)
         table = parse_define_table(_render_define_table("t", overwrite=False, schema_mode="SCHEMALESS", comment=text))
         assert table["comment"] == text
+
+
+class TestDefaultExpressions:
+    """A ``str`` default is always a text; a server-side expression is a ``SurrealFunc``.
+
+    The renderer used to pass any ``str`` containing ``::`` or starting with
+    ``$`` through unquoted, so a text such as ``'fr::CA'``, or one the parser
+    had just unquoted from the server's definition, came back as SurrealQL
+    instead of as a string.
+    """
+
+    @pytest.mark.parametrize("text", ["fr::CA", "$value", "x::y; z", "a::b -- c"])
+    def test_str_default_is_always_quoted(self, text: str) -> None:
+        assert _server_reads(_render_default(text)) == text
+
+    def test_expression_default_is_emitted_as_written(self) -> None:
+        assert _render_default(SurrealFunc("time::now()")) == "time::now()"
+
+    def test_parser_returns_expression_marker_for_unquoted_default(self) -> None:
+        assert _parse_default_value("time::now()") == SurrealFunc("time::now()")
+        assert _parse_default_value("'x::y; z'") == "x::y; z"
+
+    def test_parser_keeps_a_server_expression_it_would_otherwise_refuse(self) -> None:
+        raw = "{ DEFINE PARAM $p VALUE 1; RETURN 1 }"
+        parsed = _parse_default_value(raw)
+        assert isinstance(parsed, SurrealFunc)
+        assert parsed.expression == raw
+
+    @pytest.mark.parametrize(
+        "definition",
+        [
+            "DEFINE FIELD s ON t TYPE string DEFAULT 'x::y; z' PERMISSIONS FULL",
+            'DEFINE FIELD s ON t TYPE string DEFAULT "it\'s x::y; -- z" PERMISSIONS FULL',
+            "DEFINE FIELD s ON t TYPE string DEFAULT '$value' PERMISSIONS FULL",
+        ],
+    )
+    def test_server_text_default_replays_as_text(self, definition: str) -> None:
+        parsed = parse_define_field(definition)
+        sql = _render_define_field("t", "s", overwrite=True, field_type="string", default=parsed.default)
+        literal = sql[sql.index("DEFAULT ") + len("DEFAULT ") : -1]
+        assert _server_reads(literal) == parsed.default
+
+    def test_server_expression_default_replays_as_expression(self) -> None:
+        parsed = parse_define_field("DEFINE FIELD c ON t TYPE datetime DEFAULT time::now() PERMISSIONS FULL")
+        sql = _render_define_field("t", "c", overwrite=True, field_type="datetime", default=parsed.default)
+        assert sql == "DEFINE FIELD OVERWRITE c ON t TYPE datetime DEFAULT time::now();"
+
+    def test_migration_file_imports_surrealfunc(self) -> None:
+        op = AlterField.from_field_states(
+            "t",
+            FieldState(name="c", field_type="datetime", default=SurrealFunc("time::now()")),
+            FieldState(name="c", field_type="datetime"),
+        )
+        source = MigrationGenerator("unused")._render_migration("0002_x", [op], [])
+        assert "from surreal_orm import SurrealFunc" in source
+        namespace: dict[str, object] = {}
+        exec(compile(source.replace("from surreal_orm", "from src.surreal_orm"), "<migration>", "exec"), namespace)
+        loaded = namespace["migration"].operations[0]  # type: ignore[attr-defined]
+        assert loaded.previous_default == SurrealFunc("time::now()")
+
+    @pytest.mark.parametrize("text", ['it\'s "x"', 'a::b"(c', "C:\\temp"])
+    def test_model_code_quotes_a_text_default(self, text: str) -> None:
+        line, _ = ModelCodeGenerator()._generate_field(FieldState(name="f", field_type="string", default=text))
+        default_source = line[line.index("default=") + len("default=") : -1]
+        assert eval(default_source) == text
