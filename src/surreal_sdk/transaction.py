@@ -14,11 +14,16 @@ from .exceptions import TransactionError
 from .utils import _ESCAPED_ID_UNIT, substitute_params, unescape_record_id
 
 #: A table, relation or field name SurrealQL reads without delimiters.
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: Always used with ``fullmatch``: ``$`` would also accept a trailing newline.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-#: A record ID part that is written into the SQL as it is: an identifier, or an
-#: integer (``users:1`` stays the integer ID 1, as it always was here).
-_INLINE_ID_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*|0|[1-9][0-9]{0,17})$")
+#: A record ID part that SurrealQL reads as an integer when written inline
+#: (``users:1``, ``users:-5``), provided it fits in a signed 64-bit integer;
+#: outside that range the server reads it as a string ID.
+_INTEGER_ID_RE = re.compile(r"-?(?:0|[1-9][0-9]*)")
+
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
 
 #: ID generators SurrealQL accepts after ``table:`` (``CREATE users:ulid()``).
 _ID_GENERATORS = frozenset({"rand()", "ulid()", "uuid()"})
@@ -26,7 +31,7 @@ _ID_GENERATORS = frozenset({"rand()", "ulid()", "uuid()"})
 
 def _validate_identifier(name: str, context: str) -> None:
     """Raise ``ValueError`` unless ``name`` is a plain SurrealQL identifier."""
-    if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+    if not isinstance(name, str) or not _IDENTIFIER_RE.fullmatch(name):
         raise ValueError(f"Invalid {context}: {name!r} (expected an identifier)")
 
 
@@ -54,7 +59,8 @@ def _raw_record_id(id_part: str, thing: str, context: str) -> str | None:
 def _record_target(thing: str, context: str, binding: str, taken: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Render a ``table`` or ``table:id`` reference for a queued statement.
 
-    The table must be an identifier. An ID that is an identifier, an integer or
+    The table must be an identifier. An ID that is an identifier, an integer in
+    the signed 64-bit range (``users:-5``, as SurrealQL reads it inline) or
     ``rand()``/``ulid()``/``uuid()`` is written as it is; any other ID is bound
     as a string parameter and rendered ``type::record('table', $binding)``, so
     no part of it is ever read as SurrealQL. A delimited ID (``users:`a b```, as
@@ -76,7 +82,7 @@ def _record_target(thing: str, context: str, binding: str, taken: dict[str, Any]
     if not isinstance(thing, str):
         raise ValueError(f"Invalid {context}: {thing!r} (expected a 'table' or 'table:id' string)")
     table, sep, id_part = thing.partition(":")
-    if not _IDENTIFIER_RE.match(table):
+    if not _IDENTIFIER_RE.fullmatch(table):
         raise ValueError(f"Invalid {context}: {thing!r} (the table must be an identifier)")
     if not sep:
         return table, {}
@@ -84,8 +90,10 @@ def _record_target(thing: str, context: str, binding: str, taken: dict[str, Any]
         raise ValueError(f"Invalid {context}: {thing!r} (empty record ID)")
     raw = _raw_record_id(id_part, thing, context)
     if raw is None:
-        if id_part in _ID_GENERATORS or _INLINE_ID_RE.match(id_part):
+        if id_part in _ID_GENERATORS or _IDENTIFIER_RE.fullmatch(id_part):
             return f"{table}:{id_part}", {}
+        if len(id_part) <= 20 and _INTEGER_ID_RE.fullmatch(id_part) and _I64_MIN <= int(id_part) <= _I64_MAX:
+            return f"{table}:{int(id_part)}", {}
         if id_part[0] in "[{":
             raise ValueError(f"Invalid {context}: {thing!r} (array and object IDs are not supported; use query())")
         raw = id_part

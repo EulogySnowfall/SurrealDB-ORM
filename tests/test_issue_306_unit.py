@@ -39,6 +39,11 @@ RAW_IDS = [
     "a\\`b",
     "$zz",
     "123",  # only through format_thing(): the backtick form is a string ID
+    "x\n",
+    "9223372036854775808",  # above the i64 range: a string ID, as the server reads it inline
+    "-9223372036854775809",  # below the i64 range
+    "+5",
+    "05",
 ]
 #: IDs that may be written as they are (the queued SQL is unchanged for them).
 PLAIN_IDS = ["abc", "_x1", "A_b_9"]
@@ -113,6 +118,17 @@ class TestQueuedStatement:
         assert tx._statements[0].sql == "UPDATE i306_nodes:1 SET k = $k;"
         assert tx._statements[1].sql == "CREATE i306_nodes:ulid() SET k = $k;"
 
+    @pytest.mark.parametrize("op", OPS)
+    @pytest.mark.parametrize("integer", ["0", "-5", "1234567890123456789", "9223372036854775807", "-9223372036854775808"])
+    async def test_i64_integer_id_is_written_inline(self, connection: MagicMock, op: str, integer: str) -> None:
+        """SurrealQL reads these inline as integer IDs; binding them as strings would miss the record."""
+        tx = await _open(connection)
+        await OPS[op](tx, f"i306_nodes:{integer}")
+        stmt = tx._statements[-1]
+        assert f"i306_nodes:{integer}" in stmt.sql
+        assert integer not in stmt.vars.values()
+        assert "type::record" not in stmt.sql
+
     async def test_table_only_reference_is_written_as_before(self, connection: MagicMock) -> None:
         tx = await _open(connection)
         await tx.create("i306_nodes", {"k": 1})
@@ -165,6 +181,9 @@ class TestMalformedReferences:
             "i306_nodes:[1, 2]",
             "i306_nodes:{a: 1}",
             "i306_nodes:⟨a⟩b⟩",
+            "i306_nodes\n:x",
+            "i306_nodes\n",
+            "\ni306_nodes:x",
         ],
     )
     async def test_raises_before_queueing(self, connection: MagicMock, op: str, thing: str) -> None:
@@ -173,14 +192,14 @@ class TestMalformedReferences:
             await OPS[op](tx, thing)
         assert tx._statements == []
 
-    @pytest.mark.parametrize("relation", ["", "a b", "x->y", "rel;", "7rel", "rel:id", "`rel`"])
+    @pytest.mark.parametrize("relation", ["", "a b", "x->y", "rel;", "7rel", "rel:id", "`rel`", "rel\n", "i306_links\n"])
     async def test_relation_must_be_an_identifier(self, connection: MagicMock, relation: str) -> None:
         tx = await _open(connection)
         with pytest.raises(ValueError):
             await tx.relate("i306_nodes:a", relation, "i306_nodes:b")
         assert tx._statements == []
 
-    @pytest.mark.parametrize("table", ["", "a b", "i306_nodes:x", "t;", "7t", "`t`"])
+    @pytest.mark.parametrize("table", ["", "a b", "i306_nodes:x", "t;", "7t", "`t`", "t\n", "i306_nodes\n"])
     async def test_insert_table_must_be_an_identifier(self, connection: MagicMock, table: str) -> None:
         tx = await _open(connection)
         with pytest.raises(ValueError):

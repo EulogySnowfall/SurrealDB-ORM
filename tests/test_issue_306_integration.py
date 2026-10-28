@@ -45,7 +45,17 @@ SPECIAL_IDS = [
 ]
 
 #: Rows the target record must never affect; ``x`` and ``a`` are prefixes of target IDs.
-BYSTANDERS = ["keep", "x", "a", "p", "dir"]
+BYSTANDERS = ["keep", "x", "a", "p", "dir", "5", "`-5`"]
+
+#: Integer IDs as written inline, and the ID the server reads from each: a signed
+#: 64-bit integer, or — outside that range — the digits as a string ID.
+INTEGER_IDS: dict[str, int | str] = {
+    "-5": -5,
+    "1234567890123456789": 1234567890123456789,
+    "9223372036854775807": 2**63 - 1,
+    "-9223372036854775808": -(2**63),
+    "9223372036854775808": "9223372036854775808",
+}
 
 FORMS = {"as_written": lambda raw: f"{NODES}:{raw}", "format_thing": lambda raw: format_thing(NODES, raw)}
 
@@ -97,7 +107,7 @@ async def _rows(conn: HTTPConnection | WebSocketConnection) -> list[Any]:
     return sorted(result.all_records, key=repr)
 
 
-async def _record(conn: HTTPConnection | WebSocketConnection, raw: str) -> list[Any]:
+async def _record(conn: HTTPConnection | WebSocketConnection, raw: str | int) -> list[Any]:
     result = await conn.query(f"SELECT * FROM type::record('{NODES}', $id);", {"id": raw})
     return result.all_records
 
@@ -106,7 +116,7 @@ async def _edges(conn: HTTPConnection | WebSocketConnection) -> list[Any]:
     return (await conn.query(f"SELECT in, out, w FROM {LINKS};")).all_records
 
 
-async def _round_trip(conn: HTTPConnection | WebSocketConnection, raw: str, ref: str) -> None:
+async def _round_trip(conn: HTTPConnection | WebSocketConnection, raw: str | int, ref: str) -> None:
     """Drive every method against ``ref`` and check only that record changes."""
     await _seed(conn)
     tables = await _tables(conn)
@@ -161,6 +171,45 @@ async def test_transaction_record_references_round_trip(http: HTTPConnection, ra
 @pytest.mark.parametrize("raw", SPECIAL_IDS)
 async def test_websocket_transaction_record_references_round_trip(ws: WebSocketConnection, raw: str, form: str) -> None:
     await _round_trip(ws, raw, FORMS[form](raw))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("written", INTEGER_IDS)
+async def test_transaction_integer_record_references_round_trip(http: HTTPConnection, written: str) -> None:
+    """``t:-5`` and the rest of the i64 range stay integer IDs, as SurrealQL reads them inline."""
+    await _round_trip(http, INTEGER_IDS[written], f"{NODES}:{written}")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("written", INTEGER_IDS)
+async def test_transaction_integer_reference_targets_the_inline_record(http: HTTPConnection, written: str) -> None:
+    """A record created by inline SurrealQL is the one the transaction updates and deletes."""
+    await _seed(http)
+    await http.query(f"CREATE {NODES}:{written} SET v = 1;")
+    async with http.transaction() as tx:
+        await tx.update(f"{NODES}:{written}", {"v": 2})
+    assert await _record(http, INTEGER_IDS[written]) == [{"id": RecordId(table=NODES, id=INTEGER_IDS[written]), "v": 2}]
+    async with http.transaction() as tx:
+        await tx.delete(f"{NODES}:{written}")
+    assert (await http.query(f"SELECT * FROM {NODES}:{written};")).all_records == []
+
+
+#: The RPC calls ``WebSocketTransaction`` makes convert ``table:id`` with the
+#: connection's ``_to_thing()``, which keeps every ID a string — ``t:1`` included,
+#: before this change as after it. Only the out-of-range ID, a string on both
+#: paths, agrees with ``HTTPTransaction``.
+_RPC_STRING_IDS = pytest.mark.xfail(
+    strict=True, reason="WebSocketConnection._to_thing() binds integer IDs as strings (connection-level, pre-existing)"
+)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "written",
+    [pytest.param(w, marks=_RPC_STRING_IDS) if isinstance(v, int) else w for w, v in INTEGER_IDS.items()],
+)
+async def test_websocket_transaction_integer_record_references_round_trip(ws: WebSocketConnection, written: str) -> None:
+    await _round_trip(ws, INTEGER_IDS[written], f"{NODES}:{written}")
 
 
 @pytest.mark.integration
