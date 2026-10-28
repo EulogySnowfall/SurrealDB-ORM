@@ -16,11 +16,16 @@ Example:
 
 from abc import ABC, abstractmethod
 
-from .utils import validate_identifier
+from .utils import validate_field_path, validate_identifier
 
 
 class Aggregation(ABC):
-    """Base class for aggregation functions."""
+    """Base class for aggregation functions.
+
+    The alias given to :meth:`to_surql` and the field given to a subclass are
+    written into the query text, so both are checked: the alias must be an
+    identifier, the field an identifier or a dotted path (``address.city``).
+    """
 
     @abstractmethod
     def to_surql(self, alias: str) -> str:
@@ -32,6 +37,9 @@ class Aggregation(ABC):
 
         Returns:
             str: SurrealQL expression for the aggregation.
+
+        Raises:
+            ValueError: If ``alias`` is not an identifier.
         """
         ...
 
@@ -53,6 +61,7 @@ class Count(Aggregation):
     """
 
     def to_surql(self, alias: str) -> str:
+        validate_identifier(alias, "annotation alias")
         return f"count() AS {alias}"
 
     @property
@@ -74,10 +83,11 @@ class Sum(Aggregation):
     """
 
     def __init__(self, field: str):
-        validate_identifier(field, "aggregation field")
+        validate_field_path(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
+        validate_identifier(alias, "annotation alias")
         return f"math::sum({self.field}) AS {alias}"
 
     @property
@@ -99,10 +109,11 @@ class Avg(Aggregation):
     """
 
     def __init__(self, field: str):
-        validate_identifier(field, "aggregation field")
+        validate_field_path(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
+        validate_identifier(alias, "annotation alias")
         return f"math::mean({self.field}) AS {alias}"
 
     @property
@@ -124,10 +135,11 @@ class Min(Aggregation):
     """
 
     def __init__(self, field: str):
-        validate_identifier(field, "aggregation field")
+        validate_field_path(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
+        validate_identifier(alias, "annotation alias")
         return f"math::min({self.field}) AS {alias}"
 
     @property
@@ -149,10 +161,11 @@ class Max(Aggregation):
     """
 
     def __init__(self, field: str):
-        validate_identifier(field, "aggregation field")
+        validate_field_path(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
+        validate_identifier(alias, "annotation alias")
         return f"math::max({self.field}) AS {alias}"
 
     @property

@@ -22,6 +22,36 @@ F = TypeVar("F", bound=Callable[..., Any])
 SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
 
+def require_int(name: str, value: object, *, minimum: int) -> int:
+    """
+    Check that ``value`` is an integer of at least ``minimum`` and return it.
+
+    Pagination, KNN and search-reference arguments are written into the query text, so only an
+    ``int`` is accepted: a string (even a numeric one), a float or a ``bool``
+    raises ``TypeError``, and a value below ``minimum`` raises ``ValueError``.
+    The result is always a plain ``int``, so an ``int`` subclass with its own
+    ``__format__`` renders as its numeric value.
+
+    Args:
+        name: Argument name, used in the error message.
+        value: The value passed by the caller.
+        minimum: The smallest accepted value.
+
+    Returns:
+        int: ``value`` as a plain ``int``.
+
+    Raises:
+        TypeError: If ``value`` is not an ``int`` or is a ``bool``.
+        ValueError: If ``value`` is below ``minimum``.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} must be an int, got {type(value).__name__}")
+    number = int.__index__(value)
+    if number < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got {number}")
+    return number
+
+
 def validate_identifier(name: str, context: str = "identifier") -> None:
     """Validate that a string is a safe SurrealQL identifier.
 
