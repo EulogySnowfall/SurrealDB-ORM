@@ -2,8 +2,8 @@
 
 Two named connections point at two databases holding the same table and the
 same record ID with different contents.  ``.cache()`` under each connection
-must return that database's rows, and a write through one connection must
-only invalidate that database's cached entries.
+must return that database's rows.  A write through one connection invalidates
+the table's entries for every connection (issue #338).
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ async def test_cache_returns_each_connections_own_rows() -> None:
     assert QueryCache.stats()["entries"] == 2
 
 
-async def test_save_invalidates_only_its_own_connection() -> None:
+async def test_save_invalidates_every_connection_reads_stay_separate() -> None:
     assert await _labels("i297_conn_a") == ["from-A"]
     assert await _labels("i297_conn_b") == ["from-B"]
     assert QueryCache.stats()["entries"] == 2
@@ -79,7 +79,8 @@ async def test_save_invalidates_only_its_own_connection() -> None:
     async with SurrealDBConnectionManager.using("i297_conn_a"):
         await I297Item(id="r2", label="from-A-2").save()
 
-    # Only connection A's entry went away.
-    assert QueryCache.stats()["entries"] == 1
+    # Invalidation fails safe (issue #338): both entries go, but each database
+    # still answers with its own rows.
+    assert QueryCache.stats()["entries"] == 0
     assert await _labels("i297_conn_a") == ["from-A", "from-A-2"]
     assert await _labels("i297_conn_b") == ["from-B"]
