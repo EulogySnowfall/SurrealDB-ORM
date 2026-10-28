@@ -12,11 +12,13 @@ whose transport is replaced by an in-memory fake; the integration tests check
 ``$session`` on the pinned server.
 """
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import anyio
 import httpx
 import pytest
 
@@ -42,6 +44,7 @@ class _FakeServer:
         self.identity: str | None = None
         self.methods: list[str] = []
         self.fail_signin = False
+        self.rejected_tokens: set[str] = set()
         self.signins = 0
 
     def signin_token(self, user: str | None) -> str:
@@ -64,6 +67,8 @@ class _FakeServer:
                 return RPCResponse(id=request.id or 0, error=RPCError(code=-32000, message=str(e)))
         elif method == "authenticate":
             assert isinstance(params, list)
+            if params[0] in self.rejected_tokens:
+                return RPCResponse(id=request.id or 0, error=RPCError(code=-32000, message="token rejected"))
             self.identity = f"token:{params[0]}"
         elif method == "signup":
             self.identity = "signup:record"
@@ -81,7 +86,10 @@ def _wire(conn: BaseSurrealConnection, servers: list[_FakeServer]) -> None:
     servers.append(server)
 
     async def send_rpc(request: RPCRequest) -> RPCResponse:
-        if isinstance(conn, HTTPConnection) and conn._token is not None:
+        # A real round trip suspends the caller (and is where a cancellation
+        # is delivered).
+        await asyncio.sleep(0)
+        if isinstance(conn, HTTPConnection):
             # HTTP is stateless: the session is whatever the bearer token says.
             server.identity = conn._token
         return server.handle(request)
@@ -112,6 +120,7 @@ def _wire(conn: BaseSurrealConnection, servers: list[_FakeServer]) -> None:
             return conn  # type: ignore[return-value]
 
         async def ws_close() -> None:
+            await asyncio.sleep(0)
             conn._connected = False
             conn._authenticated = False
 
@@ -170,7 +179,10 @@ async def test_signup_by_caller_does_not_reach_next_caller(kind: str) -> None:
         async with pool.acquire() as conn:
             assert conn is first
             assert conn.token is not None and conn.token.startswith(f"token-for-{POOL_USER}")
-            assert servers[0].identity is not None and "signup" not in servers[0].identity
+            response = await conn.query("RETURN $auth")
+            assert response.first_result is not None
+            identity = response.first_result.result
+            assert identity is not None and "signup" not in str(identity)
 
 
 @pytest.mark.asyncio
@@ -208,15 +220,21 @@ async def test_pool_without_credentials_returns_connection_unauthenticated(kind:
             assert conn is first
             assert conn.token is None
             assert not conn.is_authenticated
-            assert "invalidate" in servers[0].methods
-            assert servers[0].identity is None
             if isinstance(conn, HTTPConnection):
+                # Stateless: dropping the token locally is the whole reset.
                 assert conn._signin_args is None
+                assert "invalidate" not in servers[0].methods
+            else:
+                assert "invalidate" in servers[0].methods
+            response = await conn.query("RETURN $auth")
+            assert response.first_result is not None
+            assert response.first_result.result is None
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", KINDS)
 async def test_connection_whose_reset_fails_is_closed_and_not_reused(kind: str) -> None:
+    """Credentials changed while the connection was out, and it cannot sign in with the new ones."""
     servers: list[_FakeServer] = []
     pool = _pool(kind, servers, size=1)
     async with pool:
@@ -225,17 +243,128 @@ async def test_connection_whose_reset_fails_is_closed_and_not_reused(kind: str) 
             first = conn
             await conn.authenticate(CALLER_TOKEN)
             servers[0].fail_signin = True
+            await pool.set_credentials("i391_new_user", "i391_new_pass")
+
+        assert not first.is_connected
+        assert pool.available == 0
+        assert pool.in_use == 0
+        assert pool._semaphore._value == pool.size
+        assert first not in pool._pool_auth
+
+        async with pool.acquire() as conn:
+            assert conn is not first
+            assert conn.token is not None and conn.token.startswith("token-for-i391_new_user")
+            assert pool.in_use == 1
+        assert pool.available == 1
+        assert pool._semaphore._value == pool.size
+
+
+@pytest.mark.asyncio
+async def test_websocket_rejected_pool_token_falls_back_to_signin() -> None:
+    servers: list[_FakeServer] = []
+    async with _pool("websocket", servers) as pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        async with pool.acquire() as conn:
+            first = conn
+            stale = conn.token
+            assert stale is not None
+            servers[0].rejected_tokens.add(stale)
+
+        async with pool.acquire() as conn:
+            assert conn is first
+            assert conn.token is not None and conn.token != stale
+            assert conn.token.startswith(f"token-for-{POOL_USER}")
+            assert servers[0].signins == 2
+
+
+@pytest.mark.asyncio
+async def test_websocket_rejected_pool_token_and_failed_signin_close_the_connection() -> None:
+    servers: list[_FakeServer] = []
+    async with _pool("websocket", servers) as pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        async with pool.acquire() as conn:
+            first = conn
+            await conn.authenticate(CALLER_TOKEN)
+            servers[0].rejected_tokens.add(pool._pool_auth[conn][0])
+            servers[0].fail_signin = True
 
         assert not first.is_connected
         assert pool.available == 0
         assert pool.in_use == 0
         assert pool._semaphore._value == pool.size
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
+async def test_release_puts_pool_token_back_without_signing_in(kind: str) -> None:
+    """The reset reuses the pool's token: no ``signin`` per release."""
+    servers: list[_FakeServer] = []
+    async with _pool(kind, servers) as pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        for _ in range(3):
+            await pool.query("RETURN 1")
         async with pool.acquire() as conn:
-            assert conn is not first
+            await conn.authenticate(CALLER_TOKEN)
+        async with pool.acquire() as conn:
             assert conn.token is not None and conn.token.startswith(f"token-for-{POOL_USER}")
-            assert pool.in_use == 1
-        assert pool.available == 1
+        assert servers[0].signins == 1
+        if kind == "http":
+            # Stateless: the release sends nothing at all.
+            assert servers[0].methods == ["query"] * 3 + ["authenticate"]
+        else:
+            assert servers[0].methods.count("authenticate") == 6
+
+
+@pytest.mark.asyncio
+async def test_http_keeps_a_token_re_minted_with_the_pool_credentials() -> None:
+    """A token re-minted for the pool's identity (a transient 401) replaces the stored one."""
+    servers: list[_FakeServer] = []
+    async with _pool("http", servers) as pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        async with pool.acquire() as conn:
+            await conn.signin(POOL_USER, POOL_PASS)
+            fresh = conn.token
+        async with pool.acquire() as conn:
+            assert conn.token == fresh
+        assert servers[0].signins == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
+async def test_connection_in_use_during_set_credentials_takes_the_new_ones(kind: str) -> None:
+    servers: list[_FakeServer] = []
+    async with _pool(kind, servers) as pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        async with pool.acquire() as conn:
+            await pool.set_credentials("i391_new_user", "i391_new_pass")
+        async with pool.acquire() as conn:
+            assert conn.token is not None and conn.token.startswith("token-for-i391_new_user")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("credentials", [True, False])
+@pytest.mark.parametrize("change", [False, True])
+async def test_cancelled_release_keeps_pool_accounting(kind: str, credentials: bool, change: bool) -> None:
+    """A release cancelled by an enclosing scope gives the permit back and leaves nothing in use."""
+    servers: list[_FakeServer] = []
+    async with _pool(kind, servers, size=2) as pool:
+        if credentials:
+            await pool.set_credentials(POOL_USER, POOL_PASS)
+        for _ in range(pool.size + 1):
+            with anyio.CancelScope() as scope:
+                async with pool.acquire() as conn:
+                    if change:
+                        await conn.authenticate(CALLER_TOKEN)
+                    scope.cancel()
+                    await anyio.sleep(0)
+            assert scope.cancelled_caught
+            assert pool.in_use == 0
+            assert pool._semaphore._value == pool.size
+        # Still usable: a leaked permit would make this block forever.
+        with anyio.fail_after(5):
+            async with pool.acquire() as a, pool.acquire() as b:
+                assert a is not b
         assert pool._semaphore._value == pool.size
 
 
