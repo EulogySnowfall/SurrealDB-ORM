@@ -1,6 +1,7 @@
 """Tests for HTTP connection module."""
 
-from collections.abc import AsyncGenerator
+import asyncio
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from unittest.mock import AsyncMock
 
 import httpx
@@ -457,3 +458,207 @@ class TestReauthOnlyForSigninIdentity:
         assert conn.token is None
         assert not conn.is_authenticated
         assert conn._signin_args is None
+
+
+class _GatedFakeHTTPClient(_FakeHTTPClient):
+    """``_FakeHTTPClient`` that can hold one ``/signin`` or one rejected ``/rpc`` reply.
+
+    ``hold_next_signin()`` / ``hold_next_rejection()`` make the next matching post
+    set ``held`` and wait for ``release`` before answering, so a test can run
+    another task's auth call at that exact point. The rejection is decided
+    before the hold, from the token the request was sent with.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.held = asyncio.Event()
+        self.release = asyncio.Event()
+        self._hold: str | None = None
+
+    def hold_next_signin(self) -> None:
+        self._hold = "signin"
+
+    def hold_next_rejection(self) -> None:
+        self._hold = "rejection"
+
+    async def _wait_if_held(self, kind: str) -> None:
+        if self._hold == kind:
+            self._hold = None
+            self.held.set()
+            await self.release.wait()
+
+    async def post(
+        self, path: str, json: object = None, content: bytes | None = None, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        if path == "/signin":
+            await self._wait_if_held("signin")
+            return await super().post(path, json=json, content=content, headers=headers)
+        response = await super().post(path, json=json, content=content, headers=headers)
+        if response.status_code == 401:
+            await self._wait_if_held("rejection")
+        return response
+
+
+class TestReauthDoesNotOverrideConcurrentAuthChange:
+    """Issue #390: a pending re-mint must not undo an auth change made by another task.
+
+    Task A gets a 401 and re-signs in with the retained ``signin()`` arguments.
+    If task B changes the connection's auth state meanwhile, A's re-minted token
+    is discarded. A's request is replayed only under the same identity, i.e. a
+    token renewed from the same ``signin()``; otherwise A raises the 401 and
+    nothing of A's runs with B's credentials.
+    """
+
+    async def _conn(self, monkeypatch: pytest.MonkeyPatch, fake: _GatedFakeHTTPClient) -> HTTPConnection:
+        conn = HTTPConnection("http://localhost:8000", "ns", "db", protocol="json")
+        conn._connected = True
+        conn._client = fake  # type: ignore[assignment]
+        monkeypatch.setattr("src.surreal_sdk.connection.http.asyncio.sleep", AsyncMock())
+        await conn.signin("root", "root")  # root-token-1
+        fake.rejected_tokens.add("root-token-1")  # transient 401 for task A
+        return conn
+
+    async def _run_during_remint(
+        self, conn: HTTPConnection, fake: _GatedFakeHTTPClient, other: Callable[[], Awaitable[object]]
+    ) -> BaseException | None:
+        """Start A's query, run *other* while A's re-signin is pending, then let it complete.
+
+        Returns the exception A raised, or ``None`` if A's query succeeded.
+        """
+        fake.hold_next_signin()
+        task_a = asyncio.create_task(conn.query("SELECT * FROM a_only"))
+        await asyncio.wait_for(fake.held.wait(), timeout=5)
+        fake.rejected_tokens.discard("root-token-1")  # the skew window has passed for B
+        await other()
+        fake.release.set()
+        try:
+            await asyncio.wait_for(task_a, timeout=5)
+        except Exception as exc:
+            return exc
+        return None
+
+    @staticmethod
+    def _queries_sent_with(fake: _GatedFakeHTTPClient, authorization: str | None) -> int:
+        return sum(1 for path, method, auth in fake.calls if path == "/rpc" and method == "query" and auth == authorization)
+
+    @pytest.mark.asyncio
+    async def test_authenticate_during_remint_keeps_the_new_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _GatedFakeHTTPClient()
+        conn = await self._conn(monkeypatch, fake)
+
+        error = await self._run_during_remint(conn, fake, lambda: conn.authenticate("user-token"))
+
+        assert isinstance(error, QueryError) and error.code == 401
+        assert self._queries_sent_with(fake, "Bearer user-token") == 0  # A never replayed as B
+        assert conn.token == "user-token"
+        assert conn.is_authenticated
+        assert conn._signin_args is None
+        await conn.query("RETURN 1")
+        assert fake.calls[-1][2] == "Bearer user-token"
+
+    @pytest.mark.asyncio
+    async def test_invalidate_during_remint_stays_unauthenticated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _GatedFakeHTTPClient()
+        conn = await self._conn(monkeypatch, fake)
+
+        error = await self._run_during_remint(conn, fake, conn.invalidate)
+
+        assert isinstance(error, QueryError) and error.code == 401
+        assert self._queries_sent_with(fake, None) == 0  # A not replayed without credentials
+        assert conn.token is None
+        assert not conn.is_authenticated
+        assert conn._signin_args is None
+        await conn.query("RETURN 1")
+        assert fake.calls[-1][2] is None
+
+    @pytest.mark.asyncio
+    async def test_close_during_remint_stays_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _GatedFakeHTTPClient()
+        conn = await self._conn(monkeypatch, fake)
+
+        error = await self._run_during_remint(conn, fake, conn.close)
+
+        assert isinstance(error, QueryError) and error.code == 401
+        assert conn._client is None
+        assert not conn.is_connected
+        assert not conn.is_authenticated
+        assert conn._signin_args is None
+        assert conn.token != "root-token-2"  # the re-minted token was thrown away
+
+    @pytest.mark.asyncio
+    async def test_signup_during_remint_keeps_the_signup_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _GatedFakeHTTPClient()
+        conn = await self._conn(monkeypatch, fake)
+
+        error = await self._run_during_remint(
+            conn, fake, lambda: conn.signup("ns", "db", "account", email="a@b.c", password="pw")
+        )
+
+        assert isinstance(error, QueryError) and error.code == 401
+        assert self._queries_sent_with(fake, "Bearer signup-token") == 0
+        assert conn.token == "signup-token"
+        assert conn.is_authenticated
+        assert conn._signin_args is None
+
+    @pytest.mark.asyncio
+    async def test_other_signin_during_remint_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _GatedFakeHTTPClient()
+        conn = await self._conn(monkeypatch, fake)
+
+        error = await self._run_during_remint(conn, fake, lambda: conn.signin("other", "pw"))
+
+        assert isinstance(error, QueryError) and error.code == 401
+        assert conn.token == "root-token-2"  # B's signin, not A's discarded re-mint
+        assert conn._signin_args is not None and conn._signin_args["user"] == "other"
+        assert self._queries_sent_with(fake, "Bearer root-token-2") == 0
+
+    @pytest.mark.asyncio
+    async def test_identity_changed_before_the_401_raises_without_signin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _GatedFakeHTTPClient()
+        conn = await self._conn(monkeypatch, fake)
+        fake.hold_next_rejection()
+
+        task_a = asyncio.create_task(conn.query("SELECT * FROM a_only"))
+        await asyncio.wait_for(fake.held.wait(), timeout=5)
+        fake.rejected_tokens.discard("root-token-1")
+        await conn.authenticate("user-token")
+        fake.release.set()
+
+        with pytest.raises(QueryError, match="401"):
+            await asyncio.wait_for(task_a, timeout=5)
+        assert fake.signin_count() == 1  # only the explicit signin: no re-mint
+        assert self._queries_sent_with(fake, "Bearer user-token") == 0
+        assert conn.token == "user-token"
+        assert conn._signin_args is None
+
+    @pytest.mark.asyncio
+    async def test_token_renewed_by_another_task_is_reused_without_signin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _GatedFakeHTTPClient()
+        conn = await self._conn(monkeypatch, fake)
+        fake.hold_next_rejection()
+
+        task_a = asyncio.create_task(conn.query("SELECT * FROM a_only"))
+        await asyncio.wait_for(fake.held.wait(), timeout=5)
+        # Task B hits the same transient 401 and renews the token of the same signin().
+        await conn.query("RETURN 1")
+        assert conn.token == "root-token-2"
+        fake.release.set()
+        response = await asyncio.wait_for(task_a, timeout=5)
+
+        assert response.is_ok
+        assert fake.signin_count() == 2  # the first signin and B's re-mint; A did not sign in
+        assert fake.calls[-1] == ("/rpc", "query", "Bearer root-token-2")  # A's retry
+        assert conn._signin_args is not None
+
+    @pytest.mark.asyncio
+    async def test_lone_401_still_remints_and_installs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _GatedFakeHTTPClient()
+        conn = await self._conn(monkeypatch, fake)
+
+        response = await conn.query("INFO FOR DB")
+
+        assert response.is_ok
+        assert fake.signin_count() == 2
+        assert conn.token == "root-token-2"
+        assert conn._signin_args is not None
+        assert fake.calls[-1] == ("/rpc", "query", "Bearer root-token-2")

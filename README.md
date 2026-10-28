@@ -37,6 +37,19 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.35.5
+
+**Fix release.** A transient `401` re-mint on a shared `HTTPConnection` no longer overrides a concurrent
+authentication change ([#390](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/390)). See
+[CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+- **Concurrent auth changes are kept.** When another task calls `authenticate()`, `signup()`, `invalidate()` or
+  `close()` while a re-mint is in flight, the re-minted token is discarded instead of restoring the earlier `signin()`
+  token and credentials.
+- **Behaviour change:** a request that got a `401` after another task changed the connection's credentials now raises
+  `QueryError` (code 401) instead of being retried under the new credentials. A lone transient `401` still re-mints and
+  retries, as before.
+
 ## What's New in 0.35.4
 
 **Fix release.** String literals in migration DDL
