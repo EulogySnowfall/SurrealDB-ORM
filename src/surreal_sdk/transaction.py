@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
-from .exceptions import TransactionError
+from .exceptions import TransactionConflictError, TransactionError
 from .utils import _ESCAPED_ID_UNIT, substitute_params, unescape_record_id
 
 #: A table, relation or field name SurrealQL reads without delimiters.
@@ -133,6 +133,30 @@ if TYPE_CHECKING:
         RecordResponse,
         RecordsResponse,
     )
+
+
+#: Errors SurrealDB reports for the statements a failed transaction cancelled,
+#: rather than for the statement that failed it.
+_CANCELLED_STATEMENT_ERRORS = ("not executed due to a failed transaction", "Cannot COMMIT")
+
+
+def _failed_statement_error(response: "QueryResponse") -> tuple[str, bool] | None:
+    """The server's error for the statement that failed a batched transaction.
+
+    Once a statement fails, SurrealDB reports every other statement of the
+    transaction as not executed and the ``COMMIT`` as aborted; those messages say
+    nothing about the cause, so the first error that is not one of them is
+    returned, with ``True``. When there are only such messages, the first one is
+    returned with ``False`` (cause unknown). ``None`` when every statement
+    succeeded.
+    """
+    errors = [str(statement.result) for statement in response.results if statement.is_error]
+    if not errors:
+        return None
+    for error in errors:
+        if not any(marker in error for marker in _CANCELLED_STATEMENT_ERRORS):
+            return error, True
+    return errors[0], False
 
 
 @dataclass
@@ -343,6 +367,16 @@ class HTTPTransaction(BaseTransaction):
         statement binds are renamed; built-ins such as ``$auth`` or ``$session`` and
         unbound references stay as written. The scan is textual, so a bound ``$k``
         written inside a quoted string literal is renamed too.
+
+        The server applies the batch all or nothing: if it rejects any statement, it
+        writes nothing, and the commit raises. Either way the transaction is over
+        (inactive) and stops holding its connection.
+
+        Raises:
+            TransactionError: The request failed, or the server rejected a statement
+                of the batch; the message carries the server's error for that
+                statement. ``is_committed`` stays ``False``.
+            TransactionConflictError: The rejection is a retryable conflict.
         """
         if not self.is_active:
             raise TransactionError("Transaction not active")
@@ -382,12 +416,26 @@ class HTTPTransaction(BaseTransaction):
 
         try:
             result = await self._connection.query(full_sql, all_vars)
-            self._committed = True
-            self._active = False
-            return result
         except Exception as e:
             self._active = False
-            raise TransactionError(f"Transaction commit failed: {e}")
+            raise TransactionError(f"Transaction commit failed: {e}") from e
+
+        self._active = False
+        # A statement the server rejects does not fail the request: it comes back
+        # inside a successful response as ``status: ERR``, the server cancels the
+        # rest of the batch, and nothing is written. Without this check the commit
+        # looked successful.
+        failure = _failed_statement_error(result)
+        if failure is not None:
+            error, is_cause = failure
+            message = f"Transaction commit failed: {error}"
+            # A cancellation message says "failed transaction", which would read as a
+            # retryable conflict; only the failing statement's own error is classified.
+            if is_cause and TransactionConflictError.is_conflict_error(Exception(error)):
+                raise TransactionConflictError(message)
+            raise TransactionError(message)
+        self._committed = True
+        return result
 
     async def rollback(self) -> None:
         """Discard queued statements (no server call needed for HTTP)."""
