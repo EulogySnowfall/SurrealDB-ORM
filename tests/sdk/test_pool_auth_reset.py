@@ -341,6 +341,99 @@ async def test_connection_in_use_during_set_credentials_takes_the_new_ones(kind:
             assert conn.token is not None and conn.token.startswith("token-for-i391_new_user")
 
 
+def _hold_next_signin(conn: BaseSurrealConnection) -> tuple[asyncio.Event, asyncio.Event]:
+    """
+    Make *conn*'s next ``signin()`` pause once the server has answered.
+
+    Returns ``(answered, resume)``: ``answered`` is set when the token is back,
+    and the call returns only once ``resume`` is set.
+    """
+    answered, resume = asyncio.Event(), asyncio.Event()
+    real = conn.signin
+
+    async def held(*args: Any, **kwargs: Any) -> Any:
+        conn.signin = real  # type: ignore[method-assign]
+        response = await real(*args, **kwargs)
+        answered.set()
+        await resume.wait()
+        return response
+
+    conn.signin = held  # type: ignore[method-assign]
+    return answered, resume
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
+async def test_credentials_changed_while_first_signin_is_pending(kind: str) -> None:
+    """New credentials set while a new connection signs in are the ones it ends up with."""
+    servers: list[_FakeServer] = []
+    pool = _pool(kind, servers)
+    create = pool._create_connection
+    held: list[tuple[asyncio.Event, asyncio.Event]] = []
+
+    def create_held() -> BaseSurrealConnection:
+        conn = create()
+        held.append(_hold_next_signin(conn))
+        return conn
+
+    pool._create_connection = create_held  # type: ignore[method-assign]
+    async with pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+
+        async def use() -> None:
+            async with pool.acquire():
+                pass
+
+        user = asyncio.create_task(use())
+        while not held:
+            await asyncio.sleep(0)
+        answered, resume = held[0]
+        await answered.wait()
+        change = asyncio.create_task(pool.set_credentials("i391_new_user", "i391_new_pass"))
+        await asyncio.sleep(0.01)
+        resume.set()
+        await user
+        await change
+
+        async with pool.acquire() as conn:
+            assert conn.token is not None and conn.token.startswith("token-for-i391_new_user")
+            if kind == "http":
+                assert isinstance(conn, HTTPConnection)
+                assert conn._signin_args is not None and conn._signin_args["user"] == "i391_new_user"
+        assert servers[0].identity is not None and "i391_new_user" in servers[0].identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
+async def test_credentials_changed_while_release_signin_is_pending(kind: str) -> None:
+    """New credentials set while a released connection signs in again are the ones it ends up with."""
+    servers: list[_FakeServer] = []
+    async with _pool(kind, servers) as pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        answered = resume = asyncio.Event()
+        change: asyncio.Task[None] | None = None
+
+        async def use() -> None:
+            nonlocal answered, resume
+            async with pool.acquire() as conn:
+                # The release has to sign in: the pool's token is now stale.
+                await pool.set_credentials("i391_mid_user", "i391_mid_pass")
+                answered, resume = _hold_next_signin(conn)
+
+        user = asyncio.create_task(use())
+        while not answered.is_set():
+            await asyncio.sleep(0)
+        change = asyncio.create_task(pool.set_credentials("i391_new_user", "i391_new_pass"))
+        await asyncio.sleep(0.01)
+        resume.set()
+        await user
+        await change
+
+        async with pool.acquire() as conn:
+            assert conn.token is not None and conn.token.startswith("token-for-i391_new_user")
+        assert servers[0].identity is not None and "i391_new_user" in servers[0].identity
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("credentials", [True, False])

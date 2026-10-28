@@ -65,9 +65,13 @@ class ConnectionPool:
         self._semaphore = asyncio.Semaphore(size)
         self._closed = False
         self._credentials: tuple[str, str] | None = None
-        # Per connection, the token minted for the pool's credentials and, on
-        # HTTP, the ``signin()`` arguments retained with it; see ``_reset_auth``.
-        self._pool_auth: dict[BaseSurrealConnection, tuple[str, dict[str, Any] | None]] = {}
+        # Bumped by every ``set_credentials()``: a sign-in started before the
+        # change finishes with a token for credentials that no longer apply.
+        self._credentials_generation = 0
+        # Per connection, the token minted for the pool's credentials, on HTTP
+        # the ``signin()`` arguments retained with it, and the credentials
+        # generation it was minted for; see ``_reset_auth``.
+        self._pool_auth: dict[BaseSurrealConnection, tuple[str, dict[str, Any] | None, int]] = {}
 
     async def __aenter__(self) -> Self:
         """Async context manager entry."""
@@ -108,18 +112,33 @@ class ConnectionPool:
         The token (and, on HTTP, the arguments ``signin()`` retained for its
         transient-401 recovery) is kept per connection, so that releasing the
         connection can put the pool's identity back without signing in again.
+
+        When ``set_credentials()`` changes the credentials while the sign-in
+        is pending, the connection signs in again with the new ones, so it
+        never ends up holding a token for credentials the pool no longer has.
         """
-        assert self._credentials is not None
-        user, password = self._credentials
-        response = await conn.signin(user, password)
+        while True:
+            generation = self._credentials_generation
+            assert self._credentials is not None
+            user, password = self._credentials
+            response = await conn.signin(user, password)
+            if generation == self._credentials_generation:
+                break
         # ``signin()`` keeps the previous token when the server returns none;
         # the token replayed on reconnect must be the pool's.
         conn._token = response.token
         if response.token:
             args = dict(conn._signin_args) if isinstance(conn, HTTPConnection) and conn._signin_args else None
-            self._pool_auth[conn] = (response.token, args)
+            self._pool_auth[conn] = (response.token, args, generation)
         else:
             self._pool_auth.pop(conn, None)
+
+    def _current_pool_auth(self, conn: BaseSurrealConnection) -> tuple[str, dict[str, Any] | None, int] | None:
+        """The pool token stored for *conn*, if minted for the current credentials."""
+        record = self._pool_auth.get(conn)
+        if record is None or record[2] != self._credentials_generation:
+            return None
+        return record
 
     async def set_credentials(self, user: str, password: str) -> None:
         """
@@ -135,6 +154,7 @@ class ConnectionPool:
             password: Password
         """
         self._credentials = (user, password)
+        self._credentials_generation += 1
         # Tokens minted for the previous credentials must not be put back.
         self._pool_auth.clear()
 
@@ -175,14 +195,14 @@ class ConnectionPool:
         """
         try:
             if self._credentials:
-                record = self._pool_auth.get(conn)
+                record = self._current_pool_auth(conn)
                 if isinstance(conn, HTTPConnection):
-                    token, args = record if record is not None else (None, None)
+                    token, args, generation = record if record is not None else (None, None, 0)
                     if token is not None and args is not None:
                         if conn._token and conn._authenticated and conn._signin_args == args:
                             # Still the pool's identity, possibly with a token
                             # re-minted after a 401: keep the newer one.
-                            self._pool_auth[conn] = (conn._token, args)
+                            self._pool_auth[conn] = (conn._token, args, generation)
                         else:
                             conn._token = token
                             conn._authenticated = True
@@ -195,7 +215,7 @@ class ConnectionPool:
                     except Exception:
                         await self._sign_in_as_pool(conn)
                     else:
-                        if self._pool_auth.get(conn) is not record:
+                        if self._current_pool_auth(conn) is not record:
                             # The credentials changed while the token was
                             # being checked: sign in with the new ones.
                             await self._sign_in_as_pool(conn)
