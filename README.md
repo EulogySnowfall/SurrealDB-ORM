@@ -37,6 +37,22 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.12
+
+**Fix release.** One small SDK helper added; change-feed errors now raise: see [CHANGELOG.md](CHANGELOG.md)
+before upgrading if you consume change feeds.
+
+- **Change feeds deliver changes again**
+  ([#281](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/281)). `QuerySet.changes()`, `stream()` and
+  `stream_batch()` waited forever: the `SINCE` clause was rendered as a quoted string, which SurrealDB rejects, and
+  the error was swallowed. `since` now accepts a versionstamp, the stream `cursor`, a `datetime` or an ISO 8601
+  string; each entry is delivered once, a stream no longer stalls behind other tables' entries, and errors raise
+  `ChangeFeedError`.
+- **Record IDs containing a backtick or a backslash round-trip**
+  ([#296](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/296)) through `merge()` with a `SurrealFunc`, the
+  atomic array helpers, `get_related()`, `remove_relation()`, `remove_all_relations()` and graph traversals.
+  `escape_record_id()` writes SurrealDB's `` \` `` and `\\` sequences; new `surreal_sdk.utils.unescape_record_id()`.
+
 ## What's New in 0.34.11
 
 **Fix release.** No new public API and nothing to change on upgrade.
