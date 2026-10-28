@@ -745,9 +745,8 @@ class TestDefineAccessMethod:
 
         assert inspect.iscoroutinefunction(TestUser.define_access)
 
-    def test_define_access_not_available_on_non_user(self) -> None:
+    async def test_define_access_not_available_on_non_user(self) -> None:
         """define_access() raises TypeError on non-USER models."""
-        import asyncio
 
         class RegularModel(AuthenticatedUserMixin, BaseSurrealModel):
             model_config = SurrealConfigDict(table_type=TableType.NORMAL)
@@ -756,7 +755,7 @@ class TestDefineAccessMethod:
             password: Encrypted
 
         with pytest.raises(TypeError, match="not a USER type table"):
-            asyncio.get_event_loop().run_until_complete(RegularModel.define_access())
+            await RegularModel.define_access()
 
 
 # =============================================================================
