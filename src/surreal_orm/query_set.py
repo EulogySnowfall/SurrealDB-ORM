@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
 
@@ -20,6 +20,7 @@ from .utils import (
 )
 from .utils import (
     format_thing,
+    is_declared_variable_reference,
     parse_record_id,
     remove_quotes_for_variables,
     validate_identifier,
@@ -86,6 +87,10 @@ class QuerySet(Generic[T]):
         self._order_by: str | None = None
         self._model_table: str = model.get_table_name()
         self._variables: dict[str, Any] = {}
+        # Names passed to .variables(), kept apart from _variables: compiling
+        # the query writes the ORM's own bindings ($_fN, $_knn_vec, ...) into
+        # _variables, and those must never make a "$name" value a reference.
+        self._declared_variables: frozenset[str] = frozenset()
         self._group_by_fields: list[str] = []
         self._annotations: dict[str, Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance] = {}
         # Vector similarity search (KNN)
@@ -133,7 +138,9 @@ class QuerySet(Generic[T]):
         """
         Set variables for the query.
 
-        Variables can be used in parameterized queries to safely inject values without risking SQL injection.
+        A filter value that is exactly ``$name`` refers to the variable ``name``
+        declared here. Any other value, including ``$name`` for a name that is not
+        declared, is bound as a parameter and compared as data.
 
         Args:
             **kwargs (Any): Arbitrary keyword arguments representing variable names and their corresponding values.
@@ -143,10 +150,11 @@ class QuerySet(Generic[T]):
 
         Example:
             ```python
-            queryset.variables(status='active', role='admin')
+            queryset.filter(status='$status').variables(status='active')
             ```
         """
         self._variables = {key: value for key, value in kwargs.items()}
+        self._declared_variables = frozenset(kwargs)
         return self
 
     def filter(self, *args: Q, **kwargs: Any) -> Self:
@@ -840,7 +848,8 @@ class QuerySet(Generic[T]):
 
         for alias, annotation in self._annotations.items():
             if isinstance(annotation, Subquery):
-                select_parts.append(f"{annotation.to_surql(sub_vars, counter)} AS {alias}")
+                sub_sql = annotation.to_surql(sub_vars, counter, self._declared_variables)
+                select_parts.append(f"{sub_sql} AS {alias}")
             else:
                 select_parts.append(annotation.to_surql(alias))
 
@@ -922,7 +931,10 @@ class QuerySet(Generic[T]):
                 parts, fvars = custom_qs._build_where_parts()
                 if parts:
                     extra_where = " AND " + " AND ".join(parts)
-                    extra_vars = fvars
+                    # A declared "$name" filter value is a reference: send the
+                    # variables it may refer to along with the bindings.
+                    declared_vars = {name: custom_qs._variables[name] for name in custom_qs._declared_variables}
+                    extra_vars = {**declared_vars, **fvars}
                 query = f"SELECT in, out.* FROM {relation_name} WHERE in IN [{id_list}]{extra_where};"
 
             result = await client.query(remove_quotes_for_variables(query), extra_vars)
@@ -947,7 +959,13 @@ class QuerySet(Generic[T]):
                     related = grouped.get(thing, [])
                     object.__setattr__(inst, to_attr, related)
 
-    def _coerce_filter_value(self, field_name: str, lookup_name: str, value: Any) -> Any:
+    def _coerce_filter_value(
+        self,
+        field_name: str,
+        lookup_name: str,
+        value: Any,
+        declared: Collection[str] = frozenset(),
+    ) -> Any:
         """
         Convert a filter value on a :func:`ForeignKey` field to a record link.
 
@@ -968,12 +986,16 @@ class QuerySet(Generic[T]):
             field_name: The database field name being filtered on.
             lookup_name: The lookup type (e.g. "exact", "in").
             value: The filter value as supplied by the caller.
+            declared: Variable names the query is sent with; a reference to
+                one of them is left for :meth:`_render_condition` to emit.
 
         Returns:
             The value with record references converted to ``RecordId`` objects.
         """
         targets = self.model.get_foreign_key_columns()
         if field_name not in targets or lookup_name not in ("exact", "in", "not_in"):
+            return value
+        if is_declared_variable_reference(value, declared):
             return value
 
         table = targets[field_name]
@@ -989,13 +1011,16 @@ class QuerySet(Generic[T]):
         value: Any,
         variables: dict[str, Any],
         counter: list[int],
+        declared: Collection[str] = frozenset(),
     ) -> str:
         """
         Render a single filter condition to a parameterized SurrealQL expression.
 
-        Values are bound as ``$_fN`` variables to prevent injection, unless the value
-        is a string starting with ``$`` (treated as a user-provided variable reference
-        for backwards compatibility with ``.variables()``).
+        Values are bound as ``$_fN`` variables. The one exception is a value that
+        is exactly ``$name`` where ``name`` is in ``declared`` (see
+        :func:`~surreal_orm.utils.is_declared_variable_reference`): it is
+        written as a reference to that variable. Every other string, an
+        undeclared ``$name`` included, is data and is bound.
 
         Args:
             field_name: The database field name.
@@ -1003,6 +1028,9 @@ class QuerySet(Generic[T]):
             value: The filter value.
             variables: Mutable dict to collect parameterized variables.
             counter: Mutable single-element list ``[int]`` used as auto-increment counter.
+            declared: Variable names passed through ``.variables()``. The
+                ORM's own bindings (``$_fN``, ...) are never in it, so a value
+                equal to one of them is data on every compile.
 
         Returns:
             str: The rendered SurrealQL condition.
@@ -1019,7 +1047,7 @@ class QuerySet(Generic[T]):
 
         # ── Subquery values ──────────────────────────────────────────
         if isinstance(value, Subquery):
-            sub_sql = value.to_surql(variables, counter)
+            sub_sql = value.to_surql(variables, counter, declared)
             _COLLECTION_LOOKUPS = {"in", "not_in", "containsall", "containsany"}
             if lookup_name in _COLLECTION_LOOKUPS:
                 return f"{field_name} {op} {sub_sql}"
@@ -1033,10 +1061,11 @@ class QuerySet(Generic[T]):
                 )
             return f"{field_name} IS {'NULL' if value else 'NOT NULL'}"
 
-        # ── Backwards compat: $variable references ───────────────────
+        # ── Declared $variable references ────────────────────────────
         # Must come before function-based lookups so $var isn't processed
-        # by like_to_regex(), .lower(), etc.
-        if isinstance(value, str) and value.startswith("$"):
+        # by like_to_regex(), .lower(), etc. Only an exact, declared name
+        # qualifies; anything else falls through and is bound.
+        if is_declared_variable_reference(value, declared):
             return f"{field_name} {op} {value}"
 
         # ── Function-based lookups (no SurrealQL operator equivalent) ─
@@ -1117,6 +1146,7 @@ class QuerySet(Generic[T]):
         q: Q,
         variables: dict[str, Any],
         counter: list[int],
+        declared: Collection[str] = frozenset(),
     ) -> str:
         """
         Recursively render a Q object tree to a parameterized SurrealQL expression.
@@ -1125,6 +1155,8 @@ class QuerySet(Generic[T]):
             q: The Q object to render.
             variables: Mutable dict to collect parameterized variables.
             counter: Mutable single-element list ``[int]`` used as auto-increment counter.
+            declared: Variable names a ``$name`` value may refer to
+                (see :meth:`_render_condition`).
 
         Returns:
             str: The rendered SurrealQL expression with proper parenthesization.
@@ -1135,13 +1167,13 @@ class QuerySet(Generic[T]):
         parts: list[str] = []
         for child in q.children:
             if isinstance(child, Q):
-                rendered = self._render_q(child, variables, counter)
+                rendered = self._render_q(child, variables, counter, declared)
                 if rendered:
                     parts.append(rendered)
             else:
                 field_name, lookup_name, value = child
-                value = self._coerce_filter_value(field_name, lookup_name, value)
-                parts.append(self._render_condition(field_name, lookup_name, value, variables, counter))
+                value = self._coerce_filter_value(field_name, lookup_name, value, declared)
+                parts.append(self._render_condition(field_name, lookup_name, value, variables, counter, declared))
 
         if not parts:
             return ""
@@ -1169,15 +1201,19 @@ class QuerySet(Generic[T]):
         variables: dict[str, Any] = {}
         counter: list[int] = [0]
         parts: list[str] = []
+        # A "$name" filter value refers to a variable only if it was declared
+        # through .variables(); any other value is bound as data. Not read
+        # from _variables, which also holds the bindings of earlier compiles.
+        declared = self._declared_variables
 
         # Keyword-based filters (always AND-joined)
         for field_name, lookup_name, value in self._filters:
-            value = self._coerce_filter_value(field_name, lookup_name, value)
-            parts.append(self._render_condition(field_name, lookup_name, value, variables, counter))
+            value = self._coerce_filter_value(field_name, lookup_name, value, declared)
+            parts.append(self._render_condition(field_name, lookup_name, value, variables, counter, declared))
 
         # Q object filters
         for q in self._q_filters:
-            rendered = self._render_q(q, variables, counter)
+            rendered = self._render_q(q, variables, counter, declared)
             if rendered:
                 parts.append(rendered)
 
