@@ -154,6 +154,20 @@ class TestPerConnectionInvalidation:
         assert QueryCache.get(k_alias) is None
         assert QueryCache.get(k_b) == ["from-B"]
 
+    @pytest.mark.parametrize("signal", [post_save, post_update, post_delete])
+    async def test_signal_invalidates_entries_set_without_connection(self, signal: object) -> None:
+        # A direct QueryCache.set() without connection= carries no database:
+        # any write to the table must still drop it, as before the per-connection key.
+        k_a, k_b = self._fill()
+        QueryCache.set("no-conn", ["unknown-db"], "i297_unit_items")
+        QueryCache.set("no-conn-other", "x", "orders")
+        async with SurrealDBConnectionManager.using("i297_a"):
+            await signal.send(sender=I297UnitItem, instance=I297UnitItem(id="r1"))  # type: ignore[attr-defined]
+        assert QueryCache.get("no-conn") is None
+        assert QueryCache.get(k_a) is None
+        assert QueryCache.get(k_b) == ["from-B"]
+        assert QueryCache.get("no-conn-other") == "x"
+
     def test_public_invalidate_clears_the_table_for_every_connection(self) -> None:
         k_a, k_b = self._fill()
         QueryCache.set("other", "x", "orders")

@@ -263,8 +263,18 @@ class QueryCache:
 
     @classmethod
     def _invalidate_for_connection(cls, model: Any, connection: ConnectionIdentity) -> int:
-        """Remove *model*'s table entries cached from *connection*'s database."""
-        return cls._drop_bucket((_location_of(connection), model.get_table_name()))
+        """
+        Remove *model*'s table entries cached from *connection*'s database.
+
+        Entries stored without a connection (a direct :meth:`set` with no
+        ``connection=``) carry no database, so a write to the table may have
+        made them stale whichever connection it ran on: they are dropped too.
+        """
+        table = model.get_table_name()
+        removed = cls._drop_bucket((_location_of(connection), table))
+        if _location_of(connection) != _NO_LOCATION:
+            removed += cls._drop_bucket((_NO_LOCATION, table))
+        return removed
 
     @classmethod
     def _drop_bucket(cls, bucket: tuple[_Location, str]) -> int:
