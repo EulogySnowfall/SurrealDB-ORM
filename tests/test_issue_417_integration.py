@@ -99,6 +99,9 @@ def _rejected_cases() -> dict[str, Callable[[], QuerySet[I417Order]]]:
         ),
         "geo alias": lambda: I417Order.objects().annotate(**{f"d FROM {ORDERS}" + TAIL: GeoDistance("location", (1, 2))}),
         "search alias": lambda: I417Order.objects().annotate(**{f"s FROM {ORDERS}" + TAIL: SearchScore(0)}),
+        "search ref": lambda: I417Order.objects().annotate(
+            s=SearchScore(f"0) AS s FROM {ORDERS}{TAIL}, (1")  # type: ignore[arg-type]
+        ),
         "geo field": lambda: I417Order.objects().annotate(
             d=GeoDistance(f"location, (1, 2)) AS d FROM {ORDERS}{TAIL}, geo::distance(location", (1, 2))
         ),

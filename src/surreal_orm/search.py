@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .utils import surql_string, validate_identifier
+from .utils import require_int, surql_string, validate_identifier
 
 
 class SearchScore:
@@ -30,7 +30,13 @@ class SearchScore:
     index (``@0@``, ``@1@``, etc.) used in the search clause.
 
     Args:
-        ref: Match reference index (default 0).
+        ref: Match reference index (default 0). It is written into the
+            query text, so it must be an ``int`` (not a ``bool``) of at
+            least 0.
+
+    Raises:
+        TypeError: If ``ref`` is not an ``int``.
+        ValueError: If ``ref`` is negative.
 
     Example::
 
@@ -43,7 +49,7 @@ class SearchScore:
     """
 
     def __init__(self, ref: int = 0) -> None:
-        self.ref = ref
+        self.ref = require_int("ref", ref, minimum=0)
 
     def to_surql(self, alias: str) -> str:
         """Render as ``search::score(N) AS alias``."""
@@ -72,7 +78,13 @@ class SearchHighlight:
     Args:
         open_tag: Opening tag for highlights (e.g., ``"<b>"``).
         close_tag: Closing tag for highlights (e.g., ``"</b>"``).
-        ref: Match reference index (default 0).
+        ref: Match reference index (default 0). It is written into the
+            query text, so it must be an ``int`` (not a ``bool``) of at
+            least 0.
+
+    Raises:
+        TypeError: If ``ref`` is not an ``int``.
+        ValueError: If ``ref`` is negative.
 
     Example::
 
@@ -86,7 +98,7 @@ class SearchHighlight:
     def __init__(self, open_tag: str = "<b>", close_tag: str = "</b>", ref: int = 0) -> None:
         self.open_tag = open_tag
         self.close_tag = close_tag
-        self.ref = ref
+        self.ref = require_int("ref", ref, minimum=0)
 
     def to_surql(self, alias: str) -> str:
         """Render as ``search::highlight('open', 'close', N) AS alias``.
@@ -96,7 +108,7 @@ class SearchHighlight:
         as well as the apostrophe, so a tag is always read back as written.
         """
         validate_identifier(alias, "annotation alias")
-        return f"search::highlight({surql_string(self.open_tag)}, {surql_string(self.close_tag)}, {int(self.ref)}) AS {alias}"
+        return f"search::highlight({surql_string(self.open_tag)}, {surql_string(self.close_tag)}, {self.ref}) AS {alias}"
 
     def __repr__(self) -> str:
         return f"SearchHighlight({self.open_tag!r}, {self.close_tag!r}, {self.ref})"

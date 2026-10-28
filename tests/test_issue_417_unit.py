@@ -144,3 +144,30 @@ def test_geo_distance_rejects_a_non_finite_coordinate(value: float) -> None:
 )
 def test_geo_distance_renders_int_and_float_as_numbers(point: Any, rendered: str) -> None:
     assert GeoDistance("location", point).to_surql("dist") == f"geo::distance(location, {rendered}) AS dist"
+
+
+# ------------------------------------------------------------- search ref
+
+
+def _search_annotation(cls: type[SearchScore] | type[SearchHighlight], ref: Any) -> SearchScore | SearchHighlight:
+    if cls is SearchScore:
+        return SearchScore(ref)
+    return SearchHighlight("<b>", "</b>", ref)
+
+
+@pytest.mark.parametrize("cls", [SearchScore, SearchHighlight])
+@pytest.mark.parametrize("ref", ["0) AS x", "0", True, 1.5, None])
+def test_search_annotation_rejects_a_ref_that_is_not_an_int(cls: Any, ref: Any) -> None:
+    with pytest.raises(TypeError, match="ref"):
+        _search_annotation(cls, ref)
+
+
+@pytest.mark.parametrize("cls", [SearchScore, SearchHighlight])
+def test_search_annotation_rejects_a_negative_ref(cls: Any) -> None:
+    with pytest.raises(ValueError, match="ref"):
+        _search_annotation(cls, -1)
+
+
+def test_search_annotations_render_an_int_ref_unchanged() -> None:
+    assert SearchScore(2).to_surql("s") == "search::score(2) AS s"
+    assert SearchHighlight("<b>", "</b>", 1).to_surql("h") == "search::highlight('<b>', '</b>', 1) AS h"
