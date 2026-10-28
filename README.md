@@ -30,12 +30,35 @@
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.4**  | 0.34.x      | Active development              |
+| `main` | **3.3.4**  | 0.35.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
 
 ---
+
+## What's New in 0.35.0
+
+**Minor release.** Two fixes, both with a behaviour change; the sign-up fix adds the `signup_fields` setting, hence
+the minor bump. If your `TableType.USER` models take extra fields at sign-up, or you pass non-`int` values to
+pagination or KNN methods, see the upgrade notes below and [CHANGELOG.md](CHANGELOG.md).
+
+- **The generated `SIGNUP` clause assigns only an explicit sign-up set**
+  ([#333](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/333)). `define_access()`, `makemigrations` and
+  `schema_diff` assigned every model field from the sign-up request, so model defaults were lost at sign-up. The clause
+  now assigns the identifier, the password, the fields listed in the new `SurrealConfigDict(signup_fields=[...])` and
+  `created_at = time::now()` when the model has it; every other field keeps its default. `makemigrations` /
+  `schema_diff` now also honour `encryption_algorithm` and `access_name`.
+- **Pagination and KNN arguments must be integers**
+  ([#329](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/329)). `limit()`, `offset()`, `similar_to()` and
+  `hybrid_search()` check their arguments at the call; a numeric string, a float or a `bool` produced a malformed
+  query. Valid integers produce the same SurrealQL as before.
+- **Behaviour change:** `signup()` accepts only the identifier, the password and the `signup_fields` entries (any
+  other keyword raises `SurrealDbError`), and a model without `signup_fields` signs up with the identifier and password
+  only. A non-`int` pagination/KNN argument raises `TypeError`, a value below the minimum `ValueError`.
+- **Upgrading:** list the fields your sign-up form sets in `signup_fields`, then re-apply the access definition
+  (`makemigrations` + `migrate`, or `define_access()`). Convert request values with `int(...)` before passing them to
+  `limit()` / `offset()` / `similar_to()` / `hybrid_search()`.
 
 ## What's New in 0.34.19
 
@@ -1705,7 +1728,8 @@ pip install surrealdb-orm[cli]
 
 | ORM Version           | SurrealDB     | Branch | Status              |
 | --------------------- | ------------- | ------ | ------------------- |
-| **0.34.x**            | 3.2.x – 3.3.x | `main` | Active development  |
+| **0.35.x**            | 3.2.x – 3.3.x | `main` | Active development  |
+| **0.34.x**            | 3.2.x – 3.3.x | —      | Superseded          |
 | **0.32.x – 0.33.x**   | >= 3.2        | —      | Superseded          |
 | **0.30.x – 0.31.x**   | 3.0 – 3.1     | —      | Superseded          |
 | **0.21.x**            | 2.6.x – 2.7.x | `v2`   | Security fixes only |
