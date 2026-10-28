@@ -1079,6 +1079,8 @@ class TestBug4AuthenticateAndValidateToken:
         mock_auth_result = MagicMock(first_result=mock_first_qr)
         mock_ephemeral.query = AsyncMock(return_value=mock_auth_result)
         mock_ephemeral.close = AsyncMock()
+        mock_ephemeral.namespace, mock_ephemeral.database = _I331_NS, _I331_DB
+        token = _i331_jwt({"ID": "TestUser:1", "AC": "testuser_auth"})
 
         mock_root = AsyncMock()
         mock_user_result = MagicMock(
@@ -1094,12 +1096,12 @@ class TestBug4AuthenticateAndValidateToken:
                 new=MagicMock(get_client=AsyncMock(return_value=mock_root)),
             ),
         ):
-            result = await TestUser.authenticate_token("valid_token")
+            result = await TestUser.authenticate_token(token)
             assert result is not None
             user, record_id = result
             assert isinstance(user, TestUser)
             assert record_id == "TestUser:1"
-            mock_ephemeral.authenticate.assert_called_once_with("valid_token")
+            mock_ephemeral.authenticate.assert_called_once_with(token)
             mock_ephemeral.close.assert_called_once()
 
     @pytest.mark.asyncio
@@ -1118,9 +1120,11 @@ class TestBug4AuthenticateAndValidateToken:
         mock_auth_result = MagicMock(first_result=mock_first_qr)
         mock_ephemeral.query = AsyncMock(return_value=mock_auth_result)
         mock_ephemeral.close = AsyncMock()
+        mock_ephemeral.namespace, mock_ephemeral.database = _I331_NS, _I331_DB
+        token = _i331_jwt({"ID": "TestUser:abc", "AC": "testuser_auth"})
 
         with patch.object(TestUser, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)):
-            record_id = await TestUser.validate_token("valid_token")
+            record_id = await TestUser.validate_token(token)
             assert record_id == "TestUser:abc"
             mock_ephemeral.close.assert_called_once()
 
@@ -1359,15 +1363,29 @@ class TestIssue332SessionRecordLookup:
         mock_root.query.assert_not_awaited()
 
 
+_I331_NS = "i331_ns"
+_I331_DB = "i331_db"
+
+
 def _i331_jwt(claims: dict[str, object]) -> str:
-    """Build an unsigned JWT-shaped token carrying ``claims``."""
+    """Build an unsigned JWT-shaped token carrying ``claims``.
+
+    Like a token SurrealDB issues, it names its namespace and database
+    (``_I331_NS`` / ``_I331_DB``, those of ``_i331_client``) and its access:
+    by default the default access of the ``ID`` claim's table (#393).
+    """
     import base64
     import json
 
     def part(data: dict[str, object]) -> str:
         return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
 
-    return f"{part({'alg': 'HS512'})}.{part(claims)}.c2ln"
+    full: dict[str, object] = {"NS": _I331_NS, "DB": _I331_DB}
+    record = claims.get("ID")
+    if isinstance(record, str) and ":" in record:
+        full["AC"] = f"{record.split(':', 1)[0].lower()}_auth"
+    full.update(claims)
+    return f"{part({'alg': 'HS512'})}.{part(full)}.c2ln"
 
 
 def _i331_client(auth: object, *, success: bool = True) -> AsyncMock:
@@ -1376,6 +1394,7 @@ def _i331_client(auth: object, *, success: bool = True) -> AsyncMock:
     client.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=success, raw={}))
     client.query = AsyncMock(return_value=MagicMock(first_result=MagicMock(result=auth)))
     client.close = AsyncMock()
+    client.namespace, client.database = _I331_NS, _I331_DB
     return client
 
 
@@ -1449,7 +1468,7 @@ class TestIssue331TokenCacheExpiryAndTable:
 
         ((key, entry),) = AuthenticatedUserMixin._token_cache.items()
         assert key == member._token_cache_key(token)
-        assert key[1:] == ("i331_member", token)
+        assert key[1:] == ("i331_member", "i331_member_auth", token)
         deadline = entry[1]
         assert deadline - time.monotonic() <= 31
 
@@ -1479,7 +1498,7 @@ class TestIssue331TokenCacheExpiryAndTable:
         from src.surreal_sdk.protocol.cbor import RecordId
 
         member, _ = self._models()
-        token = _i331_jwt({"ID": "x", "exp": int(time.time()) + 600})
+        token = _i331_jwt({"ID": "i331_member:a", "exp": int(time.time()) + 600})
         auth = RecordId(table="i331_member", id="a")
         with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i331_client(auth))):
             assert await member.validate_token(token) == "i331_member:a"
@@ -1498,13 +1517,17 @@ class TestIssue331TokenCacheExpiryAndTable:
 
     @pytest.mark.parametrize(
         "claims",
-        [None, {"ID": "i331_member:a"}, {"ID": "i331_member:a", "exp": "soon"}, {"ID": "i331_member:a", "exp": True}],
-        ids=["opaque", "no-exp", "string-exp", "bool-exp"],
+        [{"ID": "i331_member:a"}, {"ID": "i331_member:a", "exp": "soon"}, {"ID": "i331_member:a", "exp": True}],
+        ids=["no-exp", "string-exp", "bool-exp"],
     )
-    async def test_unreadable_exp_is_validated_but_not_cached(self, claims: dict[str, object] | None) -> None:
-        """Without a readable exp the token is validated by the server every time."""
+    async def test_unreadable_exp_is_validated_but_not_cached(self, claims: dict[str, object]) -> None:
+        """Without a readable exp the token is validated by the server every time.
+
+        An opaque token is no longer accepted at all (its access cannot be
+        read, #393): see ``tests/test_issue_393_unit.py``.
+        """
         member, _ = self._models()
-        token = "opaque-token" if claims is None else _i331_jwt(claims)
+        token = _i331_jwt(claims)
         client = _i331_client("i331_member:a")
         with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=client)):
             assert await member.validate_token(token) == "i331_member:a"
@@ -1532,8 +1555,13 @@ class TestIssue331TokenCacheExpiryAndTable:
             await member.validate_token(token)
         with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_member:b"))):
             await member.validate_token(other)
-        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=_i331_client("i331_staff:a"))):
-            await staff.validate_token(token)
+        # A token is accepted by one model only (#393): the staff entry for the
+        # same token is planted, as a cache written before that check would be.
+        AuthenticatedUserMixin._token_cache[staff._token_cache_key(token)] = (
+            "i331_staff:a",
+            time.monotonic() + 300,
+            time.time() + 300,
+        )
         assert len(AuthenticatedUserMixin._token_cache) == 3
 
         staff.invalidate_token_cache(token)
