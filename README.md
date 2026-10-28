@@ -37,6 +37,25 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.35.6
+
+**Fix release.** String `DEFAULT` values and `SearchHighlight` tags are always written as string literals
+([#401](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/401)), and `validate_token()` / `authenticate_token()`
+accept only tokens of the model's own access definition
+([#393](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/393)). See [CHANGELOG.md](CHANGELOG.md) for the full
+notes.
+
+- **A `str` default is a text.** A `DEFAULT` such as `'fr::CA'` is quoted and reads back unchanged, so rollbacks and
+  `schema_diff()` round-trip. An unquoted default read from the database is a `SurrealFunc`, and `inspectdb` renders it
+  as `SurrealFunc('...')`. `SearchHighlight` tags ending in a backslash reach `search::highlight()` as written.
+- **Tokens are checked against the model's access.** The token's `AC` / `NS` / `DB` claims must match the model's
+  `access_name`, namespace and database, and the token cache is keyed per access name, so two models on one table no
+  longer accept each other's tokens.
+- **Behaviour change / upgrading:** write a server-side expression default as `SurrealFunc("time::now()")`. A bare
+  `str` is still read as an expression only for a no-argument call or a bare `$identifier`, with a
+  `DeprecationWarning`; anything else (e.g. `"math::max([1, 2])"`) is now stored as text. Validate a token through the
+  model whose `access_name` issued it.
+
 ## What's New in 0.35.5
 
 **Fix release.** A transient `401` re-mint on a shared `HTTPConnection` no longer overrides a concurrent

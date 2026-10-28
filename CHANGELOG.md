@@ -6,6 +6,70 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.35.6] - 2026-10-28
+
+**Fix release.** Two fixes: string `DEFAULT` values and `SearchHighlight`
+tags are always written as string literals (#401 via #407), and
+`validate_token()` / `authenticate_token()` accept only tokens issued by the
+model's own access definition (#393 via #408). Read *Behaviour change* and
+*Upgrading* below if a model or migration file uses a `str` as a server-side
+expression `DEFAULT`, or if you validate a token through a model other than
+the one whose access issued it. The SurrealDB pin is unchanged (tested
+against 3.3.4, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **A plain `str` field `DEFAULT` containing `::` or starting with `$` is now
+  emitted as a quoted string literal and read back as the same text.**
+  Previously `AddField`, `AlterField.forwards()` / `backwards()` and
+  `AlterField.from_field_states()` emitted it unquoted, so a text such as
+  `'fr::CA'` read back from the database did not round-trip (#401).
+- **`SearchHighlight` renders both tags with `surql_string()`**, so a tag
+  containing or ending in a backslash is passed to `search::highlight()` as
+  written (#401).
+- **`schema_diff()` / `makemigrations` converge for both text defaults and
+  expression defaults.** An unquoted `DEFAULT` read from the database is now a
+  `SurrealFunc`, and `inspectdb` renders it as `SurrealFunc('...')` (#401).
+- **`validate_token()` and `authenticate_token()` accept only tokens issued by
+  the model's own access definition.** When two models shared a table with
+  different `access_name` values, each one accepted the other's tokens, and
+  the two models shared token cache entries. The token's `AC` claim must now
+  equal `get_access_name()`, and its `NS` / `DB` claims the namespace and
+  database of the model's connection; the token cache is keyed per access
+  name (#393).
+
+### Behaviour change
+
+- **A server-side expression default should be written as
+  `SurrealFunc("time::now()")`.** A bare `str` is still accepted as an
+  expression only when it is exactly a no-argument call (`time::now()`,
+  `rand::uuid()`) or a bare `$identifier`, and it now emits a
+  `DeprecationWarning`. Any other `str` is quoted as a text.
+  `FieldState.default` parsed from the database is a `SurrealFunc` for an
+  expression (it was a bare `str`) (#401).
+- **`validate_token()` and `authenticate_token()` now return `None`** for a
+  token issued by another access definition, namespace or database, and for a
+  token whose `AC` / `NS` / `DB` claims cannot be read. Tokens SurrealDB
+  issues for a model's own record access are unaffected, including with the
+  default `<table>_auth` access name (#393).
+
+### Upgrading
+
+- A model or migration file that used a `str` expression with arguments,
+  operators or spaces as a `DEFAULT` (e.g. `"math::max([1, 2])"`) must wrap
+  it in `SurrealFunc(...)` (`from surreal_orm import SurrealFunc`), otherwise
+  it is now stored as text. Run `schema_diff()` after upgrading to check.
+- Code that validated a token through a different model on the same table
+  (or through a bearer access with a different name) must validate it through
+  the model whose `access_name` issued it. Nothing changes for models that
+  validate their own tokens.
+
+### Known limitations
+
+- `validate_token_local()` decodes the token without verification, by
+  design, and does not compare the `AC` claim: for two models on one table it
+  still returns the `ID` claim of a token issued by the other model's access.
+
 ## [0.35.5] - 2026-10-28
 
 **Fix release.** One fix in the SDK's HTTP connection: a transient `401`
