@@ -37,6 +37,22 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.15
+
+**Fix release.** `QuerySet` filters only. If you reference query variables from `filter()`, see the behaviour change
+below and [CHANGELOG.md](CHANGELOG.md).
+
+- **`$`-prefixed filter values are compared as data**
+  ([#327](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/327)). A filter value starting with `$` (an email, a
+  search term such as `"$x OR true"`) was written into the query as a variable reference and changed the condition.
+  It is now a reference only when it is exactly `$name` and `name` was declared with `.variables()` on the same
+  QuerySet (or on the inner QuerySet of a `Subquery`); every other value is bound as a parameter. Covers keyword
+  filters, `Q` / `~Q`, subqueries, `annotate()` subqueries and `live()`.
+- **Behaviour change:** an undeclared `$name` is now matched as text (on a `ForeignKey`, as a bare ID). Declare the
+  variable — `filter(age__gte="$min_age").variables(min_age=18)` — and use `raw_query()` for built-in parameters
+  such as `$auth`.
+- **`Subquery` now sends its inner QuerySet's declared variables**; they used to reach the server unbound.
+
 ## What's New in 0.34.14
 
 **Fix release.** SDK transactions only; nothing to change for ORM users. Direct SDK callers: see

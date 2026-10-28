@@ -6,6 +6,49 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.15] - 2026-10-28
+
+**Fix release.** `QuerySet` filters only (#327, #341). Read *Behaviour
+change* below if you reference query variables from `filter()`. The SurrealDB
+pin is unchanged (tested against 3.3.4, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`$`-prefixed filter values are bound as parameters (#327).** A `QuerySet`
+  filter value starting with `$` was always written into the WHERE clause as
+  a variable reference, because only its first character was checked. A value
+  that merely starts with `$` (an email, a search term such as `"$x OR true"`)
+  therefore changed the condition instead of being matched as text. A value is
+  now a variable reference only when it is exactly `$name` and `name` was
+  declared with `.variables()` on the same QuerySet (or on the inner QuerySet
+  of a `Subquery`); any other value is bound and compared as data. This
+  applies to keyword filters, `Q` objects and `~Q`, subqueries, `annotate()`
+  subqueries and `live()`, and gives the same result when a QuerySet is
+  compiled more than once (for example `count()` then `exec()`).
+- **`Subquery` sends the variables declared on its inner QuerySet (#327).**
+  They were dropped, so a reference to one reached the server unbound. An
+  outer variable of the same name wins.
+
+### Behaviour change
+
+- An undeclared `$name` filter value, or any `$`-prefixed value that is not
+  exactly a declared name (trailing text, a trailing newline, `$auth.id`, a
+  name matching one of the ORM's internal parameters such as `$_f0`), is now
+  compared as literal text instead of being sent as a reference. On a
+  `ForeignKey` field it is treated as a bare ID: `filter(author="$who")`
+  without `.variables(who=...)` compares against `<target_table>:$who`.
+- **Migration:** to keep using a variable in a filter, declare it on the same
+  QuerySet (or on the inner QuerySet of a `Subquery`), e.g.
+  `filter(age__gte="$min_age").variables(min_age=18)`. Built-in server
+  parameters such as `$auth` cannot be referenced from `filter()`; use
+  `raw_query()` for those.
+
+### Added
+
+- `surreal_orm.utils.is_declared_variable_reference(value, declared)`: true
+  only for a string that fully matches `$` + identifier whose name is in
+  `declared`.
+
 ## [0.34.14] - 2026-10-28
 
 **Fix release.** SDK transactions only (#306, #318). ORM users have nothing

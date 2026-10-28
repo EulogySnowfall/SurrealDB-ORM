@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.14)
+> Context document for Claude AI - Last updated: October 2026 (0.34.15)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.14 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.15 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,31 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.15
+
+One fix (#327 via #341), ORM filters only. Pin unchanged (3.3.4). `v2`: same
+branch in `query_set.py`, backport tracked in #342.
+
+- **A filter value was a variable reference if it started with `$`.** Only
+  the first character was checked, so any `$`-prefixed string — an email, a
+  search term — was written into the WHERE clause as-is. A value is a
+  reference now only when it `fullmatch`es `$` + identifier (no trailing
+  newline) **and** the name was declared with `.variables()`;
+  `is_declared_variable_reference()` in `utils.py` is the single rule.
+- **Declared names live in `_declared_variables`, apart from `_variables`.**
+  Compiling writes the ORM's own bindings (`$_fN`, `$_knn_vec`) into
+  `_variables`, so checking against that dict would have turned a value equal
+  to `$_f0` into a reference on the second compile (`count()` then `exec()`).
+- **Every renderer shares the rule**: keyword filters, `Q`/`~Q`,
+  `_compile_where_clause()` (count, bulk ops), filter and `annotate()`
+  subqueries, `live()`. `_to_record_link()` no longer exempts `$` strings, so
+  an undeclared one on a `ForeignKey` coerces like any bare ID.
+- **`Subquery` used to drop its inner QuerySet's variables** — a reference to
+  one reached the server unbound. They are sent now; the outer one wins on a
+  name clash.
+- **Behaviour change:** built-in server parameters (`$auth`) can no longer be
+  referenced from `filter()`; `raw_query()` is the way.
 
 ### What's New in 0.34.14
 
