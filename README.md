@@ -37,6 +37,18 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.35.3
+
+**Fix release.** Key checks for `HTTPTransaction` data
+([#334](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/334)). See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+- **Transaction data keys must be identifiers.** `HTTPTransaction.create/insert/update/upsert/merge/relate` (SDK) raise
+  `ValueError` naming the key when a key of `data` is not a plain identifier (`[A-Za-z_][A-Za-z0-9_]*`), at the call
+  rather than at `commit()`. `insert()` checks every record before queueing any. Valid keys produce the same SurrealQL.
+- **Behaviour change:** a dotted key such as `a.b` used to commit and write nothing for that field; it now raises. ORM
+  `save(tx=)`/`merge(tx=)`/`relate(tx=)` over HTTP raise the same `ValueError` for a non-identifier field alias.
+- **Upgrading:** pass a nested dict (`{"a": {"b": 5}}`) or use `query()` to set a nested field in a transaction.
+
 ## What's New in 0.35.2
 
 **Fix release.** Field-name checks for filter keys and `values()`

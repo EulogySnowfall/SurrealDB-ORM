@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.35.2)
+> Context document for Claude AI - Last updated: October 2026 (0.35.3)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.35.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.35.3 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,20 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.35.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.35.3
+
+One fix, #334 via #374 (`src/surreal_sdk/transaction.py` only). Pin unchanged
+(3.3.4). `v2`: backport required, tracked in #382 (same six methods there).
+
+- **`_validate_keys()` runs before anything is queued** in the six
+  data-taking `HTTPTransaction` methods, on the existing `_IDENTIFIER_RE`
+  with `fullmatch`; `insert()` checks all records first. Values stay bound.
+- **A dotted key was the silent case**: `SET a.b = $a.b` reads field `b` of
+  an unbound `$a`, so the commit succeeded and stored nothing for it. Other
+  bad keys failed at `commit()` with `TransactionError`.
+- **Open:** no test drives an ORM `save(tx=)` with a non-identifier alias
+  through `HTTPTransaction` (review suggestion on #374).
 
 ### What's New in 0.35.2
 

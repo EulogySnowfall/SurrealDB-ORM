@@ -6,6 +6,43 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.35.3] - 2026-10-28
+
+**Fix release.** Key checks for `HTTPTransaction` data (#334 via #374).
+Read *Behaviour change* below if you pass dotted keys to a transaction
+method. The SurrealDB pin is unchanged (tested against 3.3.4, supported
+range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`HTTPTransaction.create()`, `insert()`, `update()`, `upsert()`,
+  `merge()` and `relate()` (SDK) check every key of `data` when the
+  statement is queued.** A key that is not a plain identifier
+  (`[A-Za-z_][A-Za-z0-9_]*`), for example one with a space, a `-` or a
+  `;`, raises `ValueError` naming the key at the call. Before, the
+  statement was queued as is: most such keys failed at `commit()` with
+  `TransactionError`, and a dotted key such as `a.b` committed and wrote
+  nothing for that field. `insert()` checks every record before queueing
+  any, so a bad key in a later record leaves the transaction unchanged.
+  Values are still bound as parameters (#334).
+
+### Behaviour change
+
+- Only keys that are not plain identifiers are affected. They now raise
+  `ValueError` at the call instead of failing at `commit()` or, for a
+  dotted key, committing without writing that field. The SurrealQL
+  generated for valid keys is unchanged.
+- ORM `save(tx=)`, `merge(tx=)` and `relate(tx=)` over HTTP raise the same
+  `ValueError` when a field alias (or a `relate()` edge-data key) is not an
+  identifier.
+
+### Upgrading
+
+- No schema, DDL or public signature change.
+- To set a nested field inside a transaction, pass a nested dict
+  (`{"a": {"b": 5}}`) instead of a dotted key, or write the statement with
+  `query()`. A dotted key was silently dropped before.
+
 ## [0.35.2] - 2026-10-28
 
 **Fix release.** Field-name checks for filter keys and `values()` (#328 via
