@@ -63,18 +63,61 @@ def needs_id_escaping(record_id: str) -> bool:
 
 
 def escape_record_id(record_id: str) -> str:
-    """
+    r"""
     Escape a record ID for SurrealQL when it needs it.
+
+    Uses SurrealDB's backtick-delimited form. Inside it SurrealDB reads ``\``
+    as an escape character, so a backslash is written ``\\`` and a backtick
+    ``\``` — the backslash first, otherwise the backslash added in front of a
+    backtick would itself be doubled. :func:`unescape_record_id` reads the
+    result back.
 
     Args:
         record_id: The record ID, without the table prefix
 
     Returns:
         The ID, backtick-wrapped when required
+
+    Examples:
+        escape_record_id("abc123")   # "abc123"
+        escape_record_id("7abc")     # "`7abc`"
+        escape_record_id("a`b")      # "`a\`b`"
+        escape_record_id("dir\\")    # "`dir\\`"
     """
     if needs_id_escaping(record_id):
-        return "`" + record_id.replace("`", "``") + "`"
+        escaped = record_id.replace("\\", "\\\\").replace("`", "\\`")
+        return f"`{escaped}`"
     return record_id
+
+
+#: One unit of a backtick-delimited record ID body: an escaped backslash or
+#: backtick, a doubled backtick (the form older releases wrote), or any
+#: other character.
+_ESCAPED_ID_UNIT = re.compile(r"\\[\\`]|``|.", re.DOTALL)
+
+
+def unescape_record_id(id_part: str) -> str:
+    r"""
+    Read back a record ID written by :func:`escape_record_id`.
+
+    A backtick-delimited ID loses its delimiters, ``\\`` becomes ``\`` and
+    ``\``` becomes a backtick. Those are the only two sequences the escaper
+    produces, so every other backslash is kept as written. A doubled backtick
+    is still read as one, so a string produced by older releases parses as it
+    always did. An ID that is not backtick-delimited is returned unchanged.
+
+    Args:
+        id_part: The record ID part of a ``table:id`` reference
+
+    Returns:
+        The raw record ID
+    """
+    if len(id_part) < 2 or not (id_part.startswith("`") and id_part.endswith("`")):
+        return id_part
+    return _ESCAPED_ID_UNIT.sub(
+        lambda m: m.group(0)[-1] if len(m.group(0)) == 2 else m.group(0),
+        id_part[1:-1],
+    )
 
 
 @dataclass

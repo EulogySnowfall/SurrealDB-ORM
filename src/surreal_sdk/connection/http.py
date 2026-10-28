@@ -540,7 +540,8 @@ class HTTPConnection(BaseSurrealConnection):
         For CBOR protocol, converts "table:id" strings to RecordId objects.
         For JSON protocol, returns the string as-is.
 
-        Handles backtick-escaped IDs (e.g., "table:`7abc`" -> RecordId(table, "7abc")).
+        Handles backtick-escaped IDs (e.g., "table:`7abc`" -> RecordId(table, "7abc"))
+        through :func:`~surreal_sdk.protocol.cbor.unescape_record_id`.
 
         Args:
             thing: Thing reference (table name or "table:id")
@@ -549,15 +550,10 @@ class HTTPConnection(BaseSurrealConnection):
             RecordId object for CBOR if thing contains ":", else string
         """
         if self.protocol == "cbor" and ":" in thing:
-            from ..protocol.cbor import RecordId
+            from ..protocol.cbor import RecordId, unescape_record_id
 
             table, id_part = thing.split(":", 1)
-
-            # Handle backtick-escaped IDs (e.g., "`7abc`" -> "7abc")
-            if id_part.startswith("`") and id_part.endswith("`"):
-                id_part = id_part[1:-1].replace("``", "`")
-
-            return RecordId(table=table, id=id_part)
+            return RecordId(table=table, id=unescape_record_id(id_part))
         return thing
 
     async def select(self, thing: str) -> Any:

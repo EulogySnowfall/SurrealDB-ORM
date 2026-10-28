@@ -50,6 +50,7 @@ def remove_quotes_for_variables(query: str) -> str:
 # public API keep working.
 from surreal_sdk.protocol.cbor import escape_record_id as escape_record_id  # noqa: E402
 from surreal_sdk.protocol.cbor import needs_id_escaping as needs_id_escaping  # noqa: E402
+from surreal_sdk.protocol.cbor import unescape_record_id  # noqa: E402
 
 
 def format_thing(table: str, record_id: str) -> str:
@@ -80,7 +81,8 @@ def parse_record_id(full_id: str) -> tuple[str | None, str]:
     """
     Parse a full record ID (table:id) into table and id parts.
 
-    Handles escaped IDs with backticks.
+    Handles backtick-escaped IDs, as :func:`format_thing` writes them, through
+    :func:`surreal_sdk.protocol.cbor.unescape_record_id`.
 
     Args:
         full_id: Full record ID in format "table:id" or just "id"
@@ -98,12 +100,7 @@ def parse_record_id(full_id: str) -> tuple[str | None, str]:
 
     table, id_part = full_id.split(":", 1)
 
-    # Handle backtick-escaped IDs
-    if id_part.startswith("`") and id_part.endswith("`"):
-        # Remove backticks and unescape doubled backticks
-        id_part = id_part[1:-1].replace("``", "`")
-
-    return table, id_part
+    return table, unescape_record_id(id_part)
 
 
 def _is_complex_value(value: Any) -> bool:
