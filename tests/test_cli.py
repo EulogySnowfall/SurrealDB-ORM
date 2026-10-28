@@ -4,11 +4,16 @@ Unit tests for CLI commands.
 Uses Click's CliRunner for testing CLI commands without database connections.
 """
 
+import asyncio
+import dataclasses
 import shutil
 import tempfile
+import threading
+import warnings
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -700,3 +705,214 @@ class TestEnvironmentVariables:
             env={"SURREAL_DATABASE": "mydb"},
         )
         assert result.exit_code == 0
+
+
+# =============================================================================
+# Issue #303 — run_async needs no current event loop
+# =============================================================================
+#
+# Every test above patches run_async, so the real helper never ran in CI. It
+# looked up the thread's current loop: Python 3.12-3.13 created one with a
+# DeprecationWarning, 3.14+ raises RuntimeError, and a click command starts
+# with no loop, so every database command failed on 3.14+.
+
+
+async def _i303_answer() -> int:
+    """Suspend once on the loop, then return a known value."""
+    await asyncio.sleep(0)
+    return 42
+
+
+async def _i303_running_loop() -> asyncio.AbstractEventLoop:
+    """Return the loop this coroutine runs on."""
+    await asyncio.sleep(0)
+    return asyncio.get_running_loop()
+
+
+def _i303_in_fresh_thread(fn: Callable[[], Any]) -> Any:
+    """Call *fn* in a new thread with ``DeprecationWarning`` raised as an error.
+
+    A new thread has no current event loop, the state a click command starts
+    in. The warning filter is set inside the thread so that it applies there
+    whether or not the interpreter keeps warning filters per context.
+    """
+    outcome: dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                outcome["value"] = fn()
+        except BaseException as exc:  # re-raised in the test's thread below
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=target, name="i303-no-loop")
+    thread.start()
+    thread.join(timeout=30)
+    assert not thread.is_alive(), "run_async did not return"
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
+def _i303_loop_running() -> bool:
+    """Whether the calling code runs inside an event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+@pytest.fixture
+def i303_restore_default_connection() -> Iterator[None]:
+    """Put back the "default" connection a command under test configured.
+
+    The commands below really run their coroutine, which calls
+    ``set_connection()`` on the process-wide manager.
+    """
+    from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+    saved = SurrealDBConnectionManager.get_config("default")
+    yield
+    if saved is None:
+        SurrealDBConnectionManager.unset_connection_sync()
+    else:
+        SurrealDBConnectionManager.add_connection("default", **dataclasses.asdict(saved))
+
+
+class TestI303RunAsync:
+    """The real run_async, called the way click calls a command."""
+
+    def test_returns_the_result_in_a_thread_with_no_current_loop(self) -> None:
+        """No current loop and warnings as errors: the coroutine still runs."""
+        from src.surreal_orm.cli.commands import run_async
+
+        assert _i303_in_fresh_thread(lambda: run_async(_i303_answer())) == 42
+
+    def test_two_calls_in_a_row_each_run_on_a_loop_closed_afterwards(self) -> None:
+        """A second call works, and neither leaves a loop open or set."""
+        import asyncio.events
+
+        from src.surreal_orm.cli.commands import run_async
+
+        with patch.object(asyncio.events, "set_event_loop", wraps=asyncio.events.set_event_loop) as set_loop:
+            first, second = _i303_in_fresh_thread(lambda: (run_async(_i303_running_loop()), run_async(_i303_running_loop())))
+
+        assert first is not second
+        assert first.is_closed()
+        assert second.is_closed()
+        # A loop installed as the thread's current one is reset to None.
+        assert set_loop.call_args_list[-1:] in ([], [call(None)])
+
+    def test_an_exception_raised_by_the_coroutine_reaches_the_caller(self) -> None:
+        """Commands report failures through their ``except Exception``."""
+        from src.surreal_orm.cli.commands import run_async
+
+        async def fail() -> None:
+            await asyncio.sleep(0)
+            raise ConnectionError("refused")
+
+        with pytest.raises(ConnectionError, match="refused"):
+            _i303_in_fresh_thread(lambda: run_async(fail()))
+
+
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+@pytest.mark.usefixtures("i303_restore_default_connection")
+class TestI303CommandsEndToEnd:
+    """Commands through CliRunner with the real run_async; only the database layer is mocked."""
+
+    def test_status_twice_in_one_process(self, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
+        """Each invocation gets its own loop, closed when the command returns."""
+        loops: list[asyncio.AbstractEventLoop] = []
+
+        class I303Executor:
+            def __init__(self, migrations_dir: Path) -> None:
+                self.migrations_dir = migrations_dir
+
+            async def get_migration_status(self) -> dict[str, dict[str, Any]]:
+                loops.append(asyncio.get_running_loop())
+                await asyncio.sleep(0)
+                return {"0001_initial": {"applied": True, "reversible": True, "has_data": False, "operations": 2}}
+
+        args = ["--migrations-dir", str(temp_migrations_dir), "-n", "i303", "-d", "i303", "status"]
+        with patch("src.surreal_orm.migrations.executor.MigrationExecutor", I303Executor):
+            results = [runner.invoke(cli_command, args), runner.invoke(cli_command, args)]
+
+        for result in results:
+            assert result.exit_code == 0, result.output
+            assert "[X] 0001_initial (2 ops)" in result.output
+        assert len(loops) == 2
+        assert loops[0] is not loops[1]
+        assert all(loop.is_closed() for loop in loops)
+
+    def test_makemigrations_reads_the_schema(self, runner: "CliRunner", cli_command, temp_migrations_dir: Path) -> None:
+        """The default ``--from-db`` path awaits the introspector on a real loop."""
+        from src.surreal_orm.migrations.introspector import introspect_models
+        from src.surreal_orm.model_base import BaseSurrealModel, clear_model_registry
+
+        clear_model_registry()
+
+        class I303Migrated(BaseSurrealModel):
+            id: str | None = None
+            name: str
+
+        introspector = MagicMock()
+        introspector.return_value.introspect = AsyncMock(return_value=introspect_models())
+        try:
+            with patch("src.surreal_orm.migrations.db_introspector.DatabaseIntrospector", introspector):
+                result = runner.invoke(
+                    cli_command,
+                    [
+                        "--migrations-dir",
+                        str(temp_migrations_dir),
+                        "-n",
+                        "i303",
+                        "-d",
+                        "i303",
+                        "makemigrations",
+                        "--name",
+                        "noop",
+                    ],
+                )
+        finally:
+            clear_model_registry()
+
+        assert result.exit_code == 0, result.output
+        assert "No changes detected" in result.output
+        introspector.return_value.introspect.assert_awaited_once()
+
+    def test_shell_prompts_outside_the_event_loop(self, runner: "CliRunner", cli_command) -> None:
+        """Queries run on the loop, the blocking prompt never does.
+
+        While a coroutine runs, asyncio turns Ctrl+C into a cancellation of that
+        coroutine, which a blocking call inside it (the prompt) only sees at its
+        next ``await``: Ctrl+C at the prompt would do nothing visible and then
+        abort the shell on the next query.
+        """
+        import click
+
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        prompted_inside_loop: list[bool] = []
+        real_prompt = click.prompt
+
+        def prompt(*args: Any, **kwargs: Any) -> Any:
+            prompted_inside_loop.append(_i303_loop_running())
+            return real_prompt(*args, **kwargs)
+
+        response = MagicMock(is_empty=False, all_records=[{"answer": 42}])
+        client = MagicMock()
+        client.query = AsyncMock(return_value=response)
+
+        with (
+            patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)),
+            patch.object(click, "prompt", side_effect=prompt),
+        ):
+            result = runner.invoke(cli_command, ["-n", "i303", "-d", "i303", "shell"], input="RETURN 42;\nexit\n")
+
+        assert result.exit_code == 0, result.output
+        assert "{'answer': 42}" in result.output
+        assert "Goodbye!" in result.output
+        client.query.assert_awaited_once_with("RETURN 42;")
+        assert prompted_inside_loop == [False, False]

@@ -918,30 +918,42 @@ class TestFR4FetchClause:
 class TestFR5RemoveAllRelationsList:
     """FR5: remove_all_relations() accepts str | list[str]."""
 
-    def test_accepts_single_string(self) -> None:
-        """Single string arg passes validation (no ValueError)."""
-        model = ModelTest(id="1", name="Test", age=45)
-        # Validation should pass — only a DB error (or connection error) may occur
-        try:
-            import asyncio
+    @staticmethod
+    def _sent_queries(relation: str | list[str]) -> list[str]:
+        """Run remove_all_relations against a mocked client and return the queries it sent.
 
-            asyncio.get_event_loop().run_until_complete(model.remove_all_relations("has_player"))
-        except ValueError:
-            pytest.fail("remove_all_relations raised ValueError for valid single string")
-        except Exception:
-            pass  # Any non-ValueError (connection/auth) is expected
+        These tests used to swallow every non-ValueError, so on Python 3.14+
+        the RuntimeError from looking up a current event loop (#303) made them
+        pass without ever reaching the method.
+        """
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        model = ModelTest(id="1", name="Test", age=45)
+        client = MagicMock()
+        client.query = AsyncMock()
+        with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+            asyncio.run(model.remove_all_relations(relation))
+        return [c.args[0] for c in client.query.await_args_list]
+
+    def test_accepts_single_string(self) -> None:
+        """A single relation name deletes that edge table's outgoing edges."""
+        from src.surreal_orm.utils import format_thing
+
+        thing = format_thing(ModelTest.get_table_name(), "1")
+        assert self._sent_queries("has_player") == [f"DELETE has_player WHERE in = {thing};"]
 
     def test_accepts_list_of_strings(self) -> None:
-        """List of strings arg passes validation (no ValueError)."""
-        model = ModelTest(id="1", name="Test", age=45)
-        try:
-            import asyncio
+        """A list deletes the outgoing edges of each table, in order."""
+        from src.surreal_orm.utils import format_thing
 
-            asyncio.get_event_loop().run_until_complete(model.remove_all_relations(["has_player", "has_action"]))
-        except ValueError:
-            pytest.fail("remove_all_relations raised ValueError for valid list of strings")
-        except Exception:
-            pass  # Any non-ValueError (connection/auth) is expected
+        thing = format_thing(ModelTest.get_table_name(), "1")
+        assert self._sent_queries(["has_player", "has_action"]) == [
+            f"DELETE has_player WHERE in = {thing};",
+            f"DELETE has_action WHERE in = {thing};",
+        ]
 
     def test_rejects_invalid_name_in_list(self) -> None:
         """Invalid relation name in list raises ValueError."""
