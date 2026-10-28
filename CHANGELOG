@@ -6,6 +6,49 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.22] - 2026-10-28
+
+**Bug fix release (V2 LTS).** One ORM fix (#310, #320), the `v2` port of #301
+from `main`: record IDs containing a backtick or a backslash round-trip. One
+small SDK helper is added. Read *Behaviour change*. The SurrealDB pin is
+unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **Record IDs containing a backtick or a backslash now round-trip (#310).**
+  Every ORM path that writes the ID into the query text — `merge()` with a
+  `SurrealFunc`, `atomic_append()` / `atomic_remove()` / `atomic_set_add()`,
+  `relate()`, `get_related()`, `remove_relation()`, `remove_all_relations()`,
+  graph traversals and `delete()` — used to fail with a parse error on
+  SurrealDB 2.x, or name a different record. This includes an ID ending in a
+  backslash. `escape_record_id()` now writes SurrealDB's `` \` `` and `\\`
+  escape sequences instead of doubling the backtick (checked on 2.7.0: both
+  read back as the original character, and a doubled backtick does not parse).
+- `RelationQuerySet` builds its start node with `format_thing()`, like every
+  other caller.
+
+### Added
+
+- `surreal_sdk.protocol.cbor.unescape_record_id()`, the inverse of
+  `escape_record_id()`. `parse_record_id()` and the SDK connections' CBOR
+  thing conversion both use it.
+
+### Behaviour change
+
+- Only record IDs containing `` ` `` or `\` produce different SurrealQL.
+  Plain and digit-leading IDs are written exactly as before.
+- `parse_record_id()` and the SDK connections' handling of `table:id` strings
+  on HTTP and WebSocket now decode `\\` and `` \` `` inside a
+  backtick-delimited ID: ``t:`a\\b` `` now addresses the ID `a\b`, where it
+  used to address `a\\b`. A doubled backtick is still read as one backtick,
+  and any other backslash is kept as written.
+
+### Migration note
+
+- None.
+
+---
+
 ## [0.21.21] - 2026-10-28
 
 **Bug fix release (V2 LTS).** One CLI fix (#303, #317), the `v2` port of #298

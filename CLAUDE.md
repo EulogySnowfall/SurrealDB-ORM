@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.21)
+> Context document for Claude AI - Last updated: October 2026 (0.21.22)
 
 <!-- -->
 
@@ -19,12 +19,30 @@
 
 ---
 
-## Current Version: 0.21.21 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.22 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.22
+
+ORM fix, the `v2` port of #301 (#310, #320). One small SDK helper added.
+
+- **The defect:** `escape_record_id()` (`surreal_sdk/protocol/cbor.py`, re-exported by `surreal_orm.utils`,
+  used by `format_thing()` and `RecordId.to_surql()`) doubled a backtick inside the backtick-delimited form and
+  left backslashes as written. SurrealDB 2.x has no doubled-backtick sequence: a backslash is the escape
+  character there (checked on 2.7.0), so an ID with a backtick did not parse and one with a backslash named a
+  different record. The helper dates from the digit-leading ID fix, whose tests only used plain characters.
+- **The fix:** `\` → `\\` first, then `` ` `` → `` \` `` (backslash first, so the one added before a backtick
+  is not doubled again). New `unescape_record_id()` is the inverse; `parse_record_id()` and both connections'
+  `_to_thing()` use it instead of three copies of `replace("``", "`")`, and still accept a doubled backtick.
+  `RelationQuerySet` builds its start node with `format_thing()`.
+- **Tests:** `tests/test_issue_310_v2_integration.py` drives every query-text path for IDs with backticks,
+  backslashes, a trailing backslash, `;`, quotes and `--`, and checks that only the target record changes (table
+  list and every other row identical). SurrealDB 2.x removes one array occurrence per `-=`, so the test removes
+  each append.
 
 ### What's New in 0.21.21
 
