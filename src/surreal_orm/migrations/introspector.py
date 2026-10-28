@@ -384,53 +384,35 @@ class ModelIntrospector:
         """
         Generate access state for a USER type table.
 
+        Built from :meth:`AccessGenerator.from_model`, the same definition
+        ``define_access()`` applies, so ``makemigrations`` and
+        ``schema_diff`` see the same ``SIGNUP`` set, hashing algorithm and
+        access name as the database receives.
+
         Args:
             model: The user model class
             table_name: Name of the table
 
         Returns:
             AccessState for authentication
+
+        Raises:
+            ValueError: If ``signup_fields`` is invalid.
         """
-        identifier_field = model.get_identifier_field()
-        password_field = model.get_password_field()
+        # Imported here: the auth package imports the model layer.
+        from ..auth.access import AccessGenerator
 
-        # Build signup fields
-        signup_fields: dict[str, str] = {}
-
-        # Get all model fields (skip computed — they have VALUE clauses)
-        computed_fields = getattr(model, "_computed_expressions", {})
-        for field_name in model.model_fields:
-            if field_name == "id" or field_name in computed_fields:
-                continue
-
-            if field_name == password_field:
-                # Password gets encrypted
-                signup_fields[field_name] = f"crypto::argon2::generate(${field_name})"
-            else:
-                # Regular fields are passed through
-                signup_fields[field_name] = f"${field_name}"
-
-        # Add default timestamp only if the model defines a created_at field
-        if "created_at" in model.model_fields and "created_at" not in signup_fields:
-            signup_fields["created_at"] = "time::now()"
-
-        # Build signin WHERE clause
-        signin_where = (
-            f"{identifier_field} = ${identifier_field} AND crypto::argon2::compare({password_field}, ${password_field})"
-        )
-
-        # Get duration settings from config
-        config = getattr(model, "model_config", {})
-        token_duration = config.get("token_duration", "15m")
-        session_duration = config.get("session_duration", "12h")
+        definition = AccessGenerator.from_model(model)
+        if definition is None:  # pragma: no cover - callers check the table type
+            raise ValueError(f"{model.__name__} is not a USER table; it has no access definition.")
 
         return AccessState(
-            name=f"{table_name.lower()}_auth",
+            name=definition.name,
             table=table_name,
-            signup_fields=signup_fields,
-            signin_where=signin_where,
-            duration_token=token_duration,
-            duration_session=session_duration,
+            signup_fields=definition.signup_fields,
+            signin_where=definition.signin_where or "",
+            duration_token=definition.duration_token,
+            duration_session=definition.duration_session,
         )
 
 
