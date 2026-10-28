@@ -21,7 +21,15 @@ from pydantic import Field
 
 from src.surreal_orm import BaseSurrealModel, Count, Q, SurrealConfigDict
 from src.surreal_orm.fields import ForeignKey
-from src.surreal_orm.utils import SAFE_IDENTIFIER_RE, validate_field_path, validate_identifier
+from src.surreal_orm.model_base import to_record_id
+from src.surreal_orm.utils import (
+    SAFE_IDENTIFIER_RE,
+    format_thing,
+    needs_id_escaping,
+    validate_field_path,
+    validate_identifier,
+)
+from surreal_sdk.protocol.cbor import RecordId
 
 
 class U328Item(BaseSurrealModel):
@@ -121,6 +129,33 @@ class TestModelChecks:
     async def test_bulk_update_rejects_trailing_newline(self) -> None:
         with pytest.raises(ValueError, match="Invalid field name"):
             await U328Item.objects().filter(age=1).bulk_update({"name\n": "x"})
+
+
+# ── Record-ID rendering (same full-match rule) ───────────────────────────
+
+
+class TestRecordIdRendering:
+    """A record ID ending in a newline is not a bare identifier any more."""
+
+    def test_needs_id_escaping_trailing_newline(self) -> None:
+        assert needs_id_escaping("abc\n") is True
+
+    def test_needs_id_escaping_plain_id_unchanged(self) -> None:
+        assert needs_id_escaping("abc") is False
+
+    def test_format_thing_backticks_trailing_newline(self) -> None:
+        assert format_thing("t", "abc\n") == "t:`abc\n`"
+
+    def test_format_thing_plain_id_unchanged(self) -> None:
+        assert format_thing("t", "abc") == "t:abc"
+
+    def test_to_record_id_rejects_table_with_trailing_newline(self) -> None:
+        assert to_record_id("t\n:abc") == "t\n:abc"
+
+    def test_to_record_id_plain_table_unchanged(self) -> None:
+        result = to_record_id("t:abc")
+        assert isinstance(result, RecordId)
+        assert (result.table, result.id) == ("t", "abc")
 
 
 # ── Table-name checks in the SDK ─────────────────────────────────────────
