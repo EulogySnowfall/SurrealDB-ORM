@@ -981,6 +981,15 @@ users = await (
 )
 ```
 
+A filter value is a variable reference only when it is exactly `$name` and `name`
+is passed to `.variables()`. Any other value, including `"$name"` for a name that
+is not declared, is bound as a parameter and compared as text:
+
+```python
+# Matches a user whose nickname is literally "$min_age"
+await User.objects().filter(nickname="$min_age").exec()
+```
+
 ### Raw SurrealQL
 
 ```python

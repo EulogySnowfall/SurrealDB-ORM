@@ -18,6 +18,7 @@ Example::
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -55,6 +56,7 @@ class Subquery:
         self,
         variables: dict[str, Any],
         counter: list[int],
+        declared: Collection[str] = frozenset(),
     ) -> str:
         """
         Compile the inner QuerySet to a parenthesized sub-SELECT.
@@ -67,6 +69,14 @@ class Subquery:
             variables: Mutable dict to collect parameterized variables.
             counter: Mutable single-element list ``[int]`` used as
                 auto-increment counter.
+            declared: Variable names the outer query declared through
+                ``.variables()``. A ``$name`` filter value inside the subquery
+                refers to a variable only if ``name`` is declared here or on
+                the inner QuerySet through ``.variables()``; the variables the
+                inner QuerySet declared are then added to ``variables`` (an
+                outer variable of the same name wins). Its ORM bindings from
+                an earlier compile (``$_fN``, ...) are neither declared nor
+                carried over. Any other value is bound as ``$_fN``.
 
         Returns:
             The sub-SELECT expression wrapped in parentheses.
@@ -88,14 +98,23 @@ class Subquery:
         # WHERE clause — build parts using the shared counter
         parts: list[str] = []
         qs_class = type(qs)
+        # Only the names the inner QuerySet declared itself: its _variables
+        # also hold the ORM bindings of any earlier compile ($_fN, ...).
+        inner_declared = frozenset(declared) | qs._declared_variables
 
         for field_name, lookup_name, value in qs._filters:
-            parts.append(qs_class._render_condition(field_name, lookup_name, value, variables, counter))
+            parts.append(qs_class._render_condition(field_name, lookup_name, value, variables, counter, inner_declared))
 
         for q in qs._q_filters:
-            rendered = qs._render_q(q, variables, counter)
+            rendered = qs._render_q(q, variables, counter, inner_declared)
             if rendered:
                 parts.append(rendered)
+
+        # Send the inner QuerySet's own variables with the outer query, or a
+        # reference to one of them would reach the server unbound.
+        for name in qs._declared_variables:
+            if name not in declared:
+                variables.setdefault(name, qs._variables[name])
 
         if parts:
             query += " WHERE " + " AND ".join(parts)
