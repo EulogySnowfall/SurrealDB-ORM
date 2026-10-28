@@ -6,6 +6,39 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.17] - 2026-10-28
+
+**Fix release.** `AuthenticatedUserMixin` only (#332, #351). Read *Behaviour
+change* below if you call `signin()`, `signup()` or `change_password()` on a
+table whose identifier values are not unique, or if you rely on their error
+handling. The SurrealDB pin is unchanged (tested against 3.3.4, supported
+range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`signin()` and `signup()` return the record the issued session token
+  belongs to (#332).** They read `$auth` on the sign-in connection and fetch
+  the user by that record ID, instead of looking the user up again by
+  `identifier_field` and taking the first row. When several records shared an
+  identifier value (no `UNIQUE` index on it), `AuthResult.user` could be a
+  different record from the one the token was issued for.
+- **`change_password()` updates only the record that signed in (#332)**,
+  instead of every record sharing the identifier value.
+- **`authenticate_token()` binds the decoded `$auth` record ID** when fetching
+  the user, so a record key that looks like a number (e.g. `⟨000000⟩`)
+  resolves to the right record (#332). The `record_id` string it returns is
+  unchanged.
+
+### Behaviour change
+
+- `signin()` / `signup()` raise `SurrealDbError` if the session record cannot
+  be read after a successful access call, and `DoesNotExist` if that record no
+  longer exists. They no longer require `identifier_field` among the
+  credentials; the `DEFINE ACCESS` definition validates them.
+- `change_password()` raises `SurrealDbError` when the update does not affect
+  exactly the signed-in record, instead of returning `True`.
+- Nothing changes for applications whose identifier values are unique.
+
 ## [0.34.16] - 2026-10-28
 
 **Fix release.** SDK `HTTPConnection` sign-in state only (#330, #347). Read
