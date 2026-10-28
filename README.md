@@ -37,6 +37,24 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.35.1
+
+**Fix release.** `validate_token()` cache and auth connection routing
+([#331](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/331)). See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+- **The validation cache is bounded by the token's `exp`.** A cached entry lasts until `min(ttl, exp)`; a token whose
+  `exp` cannot be read is validated on every call and never cached.
+- **The model's table is checked.** `validate_token()` and `authenticate_token()` return `None` for a token whose
+  `$auth` record is not in the model's table, and the cache is keyed per connection (name, URL, namespace, database),
+  model table and token. `invalidate_token_cache(token)` removes the token's entries everywhere.
+- **Auth methods follow connection routing.** With `class User(AuthenticatedUserMixin, BaseSurrealModel)`, `signup`,
+  `signin`, `authenticate_token`, `validate_token`, `define_access` and the bearer-key methods used to go to the
+  `default` connection; they now honour `connection=` and `SurrealDBConnectionManager.using()`.
+- **Upgrading:** validate a token through the model it belongs to. If the model is routed to another connection, make
+  sure the access is defined on that database.
+- **Known limitation:** `validate_token_local()` does not apply the table check; use `validate_token()` when the table
+  matters.
+
 ## What's New in 0.35.0
 
 **Minor release.** Two fixes, both with a behaviour change; the sign-up fix adds the `signup_fields` setting, hence
