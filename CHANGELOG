@@ -6,6 +6,38 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.23] - 2026-10-28
+
+**Bug fix release (V2 LTS).** One ORM fix (#315, #335), the `v2` port of #309
+from `main`: `QueryCache` entries are keyed by the connection a query runs on.
+Read *Behaviour change*. The SurrealDB pin is unchanged (tested against 2.7.0,
+supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`.cache()` queries no longer share entries across connections (#315).**
+  The same cached query run under different named connections (`using()`,
+  `SurrealConfigDict(connection=...)`) pointing at different databases returned
+  the rows cached from the first one. Cache keys now include the effective
+  connection's name, URL, namespace and database (never credentials).
+- **Writes invalidate only the database they went to.** A `save()` /
+  `update()` / `delete()` drops the table's cached entries for that database,
+  under every connection name pointing at it, plus the table's entries stored
+  without a connection. Cached results for other databases stay in place.
+
+### Behaviour change
+
+- Each connection identity (name, URL, namespace, database) now has its own
+  cache entries; previously one cached result was served to every connection
+  running the same query on the same table.
+- `QueryCache.make_key()` and `QueryCache.set()` gain an optional keyword-only
+  `connection=` argument. Calls without it keep working. `invalidate(Model)`,
+  `clear()` and `stats()` are unchanged.
+
+### Migration
+
+- None. The cache lives in memory only, so nothing persisted changes shape.
+
 ## [0.21.22] - 2026-10-28
 
 **Bug fix release (V2 LTS).** One ORM fix (#310, #320), the `v2` port of #301

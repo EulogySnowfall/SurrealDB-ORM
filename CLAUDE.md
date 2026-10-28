@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.22)
+> Context document for Claude AI - Last updated: October 2026 (0.21.23)
 
 <!-- -->
 
@@ -19,12 +19,26 @@
 
 ---
 
-## Current Version: 0.21.22 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.23 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.34.x   | Active development              |
+
+### What's New in 0.21.23
+
+ORM fix, the `v2` port of #309 (#315, #335). No new public API.
+
+- **The defect:** `QueryCache.make_key()` hashed the query, its variables and the table only. Two named
+  connections pointing at different databases therefore shared one entry for the same `.cache()` query, and
+  the second returned the first one's rows. Invalidation on write was per table, across all databases.
+- **The fix:** `QuerySet` passes `QueryCache._connection_identity(model)` — `(name, url, namespace, database)`
+  of the effective connection (`using()` override, then model `connection`, then `"default"`), never
+  credentials — to `make_key()` and `set()`. Entries are bucketed by (location, table); a write drops the
+  bucket of the database it went to under every connection name pointing at it, plus connection-less entries.
+- **Tests:** `tests/test_issue_315_v2_unit.py` (keys, buckets, invalidation scope) and
+  `tests/test_issue_315_v2_integration.py` (same table in two databases, invalidation per database).
 
 ### What's New in 0.21.22
 
