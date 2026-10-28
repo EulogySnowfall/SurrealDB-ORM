@@ -13,6 +13,7 @@ accepted as an identifier.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import Field
@@ -119,6 +120,28 @@ class TestModelChecks:
     async def test_bulk_update_rejects_trailing_newline(self) -> None:
         with pytest.raises(ValueError, match="Invalid field name"):
             await U328Item.objects().filter(age=1).bulk_update({"name\n": "x"})
+
+
+# ── Table-name checks in the SDK ─────────────────────────────────────────
+
+
+class TestSdkTableNames:
+    @pytest.mark.parametrize("table", ["users\n", "users "])
+    def test_streams_reject_trailing_whitespace(self, table: str) -> None:
+        from surreal_sdk.streaming.change_feed import ChangeFeedStream
+        from surreal_sdk.streaming.live_select import LiveSelectStream
+
+        with pytest.raises(ValueError, match="Invalid table name"):
+            ChangeFeedStream(MagicMock(), table)
+        with pytest.raises(ValueError, match="Invalid table name"):
+            LiveSelectStream(MagicMock(), table)
+
+    def test_streams_accept_plain_table(self) -> None:
+        from surreal_sdk.streaming.change_feed import ChangeFeedStream
+        from surreal_sdk.streaming.live_select import LiveSelectStream
+
+        assert ChangeFeedStream(MagicMock(), "users").table == "users"
+        assert LiveSelectStream(MagicMock(), "users").table == "users"
 
 
 # ── filter(), Q and values() ─────────────────────────────────────────────
