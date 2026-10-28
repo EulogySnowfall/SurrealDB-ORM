@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 from ..exceptions import ConnectionError, QueryError
 from ..protocol.rpc import RPCRequest, RPCResponse
 from ..types import AuthResponse
+from ..utils import unescape_record_id
 
 logger = logging.getLogger(__name__)
 
@@ -726,10 +727,7 @@ class HTTPConnection(BaseSurrealConnection):
             table, id_part = thing.split(":", 1)
 
             # Handle backtick-escaped IDs (e.g., "`7abc`" -> "7abc")
-            if id_part.startswith("`") and id_part.endswith("`"):
-                id_part = id_part[1:-1].replace("``", "`")
-
-            return RecordId(table=table, id=id_part)
+            return RecordId(table=table, id=unescape_record_id(id_part))
         return thing
 
     async def select(self, thing: str) -> Any:

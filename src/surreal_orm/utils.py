@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
 from surreal_sdk.protocol.cbor import _warn_naive_datetime
-from surreal_sdk.utils import find_param_references, substitute_params
+from surreal_sdk.utils import find_param_references, substitute_params, unescape_record_id
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +83,18 @@ def needs_id_escaping(record_id: str) -> bool:
 
 
 def escape_record_id(record_id: str) -> str:
-    """
+    r"""
     Escape a record ID for use in SurrealQL if needed.
 
-    Uses SurrealDB's backtick escaping format for IDs that contain
-    special characters or start with a digit.
+    Uses SurrealDB's backtick-delimited form for IDs that contain special
+    characters or start with a digit. Inside that form SurrealDB reads ``\``
+    as an escape character, so a backslash is written ``\\`` and a backtick
+    ``\``` — the backslash first, otherwise the backslash added in front of a
+    backtick would itself be doubled.
+
+    This is the only place a record ID is turned into SurrealQL text:
+    :func:`format_thing` and every query builder go through it.
+    :func:`surreal_sdk.utils.unescape_record_id` reads the result back.
 
     Args:
         record_id: The record ID string (without table prefix)
@@ -99,10 +106,11 @@ def escape_record_id(record_id: str) -> str:
         escape_record_id("abc123")   # "abc123" - no escaping needed
         escape_record_id("7abc")     # "`7abc`" - escaped
         escape_record_id("test-id")  # "`test-id`" - escaped
+        escape_record_id("a`b")      # "`a\`b`"
+        escape_record_id("dir\\")    # "`dir\\`"
     """
     if needs_id_escaping(record_id):
-        # Escape any backticks within the ID by doubling them
-        escaped = record_id.replace("`", "``")
+        escaped = record_id.replace("\\", "\\\\").replace("`", "\\`")
         return f"`{escaped}`"
     return record_id
 
@@ -135,7 +143,8 @@ def parse_record_id(full_id: str) -> tuple[str | None, str]:
     """
     Parse a full record ID (table:id) into table and id parts.
 
-    Handles escaped IDs with backticks.
+    Handles backtick-escaped IDs, as :func:`format_thing` writes them, through
+    :func:`surreal_sdk.utils.unescape_record_id`.
 
     Args:
         full_id: Full record ID in format "table:id" or just "id"
@@ -153,12 +162,7 @@ def parse_record_id(full_id: str) -> tuple[str | None, str]:
 
     table, id_part = full_id.split(":", 1)
 
-    # Handle backtick-escaped IDs
-    if id_part.startswith("`") and id_part.endswith("`"):
-        # Remove backticks and unescape doubled backticks
-        id_part = id_part[1:-1].replace("``", "`")
-
-    return table, id_part
+    return table, unescape_record_id(id_part)
 
 
 def _is_complex_value(value: Any) -> bool:
