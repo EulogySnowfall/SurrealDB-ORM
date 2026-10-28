@@ -836,9 +836,10 @@ class TestTheParserStopsAtPermissions:
     @pytest.mark.parametrize(
         ("default", "parsed"),
         [
-            # SurrealDB escapes a quote inside a string with a backslash.
-            (r"'a\'b PERMISSIONS FULL'", r"a\'b PERMISSIONS FULL"),
-            ('"a\'b\\"c PERMISSIONS FULL"', "a'b\\\"c PERMISSIONS FULL"),
+            # SurrealDB escapes a quote inside a string with a backslash; the
+            # escapes are decoded on the way back (#283).
+            (r"'a\'b PERMISSIONS FULL'", "a'b PERMISSIONS FULL"),
+            ('"a\'b\\"c PERMISSIONS FULL"', "a'b\"c PERMISSIONS FULL"),
         ],
     )
     def test_an_escaped_quote_does_not_end_the_string(self, default: str, parsed: str) -> None:

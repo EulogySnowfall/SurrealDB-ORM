@@ -90,13 +90,66 @@ def parse_filter_key(key: str) -> tuple[str, str]:
     return field_name, lookup_name
 
 
-def escape_single_quotes(value: str) -> str:
-    """Escape single quotes for embedding in SurrealQL string literals.
+def surql_string(text: str) -> str:
+    """Render *text* as a single-quoted SurrealQL string literal.
 
-    SurrealDB uses doubled single quotes (``''``) for escaping inside
-    single-quoted strings.
+    SurrealQL escapes with a backslash, not by doubling the quote as SQL does:
+    ``'it''s'`` is a parse error, and an unescaped backslash starts an escape
+    sequence (``'C:\\temp'`` holds a tab). The backslash is escaped first, so
+    the backslash added before each apostrophe is not escaped again.
+
+    Args:
+        text: The string value
+
+    Returns:
+        The quoted literal, read back by the server as *text*
     """
-    return value.replace("'", "''")
+    return "'" + escape_single_quotes(text) + "'"
+
+
+#: The escape sequences SurrealDB reports inside a string literal.
+_SURQL_ESCAPES = {"\\": "\\", "'": "'", '"': '"', "n": "\n", "t": "\t", "r": "\r", "0": "\0", "b": "\b", "f": "\f"}
+_SURQL_ESCAPE_RE = re.compile(r"\\(?:u\{([0-9A-Fa-f]{1,6})\}|u([0-9A-Fa-f]{4})|(.))", re.DOTALL)
+
+
+def _decode_surql_escape(match: re.Match[str]) -> str:
+    """Decode one backslash escape of a SurrealQL string literal."""
+    code = match.group(1) or match.group(2)
+    if code is not None:
+        return chr(int(code, 16))
+    char = match.group(3)
+    # An escape SurrealDB does not define is kept as written.
+    return _SURQL_ESCAPES.get(char, "\\" + char)
+
+
+def parse_surql_string(raw: str) -> str:
+    """Read back a SurrealQL string literal as the server reports it.
+
+    SurrealDB reports a string in single quotes unless it contains an
+    apostrophe, in which case it uses double quotes. Either way the content
+    carries backslash escapes (``\\"``, ``\\\\``, ``\\n``...), decoded here in
+    one pass. The inverse of :func:`surql_string`.
+
+    Args:
+        raw: The literal, quotes included
+
+    Returns:
+        The string value; *raw* stripped but otherwise unchanged when it is
+        not a quoted literal
+    """
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] in "'\"" and raw[-1] == raw[0]:
+        return _SURQL_ESCAPE_RE.sub(_decode_surql_escape, raw[1:-1])
+    return raw
+
+
+def escape_single_quotes(value: str) -> str:
+    """Escape *value* for the inside of a single-quoted SurrealQL string literal.
+
+    Backslashes become ``\\\\``, then apostrophes ``\\'``; SurrealQL has no
+    doubled-quote escape. :func:`surql_string` adds the quotes.
+    """
+    return value.replace("\\", "\\\\").replace("'", "\\'")
 
 
 #: A whole value naming one query variable: ``$`` then an identifier, nothing else.
