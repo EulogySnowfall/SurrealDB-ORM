@@ -6,6 +6,44 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.34.19] - 2026-10-28
+
+**Fix release.** SDK change feeds only (#346, #361). Read *Behaviour change*
+below if you call `ChangeFeedStream.get_changes()` while other tables are
+being written. The SurrealDB pin is unchanged (tested against 3.3.4,
+supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **Change-feed reads no longer fail to return while other tables are being
+  written (#346).** A read stopped only on an empty read of the database
+  feed, so a single write on any table between two reads kept it going:
+  under a steady writer on another table, `ChangeFeedStream.get_changes()`
+  never returned, the default start of `stream()` / `stream_batch()` /
+  `MultiTableChangeFeed.stream()` never resolved, and a caught-up stream
+  polled without sleeping. `QuerySet.changes()` goes through the SDK stream
+  and is fixed too. A caught-up poll now ends the read and sleeps
+  `poll_interval` even when other tables are busy. The new early stop is
+  safe on SurrealDB 3.3, where `SHOW CHANGES … LIMIT` counts (versionstamp,
+  table) units while the database view merges them by versionstamp: a
+  window cut inside a multi-table transaction is never taken for the end of
+  the feed, because a window ends the read only when an upper bound on its
+  units is below the scan limit. An over-count costs one extra read, never
+  an entry.
+
+### Behaviour change
+
+- `get_changes()` is a snapshot read: it stops at the end of the feed as it
+  stood when read, and does not chase writes made meanwhile on any table.
+  Each entry is still delivered exactly once.
+
+### Known limitation
+
+- With the JSON protocol (CBOR is the default), a record id whose escaped
+  table name contains `:` (for example `` `a:b`:1 ``) is split at the first
+  `:`, so two such tables can be counted as one unit. In a window exactly at
+  the scan limit this could take a cut window for the end of the feed.
+
 ## [0.34.18] - 2026-10-28
 
 **Fix release.** `QueryCache` automatic invalidation only (#338, #356). Read

@@ -12,8 +12,9 @@ import pytest
 from src.surreal_sdk.connection.http import HTTPConnection
 from src.surreal_sdk.connection.websocket import WebSocketConnection
 from src.surreal_sdk.exceptions import ChangeFeedError, QueryError
+from src.surreal_sdk.protocol.cbor import RecordId
 from src.surreal_sdk.streaming import change_feed as change_feed_module
-from src.surreal_sdk.streaming.change_feed import ChangeFeedStream, MultiTableChangeFeed, _render_since
+from src.surreal_sdk.streaming.change_feed import ChangeFeedStream, MultiTableChangeFeed, _render_since, _window_units
 from src.surreal_sdk.streaming.live_query import LiveAction, LiveNotification, LiveQuery, LiveQueryManager
 from src.surreal_sdk.types import QueryResponse
 
@@ -450,7 +451,8 @@ class TestChangeFeedQueries:
         monkeypatch.setattr(change_feed_module.asyncio, "sleep", fake_sleep)
         assert [entry async for entry in feed.stream(since=0)] == []
         assert cursors_at_sleep == ["11"]
-        assert server.show_queries == 2
+        # The window ends the feed, so no second, empty read is needed (#346).
+        assert server.show_queries == 1
 
     async def test_an_idle_poll_sleeps(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """No poll follows an empty one without a sleep, and a delivered entry is not repeated."""
@@ -533,6 +535,202 @@ class TestMultiTableChangeFeedStream:
         feed = MultiTableChangeFeed(server, ["users", "orders"], poll_interval=0.01)  # type: ignore[arg-type]
         with pytest.raises(ChangeFeedError):
             await asyncio.wait_for(anext(feed.stream(since=0)), 2.0)
+
+
+# ==================== Change feed under a busy writer (#346) ====================
+
+
+class BusyChangeFeedServer(FakeChangeFeedServer):
+    """A server another table is written to before every query, so the feed is never empty."""
+
+    async def query(self, sql: str, vars: dict[str, Any] | None = None) -> QueryResponse:
+        self.write("busy", {"id": f"busy:{self.next_vs}"})
+        return await super().query(sql, vars)
+
+
+def _dt(name: str) -> dict[str, Any]:
+    return {"define_table": {"name": name, "changefeed": {"expiry": "1h", "original": False}}}
+
+
+class TestWindowUnits:
+    """``_window_units`` bounds the ``(versionstamp, table)`` units ``LIMIT`` counted (3.3.4 shapes)."""
+
+    def test_a_merged_multi_table_entry_counts_each_table(self) -> None:
+        entry = {
+            "versionstamp": 5,
+            "changes": [{"update": {"id": "sa:5"}}, {"update": {"id": "sb:4"}}, {"update": {"id": "sb:5"}}],
+        }
+        assert _window_units([entry]) == 2
+
+    def test_define_table_shares_the_unit_of_its_records(self) -> None:
+        entry = {
+            "versionstamp": 7,
+            "changes": [_dt("pc"), {"update": {"id": "pc:1"}}, _dt("pd"), {"update": {"id": "pd:1"}}],
+        }
+        assert _window_units([entry]) == 2
+        assert _window_units([{"versionstamp": 1, "changes": [_dt("qa")]}, {"versionstamp": 2, "changes": [_dt("qb")]}]) == 2
+
+    def test_a_record_id_object_is_read_by_its_table(self) -> None:
+        entry = {
+            "versionstamp": 5,
+            "changes": [
+                {"update": {"id": RecordId("sa", 5)}},
+                {"update": {"id": RecordId("sb", 4)}},
+                {"delete": {"id": "sb:5"}},
+            ],
+        }
+        assert _window_units([entry]) == 2
+
+    def test_include_original_and_delete_shapes(self) -> None:
+        entry = {
+            "versionstamp": 9,
+            "changes": [
+                {"current": {"id": "pb:1", "x": 2}, "update": [{"op": "replace", "path": "/x", "value": 1}]},
+                {"delete": {"id": "pb:2", "original": {"id": "pb:2"}}},
+                {"delete": {"id": "pa:2"}},
+            ],
+        }
+        assert _window_units([entry]) == 2
+
+    def test_a_change_without_a_table_counts_on_its_own(self) -> None:
+        entry = {
+            "versionstamp": 3,
+            "changes": [{"update": {}}, {"update": {"id": 42}}, {"something_new": {}}, {"update": {"id": "sa:1"}}],
+        }
+        assert _window_units([entry]) == 4
+
+    def test_an_entry_counts_at_least_one(self) -> None:
+        assert _window_units([{"versionstamp": 1, "changes": []}, {"versionstamp": 2}]) == 2
+        assert _window_units([]) == 0
+
+
+class TestBusyWriter:
+    """Writes on another table between reads used to keep the readers going forever."""
+
+    async def test_resolve_now_returns(self) -> None:
+        server = BusyChangeFeedServer()
+        for i in range(30):
+            server.write("other" if i % 2 else "orders", {"id": f"x:{i}"})
+        now = await asyncio.wait_for(_feed(server)._resolve_now(), 2.0)
+        assert now >= 1030
+        assert server.show_queries == 1
+
+    async def test_get_changes_returns_the_table_entries(self) -> None:
+        server = BusyChangeFeedServer()
+        server.write("orders", {"id": "orders:1"})
+        server.write("other", {"id": "other:1"})
+        server.write("orders", {"id": "orders:2"})
+        entries = await asyncio.wait_for(_feed(server).get_changes(since=0), 2.0)
+        assert _ids(entries) == ["orders:1", "orders:2"]
+
+    async def test_get_changes_pages_past_other_tables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(change_feed_module, "_SCAN_LIMIT", 4)
+        server = BusyChangeFeedServer()
+        for i in range(20):
+            server.write("orders" if i % 5 == 0 else "other", {"id": f"{'orders' if i % 5 == 0 else 'other'}:{i}"})
+        entries = await asyncio.wait_for(_feed(server).get_changes(since=0), 2.0)
+        assert _ids(entries) == ["orders:0", "orders:5", "orders:10", "orders:15"]
+
+    async def test_stream_default_start_delivers_a_later_change(self) -> None:
+        server = BusyChangeFeedServer()
+        server.write("orders", {"id": "orders:old"})
+        feed = _feed(server, poll_interval=0.01)
+        stream = feed.stream()
+        first = asyncio.ensure_future(anext(stream))
+        for _ in range(100):
+            if feed.cursor is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert feed.cursor is not None
+        server.write("orders", {"id": "orders:new"})
+        entry = await asyncio.wait_for(first, 2.0)
+        assert _ids([entry]) == ["orders:new"]
+        await stream.aclose()
+
+    async def test_multi_table_default_start_delivers_a_later_change(self) -> None:
+        server = BusyChangeFeedServer()
+        server.write("users", {"id": "users:old"})
+        feed = MultiTableChangeFeed(server, ["users", "orders"], poll_interval=0.01)  # type: ignore[arg-type]
+        stream = feed.stream()
+        first = asyncio.ensure_future(anext(stream))
+        for _ in range(100):
+            if all(s.cursor is not None for s in feed.streams.values()):
+                break
+            await asyncio.sleep(0.01)
+        server.write("orders", {"id": "orders:new"})
+        table, entry = await asyncio.wait_for(first, 2.0)
+        assert (table, _ids([entry])) == ("orders", ["orders:new"])
+        await stream.aclose()
+
+    async def test_a_caught_up_poll_sleeps(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Other tables' writes are no reason to poll again without ``poll_interval``."""
+        server = BusyChangeFeedServer()
+        server.write("orders", {"id": "orders:a"})
+        feed = _feed(server, poll_interval=0.5)
+        sleeps: list[tuple[float, int]] = []
+
+        async def fake_sleep(delay: float) -> None:
+            sleeps.append((delay, server.show_queries))
+            if len(sleeps) == 3:
+                feed.stop()
+
+        monkeypatch.setattr(change_feed_module.asyncio, "sleep", fake_sleep)
+        delivered = [entry async for entry in feed.stream(since=0)]
+        assert _ids(delivered) == ["orders:a"]
+        # Delivery poll, then one caught-up poll before each sleep.
+        assert sleeps == [(0.5, 2), (0.5, 3), (0.5, 4)]
+
+    async def test_a_caught_up_multi_table_poll_sleeps(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        server = BusyChangeFeedServer()
+        feed = MultiTableChangeFeed(server, ["users", "orders"], poll_interval=0.5)  # type: ignore[arg-type]
+        sleeps: list[tuple[float, int]] = []
+
+        async def fake_sleep(delay: float) -> None:
+            sleeps.append((delay, server.show_queries))
+            if len(sleeps) == 3:
+                feed.stop()
+
+        monkeypatch.setattr(change_feed_module.asyncio, "sleep", fake_sleep)
+        assert [item async for item in feed.stream(since=0)] == []
+        # One read per table before each sleep.
+        assert sleeps == [(0.5, 2), (0.5, 4), (0.5, 6)]
+
+
+class TestWindowCutMidVersion:
+    """On 3.3 a window shorter than ``LIMIT`` can end inside a multi-table versionstamp."""
+
+    @staticmethod
+    def _server() -> FakeChangeFeedServer:
+        # Keys (10, aaa), (10, bbb), (11, aaa), (11, orders): LIMIT 3 returns two
+        # entries, the second holding only ``aaa`` of versionstamp 11.
+        server = FakeChangeFeedServer()
+        server.write("aaa", {"id": "aaa:0"}, vs=10)
+        server.write("bbb", {"id": "bbb:0"}, vs=10)
+        server.write("aaa", {"id": "aaa:1"}, vs=11)
+        server.write("orders", {"id": "orders:11"}, vs=11)
+        return server
+
+    async def test_the_window_is_cut_inside_a_versionstamp(self) -> None:
+        window = self._server().show(None, "0", 3)
+        assert [e["versionstamp"] for e in window] == [10, 11]
+        assert _ids(window) == ["aaa:0", "bbb:0", "aaa:1"]
+
+    async def test_get_changes_delivers_the_entry_at_the_cut(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(change_feed_module, "_SCAN_LIMIT", 3)
+        entries = await asyncio.wait_for(_feed(self._server()).get_changes(since=0), 2.0)
+        assert _ids(entries) == ["orders:11"]
+
+    async def test_stream_delivers_the_entry_at_the_cut(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(change_feed_module, "_SCAN_LIMIT", 3)
+        stream = _feed(self._server(), poll_interval=0.01).stream(since=0)
+        assert _ids(await _take(stream, 1)) == ["orders:11"]
+        await stream.aclose()
+
+    async def test_counting_entries_would_lose_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The criterion of 2.x (entries < LIMIT), which this fake must defeat."""
+        monkeypatch.setattr(change_feed_module, "_SCAN_LIMIT", 3)
+        monkeypatch.setattr(change_feed_module, "_window_units", len)
+        assert await _feed(self._server()).get_changes(since=0) == []
 
 
 class TestStreamingIntegration:
