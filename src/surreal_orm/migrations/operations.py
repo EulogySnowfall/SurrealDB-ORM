@@ -5,6 +5,8 @@ Each operation represents a single schema modification that can be
 applied (forwards) or reverted (backwards).
 """
 
+import re
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
@@ -134,6 +136,16 @@ def _previous_attr(name: str) -> str:
     return "previous_type" if name == "field_type" else f"previous_{name}"
 
 
+#: A ``str`` default still emitted as an expression, for older migration
+#: files: a whole no-argument function call (``time::now()``) or a whole bare
+#: parameter (``$value``). Deliberately narrow: no arguments, no spaces, no
+#: operators, so nothing but that one call or parameter can be emitted.
+_LEGACY_EXPRESSION_DEFAULT = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+\(\)|\$[A-Za-z_][A-Za-z0-9_]*",
+    re.ASCII,
+)
+
+
 def _render_default(default: Any) -> str:
     """
     Render a DEFAULT value as SurrealQL.
@@ -143,11 +155,18 @@ def _render_default(default: Any) -> str:
     server's lexer reads it (:func:`surql_string_literal`), or the statement
     does not parse, or stores a different text.
 
-    A ``str`` is always a text, whatever it contains: ``'fr::CA'`` is a
-    string, not a function. A server-side expression such as ``time::now()``
-    is a :class:`~surreal_orm.SurrealFunc`, which is what
-    ``_parse_default_value`` returns for an unquoted default, and is emitted
-    as written.
+    A ``str`` is a text, whatever it contains: ``'fr::CA'`` is a string, not
+    a function. A server-side expression such as ``time::now()`` is a
+    :class:`~surreal_orm.SurrealFunc`, which is what ``_parse_default_value``,
+    the migration generator and ``inspectdb`` produce for an unquoted
+    default, and is emitted as written.
+
+    One deprecated exception keeps migration files written before
+    ``SurrealFunc`` defaults working: a ``str`` that is *exactly* a
+    no-argument function call (``time::now()``, ``rand::uuid()``) or a bare
+    parameter (``$value``) is still emitted unquoted, with a
+    ``DeprecationWarning``. Anything else (arguments, operators, spaces,
+    quotes, ``;``) is quoted.
 
     Args:
         default: The default value, as the model or the database reports it
@@ -160,6 +179,13 @@ def _render_default(default: Any) -> str:
     if isinstance(default, bool):
         return str(default).lower()
     if isinstance(default, str):
+        if _LEGACY_EXPRESSION_DEFAULT.fullmatch(default):
+            warnings.warn(
+                "Passing a server-side expression as a str default is deprecated; wrap it in SurrealFunc(...)",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            return default
         return surql_string_literal(default)
     return str(default)
 

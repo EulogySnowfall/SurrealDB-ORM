@@ -17,6 +17,8 @@ never closed, swallowed every clause after it.
 Run with: pytest tests/test_issue_284_v2_unit.py
 """
 
+import warnings
+
 import pytest
 
 from src.surreal_orm.migrations.define_parser import (
@@ -213,9 +215,40 @@ class TestDefaultExpressions:
     instead of as a string.
     """
 
-    @pytest.mark.parametrize("text", ["fr::CA", "$value", "x::y; z", "a::b -- c"])
-    def test_str_default_is_always_quoted(self, text: str) -> None:
-        assert _server_reads(_render_default(text)) == text
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "fr::CA",
+            "x::y; z",
+            "a::b -- c",
+            "x::y; DEFINE TABLE i284_other; -- z",
+            "a::b(1)",
+            "$x y",
+            "time::now() + 1d",
+            "time::now()\n",
+            "$value;",
+            "(time::now())",
+        ],
+    )
+    def test_str_default_is_quoted(self, text: str) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            assert _server_reads(_render_default(text)) == text
+
+    @pytest.mark.parametrize("text", ["time::now()", "rand::uuid()", "rand::uuid::v7()", "$value", "$auth"])
+    def test_legacy_str_expression_is_unquoted_with_a_warning(self, text: str) -> None:
+        """Older migration files carry ``default="time::now()"`` as a ``str``.
+
+        A whole no-argument call or a bare parameter still renders as written,
+        and says it is deprecated.
+        """
+        with pytest.warns(DeprecationWarning, match=r"wrap it in SurrealFunc"):
+            assert _render_default(text) == text
+
+    def test_legacy_str_expression_in_a_rollback(self) -> None:
+        op = AlterField(table="t", name="c", field_type="datetime", previous_type="datetime", previous_default="time::now()")
+        with pytest.warns(DeprecationWarning):
+            assert op.backwards() == "DEFINE FIELD OVERWRITE c ON t TYPE datetime DEFAULT time::now();"
 
     def test_expression_default_is_emitted_as_written(self) -> None:
         assert _render_default(SurrealFunc("time::now()")) == "time::now()"
@@ -235,7 +268,7 @@ class TestDefaultExpressions:
         [
             "DEFINE FIELD s ON t TYPE string DEFAULT 'x::y; z' PERMISSIONS FULL",
             'DEFINE FIELD s ON t TYPE string DEFAULT "it\'s x::y; -- z" PERMISSIONS FULL',
-            "DEFINE FIELD s ON t TYPE string DEFAULT '$value' PERMISSIONS FULL",
+            "DEFINE FIELD s ON t TYPE string DEFAULT '$x y' PERMISSIONS FULL",
         ],
     )
     def test_server_text_default_replays_as_text(self, definition: str) -> None:

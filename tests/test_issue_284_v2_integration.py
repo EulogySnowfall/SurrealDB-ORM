@@ -10,6 +10,7 @@ Run with: pytest -m integration tests/test_issue_284_v2_integration.py
 """
 
 import re
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -20,6 +21,7 @@ from src.surreal_orm.migrations.db_introspector import DatabaseIntrospector
 from src.surreal_orm.migrations.define_parser import _unquote_surql_string
 from src.surreal_orm.migrations.introspector import introspect_models
 from src.surreal_orm.migrations.operations import (
+    AlterField,
     CreateIndex,
     DefineAccess,
     DefineEvent,
@@ -29,6 +31,7 @@ from src.surreal_orm.migrations.operations import (
 )
 from src.surreal_orm.migrations.state import SchemaState
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
+from src.surreal_orm.surreal_function import SurrealFunc
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_issue_284_v2"
@@ -45,7 +48,7 @@ TEXTS = [
     "a\\' ; DEFINE TABLE i284_other; -- b",
     "end\\",
     "x::y; DEFINE TABLE i284_other; -- z",
-    "$value",
+    "$x y",
 ]
 
 
@@ -203,3 +206,36 @@ async def test_default_text_replays_unchanged(text: str) -> None:
     client = await surreal_orm.SurrealDBConnectionManager.get_client()
     table_info = (await client.query(f"INFO FOR TABLE {DOC};")).first_result.result
     assert set(table_info["fields"]) == {"body"}
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_legacy_str_expression_default_rolls_back_to_an_expression() -> None:
+    """A migration file written before SurrealFunc defaults still rolls back.
+
+    ``previous_default="time::now()"`` as a ``str`` is emitted as the
+    function (with a DeprecationWarning), not as the text ``'time::now()'``,
+    which a datetime column would reject on every CREATE.
+    """
+    await _run(_render_define_table(DOC, overwrite=False, schema_mode="SCHEMAFULL"))
+    await _run(_render_define_field(DOC, "created", overwrite=False, field_type="datetime"))
+    op = AlterField(
+        table=DOC,
+        name="created",
+        field_type="datetime",
+        default=SurrealFunc("time::now() + 1d"),
+        previous_type="datetime",
+        previous_default="time::now()",
+    )
+    await _run(op.forwards())
+    with pytest.warns(DeprecationWarning, match=r"wrap it in SurrealFunc"):
+        rollback = op.backwards()
+    await _run(rollback)
+
+    client = await surreal_orm.SurrealDBConnectionManager.get_client()
+    table_info = (await client.query(f"INFO FOR TABLE {DOC};")).first_result.result
+    assert "DEFAULT time::now()" in table_info["fields"]["created"], table_info["fields"]["created"]
+
+    await _run(f"CREATE {DOC}:one;")
+    rows = (await client.query(f"SELECT created FROM {DOC}:one;")).first_result.result
+    assert isinstance(rows[0]["created"], datetime), rows
