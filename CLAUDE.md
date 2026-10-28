@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.34.18)
+> Context document for Claude AI - Last updated: October 2026 (0.34.19)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.34.18 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.34.19 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
 
 ### Branch Strategy
 
@@ -18,6 +18,27 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.4**  | 0.34.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.34.19
+
+One fix (#346 via #361), `surreal_sdk/streaming/change_feed.py` only. Pin
+unchanged (3.3.4). `v2`: already fixed by #339, where counting entries is
+correct (on 2.7.0 each (versionstamp, table) pair is its own entry).
+
+- **A window that was not cut by the server's `LIMIT` ends the read.** The
+  cursor moves past its last versionstamp, `_resolve_now()` returns,
+  `get_changes()` stops, and a poll with nothing for the table sleeps
+  `poll_interval`, in `ChangeFeedStream` and `MultiTableChangeFeed`. Before,
+  only an empty database window stopped a read, so any writer elsewhere in
+  the database kept it running.
+- **On 3.3, `LIMIT` counts (versionstamp, table) units, not entries.** The
+  database view merges one versionstamp's units into one entry, so
+  `_window_units()` bounds the count from above (distinct tables per entry,
+  at least one, one per change whose table cannot be told). Only a window
+  below the scan limit by that bound is caught up; a full window still
+  re-reads its last versionstamp.
+- **Known limitation:** a JSON-protocol string id with an escaped table name
+  containing `:` is split at the first `:` and can be under-counted.
 
 ### What's New in 0.34.18
 
