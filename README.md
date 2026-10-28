@@ -37,6 +37,22 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.34.17
+
+**Fix release.** `AuthenticatedUserMixin` only. If your identifier values are not unique, or you handle errors from
+`signin()`, `signup()` or `change_password()`, see the behaviour change below and [CHANGELOG.md](CHANGELOG.md).
+
+- **`signin()` / `signup()` return the session's own record**
+  ([#332](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/332)). The user is fetched by the `$auth` record ID
+  of the issued token, not by a second lookup on `identifier_field`. When several records shared an identifier value,
+  `AuthResult.user` could be a different record from the token's.
+- **`change_password()` updates only the signed-in record**, not every record sharing the identifier value.
+- **`authenticate_token()`** resolves record keys that look like numbers (e.g. `⟨000000⟩`) to the right record.
+- **Behaviour change:** `signin()`/`signup()` raise `SurrealDbError` if the session record cannot be read and
+  `DoesNotExist` if it no longer exists, and no longer require `identifier_field` among the credentials.
+  `change_password()` raises `SurrealDbError` instead of returning `True` when the update does not affect exactly the
+  signed-in record.
+
 ## What's New in 0.34.16
 
 **Fix release.** SDK `HTTPConnection` only. If you call `authenticate()` or `signup()` on an HTTP connection that was
