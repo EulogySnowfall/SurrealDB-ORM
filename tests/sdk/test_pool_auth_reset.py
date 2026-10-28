@@ -454,7 +454,7 @@ async def test_cancelled_release_keeps_pool_accounting(kind: str, credentials: b
             assert scope.cancelled_caught
             assert pool.in_use == 0
             assert pool._semaphore._value == pool.size
-        # Still usable: a leaked permit would make this block forever.
+        # Still usable: a permit never given back would make this block forever.
         with anyio.fail_after(5):
             async with pool.acquire() as a, pool.acquire() as b:
                 assert a is not b
