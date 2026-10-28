@@ -237,9 +237,14 @@ class ChangeModelStream(Generic[T]):
     - Audit trails
     - Event sourcing
 
+    The change feed reports a create as an update, so events carry
+    ``LiveAction.UPDATE`` or ``LiveAction.DELETE``. ``since`` accepts the forms
+    of ``QuerySet.changes()``; ``cursor`` can be passed back as ``since`` to
+    resume. A rejected poll raises ``ChangeFeedError`` from the iteration.
+
     Usage::
 
-        async for event in User.objects().changes(since="2026-01-01"):
+        async for event in User.objects().changes(since=0):  # the whole retained feed
             await publish_to_queue({
                 "type": f"user.{event.action.value.lower()}",
                 "data": event.raw,
@@ -251,7 +256,7 @@ class ChangeModelStream(Generic[T]):
         model: type[T],
         connection: HTTPConnection | None,
         table: str,
-        since: str | datetime | None = None,
+        since: str | int | datetime | None = None,
         poll_interval: float = 0.1,
         batch_size: int = 100,
     ) -> None:
@@ -263,6 +268,9 @@ class ChangeModelStream(Generic[T]):
         self._batch_size = batch_size
         self._feed: ChangeFeedStream | None = None
         self._iterator: AsyncIterator[ModelChangeEvent[T]] | None = None
+        # Versionstamp of the entry being yielded while it still has events to
+        # deliver; ``None`` between entries, where the feed's cursor applies.
+        self._entry_cursor: str | None = None
 
     async def _ensure_feed(self) -> ChangeFeedStream:
         """Lazily create the ChangeFeedStream, resolving connection if needed."""
@@ -284,7 +292,18 @@ class ChangeModelStream(Generic[T]):
 
     @property
     def cursor(self) -> str | None:
-        """Current stream cursor (versionstamp or timestamp)."""
+        """Where to resume (decimal versionstamp), or ``None`` before the stream starts.
+
+        Pass it as ``since`` to a later ``changes()`` to resume after the last
+        delivered event. A change-feed entry holds every change one transaction
+        made to the table, and a resume can only start at an entry boundary:
+        while an entry still has events to deliver, the cursor stays at that
+        entry's versionstamp, so a resume delivers the whole entry again
+        (at-least-once). Once its last event is delivered, the cursor moves
+        past it.
+        """
+        if self._entry_cursor is not None:
+            return self._entry_cursor
         return self._feed.cursor if self._feed else None
 
     def stop(self) -> None:
@@ -301,10 +320,14 @@ class ChangeModelStream(Generic[T]):
             if not isinstance(item, dict):
                 continue
 
-            # Change feed format: {"define_table": {...}} or {"update": {...}} or {"delete": {...}} or {"create": {...}}
+            # Change feed format: {"define_table": {...}}, {"update": record}, {"delete": {...}},
+            # or, on a CHANGEFEED ... INCLUDE ORIGINAL table, {"current": record, "update": [patch]}.
+            # The server records a CREATE as an update; "create" is kept for older payloads.
             for action_key in ("create", "update", "delete"):
                 if action_key in item:
                     record = item[action_key]
+                    if action_key == "update" and isinstance(item.get("current"), dict):
+                        record = item["current"]
                     if not isinstance(record, dict):
                         continue
 
@@ -348,7 +371,11 @@ class ChangeModelStream(Generic[T]):
         feed = await self._ensure_feed()
         async for change in feed.stream(since=self._since):
             events = self._parse_change(change)
-            for event in events:
+            for index, event in enumerate(events):
+                # The feed's cursor is already past this entry; until its last
+                # event is out, a checkpoint must point back at the entry.
+                last = index == len(events) - 1
+                self._entry_cursor = None if last else str(change["versionstamp"])
                 yield event
 
 

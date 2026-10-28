@@ -309,6 +309,32 @@ class TestChangeModelStream:
         stream = ChangeModelStream(model=PlayerModel, connection=None, table="players")
         assert stream.__aiter__() is stream
 
+    def test_parse_change_include_original_update(self) -> None:
+        """``CHANGEFEED … INCLUDE ORIGINAL``: the record is under ``current``, ``update`` is a JSON patch (#281)."""
+        stream = ChangeModelStream(model=PlayerModel, connection=None, table="players")
+        change = {
+            "versionstamp": 117515406058782720,
+            "changes": [
+                {
+                    "current": {"id": RecordId("players", "abc"), "name": "Bob", "age": 31, "role": "admin"},
+                    "update": [{"op": "replace", "path": "/age", "value": 30}],
+                },
+            ],
+        }
+        events = stream._parse_change(change)
+        assert len(events) == 1
+        assert events[0].action == LiveAction.UPDATE
+        assert events[0].record_id == "players:abc"
+        assert events[0].instance.name == "Bob"
+        assert events[0].instance.age == 31
+
+    def test_parse_change_create_arrives_as_update(self) -> None:
+        """The change feed records a CREATE as ``{"update": record}`` (#281)."""
+        stream = ChangeModelStream(model=PlayerModel, connection=None, table="players")
+        change = {"versionstamp": 1, "changes": [{"update": {"id": RecordId("players", "new"), "name": "Neo"}}]}
+        events = stream._parse_change(change)
+        assert [(e.action, e.record_id, e.instance.name) for e in events] == [(LiveAction.UPDATE, "players:new", "Neo")]
+
 
 # ==================== QuerySet.live() ====================
 
@@ -967,3 +993,52 @@ class TestModuleExports:
         assert "ModelChangeEvent" in __all__
         assert "LiveModelStream" in __all__
         assert "ChangeModelStream" in __all__
+
+
+class _FakeFeed:
+    """Stands in for ``ChangeFeedStream``: moves its cursor past an entry before yielding it."""
+
+    def __init__(self, entries: list[dict[str, Any]]) -> None:
+        self._entries = entries
+        self.cursor: str | None = "10"
+
+    async def stream(self, since: Any = None) -> Any:
+        for entry in self._entries:
+            self.cursor = str(entry["versionstamp"] + 1)
+            yield entry
+
+    def stop(self) -> None:
+        pass
+
+
+class TestChangeModelStreamCursor:
+    """#281: a checkpoint taken mid-entry must not skip the entry's remaining events."""
+
+    async def test_cursor_stays_on_an_entry_until_its_last_event(self) -> None:
+        stream = ChangeModelStream(model=PlayerModel, connection=None, table="players")
+        stream._feed = _FakeFeed(  # type: ignore[assignment]
+            [
+                {"versionstamp": 20, "changes": [{"update": {"id": f"players:{k}"}} for k in "abc"]},
+                {"versionstamp": 30, "changes": [{"update": {"id": "players:d"}}]},
+            ]
+        )
+        seen = []
+        async for event in stream:
+            seen.append((event.record_id, stream.cursor))
+        assert seen == [
+            ("players:a", "20"),
+            ("players:b", "20"),
+            ("players:c", "21"),
+            ("players:d", "31"),
+        ]
+
+    async def test_cursor_after_an_entry_without_model_events_is_the_feeds(self) -> None:
+        stream = ChangeModelStream(model=PlayerModel, connection=None, table="players")
+        stream._feed = _FakeFeed(  # type: ignore[assignment]
+            [
+                {"versionstamp": 20, "changes": [{"define_table": {"name": "players"}}]},
+                {"versionstamp": 30, "changes": [{"update": {"id": "players:d"}}]},
+            ]
+        )
+        events = [(event.record_id, stream.cursor) async for event in stream]
+        assert events == [("players:d", "31")]
