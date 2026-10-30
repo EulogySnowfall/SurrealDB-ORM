@@ -6,6 +6,171 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.29] - 2026-10-30
+
+**Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #386, #407 and
+#362 from `main`: a `UNIQUE` index on the identifier of USER tables in
+generated migrations (#397, #420), `SearchHighlight` tags written as SurrealQL
+string literals (#413, #431), and an explicit sign-up set in the generated
+`SIGNUP` clause (#366, #432). Read *Behaviour change* and *Migration*. The
+SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+`SurrealConfigDict(signup_fields=[...])` is the one new public name. On the
+LTS line it is part of the #366 fix (the sign-up set must be declared for the
+generated clause to assign anything beyond the identifier and the password),
+not a feature, so this stays a patch release.
+
+### Fixed
+
+- **`makemigrations` / `schema_diff()` add a `UNIQUE` index on the identifier
+  field of every `TableType.USER` table (#397, backport of #386):**
+  `DEFINE INDEX <table>_<identifier>_unique ON <table> FIELDS <identifier> UNIQUE`
+  (`email` by default, `identifier_field` honoured). A second `signup()` with
+  an identifier already in use is rejected by the database instead of
+  creating a second account that `SIGNIN` cannot tell apart.
+- **`schema_diff()` / `makemigrations` keep an equivalent `UNIQUE` index under
+  another name (#397).** When the database already enforces the same
+  single-field `UNIQUE` index under another name, the diff no longer proposes
+  a second index plus a `DropIndex`. Other indexes are still matched by name.
+- **`SearchHighlight` writes both tags with `surql_string_literal()` (#413,
+  backport of #407)**, backslash escaped first, then the apostrophe, so a tag
+  containing a backslash reaches `search::highlight()` as written. Before,
+  only the apostrophe was escaped: a tag ending in a backslash made the query
+  fail to parse, and a tag holding an escape such as `\n` was highlighted with
+  a newline instead of the two characters written.
+- **The generated `DEFINE ACCESS ... SIGNUP` clause assigns only an explicit
+  sign-up set (#366, v2 port of #333):** the identifier, the hashed password,
+  the fields listed in the new `SurrealConfigDict(signup_fields=[...])` and,
+  when the model has that field, `created_at = time::now()`. Every other field
+  keeps its schema `DEFAULT` or model default. Before, every model field was
+  assigned from a `$field` parameter, and `created_at = time::now()` was added
+  even to models without that field. A `signup_fields` entry that is `id`, the
+  identifier, the password, `created_at`, a computed field, a `server_fields`
+  entry, a read-only field or an unknown name raises `ValueError` when the
+  access definition is built.
+- **The migration introspector builds the access definition with the same
+  builder as `AccessGenerator.from_model()` (#366)**, so `makemigrations` /
+  `schemadiff` use `encryption_algorithm` and `access_name` instead of
+  hard-coding `argon2` and `'<table>_auth'`.
+
+### Behaviour change
+
+- **One more `DEFINE INDEX` per USER table** on the next `makemigrations` /
+  `schema_diff()` against an existing database (#397). `define_table()` and
+  `define_access()` do not create the index.
+- **`AuthenticatedUserMixin.signup()` raises `SurrealDbError`, before any
+  request, for a keyword outside the identifier, the password and
+  `signup_fields` (#366).** A sign-up request that carries an unlisted field
+  no longer sets it.
+- **One `REMOVE ACCESS` + `DEFINE ACCESS` per USER model** on the next
+  `makemigrations` / `schema_diff()` (#366). Where `access_name` is set, the
+  access is now created under that name, not `'<table>_auth'`.
+- **`SearchHighlight.ref` is converted with `int()` when the query is
+  rendered (#413).** An `int` subclass renders as its number; a value `int()`
+  cannot convert raises `ValueError` or `TypeError`.
+
+### Migration
+
+- **USER tables with duplicate identifiers (#397):** the new index fails to
+  apply (`MigrationStatementError`; SurrealDB 2.x reports
+  ``Database index `...` already contains '...', with record `...` ``) while
+  the table holds duplicates. List them first, replacing the table and the
+  identifier field with your own:
+  `SELECT * FROM (SELECT email, count() AS n FROM User GROUP BY email) WHERE n > 1;`,
+  resolve them, then apply the migration.
+- **Sign-up fields (#366):** list in `signup_fields` the fields your sign-up
+  form sets (for example `signup_fields=["name"]`), then re-apply the access
+  definition.
+
+### Known limitations
+
+- `SearchScore.to_surql()` still writes `ref` as given, without `int()`
+  (same as `main`).
+
+## [0.21.28] - 2026-10-29
+
+**Bug fix release (V2 LTS), backfilled.** Published automatically by the
+dependency sync (#428, #429) with the version files only; it also shipped
+three fixes merged since 0.21.27, the `v2` ports of #396, #334 and #367 from
+`main`: `HTTPTransaction.commit()` raises when the server rejects a statement
+(#399, #411), `HTTPTransaction` data keys must be identifiers (#382, #414),
+and filter keys and `values()` names must be field names (#377, #416). Read
+*Behaviour change* and *Migration*. The SurrealDB pin is unchanged (tested
+against 2.7.0).
+
+### Fixed
+
+- **`HTTPTransaction.commit()` raises `TransactionError` when SurrealDB
+  rejects a statement of the batch (#399, backport of #396).** The server
+  cancels the whole batch and writes nothing, but `is_committed` used to be
+  `True`. The error carries the rejected statement's own server error; after
+  the failure `is_committed` is `False` and the transaction is inactive.
+- **A retryable conflict in an HTTP transaction commit raises
+  `TransactionConflictError` (#399)**, so `@retry_on_conflict` retries it. The
+  generic "not executed due to a failed transaction" cancellation message is
+  no longer mistaken for a conflict. When the commit request itself fails, the
+  `TransactionError` chains the original exception.
+- **`HTTPTransaction.create/insert/update/upsert/merge/relate` check each key
+  of `data` when the statement is queued (#382, backport of #334).** A key
+  that is not a plain SurrealQL identifier (`[A-Za-z_][A-Za-z0-9_]*`) raises
+  `ValueError` naming the key and nothing is queued; `insert()` checks every
+  record before queueing any.
+- **`QuerySet.filter()`, `Q` and relation filter keys, and
+  `QuerySet.values()` names, must be a field name or a dotted path of field
+  names (#377, backport of #367)** (`"address.city"`,
+  `"address.zip__startswith"`). Anything else (for example `"name x"` or
+  `"a-b"`) raises `ValueError` naming the key before any query is sent.
+  Before, such a key reached the server as written.
+- **Trailing whitespace is no longer accepted in identifiers (#377).** A name
+  ending in a newline passed `validate_identifier()` and the other identifier
+  checks (model field and relation names, `bulk_update()` keys,
+  `atomic_append()` / `atomic_remove()` / `atomic_set_add()` fields, SDK live
+  query / live select / change feed table names). These checks now require a
+  full match. `format_thing()` backtick-escapes a record ID ending in a
+  newline.
+
+### Behaviour change
+
+- **HTTP transactions raise on a rejected statement (#399).** Over HTTP,
+  `async with SurrealDBConnectionManager.transaction()`, ORM `save(tx=)`,
+  `update(tx=)`, `merge(tx=)` and the `atomic=True` bulk operations now raise
+  `TransactionError` when the server rejects a statement. Before, they
+  silently did nothing. WebSocket transactions, successful batches and empty
+  transactions are unchanged.
+- **A non-identifier `HTTPTransaction` data key raises `ValueError` at the
+  call (#382)**; it used to fail only at `commit()` (`TransactionError`).
+  Valid keys produce exactly the same SurrealQL. `WebSocketTransaction` is
+  unchanged.
+- **An unknown filter lookup raises `ValueError` (#377)** (for example
+  `name__iexact`); it used to be rendered silently as `=`. Relation filters
+  render only `exact`, `gt`, `gte`, `lt`, `lte`, `in`, `contains`,
+  `startswith`, `endswith` and `isnull`; any other lookup now raises
+  `ValueError` instead of falling back to `=`.
+
+### Migration
+
+- Code that ran HTTP transactions and assumed success will now see a
+  `TransactionError` (or `TransactionConflictError`) where a write was
+  rejected: catch it, or wrap the call in `@retry_on_conflict` for conflicts.
+- Rename any non-identifier key passed to an `HTTPTransaction` method.
+- Replace any unsupported lookup with a supported one (the error message
+  lists them); use plain field names or dotted paths in `filter()` and
+  `values()`, and `raw_query()` for expressions.
+
+### Dependencies
+
+- **`tornado` 6.5.9 → 6.6 in `uv.lock` (#428, sync of #426 from `main`)** —
+  GHSA-r4j5-9xpp-3985, GHSA-pw9p-v7r6-gx4p and GHSA-pcg2-g6cj-q92c.
+  `tornado` reaches the lock only through the notebook tooling of the dev
+  group; it is not a dependency of the published package.
+
+### Known limitations
+
+- `HTTPTransaction.insert()` iterates `data` twice (validation, then
+  queueing), so a generator passed instead of the documented list or dict
+  queues nothing (same as `main`).
+
 ## [0.21.27] - 2026-10-28
 
 **Bug fix release (V2 LTS).** One fix, the `v2` port of #283 from `main`:
