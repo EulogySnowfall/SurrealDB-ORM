@@ -161,6 +161,7 @@ class TestAccessGenerator:
                 table_type=TableType.USER,
                 identifier_field="email",
                 password_field="password",
+                signup_fields=["name"],
             )
             id: str | None = None
             email: str
@@ -255,8 +256,25 @@ class TestAccessGenerator:
         assert access.duration_token == "5m"
         assert access.duration_session == "1h"
 
-    def test_adds_created_at(self) -> None:
-        """Test that created_at is added to signup fields."""
+    def test_adds_created_at_when_field_exists(self) -> None:
+        """Test that created_at is added to signup when the model has the field."""
+        from datetime import datetime
+
+        class SimpleUser(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER)
+            id: str | None = None
+            email: str
+            password: Encrypted
+            created_at: datetime | None = None
+
+        access = AccessGenerator.from_model(SimpleUser)
+
+        assert access is not None
+        assert "created_at" in access.signup_fields
+        assert access.signup_fields["created_at"] == "time::now()"
+
+    def test_no_created_at_when_field_missing(self) -> None:
+        """Test that created_at is NOT added when the model lacks the field."""
 
         class SimpleUser(BaseSurrealModel):
             model_config = SurrealConfigDict(table_type=TableType.USER)
@@ -267,8 +285,7 @@ class TestAccessGenerator:
         access = AccessGenerator.from_model(SimpleUser)
 
         assert access is not None
-        assert "created_at" in access.signup_fields
-        assert access.signup_fields["created_at"] == "time::now()"
+        assert "created_at" not in access.signup_fields
 
     def test_generate_all(self) -> None:
         """Test generating access for all USER models."""
@@ -374,7 +391,7 @@ class TestAuthenticatedUserMixinAsync:
         mock_client.query = AsyncMock(return_value=mock_result)
 
         class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, signup_fields=["name"])
             id: str | None = None
             email: str
             password: Encrypted
@@ -404,7 +421,7 @@ class TestAuthenticatedUserMixinAsync:
         mock_manager, mock_client = mock_connection_manager
 
         class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, signup_fields=["name"])
             id: str | None = None
             email: str
             password: Encrypted
@@ -653,7 +670,7 @@ class TestBug1EphemeralConnection:
         """signup() must call _create_auth_client, not SurrealDBConnectionManager.get_client for the signup RPC."""
 
         class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, signup_fields=["name"])
             id: str | None = None
             email: str
             password: Encrypted
@@ -857,7 +874,7 @@ class TestBug3SignupReturnsToken:
         """signup() must return (user, token) tuple."""
 
         class TestUser(AuthenticatedUserMixin, BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, signup_fields=["name"])
             id: str | None = None
             email: str
             password: Encrypted
