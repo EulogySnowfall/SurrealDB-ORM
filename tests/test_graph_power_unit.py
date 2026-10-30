@@ -11,7 +11,10 @@ to the ORM's own.
 
 from __future__ import annotations
 
+import ast
 import re
+import textwrap
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -1795,3 +1798,63 @@ class TestInstanceShortcutErrors:
     async def test_get_shortest_path_other_table_needs_include_source_false(self) -> None:
         with pytest.raises(ValueError, match=re.escape("include_source=True needs a source in 'gpu_city'")):
             await GPUPerson(id="a").get_shortest_path(GPUCity(id="paris"), "gpu_lives_in")
+
+
+DOCS_ORM = Path(__file__).resolve().parent.parent / "docs" / "orm.md"
+DOCS_SECTION = "### Recursive Traversal, Paths and Shortest Path"
+
+
+def _docs_section() -> str:
+    """The graph subsection of ``docs/orm.md``, up to the next heading of its level or above."""
+    text = DOCS_ORM.read_text(encoding="utf-8")
+    assert DOCS_SECTION in text, "docs/orm.md has no recursive traversal subsection"
+    body = text.split(DOCS_SECTION, 1)[1]
+    end = re.search(r"^#{2,3} ", body, flags=re.MULTILINE)
+    return body if end is None else body[: end.start()]
+
+
+class TestDocs:
+    """docs/orm.md documents the graph API with snippets that parse."""
+
+    def test_section_follows_get_related(self) -> None:
+        text = DOCS_ORM.read_text(encoding="utf-8")
+        assert text.index("### Querying Relations with get_related()") < text.index(DOCS_SECTION)
+        assert text.index(DOCS_SECTION) < text.index("### Removing Relations")
+
+    def test_every_python_snippet_parses(self) -> None:
+        # A block inside a list item is indented as a whole: dedent it before parsing.
+        blocks = re.findall(r"^[ ]*```python\n(.*?)^[ ]*```", _docs_section(), flags=re.DOTALL | re.MULTILINE)
+        assert len(blocks) >= 5
+        for block in blocks:
+            ast.parse(textwrap.dedent(block))
+
+    def test_every_method_is_shown(self) -> None:
+        section = _docs_section()
+        for call in (
+            ".reachable_from(",
+            ".paths_from(",
+            ".shortest_path(",
+            ".get_reachable(",
+            ".get_paths(",
+            ".get_shortest_path(",
+            "node_filter=",
+            "edge_filter=",
+            "include_source=True",
+            'Q(**{"in": ',
+            "Q(in__exact=",
+            "Q(out__in=",
+            "RecordId(",
+            "MAX_PATH_DEPTH",
+            'protocol="json"',
+        ):
+            assert call in section, call
+
+    def test_no_keyword_argument_named_in(self) -> None:
+        assert re.search(r"\bQ\(in=", _docs_section().replace("`Q(in=…)`", "")) is None
+
+    def test_documented_errors_match_the_implementation(self) -> None:
+        section = _docs_section()
+        assert "include_source=True needs a source in" in section
+        assert "record-id spelling is not supported" in section
+        assert "compares records" in section
+        assert "Exceeded the idiom recursion limit of 256" in section
