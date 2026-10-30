@@ -66,6 +66,7 @@ DEFINE FIELD email ON User TYPE string;
 DEFINE FIELD password ON User TYPE string;
 DEFINE FIELD name ON User TYPE string;
 DEFINE FIELD is_active ON User TYPE bool DEFAULT true;
+DEFINE INDEX User_email_unique ON User FIELDS email UNIQUE;
 
 DEFINE ACCESS user_auth ON DATABASE TYPE RECORD
     SIGNUP (CREATE User SET
@@ -78,6 +79,25 @@ DEFINE ACCESS user_auth ON DATABASE TYPE RECORD
         crypto::argon2::compare(password, $password)
     )
     DURATION FOR TOKEN 15m, FOR SESSION 12h;
+```
+
+The `UNIQUE` index on the identifier field (`<table>_<identifier>_unique`) makes
+`SIGNIN` match a single record: a second `signup()` with the same identifier is
+rejected by the database, and raises `SurrealDbError` (`Signup failed: ... The
+record access signup query failed` on SurrealDB 2.x). A table that already has a
+single-field `UNIQUE` index on the identifier under another name keeps it; no
+second index is proposed. The index comes from the migration (or the
+`CreateIndex` that `schema_diff()` returns): a table set up by hand needs it
+applied the same way.
+
+On an existing database, the migration that adds the index fails with
+`MigrationStatementError` while the table holds duplicate identifiers (SurrealDB
+2.x reports ``Database index `User_email_unique` already contains '...', with
+record `User:...` ``). List them first (replace `User` and `email` with your
+table and identifier field):
+
+```sql
+SELECT * FROM (SELECT email, count() AS n FROM User GROUP BY email) WHERE n > 1;
 ```
 
 ### 3. Use Authentication

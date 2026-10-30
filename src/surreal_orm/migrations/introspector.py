@@ -18,7 +18,7 @@ from ..fields.relation import is_graph_relation, is_many_to_many
 from ..surreal_function import SurrealFunc
 from ..types import PYTHON_TO_SURREAL_TYPE, FieldType, TableType
 from .operations import _LEGACY_EXPRESSION_DEFAULT, _LEGACY_EXPRESSION_DEFAULT_WARNING
-from .state import AccessState, FieldState, SchemaState, TableState
+from .state import AccessState, FieldState, IndexState, SchemaState, TableState
 
 if TYPE_CHECKING:
     from ..model_base import BaseSurrealModel
@@ -123,9 +123,12 @@ class ModelIntrospector:
             field_state = self._introspect_field(field_name, field_type_hint, field_info, model)
             table_state.fields[field_name] = field_state
 
-        # Generate access definition for USER tables
+        # Generate access definition for USER tables, and the UNIQUE index
+        # that keeps two records from sharing the identifier SIGNIN looks up.
         if table_type == TableType.USER:
             table_state.access = self._generate_access_state(model, table_name)
+            identifier_index = self._generate_identifier_index(model, table_name)
+            table_state.indexes[identifier_index.name] = identifier_index
 
         return table_state
 
@@ -281,6 +284,39 @@ class ModelIntrospector:
 
         # Fallback
         return FieldType.ANY.value
+
+    def _generate_identifier_index(
+        self,
+        model: type["BaseSurrealModel"],
+        table_name: str,
+    ) -> IndexState:
+        """
+        Generate the UNIQUE index on a USER table's identifier field.
+
+        ``SIGNIN`` selects the record whose identifier matches, so the
+        identifier must name a single record: without this index two
+        ``signup()`` calls with the same value both succeed and the table holds
+        accounts the access definition cannot tell apart.  The identifier is
+        read from :meth:`get_identifier_field`, as
+        :meth:`_generate_access_state` and :meth:`AccessGenerator.from_model`
+        do, so the index covers the same column the ``SIGNUP``/``SIGNIN``
+        clauses use.
+
+        The name, ``<table>_<identifier>_unique``, is derived from the
+        configuration only, so it is stable from one run to the next and a
+        migrated database diffs to nothing.  A database that already enforces
+        the constraint under another name keeps that index (see
+        :meth:`SchemaState.diff`).
+
+        Args:
+            model: The user model class
+            table_name: Name of the table
+
+        Returns:
+            IndexState for the identifier constraint
+        """
+        identifier = model.get_identifier_field()
+        return IndexState(name=f"{table_name}_{identifier}_unique", fields=[identifier], unique=True)
 
     def _generate_access_state(
         self,
