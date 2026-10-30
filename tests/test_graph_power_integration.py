@@ -345,3 +345,88 @@ class TestPaths:
             "RETURN { paths: $_g_paths, nodes: (SELECT * FROM array::distinct(array::flatten($_g_paths ?? []))) };"
         ]
         assert log.queries[0].variables == {"_g_src": RecordId("gp_person", "a")}
+
+
+def order(path: Iterable[Any] | None) -> list[str] | None:
+    return None if path is None else [str(node.get_id()) for node in path]
+
+
+def shortest(source: Any, target: Any, **kwargs: Any) -> Any:
+    edge = kwargs.pop("edge", "gp_knows")
+    return GPPerson.objects().shortest_path(source, target, edge, **kwargs)
+
+
+class TestShortestPath:
+    """I8 and the shortest_path() part of I10."""
+
+    async def test_shortest(self, graph: dict[str, GPPerson]) -> None:
+        path = await shortest(graph["a"], graph["d"])
+        assert order(path) == ["a", "e", "d"]
+        assert path is not None and all(isinstance(node, GPPerson) for node in path)
+        assert [node.name for node in path] == ["A", "E", "D"]
+
+    async def test_without_source(self, graph: dict[str, GPPerson]) -> None:
+        assert order(await shortest(graph["a"], graph["d"], include_source=False)) == ["e", "d"]
+
+    async def test_depth_bound_hit(self, graph: dict[str, GPPerson]) -> None:
+        assert await shortest(graph["a"], graph["d"], max_depth=1) is None
+
+    async def test_bounded(self, graph: dict[str, GPPerson]) -> None:
+        assert order(await shortest(graph["a"], graph["d"], max_depth=2)) == ["a", "e", "d"]
+
+    async def test_unreachable(self, graph: dict[str, GPPerson]) -> None:
+        assert await shortest(graph["a"], graph["z"]) is None
+
+    async def test_edge_filter(self, graph: dict[str, GPPerson]) -> None:
+        assert order(await shortest(graph["a"], graph["d"], edge_filter=Q(w__lt=5))) == ["a", "b", "c", "d"]
+
+    async def test_node_filter_excludes_target(self, graph: dict[str, GPPerson]) -> None:
+        assert await shortest(graph["a"], graph["d"], node_filter=~Q(name="D")) is None
+
+    async def test_both(self, graph: dict[str, GPPerson]) -> None:
+        # Two paths tie at 2 hops (a-b-c, a-d-c); the server returns one of them
+        # (a-d-c measured on the pin).
+        assert order(await shortest(graph["a"], graph["c"], direction="both")) in (["a", "d", "c"], ["a", "b", "c"])
+
+    async def test_in(self, graph: dict[str, GPPerson]) -> None:
+        assert order(await shortest(graph["a"], graph["e"], direction="in")) == ["a", "d", "e"]
+
+    async def test_same_record(self, graph: dict[str, GPPerson]) -> None:
+        path = await shortest(graph["a"], graph["a"])
+        assert order(path) == ["a"]
+        assert await shortest(graph["a"], "a", include_source=False) == []
+
+    async def test_same_record_missing(self, graph: dict[str, GPPerson]) -> None:
+        assert await shortest("gp_person:nope", "nope") is None
+
+    async def test_escaped_target(self, graph: dict[str, GPPerson]) -> None:
+        assert order(await shortest(graph["a"], "gp_person:`7x`")) == ["a", "e", "d", "7x"]
+
+    async def test_string_ids(self, graph: dict[str, GPPerson]) -> None:
+        assert order(await shortest("gp_person:a", RecordId("gp_person", "d"))) == ["a", "e", "d"]
+
+    async def test_missing_source(self, graph: dict[str, GPPerson]) -> None:
+        assert await shortest("gp_person:nope", graph["d"]) is None
+
+    async def test_other_source_table(self, graph: dict[str, GPPerson]) -> None:
+        path = await shortest("gp_company:acme", graph["c"], edge="gp_employs", include_source=False)
+        assert order(path) == ["c"]
+
+    async def test_other_source_table_refused(self, graph: dict[str, GPPerson]) -> None:
+        with pytest.raises(ValueError, match="include_source=True needs a source in 'gp_person'"):
+            await shortest("gp_company:acme", graph["c"], edge="gp_employs")
+
+    async def test_target_other_table_refused(self, graph: dict[str, GPPerson]) -> None:
+        with pytest.raises(ValueError, match="shortest_path\\(\\) target must be a record of 'gp_person'"):
+            await shortest(graph["a"], "gp_company:acme")
+
+    async def test_query_logger(self, graph: dict[str, GPPerson]) -> None:
+        from src.surreal_orm.debug import QueryLogger
+
+        async with QueryLogger() as log:
+            await shortest(graph["a"], graph["d"], max_depth=10)
+        assert [q.sql for q in log.queries] == [
+            "LET $_g_path = $_g_src.{..10+shortest=$_g_dst+inclusive}(->gp_knows->gp_person); "
+            "RETURN { path: $_g_path, nodes: (SELECT * FROM array::distinct(array::flatten($_g_path ?? []))) };"
+        ]
+        assert log.queries[0].variables == {"_g_src": RecordId("gp_person", "a"), "_g_dst": RecordId("gp_person", "d")}

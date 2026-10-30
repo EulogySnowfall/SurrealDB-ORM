@@ -18,6 +18,7 @@ from .graph import (
     MAX_PATH_DEPTH,
     GraphDirection,
     GraphWalk,
+    as_path,
     check_direction,
     check_filter,
     check_include_source,
@@ -1070,6 +1071,164 @@ class QuerySet(Generic[T]):
                 source_rid,
             )
         return paths
+
+    async def shortest_path(
+        self,
+        source: BaseSurrealModel | RecordId | str,
+        target: BaseSurrealModel | RecordId | str,
+        edge: str | type[BaseSurrealModel],
+        *,
+        max_depth: int | None = None,
+        direction: GraphDirection = "out",
+        node_filter: Q | None = None,
+        edge_filter: Q | None = None,
+        include_source: bool = True,
+    ) -> list[T] | None:
+        """
+        The path with the fewest hops from *source* to *target* over *edge*.
+
+        Hops are counted, not weighted (SurrealDB's ``+shortest`` is a
+        breadth-first search); when several paths tie, one of them is
+        returned. The records come in walk order: ``[source, …, target]``, or
+        ``[…, target]`` with ``include_source=False``.
+
+        Returns ``None`` when there is no path within ``max_depth``, and also
+        when a record of the path is not returned (e.g. one the session may
+        not select); that last case logs one warning naming the record, so
+        "no path" and "a record you cannot read" can be told apart.
+
+        ``source == target`` returns the trivial path ``[source]`` (``[]``
+        with ``include_source=False``) when the record exists, else ``None``;
+        the server's answer there would be the shortest cycle back to it.
+
+        This method runs on a bare QuerySet: constrain the walk with
+        ``node_filter`` / ``edge_filter``, not ``filter()``, ``order_by()``,
+        ``limit()`` or another read clause (``.variables()`` is allowed, for
+        ``$name`` references in the step filters).
+
+        Args:
+            source: The record the path starts from: a saved model instance,
+                a ``RecordId``, a ``"table:id"`` string or a bare id of this
+                QuerySet's table. A record of another table needs
+                ``include_source=False``.
+            target: The record the path ends at, of this QuerySet's table
+                (same forms as *source*).
+            edge: The edge table, or a model class whose table is the edge.
+            max_depth: Highest number of hops (1-256), or ``None`` for the
+                server's limit of 256.
+            direction: ``"out"`` (``->``), ``"in"`` (``<-``) or ``"both"``
+                (``<->``).
+            node_filter: Condition every node after the source must meet,
+                the target included.
+            edge_filter: Condition every edge crossed must meet (``in`` /
+                ``out`` values are converted to ``RecordId`` as in
+                :meth:`reachable_from`).
+            include_source: Put the source first in the path (default).
+
+        Returns:
+            list[T] | None: The records of the path, or ``None`` for no path.
+
+        Raises:
+            TypeError: An argument of the wrong type.
+            ValueError: An invalid depth, direction, edge table, record
+                reference or step filter; a target of another table;
+                ``include_source=True`` with a source of another table; a
+                QuerySet carrying a read clause.
+            QueryError: The server rejected the batch.
+            pydantic.ValidationError: A record of the path does not validate
+                against the model.
+
+        Example::
+
+            path = await Person.objects().shortest_path(alice, dave, "knows")
+            if path is not None:
+                print(len(path) - 1, "hops:", [p.name for p in path])
+            # LET $_g_path = $_g_src.{..+shortest=$_g_dst+inclusive}(->knows->person);
+            # RETURN { path: $_g_path, nodes: (SELECT * FROM
+            #   array::distinct(array::flatten($_g_path ?? []))) };
+        """
+        from .debug import _elapsed_ms, _log_query, _start_timer
+
+        if not isinstance(edge, (str, type)):
+            raise TypeError(f"edge must be a table name or a model class, got {type(edge).__name__}")
+        for arg, value in (("node_filter", node_filter), ("edge_filter", edge_filter)):
+            if value is not None and not isinstance(value, Q):
+                raise TypeError(f"{arg} must be a Q object or None, got {type(value).__name__}")
+        node_table = self._model_table
+        validate_identifier(node_table, "table")
+        source_rid = to_graph_record(source, node_table, arg="source")
+        target_rid = to_graph_record(target, node_table, arg="target")
+        if target_rid.table != node_table:
+            raise ValueError(f"shortest_path() target must be a record of {node_table!r}, got {str(target_rid)!r}")
+        check_include_source(source_rid, node_table, bool(include_source))
+        edge_table = edge_table_name(edge)
+        step_direction = cast(GraphDirection, check_direction(direction, allow_both=True, method="shortest_path"))
+        low, high = self._graph_depths(1, max_depth, require_max=False)
+        checked_edge_filter = check_filter(edge_filter, arg="edge_filter", edge=True)
+        checked_node_filter = check_filter(node_filter, arg="node_filter")
+        self._reject_read_clauses("shortest_path")
+
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+        variables: dict[str, Any] = {**self._variables, "_g_src": source_rid}
+
+        if rid_key(source_rid) == rid_key(target_rid):
+            # The server would answer with the shortest cycle back to the
+            # source; the path from a record to itself is the record alone.
+            query = "SELECT * FROM $_g_src;"
+            start = _start_timer()
+            result = await client.query(query, variables)
+            _log_query(query, variables, _elapsed_ms(start))
+            _raise_on_statement_error(result, query)
+            rows = result.results[-1].result if result.results else None
+            if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+                return None
+            return [cast(T, self.model.from_db(rows[0]))] if include_source else []
+
+        walk = GraphWalk(
+            source=source_rid,
+            edge=edge_table,
+            node_table=node_table,
+            direction=step_direction,
+            min_depth=low,
+            max_depth=high,
+            node_filter=checked_node_filter,
+            edge_filter=checked_edge_filter,
+            include_source=bool(include_source),
+        )
+        variables["_g_dst"] = target_rid
+        step = self._render_graph_step(walk, variables)
+        instructions = "+shortest=$_g_dst+inclusive" if walk.include_source else "+shortest=$_g_dst"
+        query = remove_quotes_for_variables(
+            f"LET $_g_path = $_g_src.{{{render_range(None, high)}{instructions}}}{step}; "
+            "RETURN { path: $_g_path, nodes: (SELECT * FROM array::distinct(array::flatten($_g_path ?? []))) };"
+        )
+
+        start = _start_timer()
+        result = await client.query(query, variables)
+        _log_query(query, variables, _elapsed_ms(start))
+        _raise_on_statement_error(result, query)
+
+        payload = result.results[-1].result if result.results else None
+        if not isinstance(payload, dict):
+            return None
+        path = as_path(payload.get("path"), target_rid)
+        if path is None:
+            return None
+        nodes: dict[tuple[str, str], T] = {}
+        for record in payload.get("nodes") or []:
+            if isinstance(record, dict) and isinstance(record.get("id"), RecordId):
+                nodes[rid_key(record["id"])] = cast(T, self.model.from_db(record))
+        missing = [str(rid) for rid in path if rid_key(rid) not in nodes]
+        if missing:
+            logger.warning(
+                "shortest_path() from %s to %s found a path but could not load %s "
+                "(not returned: it may not be selectable by this session); returning None",
+                source_rid,
+                target_rid,
+                ", ".join(missing),
+            )
+            return None
+        return [nodes[rid_key(rid)] for rid in path]
 
     def _reject_read_clauses(self, method: str) -> None:
         """

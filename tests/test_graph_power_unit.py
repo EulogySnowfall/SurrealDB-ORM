@@ -1341,3 +1341,279 @@ def _count() -> Any:
     from src.surreal_orm.aggregations import Count
 
     return Count()
+
+
+# ---------------------------------------------------------------------------
+# U8, E11, E16 — shortest_path() (C8, C9)
+# ---------------------------------------------------------------------------
+
+C8 = (
+    "LET $_g_path = $_g_src.{..10+shortest=$_g_dst+inclusive}(->gpu_knows->gpu_person); "
+    "RETURN { path: $_g_path, nodes: (SELECT * FROM array::distinct(array::flatten($_g_path ?? []))) };"
+)
+
+C9 = "SELECT * FROM $_g_src;"
+
+
+def _no_path() -> Any:
+    return _batch({"path": None, "nodes": []})
+
+
+def _select(*records: dict[str, Any]) -> Any:
+    from surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
+
+    return QueryResponse(results=[QueryResult(status=ResponseStatus.OK, result=list(records))])
+
+
+async def _shortest(source: Any = None, target: Any = None, edge: Any = "gpu_knows", qs: Any = None, **kwargs: Any) -> Any:
+    queryset = GPUPerson.objects() if qs is None else qs
+    return await queryset.shortest_path(
+        GPUPerson(id="a") if source is None else source,
+        GPUPerson(id="d") if target is None else target,
+        edge,
+        **kwargs,
+    )
+
+
+class TestShortestPathSql:
+    async def test_c8(self) -> None:
+        client = _client(_no_path())
+        with _patch_client(client):
+            assert await _shortest(max_depth=10) is None
+        sql, variables = client.query.await_args.args
+        assert sql == C8
+        assert variables == {"_g_src": r("a"), "_g_dst": r("d")}
+        assert isinstance(variables["_g_src"], RecordId)
+        assert isinstance(variables["_g_dst"], RecordId)
+
+    async def test_unbounded(self) -> None:
+        client = _client(_no_path())
+        with _patch_client(client):
+            await _shortest()
+        sql, _ = client.query.await_args.args
+        assert sql == C8.replace("{..10+", "{..+")
+
+    async def test_include_source_false(self) -> None:
+        client = _client(_no_path())
+        with _patch_client(client):
+            await _shortest(max_depth=10, include_source=False)
+        sql, _ = client.query.await_args.args
+        assert sql == C8.replace("+shortest=$_g_dst+inclusive}", "+shortest=$_g_dst}")
+
+    async def test_direction_both_and_filters(self) -> None:
+        client = _client(_no_path())
+        with _patch_client(client):
+            await _shortest(max_depth=4, direction="both", edge_filter=Q(w__lt=5), node_filter=Q(active=True))
+        sql, variables = client.query.await_args.args
+        assert "$_g_src.{..4+shortest=$_g_dst+inclusive}(<->gpu_knows[WHERE w < $_g0]<->gpu_person[WHERE active = $_g1])" in sql
+        assert variables == {"_g_src": r("a"), "_g_dst": r("d"), "_g0": 5, "_g1": True}
+
+    async def test_string_target(self) -> None:
+        client = _client(_no_path())
+        with _patch_client(client):
+            await _shortest(target="gpu_person:`7x`")
+        _, variables = client.query.await_args.args
+        assert variables["_g_dst"] == RecordId("gpu_person", "7x")
+
+    async def test_bare_id_target(self) -> None:
+        client = _client(_no_path())
+        with _patch_client(client):
+            await _shortest(target="d")
+        _, variables = client.query.await_args.args
+        assert variables["_g_dst"] == r("d")
+
+    async def test_query_logger(self) -> None:
+        from src.surreal_orm.debug import QueryLogger
+
+        client = _client(_no_path())
+        with _patch_client(client):
+            async with QueryLogger() as log:
+                await _shortest(max_depth=10)
+        assert [q.sql for q in log.queries] == [C8]
+        assert log.queries[0].variables == {"_g_src": r("a"), "_g_dst": r("d")}
+
+    async def test_other_table_source_without_include_source(self) -> None:
+        client = _client(_no_path())
+        with _patch_client(client):
+            await _shortest(source="gpu_city:x", include_source=False)
+        sql, variables = client.query.await_args.args
+        assert "$_g_src.{..+shortest=$_g_dst}(->gpu_knows->gpu_person)" in sql
+        assert variables["_g_src"] == RecordId("gpu_city", "x")
+
+
+class TestShortestPathMapping:
+    async def test_path(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        payload = {"path": [r("a"), r("e"), r("d")], "nodes": [_rec("d"), _rec("a"), _rec("e")]}
+        client = _client(_batch(payload))
+        with _patch_client(client), caplog.at_level(logging.WARNING):
+            path = await _shortest()
+        assert path is not None
+        assert [p.get_id() for p in path] == ["a", "e", "d"]
+        assert [p.name for p in path] == ["A", "E", "D"]
+        assert all(isinstance(p, GPUPerson) for p in path)
+        assert [rec for rec in caplog.records if rec.levelno >= logging.WARNING] == []
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param({"path": None, "nodes": []}, id="none"),
+            pytest.param({"path": [], "nodes": []}, id="empty"),
+            pytest.param(
+                {"path": [[r("a"), r("e")], [r("a"), r("b")]], "nodes": [_rec("a"), _rec("e"), _rec("b")]},
+                id="frontier",
+            ),
+            pytest.param({"path": [r("a"), r("b")], "nodes": [_rec("a"), _rec("b")]}, id="wrong-end"),
+        ],
+    )
+    async def test_no_path_without_warning(self, payload: Any, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        client = _client(_batch(payload))
+        with _patch_client(client), caplog.at_level(logging.WARNING):
+            assert await _shortest() is None
+        assert [rec for rec in caplog.records if rec.levelno >= logging.WARNING] == []
+
+    async def test_missing_node_gives_none_and_one_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        payload = {"path": [r("a"), r("e"), r("d")], "nodes": [_rec("a"), _rec("d")]}
+        client = _client(_batch(payload))
+        with _patch_client(client), caplog.at_level(logging.WARNING):
+            assert await _shortest() is None
+        warnings = [rec for rec in caplog.records if rec.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "gpu_person:e" in warnings[0].getMessage()
+
+    async def test_validation_error_propagates(self) -> None:
+        from pydantic import ValidationError
+
+        payload = {"path": [r("a"), r("d")], "nodes": [_rec("a"), {"id": r("d"), "name": 5}]}
+        client = _client(_batch(payload))
+        with _patch_client(client), pytest.raises(ValidationError):
+            await _shortest()
+
+    async def test_statement_error(self) -> None:
+        from surreal_sdk.exceptions import QueryError
+        from surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
+
+        response = QueryResponse(
+            results=[
+                QueryResult(status=ResponseStatus.ERR, result="Exceeded the idiom recursion limit of 256."),
+                QueryResult(status=ResponseStatus.ERR, result="The query was not executed due to a failed transaction"),
+            ]
+        )
+        client = _client(response)
+        with _patch_client(client), pytest.raises(QueryError, match="recursion limit"):
+            await _shortest()
+
+
+class TestShortestPathSameRecord:
+    async def test_c9_with_source(self) -> None:
+        client = _client(_select(_rec("a")))
+        with _patch_client(client):
+            path = await _shortest(target="gpu_person:a", max_depth=3)
+        sql, variables = client.query.await_args.args
+        assert sql == C9
+        assert variables == {"_g_src": r("a")}
+        assert path is not None
+        assert [p.get_id() for p in path] == ["a"]
+        assert isinstance(path[0], GPUPerson)
+
+    async def test_without_source(self) -> None:
+        client = _client(_select(_rec("a")))
+        with _patch_client(client):
+            assert await _shortest(target=r("a"), include_source=False) == []
+        sql, _ = client.query.await_args.args
+        assert sql == C9
+
+    @pytest.mark.parametrize("include_source", [True, False])
+    async def test_missing_record(self, include_source: bool) -> None:
+        client = _client(_select())
+        with _patch_client(client):
+            assert await _shortest(target="a", include_source=include_source) is None
+
+    async def test_query_logger(self) -> None:
+        from src.surreal_orm.debug import QueryLogger
+
+        client = _client(_select(_rec("a")))
+        with _patch_client(client):
+            async with QueryLogger() as log:
+                await _shortest(target="a")
+        assert [q.sql for q in log.queries] == [C9]
+
+
+class TestShortestPathErrors:
+    async def _refused(self, exc: type[Exception], message: str, qs: Any = None, **kwargs: Any) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+            pytest.raises(exc) as excinfo,
+        ):
+            await _shortest(qs=qs, **kwargs)
+        assert str(excinfo.value) == message
+        get_client.assert_not_awaited()
+
+    async def test_target_other_table(self) -> None:
+        await self._refused(
+            ValueError,
+            "shortest_path() target must be a record of 'gpu_person', got 'gpu_city:x'",
+            target="gpu_city:x",
+        )
+
+    async def test_target_other_table_before_include_source(self) -> None:
+        await self._refused(
+            ValueError,
+            "shortest_path() target must be a record of 'gpu_person', got 'gpu_city:y'",
+            source="gpu_city:x",
+            target=RecordId("gpu_city", "y"),
+        )
+
+    async def test_unsaved_target(self) -> None:
+        await self._refused(ValueError, "target must be saved before it can be traversed (it has no id)", target=GPUPerson())
+
+    async def test_unsaved_source(self) -> None:
+        await self._refused(ValueError, "source must be saved before it can be traversed (it has no id)", source=GPUPerson())
+
+    async def test_bad_target_type(self) -> None:
+        await self._refused(TypeError, "target must be a model instance, a RecordId or a 'table:id' string, got int", target=5)
+
+    async def test_include_source_other_table(self) -> None:
+        await self._refused(
+            ValueError,
+            "include_source=True needs a source in 'gpu_person', got 'gpu_city:x': the source would be returned "
+            "as a 'gpu_person' record; pass include_source=False",
+            source="gpu_city:x",
+        )
+
+    async def test_bad_direction(self) -> None:
+        await self._refused(ValueError, "direction must be 'out', 'in' or 'both', got 'sideways'", direction="sideways")
+
+    async def test_max_depth_over_limit(self) -> None:
+        await self._refused(ValueError, "max_depth must be <= 256 (SurrealDB's recursion limit), got 257", max_depth=257)
+
+    async def test_max_depth_zero(self) -> None:
+        await self._refused(ValueError, "max_depth must be >= 1, got 0", max_depth=0)
+
+    async def test_bad_edge(self) -> None:
+        await self._refused(TypeError, "edge must be a table name or a model class, got int", edge=3)
+
+    async def test_bad_node_filter(self) -> None:
+        await self._refused(TypeError, "node_filter must be a Q object or None, got dict", node_filter={"a": 1})
+
+    async def test_same_record_still_validated(self) -> None:
+        await self._refused(ValueError, "max_depth must be >= 1, got 0", target="a", max_depth=0)
+
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            pytest.param(lambda qs: qs.filter(active=True), id="filter"),
+            pytest.param(lambda qs: qs.order_by("name"), id="order_by"),
+            pytest.param(lambda qs: qs.limit(1), id="limit"),
+            pytest.param(lambda qs: qs.reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=1), id="reachable_from"),
+        ],
+    )
+    async def test_read_clause_refused(self, clause: Any) -> None:
+        await self._refused(ValueError, E13.replace("paths_from()", "shortest_path()"), qs=clause(GPUPerson.objects()))
