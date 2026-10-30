@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.27)
+> Context document for Claude AI - Last updated: October 2026 (0.21.29)
 
 <!-- -->
 
@@ -19,12 +19,38 @@
 
 ---
 
-## Current Version: 0.21.27 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.29 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
-| `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.35.x   | Active development              |
+| `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.36.x   | Active development              |
+
+### What's New in 0.21.29
+
+Three fixes, the `v2` ports of #386 (#397, #420), #407 (#413, #431) and #362 (#366, #432). Pin unchanged (2.7.0).
+
+- **USER identifier index:** `ModelIntrospector` adds `<table>_<identifier>_unique` (`get_identifier_field()`, as
+  the access definition reads it) through `CreateIndex` / `IndexState`. `SchemaState.diff` matches a target `UNIQUE`
+  index by definition, not only by name, so an equivalent index under another name is kept. Migration path only.
+- **`SearchHighlight`:** both tags through `surql_string_literal()`, `ref` through `int()`. `SearchScore` still
+  writes `ref` as given.
+- **Sign-up set:** `build_signup_fields()` is shared by `AccessGenerator.from_model()` and the introspector
+  (identifier, password, `signup_fields`, `created_at` only when the model has it). The introspector's own copy
+  hard-coded `argon2` and `<table>_auth`. `signup()` checks its keywords against the same set before any request.
+  `signup_fields` is the only new public name; on `v2` it is part of the fix, so the release is a Z.
+
+### What's New in 0.21.28
+
+Auto-release of the `tornado` 6.6 lock sync (#428, #429), which also carried three ports merged after 0.21.27;
+documented in 0.21.29's release PR.
+
+- **#399 via #411:** `HTTPTransaction.commit()` checks each statement's status; the first non-cancellation error is
+  the cause (`TransactionConflictError` for a conflict), `raise … from e` on a failed request.
+- **#382 via #414:** `_validate_keys()` runs before anything is queued in the six data-taking `HTTPTransaction`
+  methods; `insert()` checks all records first (so a generator is consumed by the check).
+- **#377 via #416:** `parse_filter_key()` / `validate_field_path()` for `filter()`, `Q`, relation filters and
+  `values()`; every identifier pattern is tested with `fullmatch()`; unknown lookups raise.
 
 ### What's New in 0.21.27
 
