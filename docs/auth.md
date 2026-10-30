@@ -41,13 +41,14 @@ class User(AuthenticatedUserMixin, BaseSurrealModel):
         table_type=TableType.USER,
         identifier_field="email",
         password_field="password",
+        signup_fields=["name"],  # Settable at sign-up, besides email/password
     )
 
     id: str | None = None
     email: str
     password: Encrypted  # Auto-hashed with argon2
     name: str
-    is_active: bool = True
+    is_active: bool = True  # Not a sign-up field: always starts as True
 ```
 
 ### 2. Generate and Apply Migration
@@ -70,9 +71,7 @@ DEFINE ACCESS user_auth ON DATABASE TYPE RECORD
     SIGNUP (CREATE User SET
         email = $email,
         password = crypto::argon2::generate($password),
-        name = $name,
-        is_active = true,
-        created_at = time::now()
+        name = $name
     )
     SIGNIN (SELECT * FROM User WHERE
         email = $email AND
@@ -167,6 +166,7 @@ class User(AuthenticatedUserMixin, BaseSurrealModel):
         token_duration="30m",              # JWT lifetime (default: "15m")
         session_duration="24h",            # Session lifetime (default: "12h")
         encryption_algorithm="argon2",     # Hash algorithm (default: "argon2")
+        signup_fields=["name"],            # Settable at sign-up (default: none)
     )
 
     id: str | None = None
@@ -174,6 +174,57 @@ class User(AuthenticatedUserMixin, BaseSurrealModel):
     password: Encrypted
     name: str
 ```
+
+### Sign-up Fields
+
+The `SIGNUP` clause of the access definition assigns an explicit set of fields:
+
+- the identifier field, from `$<identifier>`;
+- the password field, hashed with `crypto::<algorithm>::generate()`;
+- each field listed in `signup_fields`, from `$<field>`;
+- `created_at`, set to `time::now()`, when the model has that field.
+
+Every other field is left out of the clause and gets its default: the field's
+schema `DEFAULT` (emitted from the model default by migrations) or, when the
+column has no `DEFAULT`, the model default when the record is loaded. A
+sign-up request carrying any other field does not set it.
+
+```python
+class User(AuthenticatedUserMixin, BaseSurrealModel):
+    model_config = SurrealConfigDict(
+        table_type=TableType.USER,
+        signup_fields=["name", "language"],
+    )
+
+    id: str | None = None
+    email: str
+    password: Encrypted
+    name: str
+    language: str = "en"
+    role: str = "user"      # set by the application, never at sign-up
+    is_active: bool = True
+
+user, token = await User.signup(email="alice@example.com", password="secret", name="Alice")
+assert user.role == "user"
+```
+
+`signup()` accepts only the identifier, the password and the `signup_fields`
+entries, and raises `SurrealDbError` for any other keyword before sending a
+request. An entry of `signup_fields` that is `id`, the identifier, the
+password, `created_at`, a computed field, a `server_fields` entry, a read-only
+field (`Field(frozen=True)` or `json_schema_extra={"readonly": True}`) or not a
+model field raises `ValueError` when the access definition is built
+(`AccessGenerator.from_model()`, `makemigrations`, `schemadiff`).
+
+`makemigrations` builds the access definition with the same rules as
+`AccessGenerator.from_model()`, including `access_name` and
+`encryption_algorithm`.
+
+> **Upgrading:** before `signup_fields` existed, every model field was a
+> sign-up parameter. List the fields your sign-up form sets in `signup_fields`,
+> then re-apply the access definition (`makemigrations` + `migrate`, or run the
+> `AccessGenerator.from_model(User).to_surreal_ql()` statement after
+> `REMOVE ACCESS`) so the database picks up the new `SIGNUP` clause.
 
 ### Custom Identifier Field
 
@@ -198,7 +249,8 @@ admin, token = await Admin.signin(username="admin", password="secret")
 
 ### signup()
 
-Create a new user with hashed password. Returns a tuple of `(user, token)`:
+Create a new user with hashed password. Accepts the identifier, the password and
+the [`signup_fields`](#sign-up-fields) entries. Returns a tuple of `(user, token)`:
 
 ```python
 user, token = await User.signup(
@@ -318,7 +370,8 @@ print(sql)
 
 ### AccessGenerator
 
-Generate AccessDefinition from model:
+Generate AccessDefinition from model. Its `SIGNUP` clause assigns only the
+[sign-up set](#sign-up-fields):
 
 ```python
 from surreal_orm.auth import AccessGenerator
@@ -401,6 +454,7 @@ class User(AuthenticatedUserMixin, BaseSurrealModel):
         password_field="password",
         token_duration="1h",
         session_duration="24h",
+        signup_fields=["name"],  # role and is_active keep their defaults
         permissions={
             "select": "$auth.id = id",  # Users can only see themselves
             "update": "$auth.id = id",  # Users can only update themselves
