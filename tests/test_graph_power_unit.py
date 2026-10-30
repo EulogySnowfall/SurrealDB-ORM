@@ -447,3 +447,372 @@ class TestExports:
 
     def test_arrows(self) -> None:
         assert graph.ARROWS == {"out": "->", "in": "<-", "both": "<->"}
+
+
+# ---------------------------------------------------------------------------
+# U3 — reachable_from(): emitted SurrealQL (C1-C5) and bound variables
+# ---------------------------------------------------------------------------
+
+
+def _walk(**kwargs: Any) -> QuerySet[GPUPerson]:
+    """``GPUPerson.objects().reachable_from(gpu_person:a, "gpu_knows", ...)``."""
+    kwargs.setdefault("max_depth", 3)
+    return GPUPerson.objects().reachable_from(GPUPerson(id="a"), "gpu_knows", **kwargs)
+
+
+def _ok(records: list[dict[str, Any]]) -> Any:
+    from surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
+
+    return QueryResponse(results=[QueryResult(status=ResponseStatus.OK, result=records)])
+
+
+def _err(message: str) -> Any:
+    from surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
+
+    return QueryResponse(results=[QueryResult(status=ResponseStatus.ERR, result=message)])
+
+
+def _patch_client(client: Any) -> Any:
+    from unittest.mock import AsyncMock, patch
+
+    return patch(
+        "src.surreal_orm.query_set.SurrealDBConnectionManager.get_client",
+        new_callable=AsyncMock,
+        return_value=client,
+    )
+
+
+def _client(*responses: Any) -> Any:
+    from unittest.mock import AsyncMock
+
+    client = AsyncMock()
+    client.query = AsyncMock(side_effect=list(responses))
+    return client
+
+
+class TestReachableFromSql:
+    def test_returns_queryset(self) -> None:
+        qs = GPUPerson.objects()
+        assert qs.reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=3) is qs
+
+    def test_c1(self) -> None:
+        qs = _walk()
+        assert qs._compile_query() == "SELECT * FROM $_g_src.{1..3+collect}(->gpu_knows->gpu_person) WHERE id != $_g_src;"
+        assert qs._variables == {"_g_src": r("a")}
+        assert isinstance(qs._variables["_g_src"], RecordId)
+
+    def test_c2(self) -> None:
+        qs = (
+            GPUPerson.objects()
+            .reachable_from(GPUPerson(id="a"), GPUKnows, max_depth=3, min_depth=2)
+            .filter(active=True)
+            .order_by("name")
+            .limit(10)
+        )
+        order = GPUPerson.objects().order_by("name")._order_by
+        assert qs._compile_query() == (
+            "SELECT * FROM $_g_src.{2..3+collect}(->gpu_knows->gpu_person) "
+            f"WHERE active = $_f0 AND id != $_g_src ORDER BY {order} LIMIT 10;"
+        )
+        assert qs._variables == {"_f0": True, "_g_src": r("a")}
+
+    def test_c3(self) -> None:
+        qs = GPUPerson.objects().reachable_from(GPUPerson(id="a"), "gpu_knows", include_source=True)
+        assert qs._compile_query() == "SELECT * FROM $_g_src.{1..+collect+inclusive}(->gpu_knows->gpu_person);"
+        assert qs._variables == {"_g_src": r("a")}
+
+    def test_c4(self) -> None:
+        qs = _walk(edge_filter=Q(w__lt=5), node_filter=Q(active=True))
+        assert qs._compile_query() == (
+            "SELECT * FROM $_g_src.{1..3+collect}(->gpu_knows[WHERE w < $_g0]->gpu_person[WHERE active = $_g1]) "
+            "WHERE id != $_g_src;"
+        )
+        assert qs._variables == {"_g_src": r("a"), "_g0": 5, "_g1": True}
+
+    @pytest.mark.parametrize(
+        ("direction", "step"),
+        [("out", "->gpu_knows->gpu_person"), ("in", "<-gpu_knows<-gpu_person"), ("both", "<->gpu_knows<->gpu_person")],
+    )
+    def test_c5(self, direction: str, step: str) -> None:
+        qs = _walk(direction=direction)
+        assert qs._compile_query() == f"SELECT * FROM $_g_src.{{1..3+collect}}({step}) WHERE id != $_g_src;"
+
+    def test_no_value_in_text(self) -> None:
+        qs = _walk(edge_filter=Q(w__lt=5), node_filter=Q(name="Zed"))
+        sql = qs._compile_query()
+        assert "gpu_person:a" not in sql and "Zed" not in sql and "5" not in sql.replace("gpu", "")
+
+    def test_source_forms(self) -> None:
+        for source in (GPUPerson(id="a"), r("a"), "gpu_person:a", "a"):
+            qs = GPUPerson.objects().reachable_from(source, "gpu_knows", max_depth=1)
+            qs._compile_query()
+            assert qs._variables["_g_src"] == r("a")
+
+    def test_other_table_source(self) -> None:
+        qs = GPUPerson.objects().reachable_from("gpu_city:x", "gpu_knows", max_depth=1)
+        assert qs._compile_query() == "SELECT * FROM $_g_src.{1..1+collect}(->gpu_knows->gpu_person) WHERE id != $_g_src;"
+        assert qs._variables["_g_src"] == RecordId("gpu_city", "x")
+
+    def test_second_call_wins(self) -> None:
+        qs = GPUPerson.objects().reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=3)
+        qs.reachable_from("gpu_person:b", "gpu_likes", max_depth=2, direction="in")
+        assert qs._compile_query() == "SELECT * FROM $_g_src.{1..2+collect}(<-gpu_likes<-gpu_person) WHERE id != $_g_src;"
+        assert qs._variables["_g_src"] == r("b")
+
+    def test_select_and_fetch(self) -> None:
+        qs = _walk().select("name").fetch("friend")
+        assert qs._compile_query() == (
+            "SELECT name FROM $_g_src.{1..3+collect}(->gpu_knows->gpu_person) WHERE id != $_g_src FETCH friend;"
+        )
+
+    def test_node_filter_fk_coerced(self) -> None:
+        qs = GPUWithFK.objects().reachable_from(
+            GPUPerson(id="a"), "gpu_knows", max_depth=1, node_filter=Q(owner="gpu_person:b")
+        )
+        assert qs._compile_query() == (
+            "SELECT * FROM $_g_src.{1..1+collect}(->gpu_knows->gpu_with_fk[WHERE owner = $_g0]) WHERE id != $_g_src;"
+        )
+        assert qs._variables["_g0"] == r("b")
+        assert isinstance(qs._variables["_g0"], RecordId)
+
+    @pytest.mark.parametrize(
+        "edge_filter",
+        [Q(out="gpu_person:b"), Q(out=GPUPerson(id="b")), Q(out=RecordId("gpu_person", "b"))],
+    )
+    def test_edge_out_coerced(self, edge_filter: Q) -> None:
+        qs = _walk(edge_filter=edge_filter)
+        assert qs._compile_query() == (
+            "SELECT * FROM $_g_src.{1..3+collect}(->gpu_knows[WHERE out = $_g0]->gpu_person) WHERE id != $_g_src;"
+        )
+        assert qs._variables["_g0"] == r("b")
+        assert isinstance(qs._variables["_g0"], RecordId)
+
+    def test_edge_in_coerced(self) -> None:
+        qs = _walk(edge_filter=Q(**{"in": RecordId("gpu_person", "a")}))
+        assert "[WHERE in = $_g0]" in qs._compile_query()
+        assert qs._variables["_g0"] == r("a")
+
+    def test_edge_out_in_list_coerced(self) -> None:
+        qs = _walk(edge_filter=Q(out__in=["gpu_person:b", GPUPerson(id="e")]))
+        assert "[WHERE out IN $_g0]" in qs._compile_query()
+        assert qs._variables["_g0"] == [r("b"), r("e")]
+        assert all(isinstance(x, RecordId) for x in qs._variables["_g0"])
+
+    def test_edge_other_field_bound_as_given(self) -> None:
+        qs = _walk(edge_filter=Q(w__lt=5))
+        qs._compile_query()
+        assert qs._variables["_g0"] == 5
+
+    def test_edge_bare_id_refused_at_call(self) -> None:
+        with pytest.raises(ValueError, match="edge_filter on 'out' compares records"):
+            _walk(edge_filter=Q(out="b"))
+
+    def test_declared_variable_in_step(self) -> None:
+        qs = GPUPerson.objects().variables(lim=5)
+        qs.reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=3, edge_filter=Q(w__lt="$lim"))
+        assert "(->gpu_knows[WHERE w < $lim]->gpu_person)" in qs._compile_query()
+        assert qs._variables["lim"] == 5
+
+    def test_declared_endpoint_reference(self) -> None:
+        qs = GPUPerson.objects().variables(who=r("b"))
+        qs.reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=3, edge_filter=Q(out="$who"))
+        assert "(->gpu_knows[WHERE out = $who]->gpu_person)" in qs._compile_query()
+
+    def test_undeclared_endpoint_reference_refused_at_compile(self) -> None:
+        qs = _walk(edge_filter=Q(out="$who"))
+        with pytest.raises(ValueError, match="edge_filter on 'out' compares records"):
+            qs._compile_query()
+
+
+# ---------------------------------------------------------------------------
+# U4 — reachable_from(): argument errors at the call
+# ---------------------------------------------------------------------------
+
+
+class TestReachableFromErrors:
+    @pytest.mark.parametrize(
+        ("kwargs", "exc", "text"),
+        [
+            ({"max_depth": "3"}, TypeError, "max_depth must be an int, got str"),
+            ({"max_depth": True}, TypeError, "max_depth must be an int, got bool"),
+            ({"max_depth": 0}, ValueError, "max_depth must be >= 1, got 0"),
+            ({"max_depth": 300}, ValueError, "max_depth must be <= 256 (SurrealDB's recursion limit), got 300"),
+            ({"min_depth": 0}, ValueError, "min_depth must be >= 1, got 0"),
+            ({"min_depth": "1"}, TypeError, "min_depth must be an int, got str"),
+            (
+                {"min_depth": 300, "max_depth": None},
+                ValueError,
+                "min_depth must be <= 256 (SurrealDB's recursion limit), got 300",
+            ),
+            ({"min_depth": 3, "max_depth": 2}, ValueError, "min_depth (3) must be <= max_depth (2)"),
+            ({"direction": "sideways"}, ValueError, "direction must be 'out', 'in' or 'both', got 'sideways'"),
+            ({"node_filter": {"a": 1}}, TypeError, "node_filter must be a Q object or None, got dict"),
+            ({"edge_filter": {"a": 1}}, TypeError, "edge_filter must be a Q object or None, got dict"),
+            (
+                {"node_filter": Q(id__in=Subquery(GPUPerson.objects()))},
+                ValueError,
+                "Subquery values are not supported in node_filter / edge_filter",
+            ),
+        ],
+    )
+    def test_kwargs(self, kwargs: dict[str, Any], exc: type[Exception], text: str) -> None:
+        kwargs.setdefault("max_depth", 3)
+        with pytest.raises(exc) as excinfo:
+            GPUPerson.objects().reachable_from(GPUPerson(id="a"), "gpu_knows", **kwargs)
+        assert text in str(excinfo.value)
+
+    def test_max_depth_256_accepted(self) -> None:
+        assert "{1..256+collect}" in _walk(max_depth=256)._compile_query()
+
+    def test_bad_edge(self) -> None:
+        with pytest.raises(ValueError, match=r"Invalid edge table: 'kn ows'\."):
+            GPUPerson.objects().reachable_from(GPUPerson(id="a"), "kn ows", max_depth=3)
+
+    def test_edge_type(self) -> None:
+        with pytest.raises(TypeError, match="edge must be a table name or a model class, got int"):
+            GPUPerson.objects().reachable_from(GPUPerson(id="a"), 5, max_depth=3)  # type: ignore[arg-type]
+
+    def test_source_type(self) -> None:
+        with pytest.raises(TypeError, match="source must be a model instance, a RecordId or a 'table:id' string, got int"):
+            GPUPerson.objects().reachable_from(5, "gpu_knows", max_depth=3)  # type: ignore[arg-type]
+
+    def test_unsaved_source(self) -> None:
+        with pytest.raises(ValueError, match=r"source must be saved before it can be traversed \(it has no id\)"):
+            GPUPerson.objects().reachable_from(GPUPerson(), "gpu_knows", max_depth=3)
+
+    def test_bad_source_table(self) -> None:
+        with pytest.raises(ValueError, match="Invalid source: 'bad table:x'"):
+            GPUPerson.objects().reachable_from("bad table:x", "gpu_knows", max_depth=3)
+
+    def test_angle_source(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            GPUPerson.objects().reachable_from("gpu_person:⟨a⟩", "gpu_knows", max_depth=3)
+        assert E18 in str(excinfo.value)
+
+    def test_include_source_other_table(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            GPUPerson.objects().reachable_from("gpu_city:x", "gpu_knows", max_depth=3, include_source=True)
+        assert str(excinfo.value) == (
+            "include_source=True needs a source in 'gpu_person', got 'gpu_city:x': the source would be returned as "
+            "a 'gpu_person' record; pass include_source=False"
+        )
+
+    def test_error_leaves_queryset_untouched(self) -> None:
+        qs = GPUPerson.objects()
+        with pytest.raises(ValueError):
+            qs.reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=0)
+        assert qs._compile_query() == "SELECT * FROM gpu_person;"
+
+
+# ---------------------------------------------------------------------------
+# U5 — get(id), all() and statement errors with a traversal
+# ---------------------------------------------------------------------------
+
+
+class TestReachableFromExecution:
+    async def test_get_runs_on_a_copy(self) -> None:
+        import re
+
+        client = _client(_ok([{"id": r("d"), "name": "D"}]), _ok([{"id": r("e"), "name": "E"}]))
+        qs = _walk()
+        with _patch_client(client):
+            first = await qs.get("d")
+            second = await qs.get("e")
+        assert first.get_id() == "d" and second.get_id() == "e"
+        for call, key in zip(client.query.await_args_list, ("d", "e"), strict=True):
+            sql, variables = call.args
+            assert "FROM $_g_src.{1..3+collect}(->gpu_knows->gpu_person)" in sql
+            assert sql.count("id = ") == 1
+            match = re.search(r"\bid = \$(\w+)", sql)
+            assert match is not None
+            assert variables[match.group(1)] == r(key)
+            assert isinstance(variables[match.group(1)], RecordId)
+        assert qs._filters == []
+        assert r("d") not in qs._variables.values() and r("e") not in qs._variables.values()
+        client.select.assert_not_awaited()
+
+    async def test_get_with_prior_filter(self) -> None:
+        import re
+
+        client = _client(_ok([{"id": r("d"), "name": "D", "active": True}]))
+        qs = _walk().filter(active=True)
+        with _patch_client(client):
+            found = await qs.get("gpu_person:d")
+        assert found.get_id() == "d"
+        sql, variables = client.query.await_args.args
+        assert sql.count("id = ") == 1
+        match = re.search(r"\bid = \$(\w+)", sql)
+        assert match is not None
+        assert variables[match.group(1)] == r("d")
+        assert qs._filters == [("active", "exact", True)]
+
+    async def test_get_not_reachable(self) -> None:
+        client = _client(_ok([]))
+        with _patch_client(client), pytest.raises(GPUPerson.DoesNotExist):
+            await _walk().get("z")
+
+    async def test_get_without_traversal_unchanged(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        client = AsyncMock()
+        client.select = AsyncMock(return_value=MagicMock(is_empty=False, first={"id": r("d"), "name": "D"}))
+        with _patch_client(client):
+            found = await GPUPerson.objects().get("d")
+        assert found.get_id() == "d"
+        client.query.assert_not_awaited()
+
+    async def test_all_honours_traversal(self) -> None:
+        client = _client(_ok([{"id": r("b"), "name": "B"}]))
+        with _patch_client(client):
+            rows = await _walk().all()
+        assert [p.get_id() for p in rows] == ["b"]
+        sql, _ = client.query.await_args.args
+        assert sql == "SELECT * FROM $_g_src.{1..3+collect}(->gpu_knows->gpu_person) WHERE id != $_g_src;"
+        client.select.assert_not_awaited()
+
+    async def test_statement_error_raises(self) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        client = _client(_err("Exceeded the idiom recursion limit of 256."))
+        with _patch_client(client), pytest.raises(QueryError, match="recursion limit of 256"):
+            await _walk().exec()
+
+    async def test_statement_error_without_traversal_unchanged(self) -> None:
+        client = _client(_err("Some error"))
+        with _patch_client(client):
+            assert await GPUPerson.objects().exec() == []
+
+
+# ---------------------------------------------------------------------------
+# U6 (write part) — bulk writes refuse a traversal (E14)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteGuards:
+    @pytest.mark.parametrize(
+        ("method", "call"),
+        [
+            ("bulk_update", lambda qs: qs.bulk_update({"name": "x"})),
+            ("bulk_delete", lambda qs: qs.bulk_delete()),
+            ("upsert", lambda qs: qs.upsert({"name": "x"}, id="gpu_person:x")),
+            ("bulk_upsert", lambda qs: qs.bulk_upsert([GPUPerson(id="x", name="x")])),
+            ("delete_table", lambda qs: qs.delete_table()),
+        ],
+    )
+    async def test_refused_before_io(self, method: str, call: Any) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        qs = GPUPerson.objects().reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=2).filter(name="y")
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+            pytest.raises(ValueError) as excinfo,
+        ):
+            await call(qs)
+        assert str(excinfo.value) == f"{method}() cannot be combined with reachable_from()"
+        get_client.assert_not_awaited()
+
+    def test_write_where_never_carries_exclusion(self) -> None:
+        qs = GPUPerson.objects().reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=2).filter(name="y")
+        where = qs._compile_where_clause()
+        assert where == " WHERE name = $_f0"
+        assert "_g_src" not in where
