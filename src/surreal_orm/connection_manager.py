@@ -824,7 +824,8 @@ class SurrealDBConnectionManager:
 
         :raises ValueError: If *name* is not configured.
         :raises SurrealDbConnectionError: If the client cannot connect or
-            authenticate. The partly built client is closed first.
+            authenticate. The partly built client is closed first, and
+            also when the call is cancelled.
         """
         config = cls._configs.get(name)
         if config is None:
@@ -842,6 +843,16 @@ class SurrealDBConnectionManager:
             await _client.signin(config.user, config.password)
 
             return _client
+        except asyncio.CancelledError:
+            # Cancelled while connecting or signing in (e.g. a timed-out
+            # reconnect()): the client was never registered, so nothing else
+            # would ever close it.
+            if _client is not None:
+                try:
+                    await _client.close()
+                except Exception:
+                    logger.debug("Closing the partly built client of '%s' failed.", name, exc_info=True)
+            raise
         except SurrealDBError as e:
             logger.warning("Can't get connection '%s': %s", name, e)
             if _client is not None:

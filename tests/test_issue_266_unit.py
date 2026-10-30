@@ -45,9 +45,13 @@ _LEGACY_ATTRS = [a for a in vars(Manager) if a.startswith("_SurrealDBConnectionM
 class I266Transport(httpx.AsyncBaseTransport):
     """In-memory SurrealDB HTTP endpoint for one client."""
 
-    def __init__(self, *, fail_signin: bool = False, close_error: BaseException | None = None) -> None:
+    def __init__(
+        self, *, fail_signin: bool = False, hold_signin: bool = False, close_error: BaseException | None = None
+    ) -> None:
         self.fail_signin = fail_signin
+        self.hold_signin = hold_signin
         self.close_error = close_error
+        self.signin_held = asyncio.Event()
         self.held = asyncio.Event()
         self.release = asyncio.Event()
         self.closed = asyncio.Event()
@@ -55,6 +59,10 @@ class I266Transport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.path == "/signin":
+            if self.hold_signin:
+                # Never answers: only a cancellation (or a close) ends the request.
+                self.signin_held.set()
+                await asyncio.Event().wait()
             if self.fail_signin:
                 return httpx.Response(401, text="There was a problem with authentication", request=request)
             return httpx.Response(200, json={"token": "i266.jwt"}, request=request)
@@ -92,6 +100,7 @@ class I266Server:
 
     built: list[Any] = field(default_factory=list)
     fail_signin: bool = False
+    hold_signin: bool = False
     fail_connect: bool = False
     close_error: BaseException | None = None
 
@@ -136,7 +145,9 @@ def server(monkeypatch: pytest.MonkeyPatch) -> I266Server:
     class I266HTTPConnection(cm.HTTPConnection):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
-            self.i266_transport = I266Transport(fail_signin=state.fail_signin, close_error=state.close_error)
+            self.i266_transport = I266Transport(
+                fail_signin=state.fail_signin, hold_signin=state.hold_signin, close_error=state.close_error
+            )
             state.built.append(self)
 
         async def connect(self) -> Any:
@@ -253,6 +264,45 @@ async def test_reconnect_failure_leaves_the_registry_unchanged(server: I266Serve
     assert server.built[-1] is not old
     assert not server.built[-1].is_connected
     ws_sentinel.close.assert_not_awaited()
+    Manager._ws_clients.clear()
+
+
+async def test_reconnect_cancelled_before_the_swap_leaves_the_registry_unchanged(server: I266Server) -> None:
+    """Cancelled while the new client is still signing in, reconnect() keeps the current clients."""
+    old = await Manager.get_client()
+    ws_sentinel = AsyncMock()
+    Manager._ws_clients["default"] = ws_sentinel
+    clients_before = dict(Manager._clients)
+    ws_before = dict(Manager._ws_clients)
+    server.hold_signin = True
+    before = _other_tasks()
+
+    swap = asyncio.create_task(Manager.reconnect())
+    for _ in range(1000):
+        if len(server.built) == 2:
+            break
+        await asyncio.sleep(0.001)
+    partial = server.built[-1]
+    assert partial is not old
+    await asyncio.wait_for(_transport(partial).signin_held.wait(), 1)
+
+    swap.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await swap
+
+    assert Manager._clients == clients_before
+    assert Manager._ws_clients == ws_before
+    assert Manager._SurrealDBConnectionManager__client is old  # type: ignore[attr-defined]
+    assert old.is_connected
+    assert not _transport(old).closed.is_set()
+    ws_sentinel.close.assert_not_awaited()
+    # The partly built client was closed, not leaked.
+    assert not partial.is_connected
+    assert _transport(partial).closed.is_set()
+    assert not Manager._get_connection_lock().locked()
+    await asyncio.sleep(0)
+    assert _other_tasks() - before == set()
+    assert await Manager.get_client() is old
     Manager._ws_clients.clear()
 
 
