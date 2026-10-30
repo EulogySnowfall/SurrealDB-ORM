@@ -30,12 +30,46 @@
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.4**  | 0.35.x      | Active development              |
+| `main` | **3.3.5**  | 0.36.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
 
 ---
+
+## What's New in 0.36.0
+
+**Minor release — Graph Power** ([#430](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/430)). Recursive graph
+traversal on SurrealDB's recursive idiom: reachable records, every path, and the shortest path, as `QuerySet` methods
+and instance shortcuts. No change for existing calls. Also documents the 0.35.7 (SurrealDB pin 3.3.5) and 0.35.8
+(`tornado` 6.6, dev-only) auto-releases. See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+```python
+# Everyone Alice follows, up to 3 hops away, as a normal QuerySet
+people = await Person.objects().reachable_from(alice, "follows", max_depth=3).filter(active=True).exec()
+n = await Person.objects().reachable_from(alice, "follows", max_depth=3).count()
+
+# Every maximal path (max_depth is required, capped at 32)
+paths = await Person.objects().paths_from(alice, "follows", max_depth=4)
+
+# Fewest hops between two records, or None
+path = await Person.objects().shortest_path(alice, bob, "follows", max_depth=6)
+
+# Instance shortcuts
+friends = await alice.get_reachable("follows", max_depth=2)
+```
+
+- **`reachable_from()`** returns each reachable record once and chains with `filter()`, `Q`, `order_by()`, `limit()`,
+  `select()`, `fetch()`, `get()`, `first()`, and with `count()` / `sum()` / `avg()` / `min()` / `max()` /
+  `values().annotate()`, which aggregate over the reachable records only.
+- **`paths_from()`** (`+path`) and **`shortest_path()`** (`+shortest`, unweighted BFS); `node_filter=` /
+  `edge_filter=` prune the walk, `direction="out" | "in" | "both"` (not `"both"` for paths). Depths 1–256, 1–32 for
+  `paths_from()`. Requires the CBOR protocol (the default).
+- **A traversal is never silently dropped**: methods that cannot honour it (`live()`, `changes()`, bulk writes,
+  `upsert()`, `Subquery(qs)`, `Prefetch(queryset=qs)`, `cache()`, combining with `similar_to()` / `search()` /
+  `nearby()`, …) raise `ValueError` before any query.
+- **New exports**: `GraphDirection`, `MAX_GRAPH_DEPTH` (256), `MAX_PATH_DEPTH` (32). Tested on SurrealDB 3.3.5 and
+  3.2.6.
 
 ## What's New in 0.35.6
 
@@ -1817,7 +1851,7 @@ pip install surrealdb-orm
 pip install surrealdb-orm[cli]
 ```
 
-**Requirements:** Python 3.12+ (tested on 3.12 – 3.15) | SurrealDB 3.2.x – 3.3.x, tested against 3.3.4 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
+**Requirements:** Python 3.12+ (tested on 3.12 – 3.15) | SurrealDB 3.2.x – 3.3.x, tested against 3.3.5 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
 
 **Included:** `pydantic`, `httpx`, `aiohttp`, `cbor2` (CBOR is the default protocol for WebSocket)
 
@@ -1831,7 +1865,7 @@ pip install surrealdb-orm[cli]
 | **0.30.x – 0.31.x**   | 3.0 – 3.1     | —      | Superseded          |
 | **0.21.x**            | 2.6.x – 2.7.x | `v2`   | Security fixes only |
 
-- **SurrealDB 3.2.x – 3.3.x** — Use `surrealdb-orm >= 0.34.0` (this branch). Tested against SurrealDB **3.3.4**, and against 3.2.6 on the 3.2 floor line.
+- **SurrealDB 3.2.x – 3.3.x** — Use `surrealdb-orm >= 0.34.0` (this branch). Tested against SurrealDB **3.3.5**, and against 3.2.6 on the 3.2 floor line.
 - **SurrealDB 3.0 – 3.1** — Pin `surrealdb-orm<0.32`. 0.32.0 requires 3.2+ and is not tested against 3.1.x.
 - **SurrealDB 2.6.x – 2.7.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`; 2.7.x from 0.21.8, tested against **2.7.0**). This branch receives security patches but no new features.
 

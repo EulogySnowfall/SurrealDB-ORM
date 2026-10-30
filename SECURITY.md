@@ -6,13 +6,13 @@ Two release lines are actively maintained, one per SurrealDB major version:
 
 | Version     | SurrealDB     | Branch | Supported          |
 | ----------- | ------------- | ------ | ------------------ |
-| **0.35.x**  | 3.2.x – 3.3.x | `main` | :white_check_mark: |
+| **0.36.x**  | 3.2.x – 3.3.x | `main` | :white_check_mark: |
 | **0.21.x**  | 2.6.x – 2.7.x | `v2`   | :white_check_mark: |
 | any other   | -             | -      | :x:                |
 
-`main` supports **SurrealDB 3.2.x – 3.3.x** (tested against 3.3.4 as of ORM
-0.34.5); 3.1.x and earlier are not supported there. Security fixes on `main`
-ship in the current minor only — upgrade from 0.34.x to 0.35.x, which needs no
+`main` supports **SurrealDB 3.2.x – 3.3.x** (tested against 3.3.5 as of ORM
+0.35.7); 3.1.x and earlier are not supported there. Security fixes on `main`
+ship in the current minor only — upgrade from 0.35.x to 0.36.x, which needs no
 server upgrade. The `v2` line supports SurrealDB 2.6.x – 2.7.x (tested against
 2.7.0 as of 0.21.8) and receives security and bug fixes only.
 
