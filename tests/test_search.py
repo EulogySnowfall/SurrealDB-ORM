@@ -4,8 +4,10 @@ from collections.abc import AsyncGenerator
 
 import pytest
 
+from src.surreal_orm.migrations.define_parser import _unquote_surql_string
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from src.surreal_orm.search import SearchHighlight, SearchScore
+from src.surreal_orm.utils import surql_string_literal
 
 # ── Test models ──────────────────────────────────────────────────────────────
 
@@ -70,6 +72,39 @@ class TestSearchHighlight:
 
     def test_hash(self) -> None:
         assert isinstance(hash(SearchHighlight("<b>", "</b>", 0)), int)
+
+    @pytest.mark.parametrize(
+        ("tag", "literal"),
+        [
+            ("a\\", "'a\\\\'"),
+            ("it's", "'it\\'s'"),
+            ("a\\'; DEFINE TABLE i413_other; --", "'a\\\\\\'; DEFINE TABLE i413_other; --'"),
+            ("\\\\", "'\\\\\\\\'"),
+        ],
+    )
+    def test_tags_are_string_literals(self, tag: str, literal: str) -> None:
+        """A backslash is escaped before the apostrophe, so each tag reads back as written (#413)."""
+        sql = SearchHighlight(tag, tag, 0).to_surql("snippet")
+        assert sql == f"search::highlight({literal}, {literal}, 0) AS snippet"
+        assert literal == surql_string_literal(tag)
+        assert _unquote_surql_string(literal) == tag
+
+    def test_ref_renders_as_its_number(self) -> None:
+        """``ref`` is written as ``int(ref)``, not through its own ``__format__`` (#413)."""
+
+        class Ref(int):
+            def __format__(self, format_spec: str) -> str:
+                return "0) AS a, search::highlight('', '', 1"
+
+            def __str__(self) -> str:
+                return self.__format__("")
+
+        sql = SearchHighlight("<b>", "</b>", Ref(1)).to_surql("snippet")
+        assert sql == "search::highlight('<b>', '</b>', 1) AS snippet"
+
+    def test_ref_that_is_not_a_number_is_rejected(self) -> None:
+        with pytest.raises(ValueError):
+            SearchHighlight("<b>", "</b>", "0) AS a, (1").to_surql("snippet")  # type: ignore[arg-type]
 
 
 class TestSearchMethod:
