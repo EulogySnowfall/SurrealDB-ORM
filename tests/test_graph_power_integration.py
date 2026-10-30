@@ -304,3 +304,44 @@ class TestRecursionLimit:
         assert len(await qs.exec()) == 256
         qs = GPChain.objects().reachable_from(RecordId("gp_chain", 0), "gp_link", max_depth=256)
         assert await qs.count() == 256
+
+
+def path_ids(paths: Iterable[Iterable[Any]]) -> set[tuple[str, ...]]:
+    return {tuple(str(node.get_id()) for node in path) for path in paths}
+
+
+class TestPaths:
+    """I7, I5 (rest) and the paths_from() part of I10."""
+
+    async def test_paths(self, graph: dict[str, GPPerson]) -> None:
+        paths = await GPPerson.objects().paths_from(graph["a"], "gp_knows", max_depth=2)
+        assert path_ids(paths) == {("a", "b", "c"), ("a", "e", "d")}
+        assert len(paths) == 2
+        assert all(isinstance(node, GPPerson) for path in paths for node in path)
+
+    async def test_paths_without_source(self, graph: dict[str, GPPerson]) -> None:
+        paths = await GPPerson.objects().paths_from(graph["a"], "gp_knows", max_depth=2, include_source=False)
+        assert path_ids(paths) == {("b", "c"), ("e", "d")}
+
+    async def test_paths_min_depth(self, graph: dict[str, GPPerson]) -> None:
+        paths = await GPPerson.objects().paths_from(graph["c"], "gp_knows", max_depth=3, min_depth=3)
+        assert path_ids(paths) == {("c", "d", "a", "e"), ("c", "d", "a", "b")}
+
+    async def test_other_source_table_refused(self, graph: dict[str, GPPerson]) -> None:
+        with pytest.raises(ValueError, match="include_source=True needs a source in 'gp_person'"):
+            await GPPerson.objects().paths_from("gp_company:acme", "gp_employs", max_depth=1)
+
+    async def test_other_source_table(self, graph: dict[str, GPPerson]) -> None:
+        paths = await GPPerson.objects().paths_from("gp_company:acme", "gp_employs", max_depth=1, include_source=False)
+        assert path_ids(paths) == {("b",), ("c",)}
+
+    async def test_query_logger(self, graph: dict[str, GPPerson]) -> None:
+        from src.surreal_orm.debug import QueryLogger
+
+        async with QueryLogger() as log:
+            await GPPerson.objects().paths_from(graph["a"], "gp_knows", max_depth=2)
+        assert [q.sql for q in log.queries] == [
+            "LET $_g_paths = $_g_src.{1..2+path+inclusive}(->gp_knows->gp_person); "
+            "RETURN { paths: $_g_paths, nodes: (SELECT * FROM array::distinct(array::flatten($_g_paths ?? []))) };"
+        ]
+        assert log.queries[0].variables == {"_g_src": RecordId("gp_person", "a")}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from collections.abc import Callable, Collection, Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, Self, TypeVar, cast
 
 from pydantic_core import ValidationError
 
@@ -15,6 +15,7 @@ from .geo import GeoDistance
 from .graph import (
     ARROWS,
     MAX_GRAPH_DEPTH,
+    MAX_PATH_DEPTH,
     GraphDirection,
     GraphWalk,
     check_direction,
@@ -23,6 +24,7 @@ from .graph import (
     coerce_edge_value,
     edge_table_name,
     render_range,
+    rid_key,
     to_graph_record,
 )
 from .prefetch import Prefetch
@@ -919,6 +921,187 @@ class QuerySet(Generic[T]):
             include_source=bool(include_source),
         )
         return self
+
+    async def paths_from(
+        self,
+        source: BaseSurrealModel | RecordId | str,
+        edge: str | type[BaseSurrealModel],
+        *,
+        max_depth: int,
+        min_depth: int = 1,
+        direction: Literal["out", "in"] = "out",
+        node_filter: Q | None = None,
+        edge_filter: Q | None = None,
+        include_source: bool = True,
+    ) -> list[list[T]]:
+        """
+        Every maximal walk from *source* over *edge*, as lists of records.
+
+        A walk repeats the step ``<edge> -> <table>`` until ``max_depth`` or a
+        dead end; walks shorter than ``min_depth`` are dropped. Each path lists
+        the records in walk order, the source first unless
+        ``include_source=False``. Cycles are not cut: the same record may
+        appear in several paths and several times in one path (each
+        occurrence is the same instance). The order of the paths is
+        unspecified.
+
+        One batch is sent: SurrealDB's ``{min..max+path}`` idiom returns the
+        walks as record ids, and the distinct records are selected alongside.
+        A path holding a record that is not returned (e.g. one the session
+        may not select) is dropped, and one warning names how many were.
+
+        **Cost:** the number of paths grows with the branching factor to the
+        power of ``max_depth``, cycles included (two out-edges per node give
+        about ``2 ** max_depth`` paths). Keep ``max_depth`` small on dense or
+        cyclic graphs, and never pass an unvalidated request parameter as
+        ``max_depth``: use an application constant. The cap of
+        ``MAX_PATH_DEPTH`` (32) only stops an accidental large depth; it is
+        not a resource limit.
+
+        This method runs on a bare QuerySet: constrain the walk with
+        ``node_filter`` / ``edge_filter``, not ``filter()``, ``order_by()``,
+        ``limit()`` or another read clause (``.variables()`` is allowed, for
+        ``$name`` references in the step filters).
+
+        Args:
+            source: The record the walks start from: a saved model instance,
+                a ``RecordId``, a ``"table:id"`` string or a bare id of this
+                QuerySet's table. A record of another table needs
+                ``include_source=False``.
+            edge: The edge table, or a model class whose table is the edge.
+            max_depth: Highest number of hops (1-32), required.
+            min_depth: Shortest walk returned, in hops (1-32, default 1).
+            direction: ``"out"`` (``->``) or ``"in"`` (``<-``). ``"both"`` is
+                refused: each ``<->`` step also returns the record it starts
+                from.
+            node_filter: Condition every node walked must meet.
+            edge_filter: Condition every edge crossed must meet (``in`` /
+                ``out`` values are converted to ``RecordId`` as in
+                :meth:`reachable_from`).
+            include_source: Put the source first in every path (default).
+
+        Returns:
+            list[list[T]]: The paths, each a list of model instances.
+
+        Raises:
+            TypeError: An argument of the wrong type (``max_depth=None``
+                included).
+            ValueError: An invalid depth (above 32 included), direction, edge
+                table, record reference or step filter; ``include_source=True``
+                with a source of another table; a QuerySet carrying a read
+                clause.
+            QueryError: The server rejected the batch.
+            pydantic.ValidationError: A record of a path does not validate
+                against the model.
+
+        Example::
+
+            paths = await Person.objects().paths_from(alice, "knows", max_depth=3)
+            for path in paths:
+                print(" -> ".join(p.name for p in path))
+            # LET $_g_paths = $_g_src.{1..3+path+inclusive}(->knows->person);
+            # RETURN { paths: $_g_paths, nodes: (SELECT * FROM
+            #   array::distinct(array::flatten($_g_paths ?? []))) };
+        """
+        from .debug import _elapsed_ms, _log_query, _start_timer
+
+        if not isinstance(edge, (str, type)):
+            raise TypeError(f"edge must be a table name or a model class, got {type(edge).__name__}")
+        for arg, value in (("node_filter", node_filter), ("edge_filter", edge_filter)):
+            if value is not None and not isinstance(value, Q):
+                raise TypeError(f"{arg} must be a Q object or None, got {type(value).__name__}")
+        node_table = self._model_table
+        validate_identifier(node_table, "table")
+        source_rid = to_graph_record(source, node_table, arg="source")
+        check_include_source(source_rid, node_table, bool(include_source))
+        edge_table = edge_table_name(edge)
+        step_direction = cast(GraphDirection, check_direction(direction, allow_both=False, method="paths_from"))
+        low, high = self._graph_depths(min_depth, max_depth, require_max=True, cap=MAX_PATH_DEPTH, method="paths_from")
+        checked_edge_filter = check_filter(edge_filter, arg="edge_filter", edge=True)
+        checked_node_filter = check_filter(node_filter, arg="node_filter")
+        self._reject_read_clauses("paths_from")
+        walk = GraphWalk(
+            source=source_rid,
+            edge=edge_table,
+            node_table=node_table,
+            direction=step_direction,
+            min_depth=low,
+            max_depth=high,
+            node_filter=checked_node_filter,
+            edge_filter=checked_edge_filter,
+            include_source=bool(include_source),
+        )
+
+        variables: dict[str, Any] = {**self._variables, "_g_src": source_rid}
+        step = self._render_graph_step(walk, variables)
+        instructions = "+path+inclusive" if walk.include_source else "+path"
+        query = remove_quotes_for_variables(
+            f"LET $_g_paths = $_g_src.{{{render_range(low, high)}{instructions}}}{step}; "
+            "RETURN { paths: $_g_paths, nodes: (SELECT * FROM array::distinct(array::flatten($_g_paths ?? []))) };"
+        )
+
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+        start = _start_timer()
+        result = await client.query(query, variables)
+        _log_query(query, variables, _elapsed_ms(start))
+        _raise_on_statement_error(result, query)
+
+        payload = result.results[-1].result if result.results else None
+        if not isinstance(payload, dict):
+            return []
+        nodes: dict[tuple[str, str], T] = {}
+        for record in payload.get("nodes") or []:
+            if isinstance(record, dict) and isinstance(record.get("id"), RecordId):
+                nodes[rid_key(record["id"])] = cast(T, self.model.from_db(record))
+
+        paths: list[list[T]] = []
+        dropped = 0
+        for raw in payload.get("paths") or []:
+            keys = [rid_key(item) if isinstance(item, RecordId) else None for item in (raw or [])]
+            if not keys or any(key is None or key not in nodes for key in keys):
+                dropped += 1
+                continue
+            paths.append([nodes[cast(tuple[str, str], key)] for key in keys])
+        if dropped:
+            logger.warning(
+                "paths_from() dropped %d path(s) from %s: a record of the path was not returned "
+                "(it may not be selectable by this session)",
+                dropped,
+                source_rid,
+            )
+        return paths
+
+    def _reject_read_clauses(self, method: str) -> None:
+        """
+        Refuse a terminal graph method on a QuerySet carrying a read clause.
+
+        ``paths_from()`` and ``shortest_path()`` build their own batch and
+        would silently ignore ``filter()``, ``order_by()``, ``limit()`` and
+        the rest; only ``.variables()`` is carried over.
+        """
+        if (
+            self._filters
+            or self._q_filters
+            or self._order_by
+            or self._limit is not None
+            or self._offset is not None
+            or self.select_item
+            or self._group_by_fields
+            or self._annotations
+            or self._fetch_fields
+            or self._select_related
+            or self._prefetch_related
+            or self._cache_ttl is not None
+            or self._knn_field
+            or self._search_fields
+            or self._geo_field
+            or self._graph is not None
+            or self._traversal_path
+        ):
+            raise ValueError(
+                f"{method}() runs on a bare QuerySet; constrain the walk with node_filter= / edge_filter= "
+                "instead of filter(), order_by(), limit() and the other read clauses"
+            )
 
     @staticmethod
     def _graph_depths(

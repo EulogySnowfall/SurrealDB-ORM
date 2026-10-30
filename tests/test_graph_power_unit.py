@@ -1068,3 +1068,276 @@ class TestReadGuards:
             get_client.assert_not_awaited()
         finally:
             QueryCache.configure(default_ttl=saved[0], max_size=saved[1], enabled=saved[2])
+
+
+# ---------------------------------------------------------------------------
+# U7, E6, E13 — paths_from() (C7)
+# ---------------------------------------------------------------------------
+
+C7 = (
+    "LET $_g_paths = $_g_src.{1..3+path+inclusive}(->gpu_knows->gpu_person); "
+    "RETURN { paths: $_g_paths, nodes: (SELECT * FROM array::distinct(array::flatten($_g_paths ?? []))) };"
+)
+
+E13 = (
+    "paths_from() runs on a bare QuerySet; constrain the walk with node_filter= / edge_filter= instead of "
+    "filter(), order_by(), limit() and the other read clauses"
+)
+
+
+def _batch(payload: Any) -> Any:
+    """The response to a ``LET …; RETURN …;`` batch: the LET's ``NONE``, then *payload*."""
+    from surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
+
+    return QueryResponse(
+        results=[
+            QueryResult(status=ResponseStatus.OK, result=None),
+            QueryResult(status=ResponseStatus.OK, result=payload),
+        ]
+    )
+
+
+def _rec(key: str) -> dict[str, Any]:
+    return {"id": r(key), "name": key.upper()}
+
+
+def _empty_paths() -> Any:
+    return _batch({"paths": [], "nodes": []})
+
+
+async def _paths(source: Any = None, edge: Any = "gpu_knows", qs: Any = None, **kwargs: Any) -> Any:
+    kwargs.setdefault("max_depth", 3)
+    queryset = GPUPerson.objects() if qs is None else qs
+    return await queryset.paths_from(GPUPerson(id="a") if source is None else source, edge, **kwargs)
+
+
+class TestPathsFromSql:
+    async def test_c7(self) -> None:
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            assert await _paths() == []
+        sql, variables = client.query.await_args.args
+        assert sql == C7
+        assert variables == {"_g_src": r("a")}
+        assert isinstance(variables["_g_src"], RecordId)
+
+    async def test_include_source_false(self) -> None:
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            await _paths(include_source=False)
+        sql, _ = client.query.await_args.args
+        assert sql == C7.replace("+path+inclusive", "+path")
+
+    async def test_min_depth(self) -> None:
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            await _paths(min_depth=2)
+        sql, _ = client.query.await_args.args
+        assert "$_g_src.{2..3+path+inclusive}(" in sql
+
+    async def test_direction_in(self) -> None:
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            await _paths(direction="in")
+        sql, _ = client.query.await_args.args
+        assert "(<-gpu_knows<-gpu_person)" in sql
+
+    async def test_edge_model(self) -> None:
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            await _paths(edge=GPUKnows)
+        sql, _ = client.query.await_args.args
+        assert sql == C7
+
+    async def test_step_filters_as_c4(self) -> None:
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            await _paths(edge_filter=Q(w__lt=5), node_filter=Q(active=True))
+        sql, variables = client.query.await_args.args
+        assert "$_g_src.{1..3+path+inclusive}(->gpu_knows[WHERE w < $_g0]->gpu_person[WHERE active = $_g1])" in sql
+        assert variables == {"_g_src": r("a"), "_g0": 5, "_g1": True}
+
+    async def test_edge_filter_coerces_record(self) -> None:
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            await _paths(edge_filter=Q(out=GPUPerson(id="b")))
+        sql, variables = client.query.await_args.args
+        assert "(->gpu_knows[WHERE out = $_g0]->gpu_person)" in sql
+        assert variables["_g0"] == r("b")
+        assert isinstance(variables["_g0"], RecordId)
+
+    async def test_declared_variables_accepted_and_sent(self) -> None:
+        client = _client(_empty_paths())
+        qs = GPUPerson.objects().variables(x=1)
+        with _patch_client(client):
+            await _paths(qs=qs, node_filter=Q(active="$x"))
+        sql, variables = client.query.await_args.args
+        assert "->gpu_person[WHERE active = $x])" in sql
+        assert variables == {"x": 1, "_g_src": r("a")}
+        assert qs._variables == {"x": 1}
+
+    async def test_depth_32_accepted(self) -> None:
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            await _paths(max_depth=32)
+        sql, _ = client.query.await_args.args
+        assert "{1..32+path+inclusive}" in sql
+
+    async def test_other_table_without_include_source(self) -> None:
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            await _paths(source="gpu_city:x", edge="gpu_knows", max_depth=2, include_source=False)
+        sql, variables = client.query.await_args.args
+        assert "$_g_src.{1..2+path}(->gpu_knows->gpu_person)" in sql
+        assert variables["_g_src"] == RecordId("gpu_city", "x")
+
+
+class TestPathsFromMapping:
+    async def test_order_kept_and_typed(self) -> None:
+        payload = {"paths": [[r("a"), r("b"), r("a")], [r("a"), r("e")]], "nodes": [_rec("a"), _rec("b"), _rec("e")]}
+        client = _client(_batch(payload))
+        with _patch_client(client):
+            paths = await _paths()
+        assert [[p.get_id() for p in path] for path in paths] == [["a", "b", "a"], ["a", "e"]]
+        assert all(isinstance(p, GPUPerson) for path in paths for p in path)
+        assert [p.name for p in paths[0]] == ["A", "B", "A"]
+        assert paths[0][0] is paths[0][2] is paths[1][0]
+
+    async def test_missing_node_dropped_with_one_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        payload = {
+            "paths": [[r("a"), r("x")], [r("a"), r("b")], [r("a"), r("y"), r("x")]],
+            "nodes": [_rec("a"), _rec("b")],
+        }
+        client = _client(_batch(payload))
+        with _patch_client(client), caplog.at_level(logging.WARNING):
+            paths = await _paths()
+        assert [[p.get_id() for p in path] for path in paths] == [["a", "b"]]
+        warnings = [rec for rec in caplog.records if rec.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "2" in warnings[0].getMessage()
+
+    async def test_no_warning_when_complete(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        payload = {"paths": [[r("a"), r("b")]], "nodes": [_rec("a"), _rec("b")]}
+        client = _client(_batch(payload))
+        with _patch_client(client), caplog.at_level(logging.WARNING):
+            await _paths()
+        assert [rec for rec in caplog.records if rec.levelno >= logging.WARNING] == []
+
+    async def test_empty(self) -> None:
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            assert await _paths() == []
+
+    async def test_statement_error(self) -> None:
+        from surreal_sdk.exceptions import QueryError
+        from surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
+
+        response = QueryResponse(
+            results=[
+                QueryResult(status=ResponseStatus.ERR, result="Something failed"),
+                QueryResult(status=ResponseStatus.ERR, result="The query was not executed due to a failed transaction"),
+            ]
+        )
+        client = _client(response)
+        with _patch_client(client), pytest.raises(QueryError, match="Something failed"):
+            await _paths()
+
+    async def test_query_logger(self) -> None:
+        from src.surreal_orm.debug import QueryLogger
+
+        client = _client(_empty_paths())
+        with _patch_client(client):
+            async with QueryLogger() as log:
+                await _paths()
+        assert [q.sql for q in log.queries] == [C7]
+        assert log.queries[0].variables == {"_g_src": r("a")}
+
+
+class TestPathsFromErrors:
+    async def _refused(self, exc: type[Exception], message: str, qs: Any = None, **kwargs: Any) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+            pytest.raises(exc) as excinfo,
+        ):
+            await _paths(qs=qs, **kwargs)
+        assert str(excinfo.value) == message
+        get_client.assert_not_awaited()
+
+    async def test_direction_both(self) -> None:
+        await self._refused(
+            ValueError,
+            "paths_from() does not support direction='both': each '<->' step also returns the record it "
+            "starts from, so every path would repeat its own nodes",
+            direction="both",
+        )
+
+    async def test_max_depth_none(self) -> None:
+        await self._refused(TypeError, "max_depth must be an int, got NoneType", max_depth=None)
+
+    async def test_max_depth_missing(self) -> None:
+        with pytest.raises(TypeError):
+            await GPUPerson.objects().paths_from(GPUPerson(id="a"), "gpu_knows")  # type: ignore[call-arg]
+
+    async def test_max_depth_over_cap(self) -> None:
+        await self._refused(
+            ValueError,
+            "max_depth must be <= 32 for paths_from() (the number of paths grows exponentially with the depth), got 33",
+            max_depth=33,
+        )
+
+    async def test_min_depth_over_cap(self) -> None:
+        await self._refused(
+            ValueError,
+            "min_depth must be <= 32 for paths_from() (the number of paths grows exponentially with the depth), got 33",
+            max_depth=32,
+            min_depth=33,
+        )
+
+    async def test_include_source_other_table(self) -> None:
+        await self._refused(
+            ValueError,
+            "include_source=True needs a source in 'gpu_person', got 'gpu_city:x': the source would be returned "
+            "as a 'gpu_person' record; pass include_source=False",
+            source="gpu_city:x",
+            max_depth=2,
+        )
+
+    async def test_bad_edge_filter(self) -> None:
+        await self._refused(TypeError, "edge_filter must be a Q object or None, got dict", edge_filter={"w": 1})
+
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            pytest.param(lambda qs: qs.filter(active=True), id="filter"),
+            pytest.param(lambda qs: qs.filter(Q(active=True)), id="Q"),
+            pytest.param(lambda qs: qs.order_by("name"), id="order_by"),
+            pytest.param(lambda qs: qs.limit(1), id="limit"),
+            pytest.param(lambda qs: qs.offset(1), id="offset"),
+            pytest.param(lambda qs: qs.select("name"), id="select"),
+            pytest.param(lambda qs: qs.values("active"), id="values"),
+            pytest.param(lambda qs: qs.annotate(n=_count()), id="annotate"),
+            pytest.param(lambda qs: qs.fetch("owner"), id="fetch"),
+            pytest.param(lambda qs: qs.select_related("owner"), id="select_related"),
+            pytest.param(lambda qs: qs.prefetch_related("gpu_knows"), id="prefetch_related"),
+            pytest.param(lambda qs: qs.cache(ttl=5), id="cache"),
+            pytest.param(lambda qs: qs.similar_to("emb", [0.1], limit=2), id="similar_to"),
+            pytest.param(lambda qs: qs.search(name="x"), id="search"),
+            pytest.param(lambda qs: qs.nearby("loc", (0, 0), 10), id="nearby"),
+            pytest.param(lambda qs: qs.reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=1), id="reachable_from"),
+            pytest.param(lambda qs: qs.traverse("->gpu_knows->gpu_person"), id="traverse"),
+        ],
+    )
+    async def test_read_clause_refused(self, clause: Any) -> None:
+        await self._refused(ValueError, E13, qs=clause(GPUPerson.objects()))
+
+
+def _count() -> Any:
+    from src.surreal_orm.aggregations import Count
+
+    return Count()
