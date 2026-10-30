@@ -52,6 +52,35 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.29
+
+**Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #386, #407 and #362 from `main`.
+
+- **USER tables get a `UNIQUE` index on their identifier (#397).** `makemigrations` / `schema_diff()` add
+  `<table>_<identifier>_unique`, so a second `signup()` with an identifier already in use is rejected by the database.
+  An equivalent `UNIQUE` index under another name is kept. Duplicate identifiers must be resolved before the
+  migration applies: see the CHANGELOG for the query that lists them.
+- **`SearchHighlight` tags are SurrealQL string literals (#413).** A tag containing a backslash reaches
+  `search::highlight()` as written; `ref` is converted with `int()`.
+- **The generated `SIGNUP` clause assigns only an explicit sign-up set (#366).** The identifier, the hashed
+  password, the fields listed in `SurrealConfigDict(signup_fields=[...])` and `created_at` when the model has it;
+  every other field keeps its default. `signup()` rejects any other keyword before sending a request, and the
+  migration introspector now honours `encryption_algorithm` and `access_name`. `signup_fields` is part of this fix
+  on the LTS line, not a feature.
+
+## What's New in 0.21.28
+
+**Bug fix release (V2 LTS), documented here after the fact.** Published by the dependency sync (`tornado` 6.6 in the
+dev lock); it also shipped three fixes, the `v2` ports of #396, #334 and #367.
+
+- **`HTTPTransaction.commit()` raises when the server rejects a statement (#399).** `TransactionError` with the
+  server's error, `TransactionConflictError` for a retryable conflict. Before, the batch was cancelled and the
+  commit reported success.
+- **`HTTPTransaction` data keys must be identifiers (#382).** Any other key raises `ValueError` when the statement
+  is queued.
+- **Filter keys and `values()` names must be field names or dotted paths (#377).** Unknown lookups raise
+  `ValueError` instead of being rendered as `=`, and identifier checks no longer accept trailing whitespace.
+
 ## What's New in 0.21.27
 
 **Bug fix release (V2 LTS).** One fix, the `v2` port of #283 from `main`; no new public API on the model side.
