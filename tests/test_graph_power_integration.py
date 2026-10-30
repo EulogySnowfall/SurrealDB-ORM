@@ -430,3 +430,26 @@ class TestShortestPath:
             "RETURN { path: $_g_path, nodes: (SELECT * FROM array::distinct(array::flatten($_g_path ?? []))) };"
         ]
         assert log.queries[0].variables == {"_g_src": RecordId("gp_person", "a"), "_g_dst": RecordId("gp_person", "d")}
+
+
+class TestInstanceShortcuts:
+    """I11."""
+
+    async def test_get_reachable(self, graph: dict[str, GPPerson]) -> None:
+        rows = await graph["a"].get_reachable("gp_knows", max_depth=3)
+        assert ids(rows) == {"b", "c", "d", "e", "7x"}
+        assert all(isinstance(row, GPPerson) for row in rows)
+
+    async def test_get_reachable_model_class(self, graph: dict[str, GPPerson]) -> None:
+        acme = await GPCompany.objects().get("acme")
+        assert ids(await acme.get_reachable("gp_employs", max_depth=1, model_class=GPPerson)) == {"b", "c"}
+
+    async def test_get_paths(self, graph: dict[str, GPPerson]) -> None:
+        paths = await graph["a"].get_paths("gp_knows", max_depth=2)
+        assert path_ids(paths) == {("a", "b", "c"), ("a", "e", "d")}
+        assert all(isinstance(node, GPPerson) for path in paths for node in path)
+
+    async def test_get_shortest_path(self, graph: dict[str, GPPerson]) -> None:
+        path = await graph["a"].get_shortest_path(graph["d"], "gp_knows")
+        assert order(path) == ["a", "e", "d"]
+        assert await graph["a"].get_shortest_path(graph["z"], "gp_knows") is None

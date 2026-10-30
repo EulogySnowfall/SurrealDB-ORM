@@ -11,6 +11,7 @@ to the ORM's own.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -1617,3 +1618,180 @@ class TestShortestPathErrors:
     )
     async def test_read_clause_refused(self, clause: Any) -> None:
         await self._refused(ValueError, E13.replace("paths_from()", "shortest_path()"), qs=clause(GPUPerson.objects()))
+
+
+# ---------------------------------------------------------------------------
+# U9 — instance shortcuts get_reachable(), get_paths(), get_shortest_path()
+# ---------------------------------------------------------------------------
+
+
+class _Spy:
+    """Records the QuerySet method a shortcut delegates to, and on which model."""
+
+    def __init__(self, result: Any) -> None:
+        self.result = result
+        self.calls: list[tuple[str, type[Any], tuple[Any, ...], dict[str, Any]]] = []
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spy = self
+
+        def reachable_from(qs: QuerySet[Any], *args: Any, **kwargs: Any) -> QuerySet[Any]:
+            spy.calls.append(("reachable_from", qs.model, args, kwargs))
+            return qs
+
+        async def exec_(qs: QuerySet[Any]) -> Any:
+            spy.calls.append(("exec", qs.model, (), {}))
+            return spy.result
+
+        async def paths_from(qs: QuerySet[Any], *args: Any, **kwargs: Any) -> Any:
+            spy.calls.append(("paths_from", qs.model, args, kwargs))
+            return spy.result
+
+        async def shortest_path(qs: QuerySet[Any], *args: Any, **kwargs: Any) -> Any:
+            spy.calls.append(("shortest_path", qs.model, args, kwargs))
+            return spy.result
+
+        monkeypatch.setattr(QuerySet, "reachable_from", reachable_from)
+        monkeypatch.setattr(QuerySet, "exec", exec_)
+        monkeypatch.setattr(QuerySet, "paths_from", paths_from)
+        monkeypatch.setattr(QuerySet, "shortest_path", shortest_path)
+
+
+_STEP_DEFAULTS: dict[str, Any] = {"direction": "out", "node_filter": None, "edge_filter": None}
+
+
+class TestInstanceShortcuts:
+    async def test_get_reachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spy = _Spy(["sentinel"])
+        spy.install(monkeypatch)
+        alice = GPUPerson(id="a")
+        assert await alice.get_reachable("gpu_knows", max_depth=2) == ["sentinel"]
+        assert spy.calls == [
+            (
+                "reachable_from",
+                GPUPerson,
+                (alice, "gpu_knows"),
+                {"max_depth": 2, "min_depth": 1, **_STEP_DEFAULTS, "include_source": False},
+            ),
+            ("exec", GPUPerson, (), {}),
+        ]
+
+    async def test_get_reachable_forwards_every_argument(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spy = _Spy([])
+        spy.install(monkeypatch)
+        alice = GPUPerson(id="a")
+        node, edge = Q(active=True), Q(w__lt=5)
+        await alice.get_reachable(
+            GPUKnows,
+            max_depth=None,
+            min_depth=2,
+            direction="both",
+            node_filter=node,
+            edge_filter=edge,
+            include_source=True,
+        )
+        assert spy.calls[0] == (
+            "reachable_from",
+            GPUPerson,
+            (alice, GPUKnows),
+            {
+                "max_depth": None,
+                "min_depth": 2,
+                "direction": "both",
+                "node_filter": node,
+                "edge_filter": edge,
+                "include_source": True,
+            },
+        )
+
+    async def test_get_reachable_model_class(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spy = _Spy([])
+        spy.install(monkeypatch)
+        alice = GPUPerson(id="a")
+        await alice.get_reachable("gpu_lives_in", max_depth=1, model_class=GPUCity)
+        assert [(name, model) for name, model, _, _ in spy.calls] == [
+            ("reachable_from", GPUCity),
+            ("exec", GPUCity),
+        ]
+
+    async def test_get_paths(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spy = _Spy([["p"]])
+        spy.install(monkeypatch)
+        alice = GPUPerson(id="a")
+        assert await alice.get_paths("gpu_knows", max_depth=3) == [["p"]]
+        assert spy.calls == [
+            (
+                "paths_from",
+                GPUPerson,
+                (alice, "gpu_knows"),
+                {"max_depth": 3, "min_depth": 1, **_STEP_DEFAULTS, "include_source": True},
+            )
+        ]
+
+    async def test_get_paths_model_class(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spy = _Spy([])
+        spy.install(monkeypatch)
+        alice = GPUPerson(id="a")
+        await alice.get_paths("gpu_lives_in", max_depth=1, model_class=GPUCity, include_source=False, direction="in")
+        assert spy.calls == [
+            (
+                "paths_from",
+                GPUCity,
+                (alice, "gpu_lives_in"),
+                {"max_depth": 1, "min_depth": 1, **_STEP_DEFAULTS, "direction": "in", "include_source": False},
+            )
+        ]
+
+    async def test_get_shortest_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spy = _Spy(None)
+        spy.install(monkeypatch)
+        alice, dave = GPUPerson(id="a"), GPUPerson(id="d")
+        assert await alice.get_shortest_path(dave, "gpu_knows") is None
+        assert spy.calls == [
+            (
+                "shortest_path",
+                GPUPerson,
+                (alice, dave, "gpu_knows"),
+                {"max_depth": None, **_STEP_DEFAULTS, "include_source": True},
+            )
+        ]
+
+    async def test_get_shortest_path_target_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spy = _Spy([])
+        spy.install(monkeypatch)
+        alice, paris = GPUPerson(id="a"), GPUCity(id="paris")
+        await alice.get_shortest_path(paris, "gpu_lives_in", max_depth=4, include_source=False)
+        assert spy.calls == [
+            (
+                "shortest_path",
+                GPUCity,
+                (alice, paris, "gpu_lives_in"),
+                {"max_depth": 4, **_STEP_DEFAULTS, "include_source": False},
+            )
+        ]
+
+
+class TestInstanceShortcutErrors:
+    """Errors come from the QuerySet methods; the shortcuts add no rule."""
+
+    E9 = "source must be saved before it can be traversed (it has no id)"
+
+    async def test_get_reachable_unsaved(self) -> None:
+        with pytest.raises(ValueError, match=re.escape(self.E9)):
+            await GPUPerson().get_reachable("gpu_knows", max_depth=2)
+
+    async def test_get_paths_unsaved(self) -> None:
+        with pytest.raises(ValueError, match=re.escape(self.E9)):
+            await GPUPerson().get_paths("gpu_knows", max_depth=2)
+
+    async def test_get_shortest_path_unsaved(self) -> None:
+        with pytest.raises(ValueError, match=re.escape(self.E9)):
+            await GPUPerson().get_shortest_path(GPUPerson(id="d"), "gpu_knows")
+
+    async def test_get_paths_other_model_needs_include_source_false(self) -> None:
+        with pytest.raises(ValueError, match=re.escape("include_source=True needs a source in 'gpu_city'")):
+            await GPUPerson(id="a").get_paths("gpu_lives_in", max_depth=1, model_class=GPUCity)
+
+    async def test_get_shortest_path_other_table_needs_include_source_false(self) -> None:
+        with pytest.raises(ValueError, match=re.escape("include_source=True needs a source in 'gpu_city'")):
+            await GPUPerson(id="a").get_shortest_path(GPUCity(id="paris"), "gpu_lives_in")
