@@ -511,6 +511,7 @@ class TestMixinAuthWorkflow:
                 identifier_field="email",
                 password_field="password",
                 access_name="account",
+                signup_fields=["name"],
             )
             id: str | None = None
             email: str
@@ -764,6 +765,7 @@ class TestIssue353SessionRecord:
                 identifier_field="email",
                 password_field="password",
                 access_name="i353_auth",
+                signup_fields=["name"],
             )
             id: str | None = None
             email: str

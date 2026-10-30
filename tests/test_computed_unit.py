@@ -406,6 +406,7 @@ class TestAccessStateSkipsComputed:
                 table_type=TableType.USER,
                 identifier_field="email",
                 password_field="password",
+                signup_fields=["name"],
             )
             id: str | None = None
             email: str
