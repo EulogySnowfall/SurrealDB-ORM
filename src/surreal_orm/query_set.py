@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+from collections.abc import Callable, Collection, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
 
@@ -1103,11 +1103,13 @@ class QuerySet(Generic[T]):
         counter: list[int],
         prelude: list[str] | None = None,
         declared: Collection[str] = frozenset(),
+        *,
+        prefix: str = "_f",
     ) -> str:
         """
         Render a single filter condition to a parameterized SurrealQL expression.
 
-        Values are bound as ``$_fN`` variables. The one exception is a value that
+        Values are bound as ``$<prefix>N`` variables (``$_fN`` by default). The one exception is a value that
         is exactly ``$name`` where ``name`` is in ``declared`` (see
         :func:`~surreal_orm.utils.is_declared_variable_reference`): it is
         written as a reference to that variable. Every other string — an
@@ -1125,6 +1127,9 @@ class QuerySet(Generic[T]):
             declared: Variable names passed through ``.variables()``. The
                 ORM's own bindings (``$_fN``, ...) are never in it, so a value
                 equal to one of them is data on every compile.
+            prefix: Name prefix of the bound variables. A clause compiled
+                beside the ordinary filters (a graph traversal step) binds
+                under its own prefix so the two never share a name.
 
         Returns:
             str: The rendered SurrealQL condition.
@@ -1134,9 +1139,9 @@ class QuerySet(Generic[T]):
         # well as when the key is parsed: Q children can be built by hand.
         parse_filter_key(f"{field_name}__{lookup_name}")
 
-        # ── Helper: bind a value as $_fN and return the var name ──────
+        # ── Helper: bind a value as $<prefix>N and return the var name ─
         def _bind(val: Any) -> str:
-            vn = f"_f{counter[0]}"
+            vn = f"{prefix}{counter[0]}"
             counter[0] += 1
             variables[vn] = val
             return vn
@@ -1246,6 +1251,9 @@ class QuerySet(Generic[T]):
         counter: list[int],
         prelude: list[str] | None = None,
         declared: Collection[str] = frozenset(),
+        *,
+        prefix: str = "_f",
+        coerce: Callable[[str, str, Any, Collection[str]], Any] | None = None,
     ) -> str:
         """
         Recursively render a Q object tree to a parameterized SurrealQL expression.
@@ -1257,23 +1265,31 @@ class QuerySet(Generic[T]):
             prelude: Mutable list collecting ``LET`` statements for hoisted subqueries.
             declared: Variable names a ``$name`` value may refer to
                 (see :meth:`_render_condition`).
+            prefix: Name prefix of the bound variables (see
+                :meth:`_render_condition`); nested ``Q`` objects use it too.
+            coerce: Called as ``coerce(field, lookup, value, declared)`` on
+                each leaf before it is rendered. ``None`` uses
+                :meth:`_coerce_filter_value` (foreign keys to record links).
 
         Returns:
             str: The rendered SurrealQL expression with proper parenthesization.
         """
         if not q.children:
             return ""
+        coerce_value = self._coerce_filter_value if coerce is None else coerce
 
         parts: list[str] = []
         for child in q.children:
             if isinstance(child, Q):
-                rendered = self._render_q(child, variables, counter, prelude, declared)
+                rendered = self._render_q(child, variables, counter, prelude, declared, prefix=prefix, coerce=coerce)
                 if rendered:
                     parts.append(rendered)
             else:
                 field_name, lookup_name, value = child
-                value = self._coerce_filter_value(field_name, lookup_name, value, declared)
-                parts.append(self._render_condition(field_name, lookup_name, value, variables, counter, prelude, declared))
+                value = coerce_value(field_name, lookup_name, value, declared)
+                parts.append(
+                    self._render_condition(field_name, lookup_name, value, variables, counter, prelude, declared, prefix=prefix)
+                )
 
         if not parts:
             return ""

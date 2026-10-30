@@ -11,11 +11,15 @@ to the ORM's own.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from src.surreal_orm import graph
+from src.surreal_orm.fields.relation import ForeignKey
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from src.surreal_orm.q import Q
+from src.surreal_orm.query_set import QuerySet
 from src.surreal_orm.subquery import Subquery
 from src.surreal_orm.types import TableType
 from src.surreal_orm.utils import parse_record_id
@@ -40,6 +44,13 @@ class GPUCity(BaseSurrealModel):
     model_config = SurrealConfigDict(table_name="gpu_city")
 
     id: str | None = None
+
+
+class GPUWithFK(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="gpu_with_fk")
+
+    id: str | None = None
+    owner: ForeignKey("GPUPerson") = None  # type: ignore[valid-type]
 
 
 def r(key: str) -> RecordId:
@@ -337,6 +348,85 @@ class TestAsPath:
     )
     def test_not_a_path(self, raw: object) -> None:
         assert graph.as_path(raw, r("d")) is None
+
+
+# ---------------------------------------------------------------------------
+# U2 — filter renderers bind under a given prefix
+# ---------------------------------------------------------------------------
+
+
+class TestRenderPrefix:
+    def test_condition_prefix(self) -> None:
+        v: dict[str, Any] = {}
+        sql = QuerySet._render_condition("age", "gt", 3, v, [0], prefix="_g")
+        assert sql == "age > $_g0"
+        assert v == {"_g0": 3}
+
+    def test_q_prefix(self) -> None:
+        v: dict[str, Any] = {}
+        sql = GPUPerson.objects()._render_q(Q(age__gt=3) | Q(name="x"), v, [0], prefix="_g")
+        assert sql == "(age > $_g0 OR name = $_g1)"
+        assert v == {"_g0": 3, "_g1": "x"}
+
+    def test_q_prefix_reaches_nested(self) -> None:
+        v: dict[str, Any] = {}
+        q = Q(age__gt=3) & ~(Q(name="x") | Q(name="y"))
+        sql = GPUPerson.objects()._render_q(q, v, [0], prefix="_g")
+        assert sql == "(age > $_g0 AND NOT ((name = $_g1 OR name = $_g2)))"
+        assert v == {"_g0": 3, "_g1": "x", "_g2": "y"}
+
+    def test_default_coerces_fk(self) -> None:
+        v: dict[str, Any] = {}
+        GPUWithFK.objects()._render_q(Q(owner="gpu_person:a"), v, [0], prefix="_g")
+        assert v == {"_g0": r("a")}
+
+    def test_coerce_override(self) -> None:
+        v: dict[str, Any] = {}
+        GPUWithFK.objects()._render_q(Q(owner="gpu_person:a"), v, [0], prefix="_g", coerce=lambda f, lk, val, d: val)
+        assert v == {"_g0": "gpu_person:a"}
+
+    def test_coerce_spy_called_once_per_leaf(self) -> None:
+        calls: list[tuple[str, str, Any, Any]] = []
+
+        def spy(field: str, lookup: str, value: Any, declared: Any) -> Any:
+            calls.append((field, lookup, value, declared))
+            return value
+
+        qs = GPUPerson.objects().variables(lim=5)
+        v: dict[str, Any] = {}
+        sql = qs._render_q(
+            Q(age__lt="$lim") & (Q(name="x") | Q(name__in=["a", "b"])), v, [0], declared=qs._declared_variables, coerce=spy
+        )
+        assert sql == "(age < $lim AND (name = $_f0 OR name IN $_f1))"
+        assert [c[:3] for c in calls] == [("age", "lt", "$lim"), ("name", "exact", "x"), ("name", "in", ["a", "b"])]
+        assert all(set(c[3]) == {"lim"} for c in calls)
+
+    @pytest.mark.parametrize(
+        ("lookup", "value", "expected_sql", "expected_vars"),
+        [
+            ("exact", "x", "name = $_f0", {"_f0": "x"}),
+            ("in", ["x", "y"], "name IN $_f0", {"_f0": ["x", "y"]}),
+            ("isnull", True, "name IS NULL", {}),
+            ("contains", "x", "name CONTAINS $_f0", {"_f0": "x"}),
+            ("startswith", "x", "string::starts_with(name, $_f0)", {"_f0": "x"}),
+            ("regex", "^x", "string::matches(name, $_f0)", {"_f0": "^x"}),
+            ("exact", "$who", "name = $who", {}),
+        ],
+    )
+    def test_default_unchanged(self, lookup: str, value: Any, expected_sql: str, expected_vars: dict[str, Any]) -> None:
+        v: dict[str, Any] = {}
+        assert QuerySet._render_condition("name", lookup, value, v, [0], None, {"who"}) == expected_sql
+        assert v == expected_vars
+        v2: dict[str, Any] = {}
+        sql = GPUPerson.objects()._render_q(Q(**{f"name__{lookup}": value}), v2, [0], None, {"who"})
+        assert sql == expected_sql
+        assert v2 == expected_vars
+
+    def test_default_fk_unchanged(self) -> None:
+        v: dict[str, Any] = {}
+        sql = GPUWithFK.objects()._render_q(Q(owner="gpu_person:a"), v, [0])
+        assert sql == "owner = $_f0"
+        assert v == {"_f0": r("a")}
 
 
 # ---------------------------------------------------------------------------
