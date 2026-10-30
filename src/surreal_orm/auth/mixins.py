@@ -43,6 +43,7 @@ class AuthenticatedUserMixin:
                 identifier_field="email",
                 password_field="password",
                 access_name="account",  # Custom access name (optional)
+                signup_fields=["name"],  # Settable at sign-up, besides email/password
             )
 
             id: str | None = None
@@ -342,9 +343,13 @@ class AuthenticatedUserMixin:
 
         An ephemeral connection is used so the root singleton is not affected.
 
+        Only the identifier, the password and the fields listed in
+        ``SurrealConfigDict(signup_fields=[...])`` are accepted; every other
+        field gets its schema or model default.
+
         Args:
-            **credentials: User credentials matching the ACCESS definition
-                          (e.g., email, password, name, language)
+            **credentials: The identifier, the password and any
+                ``signup_fields`` entries (e.g., email, password, name)
 
         Returns:
             Tuple of (created user instance, JWT token)
@@ -353,11 +358,22 @@ class AuthenticatedUserMixin:
         (``$auth``), fetched by its record ID.
 
         Raises:
-            SurrealDbError: If signup fails (e.g., duplicate identifier), or
-                the session record cannot be read after signup
+            SurrealDbError: If a keyword is outside the sign-up set (raised
+                before any request), if signup fails (e.g., duplicate
+                identifier), or the session record cannot be read after signup
             DoesNotExist: If the session record no longer exists
 
         Example:
+            class User(AuthenticatedUserMixin, BaseSurrealModel):
+                model_config = SurrealConfigDict(
+                    table_type=TableType.USER,
+                    signup_fields=["name"],
+                )
+                email: str
+                password: Encrypted
+                name: str
+                role: str = "user"  # not settable at sign-up
+
             user, token = await User.signup(
                 email="user@example.com",
                 password="secure_password",
@@ -366,6 +382,18 @@ class AuthenticatedUserMixin:
         """
         from ..connection_manager import SurrealDBConnectionManager
         from ..model_base import SurrealDbError
+        from .access import get_signup_parameters
+
+        # Only the sign-up set may be sent: the ACCESS SIGNUP clause ignores
+        # anything else, so an extra keyword would be silently dropped.
+        allowed = get_signup_parameters(cls)  # type: ignore[arg-type]
+        unexpected = sorted(set(credentials) - allowed)
+        if unexpected:
+            raise SurrealDbError(
+                f"signup() got field(s) outside the sign-up set of {cls.__name__}: "
+                f"{', '.join(unexpected)}. Accepted: {', '.join(sorted(allowed))}. "
+                "List extra sign-up fields in SurrealConfigDict(signup_fields=[...])."
+            )
 
         # Get access configuration from model
         config = getattr(cls, "model_config", {})
