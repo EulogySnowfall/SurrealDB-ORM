@@ -784,6 +784,101 @@ class TestReachableFromExecution:
 
 
 # ---------------------------------------------------------------------------
+# AC-2 — counts, aggregations and grouping over a traversal (C6)
+# ---------------------------------------------------------------------------
+
+
+class TestAggregatesOverTraversal:
+    async def test_count_c6(self) -> None:
+        client = _client(_ok([{"count": 5}]))
+        with _patch_client(client):
+            assert await _walk().count() == 5
+        sql, variables = client.query.await_args.args
+        assert sql == "SELECT count() FROM $_g_src.{1..3+collect}(->gpu_knows->gpu_person) WHERE id != $_g_src GROUP ALL;"
+        assert variables == {"_g_src": r("a")}
+
+    async def test_count_with_filter(self) -> None:
+        client = _client(_ok([{"count": 2}]))
+        with _patch_client(client):
+            assert await _walk().filter(active=True).count() == 2
+        sql, variables = client.query.await_args.args
+        assert sql == (
+            "SELECT count() FROM $_g_src.{1..3+collect}(->gpu_knows->gpu_person) "
+            "WHERE active = $_f0 AND id != $_g_src GROUP ALL;"
+        )
+        assert variables == {"_f0": True, "_g_src": r("a")}
+
+    async def test_count_include_source_has_no_exclusion(self) -> None:
+        client = _client(_ok([{"count": 6}]))
+        with _patch_client(client):
+            assert await _walk(include_source=True).count() == 6
+        sql, _ = client.query.await_args.args
+        assert sql == "SELECT count() FROM $_g_src.{1..3+collect+inclusive}(->gpu_knows->gpu_person) GROUP ALL;"
+
+    @pytest.mark.parametrize(
+        ("method", "expr", "key", "value"),
+        [
+            ("sum", "math::sum(w) AS total", "total", 7),
+            ("avg", "math::mean(w) AS average", "average", 1.5),
+            ("min", "math::min(w) AS minimum", "minimum", 1),
+            ("max", "math::max(w) AS maximum", "maximum", 5),
+        ],
+    )
+    async def test_aggregates(self, method: str, expr: str, key: str, value: Any) -> None:
+        client = _client(_ok([{key: value}]))
+        with _patch_client(client):
+            assert await getattr(_walk(), method)("w") == value
+        sql, variables = client.query.await_args.args
+        assert sql == (f"SELECT {expr} FROM $_g_src.{{1..3+collect}}(->gpu_knows->gpu_person) WHERE id != $_g_src GROUP ALL;")
+        assert variables == {"_g_src": r("a")}
+
+    @pytest.mark.parametrize("method", ["count", "sum", "avg", "min", "max"])
+    async def test_statement_error_raises(self, method: str) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        client = _client(_err("Exceeded the idiom recursion limit of 256."))
+        call = getattr(_walk(), method)
+        with _patch_client(client), pytest.raises(QueryError, match="recursion limit of 256"):
+            await (call() if method == "count" else call("w"))
+
+    @pytest.mark.parametrize("method", ["count", "sum", "avg", "min", "max"])
+    async def test_statement_error_without_traversal_unchanged(self, method: str) -> None:
+        client = _client(_err("Some error"))
+        call = getattr(GPUPerson.objects(), method)
+        with _patch_client(client):
+            result = await (call() if method == "count" else call("w"))
+        assert result == {"count": 0, "sum": 0}.get(method)
+
+    def test_count_without_traversal_unchanged(self) -> None:
+        qs = GPUPerson.objects().filter(active=True)
+        assert qs._compile_read_where_clause() == " WHERE active = $_f0"
+        assert qs._variables == {"_f0": True}
+
+    def test_values_annotate(self) -> None:
+        from src.surreal_orm.aggregations import Count
+
+        qs = _walk().values("active").annotate(n=Count())
+        assert qs._compile_annotate_query() == (
+            "SELECT active, count() AS n FROM $_g_src.{1..3+collect}(->gpu_knows->gpu_person) "
+            "WHERE id != $_g_src GROUP BY active;"
+        )
+        assert qs._variables == {"_g_src": r("a")}
+
+    async def test_values_annotate_statement_error_raises(self) -> None:
+        from src.surreal_orm.aggregations import Count
+        from surreal_sdk.exceptions import QueryError
+
+        client = _client(_err("Exceeded the idiom recursion limit of 256."))
+        with _patch_client(client), pytest.raises(QueryError, match="recursion limit of 256"):
+            await _walk().values("active").annotate(n=Count()).exec()
+
+    def test_write_where_still_free_of_source(self) -> None:
+        qs = _walk().filter(active=True)
+        qs._compile_read_where_clause()
+        assert qs._compile_where_clause() == " WHERE active = $_f0"
+
+
+# ---------------------------------------------------------------------------
 # U6 (write part) — bulk writes refuse a traversal (E14)
 # ---------------------------------------------------------------------------
 

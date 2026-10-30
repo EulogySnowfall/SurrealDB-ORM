@@ -45,6 +45,12 @@ class GPKnows(BaseSurrealModel):
     w: int = 0
 
 
+class GPChain(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="gp_chain")
+
+    id: str | None = None
+
+
 class GPCompany(BaseSurrealModel):
     model_config = SurrealConfigDict(table_name="gp_company")
 
@@ -136,6 +142,11 @@ class TestReachable:
     async def test_edge_model(self, graph: dict[str, GPPerson]) -> None:
         assert ids(await walk(graph["a"], edge=GPKnows, max_depth=1).exec()) == {"b", "e"}
 
+    async def test_count(self, graph: dict[str, GPPerson]) -> None:
+        assert await walk(graph["a"], max_depth=3).count() == 5
+        assert await walk(graph["a"], max_depth=3, include_source=True).count() == 6
+        assert await walk(graph["a"], max_depth=3).filter(active=True).count() == 3
+
 
 class TestFilters:
     """I2: filter() filters the result, node_filter= / edge_filter= prune the walk."""
@@ -207,6 +218,21 @@ class TestChained:
         rows = await walk(graph["a"], max_depth=3).select("name").exec()
         assert {row.name for row in rows} == {"B", "C", "D", "E", "Seven"}
 
+    async def test_grouped_counts(self, graph: dict[str, GPPerson]) -> None:
+        from src.surreal_orm.aggregations import Count
+
+        rows = await walk(graph["a"], max_depth=3).values("active").annotate(n=Count()).exec()
+        assert {row.get("active"): row["n"] for row in rows} == {True: 3, False: 1, None: 1}
+
+    async def test_aggregates(self, graph: dict[str, GPPerson]) -> None:
+        # Edge weights are not node fields: aggregate a node field instead.
+        await GPPerson.raw_query("UPDATE gp_person SET score = 1; UPDATE gp_person:e SET score = 5;")
+        qs = walk(graph["a"], max_depth=3)
+        assert await qs.sum("score") == 9
+        assert await walk(graph["a"], max_depth=3).min("score") == 1
+        assert await walk(graph["a"], max_depth=3).max("score") == 5
+        assert await walk(graph["a"], max_depth=1).avg("score") == 3.0
+
 
 class TestOtherSourceTable:
     """I5 (first part)."""
@@ -243,3 +269,38 @@ class TestKeys:
             "CREATE gp_person:1 SET name = 'One', active = true; RELATE gp_person:1->gp_knows->gp_person:a SET w = 1;"
         )
         assert ids(await walk(RecordId("gp_person", 1), max_depth=1).exec()) == {"a"}
+
+
+class TestRecursionLimit:
+    """I9: past the server's recursion limit, a statement error is raised, never an empty result."""
+
+    @pytest.fixture
+    async def chain(self) -> AsyncGenerator[None, Any]:
+        await GPChain.raw_query(
+            "DELETE gp_chain; DELETE gp_link; "
+            "FOR $i IN 0..301 { CREATE type::record('gp_chain', $i); }; "
+            "FOR $i IN 0..300 { LET $a = type::record('gp_chain', $i); "
+            "LET $b = type::record('gp_chain', $i + 1); RELATE $a->gp_link->$b; };"
+        )
+        yield
+        await GPChain.raw_query("DELETE gp_chain; DELETE gp_link;")
+
+    async def test_unbounded_raises(self, chain: None) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        qs = GPChain.objects().reachable_from(RecordId("gp_chain", 0), "gp_link")
+        with pytest.raises(QueryError, match="recursion limit of 256"):
+            await qs.exec()
+
+    async def test_count_unbounded_raises(self, chain: None) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        qs = GPChain.objects().reachable_from(RecordId("gp_chain", 0), "gp_link")
+        with pytest.raises(QueryError, match="recursion limit of 256"):
+            await qs.count()
+
+    async def test_max_depth_256(self, chain: None) -> None:
+        qs = GPChain.objects().reachable_from(RecordId("gp_chain", 0), "gp_link", max_depth=256)
+        assert len(await qs.exec()) == 256
+        qs = GPChain.objects().reachable_from(RecordId("gp_chain", 0), "gp_link", max_depth=256)
+        assert await qs.count() == 256

@@ -1147,10 +1147,11 @@ class QuerySet(Generic[T]):
         Returns:
             list[dict[str, Any]]: A list of dictionaries containing grouped results.
         """
-        query = self._compile_annotate_query()
+        query = remove_quotes_for_variables(self._compile_annotate_query())
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         return result.all_records
 
@@ -1972,6 +1973,27 @@ class QuerySet(Generic[T]):
 
         return " WHERE " + " AND ".join(where_parts)
 
+    def _compile_read_where_clause(self) -> str:
+        """
+        The ``WHERE`` clause of a read: :meth:`_compile_where_clause` plus the traversal's exclusion.
+
+        Used by :meth:`count`, :meth:`sum`, :meth:`avg`, :meth:`min` and
+        :meth:`max`, after :meth:`_from_clause` has bound ``$_g_src``.
+        :meth:`_compile_where_clause` itself never carries ``id != $_g_src``:
+        it also builds the ``WHERE`` of the bulk writes, where ``$_g_src`` is
+        not bound and the comparison would match every row.
+
+        Returns:
+            str: The WHERE clause string (including WHERE keyword) or empty string.
+        """
+        where_parts, filter_vars = self._build_where_parts()
+        if filter_vars:
+            self._variables.update(filter_vars)
+        where_parts.extend(self._graph_where_parts())
+        if not where_parts:
+            return ""
+        return " WHERE " + " AND ".join(where_parts)
+
     async def count(self) -> int:
         """
         Count the number of records matching the current filters.
@@ -1985,11 +2007,13 @@ class QuerySet(Generic[T]):
             active = await User.objects().filter(active=True).count()
             ```
         """
-        where_clause = self._compile_where_clause()
-        query = f"SELECT count() FROM {self._model_table}{where_clause} GROUP ALL;"
+        source = self._from_clause()
+        where_clause = self._compile_read_where_clause()
+        query = remove_quotes_for_variables(f"SELECT count() FROM {source}{where_clause} GROUP ALL;")
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2013,11 +2037,13 @@ class QuerySet(Generic[T]):
             ```
         """
         validate_identifier(field, "aggregation field")
-        where_clause = self._compile_where_clause()
-        query = f"SELECT math::sum({field}) AS total FROM {self._model_table}{where_clause} GROUP ALL;"
+        source = self._from_clause()
+        where_clause = self._compile_read_where_clause()
+        query = remove_quotes_for_variables(f"SELECT math::sum({field}) AS total FROM {source}{where_clause} GROUP ALL;")
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2042,11 +2068,13 @@ class QuerySet(Generic[T]):
             ```
         """
         validate_identifier(field, "aggregation field")
-        where_clause = self._compile_where_clause()
-        query = f"SELECT math::mean({field}) AS average FROM {self._model_table}{where_clause} GROUP ALL;"
+        source = self._from_clause()
+        where_clause = self._compile_read_where_clause()
+        query = remove_quotes_for_variables(f"SELECT math::mean({field}) AS average FROM {source}{where_clause} GROUP ALL;")
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2071,11 +2099,13 @@ class QuerySet(Generic[T]):
             ```
         """
         validate_identifier(field, "aggregation field")
-        where_clause = self._compile_where_clause()
-        query = f"SELECT math::min({field}) AS minimum FROM {self._model_table}{where_clause} GROUP ALL;"
+        source = self._from_clause()
+        where_clause = self._compile_read_where_clause()
+        query = remove_quotes_for_variables(f"SELECT math::min({field}) AS minimum FROM {source}{where_clause} GROUP ALL;")
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2099,11 +2129,13 @@ class QuerySet(Generic[T]):
             ```
         """
         validate_identifier(field, "aggregation field")
-        where_clause = self._compile_where_clause()
-        query = f"SELECT math::max({field}) AS maximum FROM {self._model_table}{where_clause} GROUP ALL;"
+        source = self._from_clause()
+        where_clause = self._compile_read_where_clause()
+        query = remove_quotes_for_variables(f"SELECT math::max({field}) AS maximum FROM {source}{where_clause} GROUP ALL;")
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         if result.all_records:
             record = result.all_records[0]
