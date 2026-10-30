@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.29)
+> Context document for Claude AI - Last updated: October 2026 (0.21.30)
 
 <!-- -->
 
@@ -19,12 +19,27 @@
 
 ---
 
-## Current Version: 0.21.29 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.30 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.36.x   | Active development              |
+
+### What's New in 0.21.30
+
+One fix, the `v2` port of #260 (#266, #435). Pin unchanged (2.7.0).
+
+- **Build, swap, then retire.** `reconnect()` connects and signs in the new client first, swaps it under the
+  connection lock, and closes the previous one once no RPC request or `HTTPTransaction` uses it (30 s,
+  `_reconnect_drain_timeout`). `HTTPConnection` counts in-flight RPC requests; a transaction holds its connection
+  from begin to commit/rollback. Transactions of the draining task are not waited for (matched on
+  `asyncio.current_task()`, so a child task stalls 30 s).
+- **Cancellation never closes under users.** Before the swap the partly built client is closed; after it, the last
+  request or transaction on the old client closes it (errors only logged).
+- **Failed closes unregister.** `_close_single()` logs, the three close/remove paths unregister in a `finally`, and
+  `HTTPConnection.close()` resets its state first. `sql()`/`health()`/`status()`/`rest_*()` are not counted by the
+  drain; `QuerySet.changes()` still keeps its first client (ends with `ChangeFeedError` after `reconnect()`).
 
 ### What's New in 0.21.29
 

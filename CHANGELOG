@@ -6,6 +6,82 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.30] - 2026-10-30
+
+**Bug fix release (V2 LTS).** One fix, the `v2` port of #260 from `main`:
+`SurrealDBConnectionManager.reconnect()` no longer closes the shared HTTP
+client under requests and transactions still running on it, and a client
+whose close raises no longer stays registered (#266, #435). Read *Behaviour
+change* and *Known limitations*. No new public API. The SurrealDB pin is
+unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`SurrealDBConnectionManager.reconnect()` no longer closes the shared HTTP
+  client before the new one exists (#266, backport of #260).** It builds and
+  signs in the new client first, swaps it in under the connection lock, then
+  closes the old one once no request or transaction uses it. Requests running
+  on the old client finish, and an `HTTPTransaction` opened before the swap
+  commits on its own client instead of failing with `Not connected` and
+  losing its writes. This also applies to `validate_connection()` and to
+  `set_url/set_user/set_password/set_namespace/set_database(reconnect=True)`.
+- **A client whose close raises no longer stays registered (#266)** (for
+  example `RuntimeError: Event loop is closed`). `_close_single()` logs the
+  error as a warning with its traceback, `close_connection()` /
+  `close_connection(name)` / `remove_connection(name)` unregister in a
+  `finally`, and `get_client()` builds a new client.
+  `HTTPConnection.close()` marks the connection closed before closing the
+  pool; the exception still propagates.
+- **A `reconnect()` cancelled while the new client is still connecting or
+  signing in (#266)** leaves the current clients in place and closes the
+  partly built client.
+
+### Behaviour change
+
+- **`reconnect()` returns only after the previous HTTP client is closed
+  (#266)**, which happens once no request or transaction uses it, or after
+  30 s (`_reconnect_drain_timeout`). Transactions opened by the task calling
+  `reconnect()` are not waited for; the old client closes when the last of
+  them ends.
+- **If the new client cannot connect or authenticate, `reconnect()` raises
+  `SurrealDbConnectionError` and leaves the current clients in place (#266).**
+  Before, they were already closed and removed.
+- **A cancelled `reconnect()` no longer closes the previous client under its
+  users (#266)** (for example `asyncio.wait_for(reconnect(), 5)`, or a
+  cancelled task running `validate_connection()` or a
+  `set_*(reconnect=True)` helper). Cancelled before the swap, the current
+  clients stay. Cancelled after it, the new client stays installed and the
+  last request or transaction on the old client closes it.
+- **`reconnect()` awaited from a child task (`asyncio.gather()`, a
+  `TaskGroup`) of a task that holds an open `HTTPTransaction` waits the full
+  30 s for that transaction (#266)**, then closes the client, and the commit
+  fails with `Not connected`. Before, the commit failed at once.
+
+### Migration
+
+- No code change needed. Do not keep a client from `get_client()` across an
+  `await` and a `reconnect()`: once that client is closed it raises
+  `Not connected`; call `get_client()` again. `reconnect()` is not needed to
+  renew an expired token: SurrealDB 2.7.0 answers it with HTTP 401 and the
+  HTTP client signs in again.
+
+### Known limitations
+
+- `reconnect()` awaited from a child task of a task that holds an open
+  `HTTPTransaction` stalls for 30 s (see above): open transactions are
+  matched on `asyncio.current_task()`.
+- After a cancelled `reconnect()`, the previous client has no time limit: an
+  `HTTPTransaction` on it that is never committed or rolled back keeps that
+  client and its pool open.
+- `sql()`, `health()`, `status()` and `rest_*()` do not go through the RPC
+  path, so the drain does not wait for them; a direct call on a client from
+  `get_client()` that spans `reconnect()` can still be cut off. The ORM never
+  calls them on the shared client.
+- Pre-existing, unchanged: a `QuerySet.changes()` stream keeps the client it
+  resolved first, so after `reconnect()` closes that client its next poll
+  raises `ChangeFeedError` (`Not connected`) and the stream ends. Open a new
+  stream after `reconnect()`.
+
 ## [0.21.29] - 2026-10-30
 
 **Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #386, #407 and
