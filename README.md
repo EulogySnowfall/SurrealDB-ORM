@@ -52,6 +52,16 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.30
+
+**Bug fix release (V2 LTS).** One fix, the `v2` port of #260 from `main`; no new public API.
+
+- **`reconnect()` no longer cuts off requests and transactions running on the shared HTTP client (#266).** The new
+  client is built and signed in first, swapped in, and the old one is closed once nothing uses it (at most 30 s
+  later). An `HTTPTransaction` opened before the swap commits on its own client instead of failing with
+  `Not connected`. A failed connect or sign-in raises and leaves the current clients in place, and a client whose
+  close raises no longer stays registered. See the CHANGELOG for the behaviour changes and known limitations.
+
 ## What's New in 0.21.29
 
 **Bug fix release (V2 LTS).** Three fixes, the `v2` ports of #386, #407 and #362 from `main`.
