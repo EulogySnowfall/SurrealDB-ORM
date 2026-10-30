@@ -42,6 +42,7 @@ from .fields import (
     is_relation_field,
 )
 from .geo import GeoDistance
+from .graph import MAX_GRAPH_DEPTH, MAX_PATH_DEPTH, GraphDirection
 from .introspection import generate_models_from_db, schema_diff
 from .live import ChangeModelStream, LiveModelStream, ModelChangeEvent
 from .migrations.operations import (
@@ -163,6 +164,10 @@ __all__ = [
     "ModelChangeEvent",
     "ChangeModelStream",
     "LiveAction",
+    # Graph
+    "GraphDirection",
+    "MAX_GRAPH_DEPTH",
+    "MAX_PATH_DEPTH",
     # Subqueries
     "Subquery",
     # Cache

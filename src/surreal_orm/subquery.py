@@ -99,6 +99,10 @@ class Subquery:
             ``$_sqN`` when hoisted, otherwise the parenthesized sub-SELECT.
         """
         qs = self.queryset
+        # The sub-SELECT is compiled from the table and the filters only, so a
+        # traversal would be silently dropped.
+        if getattr(qs, "_graph", None) is not None:
+            raise ValueError("Subquery() cannot be combined with reachable_from()")
 
         # SELECT clause — use VALUE for single-field selects so
         # the result is a flat array (required for IN subqueries).

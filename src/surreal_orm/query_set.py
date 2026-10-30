@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Collection, Sequence
+import copy
+from collections.abc import Callable, Collection, Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, Self, TypeVar, cast
 
 from pydantic_core import ValidationError
 
@@ -11,6 +12,22 @@ from .aggregations import Aggregation
 from .constants import LOOKUP_OPERATORS, like_to_regex
 from .enum import OrderBy
 from .geo import GeoDistance
+from .graph import (
+    ARROWS,
+    MAX_GRAPH_DEPTH,
+    MAX_PATH_DEPTH,
+    GraphDirection,
+    GraphWalk,
+    as_path,
+    check_direction,
+    check_filter,
+    check_include_source,
+    coerce_edge_value,
+    edge_table_name,
+    render_range,
+    rid_key,
+    to_graph_record,
+)
 from .prefetch import Prefetch
 from .q import Q
 from .search import SearchHighlight, SearchScore
@@ -36,7 +53,9 @@ if TYPE_CHECKING:
 
 import logging
 
-from .model_base import SurrealDbError, _to_record_link
+from surreal_sdk.protocol.cbor import RecordId
+
+from .model_base import SurrealDbError, _raise_on_statement_error, _to_record_link
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +162,8 @@ class QuerySet(Generic[T]):
         self._traversal_path: str | None = None
         # Cache
         self._cache_ttl: int | None = None
+        # Recursive graph traversal (reachable_from): replaces the FROM source
+        self._graph: GraphWalk | None = None
 
     def select(self, *fields: str) -> Self:
         """
@@ -500,6 +521,7 @@ class QuerySet(Generic[T]):
             ).exec()
         """
         self._prefetch_related = list(relations)
+        self._reject_graph_prefetch()
         return self
 
     def fetch(self, *fields: str) -> Self:
@@ -759,6 +781,7 @@ class QuerySet(Generic[T]):
                 text_limit=10,
             )
         """
+        self._reject_graph("hybrid_search")
         if not _SAFE_IDENTIFIER_RE.fullmatch(vector_field):
             raise ValueError(f"Invalid field name for hybrid_search(): {vector_field!r}")
         if not _SAFE_IDENTIFIER_RE.fullmatch(text_field):
@@ -791,6 +814,610 @@ class QuerySet(Generic[T]):
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), variables)
         return result.all_records
+
+    # ==================== Recursive graph traversal ====================
+
+    def reachable_from(
+        self,
+        source: BaseSurrealModel | RecordId | str,
+        edge: str | type[BaseSurrealModel],
+        *,
+        max_depth: int | None = None,
+        min_depth: int = 1,
+        direction: GraphDirection = "out",
+        node_filter: Q | None = None,
+        edge_filter: Q | None = None,
+        include_source: bool = False,
+    ) -> Self:
+        """
+        Restrict the QuerySet to the records reachable from *source* over *edge*.
+
+        The records of this QuerySet's table reached by repeating the step
+        ``<edge> -> <table>`` between ``min_depth`` and ``max_depth`` times,
+        each record once. The traversal becomes the ``FROM`` source of the
+        query (SurrealDB's recursive idiom ``{min..max+collect}``), so every
+        read clause still applies to the result: ``filter()``, ``Q``,
+        ``order_by()``, ``limit()``, ``offset()``, ``select()``, ``fetch()``,
+        ``get()``, ``first()``, ``all()``. Calling it again replaces the
+        previous traversal.
+
+        ``node_filter`` / ``edge_filter`` prune the walk: a node or an edge that
+        fails them is not traversed, so nothing beyond it is reached through
+        it. ``filter()`` filters the result. The source is never part of the
+        result unless ``include_source=True``, even when a cycle leads back to
+        it. Result order is unspecified: use ``order_by()``.
+
+        On an edge, ``in`` and ``out`` are records: ``edge_filter`` values on
+        them (lookups ``exact``, ``in``, ``not_in``) are converted to
+        ``RecordId`` from a model instance, a ``RecordId`` or a ``"table:id"``
+        string, and a bare id is refused. ``in`` is a Python keyword: write
+        ``Q(**{"in": alice})`` or ``Q(in__exact=alice)``.
+
+        Bulk writes (``bulk_update()``, ``bulk_delete()``, ``upsert()``,
+        ``bulk_upsert()``, ``delete_table()``) refuse a traversal QuerySet, and
+        so do the paths that compile from the table and would drop it:
+        ``live()``, ``changes()``, ``query()``, ``hybrid_search()``,
+        ``graph_query()``, ``similar_to()`` / ``search()`` / ``nearby()`` (at
+        compile), ``Subquery(qs)`` and ``Prefetch(queryset=qs)``. ``cache()``
+        is refused at ``exec()``: edge writes fire no signal, so nothing would
+        invalidate the entry. Each raises ``ValueError`` before any query.
+
+        Args:
+            source: The record the walk starts from: a saved model instance,
+                a ``RecordId``, a ``"table:id"`` string (read like ``get()``
+                reads it) or a bare id of this QuerySet's table. It may belong
+                to another table unless ``include_source`` is true.
+            edge: The edge table, or a model class whose table is the edge.
+            max_depth: Highest number of hops (1-256). ``None`` walks up to the
+                server's recursion limit, and the query fails past 256 hops.
+            min_depth: Lowest number of hops returned (1-256, default 1).
+            direction: ``"out"`` (``->``), ``"in"`` (``<-``) or ``"both"`` (``<->``).
+            node_filter: Condition every node walked must meet.
+            edge_filter: Condition every edge crossed must meet.
+            include_source: Return the source itself too (it must then be a
+                record of this QuerySet's table).
+
+        Returns:
+            Self: The current instance of QuerySet to allow method chaining.
+
+        Raises:
+            TypeError: An argument of the wrong type (a depth that is not an
+                ``int``, a filter that is not a ``Q``, ...).
+            ValueError: An invalid depth, direction, edge table or record
+                reference, a ``Subquery`` in a step filter, an ``edge_filter``
+                value on ``in`` / ``out`` that is not a record, or
+                ``include_source=True`` with a source of another table.
+
+        Example::
+
+            friends = await Person.objects().reachable_from(
+                alice, "knows", max_depth=3,
+            ).filter(active=True).order_by("name").exec()
+            # SELECT * FROM $_g_src.{1..3+collect}(->knows->person)
+            #   WHERE active = $_f0 AND id != $_g_src ORDER BY name ASC;
+        """
+        if not isinstance(edge, (str, type)):
+            raise TypeError(f"edge must be a table name or a model class, got {type(edge).__name__}")
+        for arg, value in (("node_filter", node_filter), ("edge_filter", edge_filter)):
+            if value is not None and not isinstance(value, Q):
+                raise TypeError(f"{arg} must be a Q object or None, got {type(value).__name__}")
+        node_table = self._model_table
+        validate_identifier(node_table, "table")
+        source_rid = to_graph_record(source, node_table, arg="source")
+        check_include_source(source_rid, node_table, bool(include_source))
+        edge_table = edge_table_name(edge)
+        step_direction = cast(GraphDirection, check_direction(direction, allow_both=True, method="reachable_from"))
+        low, high = self._graph_depths(min_depth, max_depth, require_max=False)
+        checked_edge_filter = check_filter(edge_filter, arg="edge_filter", edge=True)
+        checked_node_filter = check_filter(node_filter, arg="node_filter")
+        self._graph = GraphWalk(
+            source=source_rid,
+            edge=edge_table,
+            node_table=node_table,
+            direction=step_direction,
+            min_depth=low,
+            max_depth=high,
+            node_filter=checked_node_filter,
+            edge_filter=checked_edge_filter,
+            include_source=bool(include_source),
+        )
+        return self
+
+    async def paths_from(
+        self,
+        source: BaseSurrealModel | RecordId | str,
+        edge: str | type[BaseSurrealModel],
+        *,
+        max_depth: int,
+        min_depth: int = 1,
+        direction: Literal["out", "in"] = "out",
+        node_filter: Q | None = None,
+        edge_filter: Q | None = None,
+        include_source: bool = True,
+    ) -> list[list[T]]:
+        """
+        Every maximal walk from *source* over *edge*, as lists of records.
+
+        A walk repeats the step ``<edge> -> <table>`` until ``max_depth`` or a
+        dead end; walks shorter than ``min_depth`` are dropped. Each path lists
+        the records in walk order, the source first unless
+        ``include_source=False``. Cycles are not cut: the same record may
+        appear in several paths and several times in one path (each
+        occurrence is the same instance). The order of the paths is
+        unspecified.
+
+        One batch is sent: SurrealDB's ``{min..max+path}`` idiom returns the
+        walks as record ids, and the distinct records are selected alongside.
+        A path holding a record that is not returned (e.g. one the session
+        may not select) is dropped, and one warning names how many were.
+
+        **Cost:** the number of paths grows with the branching factor to the
+        power of ``max_depth``, cycles included (two out-edges per node give
+        about ``2 ** max_depth`` paths). Keep ``max_depth`` small on dense or
+        cyclic graphs, and never pass an unvalidated request parameter as
+        ``max_depth``: use an application constant. The cap of
+        ``MAX_PATH_DEPTH`` (32) only stops an accidental large depth; it is
+        not a resource limit.
+
+        This method runs on a bare QuerySet: constrain the walk with
+        ``node_filter`` / ``edge_filter``, not ``filter()``, ``order_by()``,
+        ``limit()`` or another read clause (``.variables()`` is allowed, for
+        ``$name`` references in the step filters).
+
+        Args:
+            source: The record the walks start from: a saved model instance,
+                a ``RecordId``, a ``"table:id"`` string or a bare id of this
+                QuerySet's table. A record of another table needs
+                ``include_source=False``.
+            edge: The edge table, or a model class whose table is the edge.
+            max_depth: Highest number of hops (1-32), required.
+            min_depth: Shortest walk returned, in hops (1-32, default 1).
+            direction: ``"out"`` (``->``) or ``"in"`` (``<-``). ``"both"`` is
+                refused: each ``<->`` step also returns the record it starts
+                from.
+            node_filter: Condition every node walked must meet.
+            edge_filter: Condition every edge crossed must meet (``in`` /
+                ``out`` values are converted to ``RecordId`` as in
+                :meth:`reachable_from`).
+            include_source: Put the source first in every path (default).
+
+        Returns:
+            list[list[T]]: The paths, each a list of model instances.
+
+        Raises:
+            TypeError: An argument of the wrong type (``max_depth=None``
+                included).
+            ValueError: An invalid depth (above 32 included), direction, edge
+                table, record reference or step filter; ``include_source=True``
+                with a source of another table; a QuerySet carrying a read
+                clause.
+            QueryError: The server rejected the batch.
+            pydantic.ValidationError: A record of a path does not validate
+                against the model.
+
+        Example::
+
+            paths = await Person.objects().paths_from(alice, "knows", max_depth=3)
+            for path in paths:
+                print(" -> ".join(p.name for p in path))
+            # LET $_g_paths = $_g_src.{1..3+path+inclusive}(->knows->person);
+            # RETURN { paths: $_g_paths, nodes: (SELECT * FROM
+            #   array::distinct(array::flatten($_g_paths ?? []))) };
+        """
+        from .debug import _elapsed_ms, _log_query, _start_timer
+
+        if not isinstance(edge, (str, type)):
+            raise TypeError(f"edge must be a table name or a model class, got {type(edge).__name__}")
+        for arg, value in (("node_filter", node_filter), ("edge_filter", edge_filter)):
+            if value is not None and not isinstance(value, Q):
+                raise TypeError(f"{arg} must be a Q object or None, got {type(value).__name__}")
+        node_table = self._model_table
+        validate_identifier(node_table, "table")
+        source_rid = to_graph_record(source, node_table, arg="source")
+        check_include_source(source_rid, node_table, bool(include_source))
+        edge_table = edge_table_name(edge)
+        step_direction = cast(GraphDirection, check_direction(direction, allow_both=False, method="paths_from"))
+        low, high = self._graph_depths(min_depth, max_depth, require_max=True, cap=MAX_PATH_DEPTH, method="paths_from")
+        checked_edge_filter = check_filter(edge_filter, arg="edge_filter", edge=True)
+        checked_node_filter = check_filter(node_filter, arg="node_filter")
+        self._reject_read_clauses("paths_from")
+        walk = GraphWalk(
+            source=source_rid,
+            edge=edge_table,
+            node_table=node_table,
+            direction=step_direction,
+            min_depth=low,
+            max_depth=high,
+            node_filter=checked_node_filter,
+            edge_filter=checked_edge_filter,
+            include_source=bool(include_source),
+        )
+
+        variables: dict[str, Any] = {**self._variables, "_g_src": source_rid}
+        step = self._render_graph_step(walk, variables)
+        instructions = "+path+inclusive" if walk.include_source else "+path"
+        query = remove_quotes_for_variables(
+            f"LET $_g_paths = $_g_src.{{{render_range(low, high)}{instructions}}}{step}; "
+            "RETURN { paths: $_g_paths, nodes: (SELECT * FROM array::distinct(array::flatten($_g_paths ?? []))) };"
+        )
+
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+        start = _start_timer()
+        result = await client.query(query, variables)
+        _log_query(query, variables, _elapsed_ms(start))
+        _raise_on_statement_error(result, query)
+
+        payload = result.results[-1].result if result.results else None
+        if not isinstance(payload, dict):
+            return []
+        nodes: dict[tuple[str, str], T] = {}
+        for record in payload.get("nodes") or []:
+            if isinstance(record, dict) and isinstance(record.get("id"), RecordId):
+                nodes[rid_key(record["id"])] = cast(T, self.model.from_db(record))
+
+        paths: list[list[T]] = []
+        dropped = 0
+        for raw in payload.get("paths") or []:
+            keys = [rid_key(item) if isinstance(item, RecordId) else None for item in (raw or [])]
+            if not keys or any(key is None or key not in nodes for key in keys):
+                dropped += 1
+                continue
+            paths.append([nodes[cast(tuple[str, str], key)] for key in keys])
+        if dropped:
+            logger.warning(
+                "paths_from() dropped %d path(s) from %s: a record of the path was not returned "
+                "(it may not be selectable by this session)",
+                dropped,
+                source_rid,
+            )
+        return paths
+
+    async def shortest_path(
+        self,
+        source: BaseSurrealModel | RecordId | str,
+        target: BaseSurrealModel | RecordId | str,
+        edge: str | type[BaseSurrealModel],
+        *,
+        max_depth: int | None = None,
+        direction: GraphDirection = "out",
+        node_filter: Q | None = None,
+        edge_filter: Q | None = None,
+        include_source: bool = True,
+    ) -> list[T] | None:
+        """
+        The path with the fewest hops from *source* to *target* over *edge*.
+
+        Hops are counted, not weighted (SurrealDB's ``+shortest`` is a
+        breadth-first search); when several paths tie, one of them is
+        returned. The records come in walk order: ``[source, …, target]``, or
+        ``[…, target]`` with ``include_source=False``.
+
+        Returns ``None`` when there is no path within ``max_depth``, and also
+        when a record of the path is not returned (e.g. one the session may
+        not select); that last case logs one warning naming the record, so
+        "no path" and "a record you cannot read" can be told apart.
+
+        ``source == target`` returns the trivial path ``[source]`` (``[]``
+        with ``include_source=False``) when the record exists, else ``None``;
+        the server's answer there would be the shortest cycle back to it.
+
+        This method runs on a bare QuerySet: constrain the walk with
+        ``node_filter`` / ``edge_filter``, not ``filter()``, ``order_by()``,
+        ``limit()`` or another read clause (``.variables()`` is allowed, for
+        ``$name`` references in the step filters).
+
+        Args:
+            source: The record the path starts from: a saved model instance,
+                a ``RecordId``, a ``"table:id"`` string or a bare id of this
+                QuerySet's table. A record of another table needs
+                ``include_source=False``.
+            target: The record the path ends at, of this QuerySet's table
+                (same forms as *source*).
+            edge: The edge table, or a model class whose table is the edge.
+            max_depth: Highest number of hops (1-256), or ``None`` for the
+                server's limit of 256.
+            direction: ``"out"`` (``->``), ``"in"`` (``<-``) or ``"both"``
+                (``<->``).
+            node_filter: Condition every node after the source must meet,
+                the target included.
+            edge_filter: Condition every edge crossed must meet (``in`` /
+                ``out`` values are converted to ``RecordId`` as in
+                :meth:`reachable_from`).
+            include_source: Put the source first in the path (default).
+
+        Returns:
+            list[T] | None: The records of the path, or ``None`` for no path.
+
+        Raises:
+            TypeError: An argument of the wrong type.
+            ValueError: An invalid depth, direction, edge table, record
+                reference or step filter; a target of another table;
+                ``include_source=True`` with a source of another table; a
+                QuerySet carrying a read clause.
+            QueryError: The server rejected the batch.
+            pydantic.ValidationError: A record of the path does not validate
+                against the model.
+
+        Example::
+
+            path = await Person.objects().shortest_path(alice, dave, "knows")
+            if path is not None:
+                print(len(path) - 1, "hops:", [p.name for p in path])
+            # LET $_g_path = $_g_src.{..+shortest=$_g_dst+inclusive}(->knows->person);
+            # RETURN { path: $_g_path, nodes: (SELECT * FROM
+            #   array::distinct(array::flatten($_g_path ?? []))) };
+        """
+        from .debug import _elapsed_ms, _log_query, _start_timer
+
+        if not isinstance(edge, (str, type)):
+            raise TypeError(f"edge must be a table name or a model class, got {type(edge).__name__}")
+        for arg, value in (("node_filter", node_filter), ("edge_filter", edge_filter)):
+            if value is not None and not isinstance(value, Q):
+                raise TypeError(f"{arg} must be a Q object or None, got {type(value).__name__}")
+        node_table = self._model_table
+        validate_identifier(node_table, "table")
+        source_rid = to_graph_record(source, node_table, arg="source")
+        target_rid = to_graph_record(target, node_table, arg="target")
+        if target_rid.table != node_table:
+            raise ValueError(f"shortest_path() target must be a record of {node_table!r}, got {str(target_rid)!r}")
+        check_include_source(source_rid, node_table, bool(include_source))
+        edge_table = edge_table_name(edge)
+        step_direction = cast(GraphDirection, check_direction(direction, allow_both=True, method="shortest_path"))
+        low, high = self._graph_depths(1, max_depth, require_max=False)
+        checked_edge_filter = check_filter(edge_filter, arg="edge_filter", edge=True)
+        checked_node_filter = check_filter(node_filter, arg="node_filter")
+        self._reject_read_clauses("shortest_path")
+
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+        variables: dict[str, Any] = {**self._variables, "_g_src": source_rid}
+
+        if rid_key(source_rid) == rid_key(target_rid):
+            # The server would answer with the shortest cycle back to the
+            # source; the path from a record to itself is the record alone.
+            query = "SELECT * FROM $_g_src;"
+            start = _start_timer()
+            result = await client.query(query, variables)
+            _log_query(query, variables, _elapsed_ms(start))
+            _raise_on_statement_error(result, query)
+            rows = result.results[-1].result if result.results else None
+            if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
+                return None
+            return [cast(T, self.model.from_db(rows[0]))] if include_source else []
+
+        walk = GraphWalk(
+            source=source_rid,
+            edge=edge_table,
+            node_table=node_table,
+            direction=step_direction,
+            min_depth=low,
+            max_depth=high,
+            node_filter=checked_node_filter,
+            edge_filter=checked_edge_filter,
+            include_source=bool(include_source),
+        )
+        variables["_g_dst"] = target_rid
+        step = self._render_graph_step(walk, variables)
+        instructions = "+shortest=$_g_dst+inclusive" if walk.include_source else "+shortest=$_g_dst"
+        query = remove_quotes_for_variables(
+            f"LET $_g_path = $_g_src.{{{render_range(None, high)}{instructions}}}{step}; "
+            "RETURN { path: $_g_path, nodes: (SELECT * FROM array::distinct(array::flatten($_g_path ?? []))) };"
+        )
+
+        start = _start_timer()
+        result = await client.query(query, variables)
+        _log_query(query, variables, _elapsed_ms(start))
+        _raise_on_statement_error(result, query)
+
+        payload = result.results[-1].result if result.results else None
+        if not isinstance(payload, dict):
+            return None
+        path = as_path(payload.get("path"), target_rid)
+        if path is None:
+            return None
+        nodes: dict[tuple[str, str], T] = {}
+        for record in payload.get("nodes") or []:
+            if isinstance(record, dict) and isinstance(record.get("id"), RecordId):
+                nodes[rid_key(record["id"])] = cast(T, self.model.from_db(record))
+        missing = [str(rid) for rid in path if rid_key(rid) not in nodes]
+        if missing:
+            logger.warning(
+                "shortest_path() from %s to %s found a path but could not load %s "
+                "(not returned: it may not be selectable by this session); returning None",
+                source_rid,
+                target_rid,
+                ", ".join(missing),
+            )
+            return None
+        return [nodes[rid_key(rid)] for rid in path]
+
+    def _reject_read_clauses(self, method: str) -> None:
+        """
+        Refuse a terminal graph method on a QuerySet carrying a read clause.
+
+        ``paths_from()`` and ``shortest_path()`` build their own batch and
+        would silently ignore ``filter()``, ``order_by()``, ``limit()`` and
+        the rest; only ``.variables()`` is carried over.
+        """
+        if (
+            self._filters
+            or self._q_filters
+            or self._order_by
+            or self._limit is not None
+            or self._offset is not None
+            or self.select_item
+            or self._group_by_fields
+            or self._annotations
+            or self._fetch_fields
+            or self._select_related
+            or self._prefetch_related
+            or self._cache_ttl is not None
+            or self._knn_field
+            or self._search_fields
+            or self._geo_field
+            or self._graph is not None
+            or self._traversal_path
+        ):
+            raise ValueError(
+                f"{method}() runs on a bare QuerySet; constrain the walk with node_filter= / edge_filter= "
+                "instead of filter(), order_by(), limit() and the other read clauses"
+            )
+
+    @staticmethod
+    def _graph_depths(
+        min_depth: object,
+        max_depth: object,
+        *,
+        require_max: bool,
+        cap: int = MAX_GRAPH_DEPTH,
+        method: str | None = None,
+    ) -> tuple[int, int | None]:
+        """
+        Check the depth range of a traversal.
+
+        Depths are written into the query text (SurrealDB parses the range as
+        syntax and refuses a parameter there), so they are checked as plain
+        integers first.
+
+        Args:
+            min_depth: Lowest depth; an ``int`` of at least 1.
+            max_depth: Highest depth; an ``int`` of at least 1, or ``None``
+                unless *require_max*.
+            require_max: Whether ``max_depth`` is mandatory.
+            cap: Highest depth accepted (the server's recursion limit, or
+                ``MAX_PATH_DEPTH`` for ``paths_from()``).
+            method: The calling method, named in the message of a capped depth
+                when *cap* is not the server's limit.
+
+        Returns:
+            ``(min_depth, max_depth)`` as plain integers (``max_depth`` may be ``None``).
+
+        Raises:
+            TypeError: A depth that is not an ``int`` (``bool`` included).
+            ValueError: A depth below 1 or above *cap*, or ``min_depth > max_depth``.
+        """
+
+        def _capped(name: str, value: int) -> int:
+            if value > cap:
+                if cap == MAX_GRAPH_DEPTH:
+                    raise ValueError(f"{name} must be <= {cap} (SurrealDB's recursion limit), got {value}")
+                raise ValueError(
+                    f"{name} must be <= {cap} for {method}() (the number of paths grows exponentially "
+                    f"with the depth), got {value}"
+                )
+            return value
+
+        high: int | None = None
+        if max_depth is not None or require_max:
+            high = _capped("max_depth", _require_int("max_depth", max_depth, minimum=1))
+        low = _capped("min_depth", _require_int("min_depth", min_depth, minimum=1))
+        if high is not None and low > high:
+            raise ValueError(f"min_depth ({low}) must be <= max_depth ({high})")
+        return low, high
+
+    def _render_graph_step(self, walk: GraphWalk, variables: dict[str, Any]) -> str:
+        """
+        Render the parenthesised step of a traversal, binding its filter values.
+
+        ``(<arrow><edge>[WHERE …]<arrow><table>[WHERE …])``: the edge filter is
+        rendered first, then the node filter, both bound as ``$_g0``,
+        ``$_g1``, … from one counter per compile. Edge ``in`` / ``out``
+        values go through :func:`~surreal_orm.graph.coerce_edge_value`, node
+        values through the model's own coercion, as in ``filter()``.
+        """
+        counter = [0]
+        declared = self._declared_variables
+        arrow = ARROWS[walk.direction]
+        edge_where = ""
+        if walk.edge_filter is not None:
+            rendered = self._render_q(
+                walk.edge_filter, variables, counter, None, declared, prefix="_g", coerce=coerce_edge_value
+            )
+            edge_where = f"[WHERE {rendered}]" if rendered else ""
+        node_where = ""
+        if walk.node_filter is not None:
+            rendered = self._render_q(walk.node_filter, variables, counter, None, declared, prefix="_g")
+            node_where = f"[WHERE {rendered}]" if rendered else ""
+        return f"({arrow}{walk.edge}{edge_where}{arrow}{walk.node_table}{node_where})"
+
+    def _from_clause(self) -> str:
+        """
+        The ``FROM`` source of a read: the table, or the traversal idiom.
+
+        With a traversal, binds ``$_g_src`` and the step's filter values into
+        ``self._variables`` and returns
+        ``$_g_src.{<min>..<max>+collect[+inclusive]}(<step>)``. Called before the
+        ``WHERE`` parts are joined, so ``$_g_src`` is bound whenever
+        ``id != $_g_src`` is emitted.
+        """
+        walk = self._graph
+        if walk is None:
+            return self._model_table
+        self._variables["_g_src"] = walk.source
+        step = self._render_graph_step(walk, self._variables)
+        instructions = "+collect+inclusive" if walk.include_source else "+collect"
+        return f"$_g_src.{{{render_range(walk.min_depth, walk.max_depth)}{instructions}}}{step}"
+
+    def _graph_where_parts(self) -> list[str]:
+        """
+        ``["id != $_g_src"]`` for a traversal that excludes its source, else ``[]``.
+
+        A cycle brings the source back into the walk, so ``include_source=False``
+        has to exclude it explicitly. Never part of
+        :meth:`_compile_where_clause`, which also builds the ``WHERE`` of the
+        bulk writes, where ``$_g_src`` is not bound.
+        """
+        if self._graph is None or self._graph.include_source:
+            return []
+        return ["id != $_g_src"]
+
+    def _check_graph_response(self, result: Any, query: str) -> None:
+        """
+        Raise a statement error of *result* when a traversal is set.
+
+        A recursive idiom past the server's limit fails as a statement error
+        (``Exceeded the idiom recursion limit of 256.``) inside a successful
+        RPC; read as records, it would look like an empty result.
+        """
+        if self._graph is not None:
+            _raise_on_statement_error(result, query)
+
+    def _reject_graph(self, method: str) -> None:
+        """Refuse *method* on a traversal QuerySet, whose source it cannot honour."""
+        if self._graph is not None:
+            raise ValueError(f"{method}() cannot be combined with reachable_from()")
+
+    def _reject_graph_ranking(self) -> None:
+        """
+        Refuse ``similar_to()`` / ``search()`` / ``nearby()`` on a traversal QuerySet.
+
+        Their operators (``<|K,EF|>``, ``@N@``, ``geo::distance``) are written
+        against the table's indexes, and the recursive idiom of the traversal
+        is not a source they can rank or match; the error names the first
+        one set.
+        """
+        if self._graph is None:
+            return
+        if self._knn_field:
+            self._reject_graph("similar_to")
+        if self._search_fields:
+            self._reject_graph("search")
+        if self._geo_field:
+            self._reject_graph("nearby")
+
+    def _reject_graph_prefetch(self) -> None:
+        """
+        Refuse a ``Prefetch`` whose queryset carries a traversal.
+
+        ``_execute_prefetch()`` compiles the inner QuerySet from its table and
+        its filters only, so the traversal would be silently dropped. Checked
+        in :meth:`prefetch_related` and again at the start of :meth:`exec`,
+        since ``reachable_from()`` mutates a QuerySet in place and may be
+        called on the inner one after it was wrapped.
+        """
+        for relation in self._prefetch_related:
+            if isinstance(relation, Prefetch) and relation.queryset is not None:
+                if relation.queryset._graph is not None:
+                    raise ValueError("Prefetch() cannot be combined with reachable_from()")
 
     def traverse(self, path: str) -> Self:
         """
@@ -842,6 +1469,8 @@ class QuerySet(Generic[T]):
             )
             ```
         """
+        self._reject_graph("graph_query")
+
         # Parse the traversal to determine edge and direction
         # Expected format: "->edge->Table" or "<-edge<-Table"
         # For now, support simple single-hop traversals
@@ -903,10 +1532,11 @@ class QuerySet(Generic[T]):
         Returns:
             list[dict[str, Any]]: A list of dictionaries containing grouped results.
         """
-        query = self._compile_annotate_query()
+        query = remove_quotes_for_variables(self._compile_annotate_query())
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         return result.all_records
 
@@ -921,13 +1551,16 @@ class QuerySet(Generic[T]):
         Returns:
             str: The compiled SurrealQL, including any ``LET`` prelude.
         """
+        self._reject_graph_ranking()
         prelude: list[str] = []
 
         # Build WHERE clause first so the shared counter is advanced before
         # subquery annotations — prevents $_fN variable collisions.
+        source = self._from_clause()
         where_parts, filter_vars = self._build_where_parts(prelude)
         if filter_vars:
             self._variables.update(filter_vars)
+        where_parts.extend(self._graph_where_parts())
         where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
         # Build SELECT clause with group fields and aggregations/subqueries.
@@ -958,7 +1591,7 @@ class QuerySet(Generic[T]):
         else:
             group_clause = " GROUP ALL"
 
-        query = f"SELECT {select_clause} FROM {self._model_table}{where_clause}{group_clause};"
+        query = f"SELECT {select_clause} FROM {source}{where_clause}{group_clause};"
 
         if prelude:
             return " ".join(prelude) + " " + query
@@ -1103,11 +1736,13 @@ class QuerySet(Generic[T]):
         counter: list[int],
         prelude: list[str] | None = None,
         declared: Collection[str] = frozenset(),
+        *,
+        prefix: str = "_f",
     ) -> str:
         """
         Render a single filter condition to a parameterized SurrealQL expression.
 
-        Values are bound as ``$_fN`` variables. The one exception is a value that
+        Values are bound as ``$<prefix>N`` variables (``$_fN`` by default). The one exception is a value that
         is exactly ``$name`` where ``name`` is in ``declared`` (see
         :func:`~surreal_orm.utils.is_declared_variable_reference`): it is
         written as a reference to that variable. Every other string — an
@@ -1125,6 +1760,9 @@ class QuerySet(Generic[T]):
             declared: Variable names passed through ``.variables()``. The
                 ORM's own bindings (``$_fN``, ...) are never in it, so a value
                 equal to one of them is data on every compile.
+            prefix: Name prefix of the bound variables. A clause compiled
+                beside the ordinary filters (a graph traversal step) binds
+                under its own prefix so the two never share a name.
 
         Returns:
             str: The rendered SurrealQL condition.
@@ -1134,9 +1772,9 @@ class QuerySet(Generic[T]):
         # well as when the key is parsed: Q children can be built by hand.
         parse_filter_key(f"{field_name}__{lookup_name}")
 
-        # ── Helper: bind a value as $_fN and return the var name ──────
+        # ── Helper: bind a value as $<prefix>N and return the var name ─
         def _bind(val: Any) -> str:
-            vn = f"_f{counter[0]}"
+            vn = f"{prefix}{counter[0]}"
             counter[0] += 1
             variables[vn] = val
             return vn
@@ -1246,6 +1884,9 @@ class QuerySet(Generic[T]):
         counter: list[int],
         prelude: list[str] | None = None,
         declared: Collection[str] = frozenset(),
+        *,
+        prefix: str = "_f",
+        coerce: Callable[[str, str, Any, Collection[str]], Any] | None = None,
     ) -> str:
         """
         Recursively render a Q object tree to a parameterized SurrealQL expression.
@@ -1257,23 +1898,31 @@ class QuerySet(Generic[T]):
             prelude: Mutable list collecting ``LET`` statements for hoisted subqueries.
             declared: Variable names a ``$name`` value may refer to
                 (see :meth:`_render_condition`).
+            prefix: Name prefix of the bound variables (see
+                :meth:`_render_condition`); nested ``Q`` objects use it too.
+            coerce: Called as ``coerce(field, lookup, value, declared)`` on
+                each leaf before it is rendered. ``None`` uses
+                :meth:`_coerce_filter_value` (foreign keys to record links).
 
         Returns:
             str: The rendered SurrealQL expression with proper parenthesization.
         """
         if not q.children:
             return ""
+        coerce_value = self._coerce_filter_value if coerce is None else coerce
 
         parts: list[str] = []
         for child in q.children:
             if isinstance(child, Q):
-                rendered = self._render_q(child, variables, counter, prelude, declared)
+                rendered = self._render_q(child, variables, counter, prelude, declared, prefix=prefix, coerce=coerce)
                 if rendered:
                     parts.append(rendered)
             else:
                 field_name, lookup_name, value = child
-                value = self._coerce_filter_value(field_name, lookup_name, value, declared)
-                parts.append(self._render_condition(field_name, lookup_name, value, variables, counter, prelude, declared))
+                value = coerce_value(field_name, lookup_name, value, declared)
+                parts.append(
+                    self._render_condition(field_name, lookup_name, value, variables, counter, prelude, declared, prefix=prefix)
+                )
 
         if not parts:
             return ""
@@ -1335,6 +1984,8 @@ class QuerySet(Generic[T]):
         Returns:
             str: The compiled SQL query string.
         """
+        self._reject_graph_ranking()
+
         # ── LET prelude ─────────────────────────────────────────────────
         # Uncorrelated subqueries are hoisted into `LET $_sqN = (...);`
         # statements emitted ahead of the SELECT (see Subquery.to_surql).
@@ -1352,21 +2003,24 @@ class QuerySet(Generic[T]):
             if isinstance(annotation, (SearchScore, SearchHighlight, GeoDistance)):
                 extra_select.append(annotation.to_surql(alias))
 
+        # The FROM source: the table, or a traversal idiom (binds $_g_src).
+        source = self._from_clause()
         if self.select_item:
             fields = ", ".join(self.select_item)
             if extra_select:
                 fields += ", " + ", ".join(extra_select)
-            query = f"SELECT {fields} FROM {self._model_table}"
+            query = f"SELECT {fields} FROM {source}"
         else:
             if extra_select:
-                query = f"SELECT *, {', '.join(extra_select)} FROM {self._model_table}"
+                query = f"SELECT *, {', '.join(extra_select)} FROM {source}"
             else:
-                query = f"SELECT * FROM {self._model_table}"
+                query = f"SELECT * FROM {source}"
 
         # ── WHERE clause ────────────────────────────────────────────────
         where_parts, filter_vars = self._build_where_parts(prelude)
         if filter_vars:
             self._variables.update(filter_vars)
+        where_parts.extend(self._graph_where_parts())
 
         # KNN: append <|K, EF|> condition
         # SurrealDB 3.0 requires the EF (search effort) parameter; default to 100
@@ -1463,6 +2117,13 @@ class QuerySet(Generic[T]):
             ).exec()
             ```
         """
+        # Checked before compiling anything, so no query is sent (E14 / E15).
+        self._reject_graph_prefetch()
+        if self._graph is not None and self._cache_ttl is not None:
+            # Edges written by relate() / RELATE fire no signal: nothing
+            # would invalidate a cached traversal.
+            raise ValueError("cache() cannot be combined with reachable_from(): edge writes do not invalidate cached results")
+
         # If annotations are set with Aggregation or Subquery, execute as GROUP BY query.
         # SearchScore / SearchHighlight are handled inline by _compile_query().
         has_group_annotations = any(isinstance(a, (Aggregation, Subquery)) for a in self._annotations.values())
@@ -1614,6 +2275,19 @@ class QuerySet(Generic[T]):
         """
         # Allow 'id' keyword to be used as alias for 'id_item'
         record_id = id if id is not None else id_item
+        if record_id and self._graph is not None:
+            # A traversal is the source, not a filter: look the id up among
+            # the reachable records, on a copy so this QuerySet is unchanged.
+            _, id_part = parse_record_id(str(record_id))
+            lookup = copy.copy(self)
+            lookup._filters = [*self._filters, ("id", "exact", RecordId(table=self._model_table, id=id_part))]
+            lookup._variables = dict(self._variables)
+            found = await lookup.exec()
+            if len(found) > 1:
+                raise SurrealDbError("More than one result found.")
+            if not found:
+                raise self.model.DoesNotExist("Record not found.")
+            return found[0]
         if record_id:
             record_id_str = str(record_id)
             # Handle full SurrealDB format (table:id) - extract just the ID part
@@ -1652,6 +2326,10 @@ class QuerySet(Generic[T]):
             all_users = await queryset.all()
             ```
         """
+        if self._graph is not None:
+            # The traversal is the source of the query, not a filter: reading
+            # the whole table would be a wrong answer.
+            return await self.exec()
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.select(self._model_table)
         return self.model.from_db(cast(dict[str, Any] | list[Any] | None, result.records))  # type: ignore[return-value]
@@ -1690,6 +2368,28 @@ class QuerySet(Generic[T]):
 
         return " WHERE " + " AND ".join(where_parts)
 
+    def _compile_read_where_clause(self) -> str:
+        """
+        The ``WHERE`` clause of a read: :meth:`_compile_where_clause` plus the traversal's exclusion.
+
+        Used by :meth:`count`, :meth:`sum`, :meth:`avg`, :meth:`min` and
+        :meth:`max`, after :meth:`_from_clause` has bound ``$_g_src``.
+        :meth:`_compile_where_clause` itself never carries ``id != $_g_src``:
+        it also builds the ``WHERE`` of the bulk writes, where ``$_g_src`` is
+        not bound and the comparison would match every row.
+
+        Returns:
+            str: The WHERE clause string (including WHERE keyword) or empty string.
+        """
+        self._reject_graph_ranking()
+        where_parts, filter_vars = self._build_where_parts()
+        if filter_vars:
+            self._variables.update(filter_vars)
+        where_parts.extend(self._graph_where_parts())
+        if not where_parts:
+            return ""
+        return " WHERE " + " AND ".join(where_parts)
+
     async def count(self) -> int:
         """
         Count the number of records matching the current filters.
@@ -1703,11 +2403,13 @@ class QuerySet(Generic[T]):
             active = await User.objects().filter(active=True).count()
             ```
         """
-        where_clause = self._compile_where_clause()
-        query = f"SELECT count() FROM {self._model_table}{where_clause} GROUP ALL;"
+        source = self._from_clause()
+        where_clause = self._compile_read_where_clause()
+        query = remove_quotes_for_variables(f"SELECT count() FROM {source}{where_clause} GROUP ALL;")
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -1731,11 +2433,13 @@ class QuerySet(Generic[T]):
             ```
         """
         validate_identifier(field, "aggregation field")
-        where_clause = self._compile_where_clause()
-        query = f"SELECT math::sum({field}) AS total FROM {self._model_table}{where_clause} GROUP ALL;"
+        source = self._from_clause()
+        where_clause = self._compile_read_where_clause()
+        query = remove_quotes_for_variables(f"SELECT math::sum({field}) AS total FROM {source}{where_clause} GROUP ALL;")
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -1760,11 +2464,13 @@ class QuerySet(Generic[T]):
             ```
         """
         validate_identifier(field, "aggregation field")
-        where_clause = self._compile_where_clause()
-        query = f"SELECT math::mean({field}) AS average FROM {self._model_table}{where_clause} GROUP ALL;"
+        source = self._from_clause()
+        where_clause = self._compile_read_where_clause()
+        query = remove_quotes_for_variables(f"SELECT math::mean({field}) AS average FROM {source}{where_clause} GROUP ALL;")
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -1789,11 +2495,13 @@ class QuerySet(Generic[T]):
             ```
         """
         validate_identifier(field, "aggregation field")
-        where_clause = self._compile_where_clause()
-        query = f"SELECT math::min({field}) AS minimum FROM {self._model_table}{where_clause} GROUP ALL;"
+        source = self._from_clause()
+        where_clause = self._compile_read_where_clause()
+        query = remove_quotes_for_variables(f"SELECT math::min({field}) AS minimum FROM {source}{where_clause} GROUP ALL;")
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -1817,11 +2525,13 @@ class QuerySet(Generic[T]):
             ```
         """
         validate_identifier(field, "aggregation field")
-        where_clause = self._compile_where_clause()
-        query = f"SELECT math::max({field}) AS maximum FROM {self._model_table}{where_clause} GROUP ALL;"
+        source = self._from_clause()
+        where_clause = self._compile_read_where_clause()
+        query = remove_quotes_for_variables(f"SELECT math::max({field}) AS maximum FROM {source}{where_clause} GROUP ALL;")
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        result = await client.query(query, self._variables)
+        self._check_graph_response(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -1888,6 +2598,7 @@ class QuerySet(Generic[T]):
         for qr in result.results:
             if qr.is_error and isinstance(qr.result, str) and TableNotFoundError.is_table_not_found(qr.result):
                 raise TableNotFoundError(message=qr.result, query=final_query)
+        self._check_graph_response(result, final_query)
 
         # SDK returns QueryResponse, extract all records
         return cast(list[Any], result.all_records)
@@ -1910,6 +2621,7 @@ class QuerySet(Generic[T]):
             success = await queryset.delete_table()
             ```
         """
+        self._reject_graph("delete_table")
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         await client.delete(self._model_table)
         return True
@@ -1941,6 +2653,7 @@ class QuerySet(Generic[T]):
         """
         from surreal_sdk.exceptions import TableNotFoundError
 
+        self._reject_graph("query")
         variables = variables or {}
         if f"FROM {self._model_table}" not in query:
             raise SurrealDbError(f"The query must include 'FROM {self._model_table}' to reference the correct table.")
@@ -2046,6 +2759,7 @@ class QuerySet(Generic[T]):
             )
             ```
         """
+        self._reject_graph("bulk_update")
         where_clause = self._compile_where_clause()
 
         # Build SET clause — foreign-key values are bound as record links,
@@ -2097,6 +2811,7 @@ class QuerySet(Generic[T]):
             ).bulk_delete(atomic=True)
             ```
         """
+        self._reject_graph("bulk_delete")
         where_clause = self._compile_where_clause()
         # Use RETURN BEFORE to get deleted records count
         query = f"DELETE FROM {self._model_table}{where_clause} RETURN BEFORE;"
@@ -2161,6 +2876,7 @@ class QuerySet(Generic[T]):
                 on_conflict={"login_count": SurrealFunc("login_count += 1")},
             )
         """
+        self._reject_graph("upsert")
         from .surreal_function import SurrealFunc
 
         table = self._model_table
@@ -2267,6 +2983,7 @@ class QuerySet(Generic[T]):
                 on_conflict={"login_count": SurrealFunc("login_count += 1")},
             )
         """
+        self._reject_graph("bulk_upsert")
         from .surreal_function import SurrealFunc
 
         if not instances:
@@ -2396,6 +3113,9 @@ class QuerySet(Generic[T]):
                         case LiveAction.DELETE:
                             print(f"Admin removed: {event.record_id}")
         """
+        # A LIVE SELECT on a recursive idiom is refused by the server.
+        self._reject_graph("live")
+
         from .live import LiveModelStream
 
         # Build WHERE clause and params from current filters
@@ -2472,6 +3192,8 @@ class QuerySet(Generic[T]):
                 })
                 checkpoint(stream.cursor)  # resume later with changes(since=...)
         """
+        self._reject_graph("changes")
+
         from .live import ChangeModelStream
 
         return ChangeModelStream(

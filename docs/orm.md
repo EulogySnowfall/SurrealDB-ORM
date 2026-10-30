@@ -613,6 +613,195 @@ followers = await alice.get_related("follows", direction="in", model_class=User)
 following_data = await alice.get_related("follows", direction="out")
 ```
 
+### Recursive Traversal, Paths and Shortest Path
+
+`get_related()` follows one hop. Three `QuerySet` methods walk an edge recursively, with SurrealDB's recursive
+idioms (`{min..max+collect}`, `+path`, `+shortest`), and each has an instance shortcut:
+
+| QuerySet method | Instance shortcut | Returns |
+| --- | --- | --- |
+| `reachable_from(source, edge, ...)` | `get_reachable(edge, ...)` | the QuerySet (chainable); `exec()` gives each reachable record once |
+| `paths_from(source, edge, *, max_depth, ...)` | `get_paths(edge, *, max_depth, ...)` | `list[list[T]]`, every walk from the source |
+| `shortest_path(source, target, edge, ...)` | `get_shortest_path(target, edge, ...)` | `list[T]` (fewest hops), or `None` when there is no path |
+
+The examples below use this graph of `follows` edges between `users`:
+
+```python
+# alice -> bob -> charlie -> dave
+# alice -> erin -> dave
+await alice.relate("follows", bob)
+await bob.relate("follows", charlie)
+await charlie.relate("follows", dave)
+await alice.relate("follows", erin)
+await erin.relate("follows", dave)
+```
+
+#### Reachable records — `reachable_from()` / `get_reachable()`
+
+The QuerySet's table is the table of the nodes walked; the source may belong to any table. The result is a normal
+QuerySet: `filter()`, `Q`, `order_by()`, `limit()`, `offset()`, `select()`, `fetch()`, `prefetch_related()`,
+`count()` and the aggregations all apply to it. Calling `reachable_from()` again replaces the previous traversal.
+
+```python
+from surreal_orm import Q
+
+users = await User.objects().reachable_from(alice, "follows", max_depth=3).order_by("name").exec()
+# [bob, charlie, dave, erin]
+
+n = await User.objects().reachable_from(alice, "follows", max_depth=3).count()
+# 4
+
+# The source itself, first in the walk
+users = await User.objects().reachable_from(alice, "follows", max_depth=3, include_source=True).exec()
+# [alice, bob, charlie, dave, erin] (in some order)
+
+# Only records 2 or 3 hops away; follow the edges backwards; or both ways
+far = await User.objects().reachable_from(alice, "follows", min_depth=2, max_depth=3).exec()  # [charlie, dave]
+fans = await User.objects().reachable_from(dave, "follows", max_depth=3, direction="in").exec()  # 4 users
+around = await User.objects().reachable_from(bob, "follows", max_depth=1, direction="both").exec()  # [alice, charlie]
+
+# One hop into another table
+posts = await Post.objects().reachable_from(alice, "wrote", max_depth=1).exec()
+
+# The edge as a model class (a model with table_type=TableType.RELATION and table_name="follows")
+users = await User.objects().reachable_from(alice, Follows, max_depth=1).exec()
+
+# Instance shortcut: model_class is the node model (default: the instance's own class)
+reach = await alice.get_reachable("follows", max_depth=3)  # list[User]
+posts = await alice.get_reachable("wrote", max_depth=1, model_class=Post)  # list[Post]
+```
+
+**`filter()` vs `node_filter=` / `edge_filter=`.** `filter()` and `Q` on the QuerySet filter the **result** (the
+`WHERE` of the outer `SELECT`): the walk still goes through a record that fails them. `node_filter=` and
+`edge_filter=` **prune the walk**: a node failing `node_filter`, or an edge failing `edge_filter`, is not
+traversed, so nothing beyond it is reached through it. On a graph `a -> b -> c -> d` (edge weight `w = 1`) plus
+`a -> e -> d` (`a -> e` has `w = 5`), where `c` is the only inactive record:
+
+```python
+walk = Person.objects().reachable_from(a, "knows", max_depth=3, edge_filter=Q(w__lt=5))
+# {b, c, d}: the heavy edge a -> e is not walked
+
+await walk.filter(active=True).exec()
+# {b, d}: c is dropped from the result, but d is still reached through it
+
+await Person.objects().reachable_from(
+    a, "knows", max_depth=3, edge_filter=Q(w__lt=5), node_filter=Q(active=True)
+).exec()
+# {b}: the walk stops at c, so d is never reached
+```
+
+`node_filter` values are converted like `filter()` values (`ForeignKey` columns become records). A `Subquery` is
+not accepted inside `node_filter` / `edge_filter`.
+
+**Filtering on the edge's endpoints.** On an edge table, `in` and `out` are always records, and a string never
+equals a record. `edge_filter` therefore converts the values of `in` / `out` (lookups `exact`, `in`, `not_in`) to
+records: a model instance, a `RecordId` or a `"table:id"` string. A bare id such as `"bob"` has no table to resolve
+against and raises `ValueError` (`edge_filter on 'out' compares records: ...`). `in` is a Python keyword, so write
+`Q(**{"in": alice})` or `Q(in__exact=alice)` — never `Q(in=…)`, which is a syntax error:
+
+```python
+# Walk only the edges that leave alice
+await User.objects().reachable_from(alice, "follows", max_depth=3, edge_filter=Q(**{"in": alice})).exec()
+await User.objects().reachable_from(alice, "follows", max_depth=3, edge_filter=Q(in__exact=alice)).exec()
+# both: [bob, erin]
+
+# Walk only the edges that arrive at bob or erin
+await User.objects().reachable_from(alice, "follows", max_depth=3, edge_filter=Q(out__in=[bob, erin])).exec()
+# [bob, erin]
+```
+
+#### Every walk — `paths_from()` / `get_paths()`
+
+Each path is a list of model instances in walk order, the source first (`include_source=True` is the default
+here). A walk stops at `max_depth` or at a dead end; walks shorter than `min_depth` are dropped. `max_depth` is
+required, and `direction` is `"out"` or `"in"` (`"both"` raises). `paths_from()` is terminal: it runs on a bare
+QuerySet (`filter()`, `order_by()`, `limit()` and the other read clauses raise `ValueError`; constrain the walk with
+`node_filter=` / `edge_filter=`).
+
+```python
+paths = await User.objects().paths_from(alice, "follows", max_depth=3)
+for path in paths:
+    print(" -> ".join(u.name for u in path))
+# Alice -> Bob -> Charlie -> Dave
+# Alice -> Erin -> Dave   (paths come in no particular order)
+
+paths = await alice.get_paths("follows", max_depth=3)  # list[list[User]]
+```
+
+> **Cost.** `paths_from()` does not cut cycles: a record can appear several times in one path, and the number of
+> paths grows with the branching factor to the power of `max_depth` (a cyclic graph with two out-edges per node
+> gives about 2^`max_depth` paths). Keep `max_depth` small on dense or cyclic graphs, and make it an **application
+> constant — never a request parameter**. The cap of `MAX_PATH_DEPTH` (32) only stops an accidental large depth;
+> it does not bound the work the server does below it.
+
+#### Shortest path — `shortest_path()` / `get_shortest_path()`
+
+The path with the fewest hops (unweighted; one of them when several tie), as `[source, ..., target]`, or `None`
+when no path exists within `max_depth`. The target must be a record of the QuerySet's table. `source == target`
+gives `[source]` when the record exists. `node_filter` applies to every node after the source, the target
+included. Like `paths_from()`, it is terminal.
+
+```python
+path = await User.objects().shortest_path(alice, dave, "follows")
+if path is None:
+    print("not connected")
+else:
+    print(len(path) - 1, "hops:", [u.name for u in path])
+# 2 hops: ['Alice', 'Erin', 'Dave']
+
+path = await alice.get_shortest_path(dave, "follows")  # list[User] | None, same path
+path = await User.objects().shortest_path(dave, alice, "follows")  # None: no edge leaves dave
+path = await User.objects().shortest_path(alice, dave, "follows", include_source=False)  # [erin, dave]
+```
+
+A path whose records the session cannot read (for example a node hidden by table permissions) also gives `None`,
+and logs a warning so it can be told apart from "no path"; `paths_from()` drops such a path and logs a warning too.
+
+#### Rules shared by the three methods
+
+- **Depths.** `max_depth` and `min_depth` are `int`s from 1 to 256 (`MAX_GRAPH_DEPTH`, SurrealDB's recursion limit),
+  `min_depth <= max_depth`, checked at the call. `max_depth=None` (the default of `reachable_from()` and
+  `shortest_path()`) walks up to the server's limit; a graph deeper than that makes the server reject the query, raised
+  as `QueryError` (`Exceeded the idiom recursion limit of 256.`). `paths_from()` needs `max_depth`, at most 32
+  (`MAX_PATH_DEPTH`).
+- **Order.** The order of the results is unspecified: use `order_by()` (and sort the output of `paths_from()`).
+- **`include_source`.** `False` (default for `reachable_from()`) never returns the source, even when a cycle comes
+  back to it; `True` (default for `paths_from()` and `shortest_path()`) returns it, and it is not subject to
+  `node_filter`. With `True`, the source must be a record of the QuerySet's table, because it is returned as one; a
+  source from another table needs `include_source=False`:
+
+  ```python
+  # ValueError: include_source=True needs a source in 'posts', got 'users:alice': the source would be
+  # returned as a 'posts' record; pass include_source=False
+  await Post.objects().paths_from(alice, "wrote", max_depth=1)
+
+  paths = await Post.objects().paths_from(alice, "wrote", max_depth=1, include_source=False)
+  ```
+
+- **Sources and targets.** A saved model instance, a `RecordId`, a `"table:id"` string or a bare id (read in the
+  QuerySet's table). A string is read the way `get()` reads it, so its key is always a string: `"users:1"` is the
+  record with the key `"1"`, not the integer `1` — pass `RecordId("users", 1)` for an integer key. A key that is not a
+  plain identifier is escaped with backticks (``"users:`7x`"``); the `⟨…⟩` spelling raises `ValueError` (`The ⟨…⟩
+  record-id spelling is not supported; ...`) instead of silently matching nothing:
+
+  ```python
+  from surreal_sdk import RecordId
+
+  await User.objects().reachable_from("users:alice", "follows", max_depth=3).exec()
+  await User.objects().reachable_from(RecordId("users", 1), "follows", max_depth=3).exec()
+  await User.objects().reachable_from("users:`7x`", "follows", max_depth=3).exec()
+  ```
+
+- **Edges.** `edge` is the edge table's name or its model class, an identifier either way.
+- **Not combinable.** A traversal QuerySet refuses `cache()` (edge writes do not invalidate cached results),
+  `live()`, `changes()`, `query()`, `graph_query()`, `hybrid_search()`, `similar_to()` / `search()` / `nearby()`,
+  `Subquery(...)`, `Prefetch(queryset=...)` and the bulk writes (`bulk_update()`, `bulk_delete()`, `upsert()`,
+  `bulk_upsert()`, `delete_table()`) with a `ValueError`, rather than silently ignoring the traversal.
+- **Bound values.** The source, the target and every filter value are bound as query variables (`$_g_src`,
+  `$_g_dst`, `$_gN`); a `$name` filter value refers to a variable declared with `.variables()`, as in `filter()`.
+- **CBOR protocol.** The traversals compare records. Under `protocol="json"` record values are sent as strings, which
+  never equal a record, so the traversals return nothing there; use the default CBOR protocol.
+
 ### Removing Relations
 
 ```python
