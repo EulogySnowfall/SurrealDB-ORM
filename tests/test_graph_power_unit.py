@@ -911,3 +911,160 @@ class TestWriteGuards:
         where = qs._compile_where_clause()
         assert where == " WHERE name = $_f0"
         assert "_g_src" not in where
+
+
+# ---------------------------------------------------------------------------
+# U6 (rest), AC-9 — the other paths refuse a traversal (E14 / E15)
+# ---------------------------------------------------------------------------
+
+
+def _traversal(max_depth: int = 2) -> QuerySet[GPUPerson]:
+    return GPUPerson.objects().reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=max_depth)
+
+
+def _e14(method: str) -> str:
+    return f"{method}() cannot be combined with reachable_from()"
+
+
+class TestReadGuards:
+    @pytest.mark.parametrize(
+        ("method", "call"),
+        [
+            ("live", lambda qs: qs.live()),
+            ("changes", lambda qs: qs.changes()),
+        ],
+    )
+    def test_streams_refused_at_call(self, method: str, call: Any) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        qs = _traversal()
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+            pytest.raises(ValueError) as excinfo,
+        ):
+            call(qs)
+        assert str(excinfo.value) == _e14(method)
+        get_client.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("method", "call"),
+        [
+            ("query", lambda qs: qs.query("SELECT * FROM gpu_person")),
+            (
+                "hybrid_search",
+                lambda qs: qs.hybrid_search(vector_field="emb", vector=[0.1], text_field="name", text_query="x"),
+            ),
+            ("graph_query", lambda qs: qs.graph_query("->gpu_knows->gpu_person")),
+        ],
+    )
+    async def test_async_refused_before_io(self, method: str, call: Any) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        qs = _traversal()
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+            pytest.raises(ValueError) as excinfo,
+        ):
+            await call(qs)
+        assert str(excinfo.value) == _e14(method)
+        get_client.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("method", "call"),
+        [
+            ("similar_to", lambda qs: qs.similar_to("emb", [0.1], limit=2)),
+            ("search", lambda qs: qs.search(name="x")),
+            ("nearby", lambda qs: qs.nearby("loc", (0, 0), 10)),
+        ],
+    )
+    def test_ranking_clauses_refused_at_compile(self, method: str, call: Any) -> None:
+        qs = call(_traversal())
+        with pytest.raises(ValueError) as excinfo:
+            qs._compile_query()
+        assert str(excinfo.value) == _e14(method)
+
+    @pytest.mark.parametrize(
+        ("method", "call"),
+        [
+            ("similar_to", lambda qs: qs.similar_to("emb", [0.1], limit=2)),
+            ("search", lambda qs: qs.search(name="x")),
+            ("nearby", lambda qs: qs.nearby("loc", (0, 0), 10)),
+        ],
+    )
+    async def test_ranking_clauses_refused_by_exec_and_count(self, method: str, call: Any) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        for terminal in ("exec", "count"):
+            qs = call(_traversal())
+            with (
+                patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+                pytest.raises(ValueError) as excinfo,
+            ):
+                await getattr(qs, terminal)()
+            assert str(excinfo.value) == _e14(method)
+            get_client.assert_not_awaited()
+
+    def test_ranking_clauses_without_traversal_unchanged(self) -> None:
+        sql = GPUPerson.objects().nearby("loc", (0, 0), 10)._compile_query()
+        assert sql.startswith("SELECT * FROM gpu_person WHERE geo::distance(loc")
+
+    def test_subquery_refused(self) -> None:
+        outer = GPUPerson.objects().filter(id__in=Subquery(_traversal().select("id")))
+        with pytest.raises(ValueError) as excinfo:
+            outer._compile_query()
+        assert str(excinfo.value) == _e14("Subquery")
+
+    def test_subquery_to_surql_refused(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            Subquery(_traversal()).to_surql({}, [0])
+        assert str(excinfo.value) == "Subquery() cannot be combined with reachable_from()"
+
+    def test_prefetch_refused_at_prefetch_related(self) -> None:
+        from src.surreal_orm.prefetch import Prefetch
+
+        with pytest.raises(ValueError) as excinfo:
+            GPUPerson.objects().prefetch_related(Prefetch("gpu_knows", queryset=_traversal()))
+        assert str(excinfo.value) == "Prefetch() cannot be combined with reachable_from()"
+
+    async def test_prefetch_made_traversal_later_refused_before_main_query(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from src.surreal_orm.prefetch import Prefetch
+
+        inner = GPUPerson.objects()
+        outer = GPUPerson.objects().prefetch_related(Prefetch("gpu_knows", queryset=inner))
+        inner.reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=1)
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+            pytest.raises(ValueError) as excinfo,
+        ):
+            await outer.exec()
+        assert str(excinfo.value) == "Prefetch() cannot be combined with reachable_from()"
+        get_client.assert_not_awaited()
+
+    def test_prefetch_without_traversal_accepted(self) -> None:
+        from src.surreal_orm.prefetch import Prefetch
+
+        qs = GPUPerson.objects().prefetch_related(Prefetch("gpu_knows", queryset=GPUPerson.objects()))
+        assert len(qs._prefetch_related) == 1
+
+    async def test_cache_refused(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from src.surreal_orm.cache import QueryCache
+
+        saved = (QueryCache._default_ttl, QueryCache._max_size, QueryCache._enabled)
+        QueryCache.configure(enabled=True)
+        try:
+            qs = _traversal().cache(ttl=5)
+            with (
+                patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+                pytest.raises(ValueError) as excinfo,
+            ):
+                await qs.exec()
+            assert str(excinfo.value) == (
+                "cache() cannot be combined with reachable_from(): edge writes do not invalidate cached results"
+            )
+            get_client.assert_not_awaited()
+        finally:
+            QueryCache.configure(default_ttl=saved[0], max_size=saved[1], enabled=saved[2])

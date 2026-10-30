@@ -518,6 +518,7 @@ class QuerySet(Generic[T]):
             ).exec()
         """
         self._prefetch_related = list(relations)
+        self._reject_graph_prefetch()
         return self
 
     def fetch(self, *fields: str) -> Self:
@@ -777,6 +778,7 @@ class QuerySet(Generic[T]):
                 text_limit=10,
             )
         """
+        self._reject_graph("hybrid_search")
         if not _SAFE_IDENTIFIER_RE.fullmatch(vector_field):
             raise ValueError(f"Invalid field name for hybrid_search(): {vector_field!r}")
         if not _SAFE_IDENTIFIER_RE.fullmatch(text_field):
@@ -849,7 +851,13 @@ class QuerySet(Generic[T]):
         ``Q(**{"in": alice})`` or ``Q(in__exact=alice)``.
 
         Bulk writes (``bulk_update()``, ``bulk_delete()``, ``upsert()``,
-        ``bulk_upsert()``, ``delete_table()``) refuse a traversal QuerySet.
+        ``bulk_upsert()``, ``delete_table()``) refuse a traversal QuerySet, and
+        so do the paths that compile from the table and would drop it:
+        ``live()``, ``changes()``, ``query()``, ``hybrid_search()``,
+        ``graph_query()``, ``similar_to()`` / ``search()`` / ``nearby()`` (at
+        compile), ``Subquery(qs)`` and ``Prefetch(queryset=qs)``. ``cache()``
+        is refused at ``exec()``: edge writes fire no signal, so nothing would
+        invalidate the entry. Each raises ``ValueError`` before any query.
 
         Args:
             source: The record the walk starts from: a saved model instance,
@@ -1036,6 +1044,39 @@ class QuerySet(Generic[T]):
         if self._graph is not None:
             raise ValueError(f"{method}() cannot be combined with reachable_from()")
 
+    def _reject_graph_ranking(self) -> None:
+        """
+        Refuse ``similar_to()`` / ``search()`` / ``nearby()`` on a traversal QuerySet.
+
+        Their operators (``<|K,EF|>``, ``@N@``, ``geo::distance``) are written
+        against the table's indexes, and the recursive idiom of the traversal
+        is not a source they can rank or match; the error names the first
+        one set.
+        """
+        if self._graph is None:
+            return
+        if self._knn_field:
+            self._reject_graph("similar_to")
+        if self._search_fields:
+            self._reject_graph("search")
+        if self._geo_field:
+            self._reject_graph("nearby")
+
+    def _reject_graph_prefetch(self) -> None:
+        """
+        Refuse a ``Prefetch`` whose queryset carries a traversal.
+
+        ``_execute_prefetch()`` compiles the inner QuerySet from its table and
+        its filters only, so the traversal would be silently dropped. Checked
+        in :meth:`prefetch_related` and again at the start of :meth:`exec`,
+        since ``reachable_from()`` mutates a QuerySet in place and may be
+        called on the inner one after it was wrapped.
+        """
+        for relation in self._prefetch_related:
+            if isinstance(relation, Prefetch) and relation.queryset is not None:
+                if relation.queryset._graph is not None:
+                    raise ValueError("Prefetch() cannot be combined with reachable_from()")
+
     def traverse(self, path: str) -> Self:
         """
         Add a graph traversal path to the query.
@@ -1086,6 +1127,8 @@ class QuerySet(Generic[T]):
             )
             ```
         """
+        self._reject_graph("graph_query")
+
         # Parse the traversal to determine edge and direction
         # Expected format: "->edge->Table" or "<-edge<-Table"
         # For now, support simple single-hop traversals
@@ -1166,6 +1209,7 @@ class QuerySet(Generic[T]):
         Returns:
             str: The compiled SurrealQL, including any ``LET`` prelude.
         """
+        self._reject_graph_ranking()
         prelude: list[str] = []
 
         # Build WHERE clause first so the shared counter is advanced before
@@ -1598,6 +1642,8 @@ class QuerySet(Generic[T]):
         Returns:
             str: The compiled SQL query string.
         """
+        self._reject_graph_ranking()
+
         # ── LET prelude ─────────────────────────────────────────────────
         # Uncorrelated subqueries are hoisted into `LET $_sqN = (...);`
         # statements emitted ahead of the SELECT (see Subquery.to_surql).
@@ -1729,6 +1775,13 @@ class QuerySet(Generic[T]):
             ).exec()
             ```
         """
+        # Checked before compiling anything, so no query is sent (E14 / E15).
+        self._reject_graph_prefetch()
+        if self._graph is not None and self._cache_ttl is not None:
+            # Edges written by relate() / RELATE fire no signal: nothing
+            # would invalidate a cached traversal.
+            raise ValueError("cache() cannot be combined with reachable_from(): edge writes do not invalidate cached results")
+
         # If annotations are set with Aggregation or Subquery, execute as GROUP BY query.
         # SearchScore / SearchHighlight are handled inline by _compile_query().
         has_group_annotations = any(isinstance(a, (Aggregation, Subquery)) for a in self._annotations.values())
@@ -1986,6 +2039,7 @@ class QuerySet(Generic[T]):
         Returns:
             str: The WHERE clause string (including WHERE keyword) or empty string.
         """
+        self._reject_graph_ranking()
         where_parts, filter_vars = self._build_where_parts()
         if filter_vars:
             self._variables.update(filter_vars)
@@ -2257,6 +2311,7 @@ class QuerySet(Generic[T]):
         """
         from surreal_sdk.exceptions import TableNotFoundError
 
+        self._reject_graph("query")
         variables = variables or {}
         if f"FROM {self._model_table}" not in query:
             raise SurrealDbError(f"The query must include 'FROM {self._model_table}' to reference the correct table.")
@@ -2716,6 +2771,9 @@ class QuerySet(Generic[T]):
                         case LiveAction.DELETE:
                             print(f"Admin removed: {event.record_id}")
         """
+        # A LIVE SELECT on a recursive idiom is refused by the server.
+        self._reject_graph("live")
+
         from .live import LiveModelStream
 
         # Build WHERE clause and params from current filters
@@ -2792,6 +2850,8 @@ class QuerySet(Generic[T]):
                 })
                 checkpoint(stream.cursor)  # resume later with changes(since=...)
         """
+        self._reject_graph("changes")
+
         from .live import ChangeModelStream
 
         return ChangeModelStream(
