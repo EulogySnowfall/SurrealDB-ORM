@@ -4,6 +4,7 @@ Transaction support for SurrealDB SDK.
 Provides atomic transaction handling for both HTTP and WebSocket connections.
 """
 
+import asyncio
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Container
@@ -160,6 +161,7 @@ def _validate_thing(thing: str, context: str = "thing") -> None:
 
 if TYPE_CHECKING:
     from .connection.base import BaseSurrealConnection
+    from .connection.http import HTTPConnection
     from .types import (
         DeleteResponse,
         QueryResponse,
@@ -352,7 +354,18 @@ class HTTPTransaction(BaseTransaction):
     key must be a plain identifier (``[A-Za-z_][A-Za-z0-9_]*``); any other key
     raises ``ValueError`` at the call and nothing is queued. Values are always
     bound as parameters.
+
+    While it is open, the transaction counts as using its ``HTTPConnection``
+    even though nothing is sent yet, so that a connection being retired (see
+    ``HTTPConnection._drain_and_close``) stays open until the commit.
     """
+
+    def __init__(self, connection: "BaseSurrealConnection"):
+        super().__init__(connection)
+        # The HTTP connection this open transaction is counted on, and the task
+        # it was counted for (see ``_hold_connection``).
+        self._held: HTTPConnection | None = None
+        self._held_for: asyncio.Task[Any] | None = None
 
     @property
     def defers_results(self) -> bool:
@@ -365,6 +378,22 @@ class HTTPTransaction(BaseTransaction):
             raise TransactionError("Transaction already active")
         self._active = True
         self._statements = []
+        self._hold_connection()
+
+    def _hold_connection(self) -> None:
+        """Count this transaction as using its connection until it ends."""
+        from .connection.http import HTTPConnection
+
+        if self._held is None and isinstance(self._connection, HTTPConnection):
+            self._held_for = self._connection._transaction_opened()
+            self._held = self._connection
+
+    async def _release_connection(self) -> None:
+        """Stop counting this transaction on its connection (idempotent)."""
+        held, self._held = self._held, None
+        if held is not None:
+            await held._transaction_ended(self._held_for)
+            self._held_for = None
 
     async def commit(self) -> "QueryResponse":
         """Execute all queued statements atomically.
@@ -386,10 +415,17 @@ class HTTPTransaction(BaseTransaction):
                 that statement's own error. Nothing was written, ``is_committed``
                 is ``False`` and the transaction is no longer active.
         """
-        from .types import QueryResponse
-
         if not self.is_active:
             raise TransactionError("Transaction not active")
+
+        try:
+            return await self._send_statements()
+        finally:
+            await self._release_connection()
+
+    async def _send_statements(self) -> "QueryResponse":
+        """Send the queued statements as one ``BEGIN``/``COMMIT`` query (see ``commit``)."""
+        from .types import QueryResponse
 
         if not self._statements:
             # Empty transaction, just mark as committed
@@ -443,6 +479,7 @@ class HTTPTransaction(BaseTransaction):
         self._statements = []
         self._rolled_back = True
         self._active = False
+        await self._release_connection()
 
     def _queue_statement(self, sql: str, vars: dict[str, Any] | None = None) -> None:
         """Queue a statement for later execution."""
