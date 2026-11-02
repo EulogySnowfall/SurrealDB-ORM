@@ -278,9 +278,17 @@ def test_like_to_regex_patterns() -> None:
 
 
 def test_transaction_conflict_error_detection() -> None:
-    assert TransactionConflictError.is_conflict_error(Exception("Transaction failed: can be retried"))
-    assert TransactionConflictError.is_conflict_error(Exception("failed transaction due to conflict"))
-    assert TransactionConflictError.is_conflict_error(Exception("document changed by another client"))
+    # SurrealDB 3.3.5 wording for a write conflict (plain statement, then at COMMIT).
+    assert TransactionConflictError.is_conflict_error(
+        Exception(
+            "There was a problem with the key-value store: Transaction conflict: Write conflict, "
+            "retry the transaction. This transaction can be retried"
+        )
+    )
+    assert TransactionConflictError.is_conflict_error(
+        Exception("Cannot COMMIT: Transaction conflict: Write conflict, retry the transaction. This transaction can be retried")
+    )
+    assert not TransactionConflictError.is_conflict_error(Exception("The query was not executed due to a failed transaction"))
     assert not TransactionConflictError.is_conflict_error(Exception("connection timeout"))
     assert not TransactionConflictError.is_conflict_error(Exception("authentication failed"))
 
