@@ -52,6 +52,20 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.31
+
+**Bug fix release (V2 LTS).** One SDK fix (#258) that closes the follow-ups left open by the 0.21.14 reviews; no
+ORM API change.
+
+- **`live(diff=True)` subscriptions start.** Every live-query builder now sends
+  `LIVE SELECT DIFF FROM <table> [WHERE ...]`; `DIFF` used to come after the table and `WHERE` clause, which
+  SurrealDB rejects. Statements without `diff=True` are unchanged.
+- **Out-of-range integer record ids in a `live()` filter raise `TypeError`.** Outside the signed 64-bit range the
+  server reads the literal as a string id, so the filter compared against a different record.
+- **Behaviour change:** a naive `datetime` bound as a query parameter is sent as UTC with a `RuntimeWarning`
+  instead of raising, and over WebSocket a parameter that cannot be encoded raises the original
+  `ValueError`/`TypeError` instead of `ConnectionError`. See the [CHANGELOG](CHANGELOG) for the migration notes.
+
 ## What's New in 0.21.30
 
 **Bug fix release (V2 LTS).** One fix, the `v2` port of #260 from `main`; no new public API.
@@ -316,8 +330,8 @@ behaviour change.
   with non-`str` keys) raises `TypeError` instead of being turned into a quoted string; so does a
   NaN or infinite `float`, which used to be written bare (`nan`, `inf`) and is not a number to
   SurrealDB. Convert it first: a `set` to a `list`, an `Enum` to its `.value`.
-- **Known limitation, unchanged:** `live(diff=True)` emits `DIFF` after the `WHERE` clause, which
-  SurrealDB 2.7.0 rejects as a parse error. See the [CHANGELOG](CHANGELOG) for the full list.
+- **Known limitation at the time:** `live(diff=True)` emitted `DIFF` after the `WHERE` clause, which
+  SurrealDB 2.7.0 rejects as a parse error. Fixed in 0.21.31 (#258).
 
 ## What's New in 0.21.13
 
