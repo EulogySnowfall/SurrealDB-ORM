@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.37.3)
+> Context document for Claude AI - Last updated: November 2026 (0.38.0)
 
 ## Project Vision
 
@@ -10,14 +10,50 @@
 
 ---
 
-## Current Version: 0.37.3 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.38.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.5**  | 0.37.x      | Active development              |
+| `main` | **3.3.5**  | 0.38.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.38.0
+
+Advanced Queries, roadmap v0.38.0 (#457 via #469): `surreal_orm/paths.py`
+(new), `query_set.py`, `q.py`, `model_base.py`, `subquery.py`,
+`constants.py`. ORM only, no SDK or DDL change. Pin unchanged (3.3.5).
+`v2`: the attached-values fix is tracked in #470; the feature is not
+backported.
+
+- **Element filters `__any` / `__all` / `__none`** take a `Q` evaluated per
+  element and go through `_render_condition()`, so every renderer (filter, `Q`,
+  count, bulk writes, `live()`, `Subquery`, graph step filters) gets them. The
+  `type::is_array(F)` guard is load-bearing: 3.2.x wraps a non-array value in a
+  one-element array and filters it, 3.3.x does not. Truthiness of `F[WHERE C]`,
+  never `count()`: `count()` skips `NONE`, `0` and `false` elements.
+- **`FieldPath` holds data and validation only**; the QuerySet renders it
+  (it owns the bindings and their counter, and importing `query_set` from
+  `paths.py` would be a cycle). A path ending in a field access is wrapped in
+  parentheses before an index or a `where()`: `items.sku[0]` indexes each
+  element, `(items.sku)[0]` is the first sku.
+- **`where()` after `field()` after an earlier `where()` is refused at the
+  call**: on that shape the server tests each per-element array as a whole and
+  returns it unfiltered (measured on 3.2.6 and 3.3.5). `pick(lines=FieldPath(
+  "lines").where(...))` filters inside each element.
+- **Attached query values live outside model data.** A module registry keyed
+  by `id(instance)` (`weakref.finalize`, `atexit=False`) holds only names that
+  are not model fields; nothing validation accepts reaches it. `__copy__`/
+  `__deepcopy__` give the copy its own entry; `__getstate__`/`__setstate__`
+  carry it through pickle. `save()`/`update()`/`bulk_upsert()` exclude those
+  names; `_sorm_attached` is reserved.
+- **Statement errors raise** for queries using the new API (element filter
+  anywhere, `FieldPath` annotation) instead of the historical `[]`; other
+  querysets are unchanged.
+- **Open:** on 3.2.x a `where()` reached on a non-array value returns a
+  one-element array; a dotted field part crossing an array in an element
+  filter does not filter per element (nest `__any` instead).
 
 ### What's New in 0.37.3
 

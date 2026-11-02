@@ -1,6 +1,6 @@
 # SurrealDB-ORM Roadmap
 
-> Planning document for future ORM features - Last updated: November 2026 (0.37.0)
+> Planning document for future ORM features - Last updated: November 2026 (0.38.0)
 
 ---
 
@@ -39,6 +39,7 @@
 | 0.35.0  | Released | Sign-up fields (`signup_fields`), integer-only pagination  |
 | 0.36.0  | Released | Graph Power: recursive traversal, paths, shortest path     |
 | 0.37.0  | Released | ML & Data: JSONL import/export, DB dump/restore            |
+| 0.38.0  | Released | Advanced Queries: element filters, nested path annotations |
 
 ---
 
@@ -1866,7 +1867,7 @@ await User.objects().bulk_upsert(
 | 0.35.0  | Auth fixes       | `signup_fields` explicit sign-up set; integer-only pagination/KNN args (Done) |
 | 0.36.0  | Graph Power      | Recursive traversal, shortest path, path collection (Done)                    |
 | 0.37.0  | ML & Data        | JSONL import/export, DB dump/restore (Done)                                   |
-| 0.38.0  | Advanced Queries | Nested path queries (`[WHERE ...]`, `.?`), destructuring                      |
+| 0.38.0  | Advanced Queries | Element filters (`__any`/`__all`/`__none`), `FieldPath` nested paths (Done)   |
 | 0.39.0  | File Storage     | DEFINE BUCKET, FileField/ImageField, SDK bucket CRUD, upload/download helpers |
 
 SurrealML inference, planned for 0.37.0, is not shipped: it cannot be used on the official SurrealDB 3.x

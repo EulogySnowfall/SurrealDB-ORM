@@ -30,12 +30,49 @@
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.5**  | 0.37.x      | Active development              |
+| `main` | **3.3.5**  | 0.38.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
 
 ---
+
+## What's New in 0.38.0
+
+**Minor release — Advanced Queries** ([#457](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/457)). Filter
+records by the elements of an array field, and project nested values (filtered arrays, one element, destructured
+objects) with `FieldPath`. Every field name is checked at the call and every value is bound, so nothing a user types
+reaches the query text. ORM layer only; SurrealDB pin unchanged (3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full
+notes.
+
+```python
+from surreal_orm import FieldPath, Q
+
+# Element filters: a Q evaluated per element of the array
+await Order.objects().filter(items__any=Q(qty__gt=2)).exec()
+await Order.objects().filter(orders__any=Q(status="open", lines__any=Q(qty__gt=2))).exec()
+await Order.objects().filter(tags__none=Q(this__startswith="x")).count()
+
+# FieldPath annotations: one column per path, attached to each instance
+orders = await Order.objects().annotate(
+    big=FieldPath("items").where(qty__gt=1).pick("sku", total="price"),  # items.?[WHERE qty > $_pa0].{sku, total: price}
+    city=FieldPath("customer.address.city"),
+    first_sku=FieldPath("items").field("sku").first(),                    # (items.sku)[0]
+).order_by("city").exec()
+```
+
+- **`__any` / `__all` / `__none`** render `items[WHERE …]` behind a `type::is_array()` guard, so a non-array field
+  never matches on 3.2.x or 3.3.x. They work in `count()`, aggregates, `bulk_update()`, `bulk_delete()`, `live()`,
+  `Subquery` and the `reachable_from()` filters.
+- **`FieldPath`** steps: `field()`, `where()` (optional chaining, `.?[WHERE …]`), `first()` / `last()` / `at(n)`,
+  `pick()` (destructuring, follows record links). A missing value anywhere on the path gives `None`.
+- **Fix:** on an `extra="allow"` model, values a query attaches to an instance (search and `FieldPath` annotations,
+  `_knn_distance`, `Prefetch(to_attr=...)`) are no longer written as columns by `save()`, `update()` or
+  `bulk_upsert()`.
+- **Behaviour change:** `__any`, `__all`, `__none` are lookups now (a field named `any` is unaffected); a query using
+  an element filter or a `FieldPath` annotation raises the statement error instead of returning `[]`.
+- Docs: [Nested Paths & Destructuring](docs/orm.md#nested-paths--destructuring); notebook
+  [`examples/09_advanced_queries.ipynb`](examples/09_advanced_queries.ipynb), section 4.
 
 ## What's New in 0.37.3
 
@@ -1957,8 +1994,8 @@ pip install surrealdb-orm[cli]
 
 | ORM Version           | SurrealDB     | Branch | Status              |
 | --------------------- | ------------- | ------ | ------------------- |
-| **0.37.x**            | 3.2.x – 3.3.x | `main` | Active development  |
-| **0.35.x – 0.36.x**   | 3.2.x – 3.3.x | —      | Superseded          |
+| **0.38.x**            | 3.2.x – 3.3.x | `main` | Active development  |
+| **0.35.x – 0.37.x**   | 3.2.x – 3.3.x | —      | Superseded          |
 | **0.34.x**            | 3.2.x – 3.3.x | —      | Superseded          |
 | **0.32.x – 0.33.x**   | >= 3.2        | —      | Superseded          |
 | **0.30.x – 0.31.x**   | 3.0 – 3.1     | —      | Superseded          |
