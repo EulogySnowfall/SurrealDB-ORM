@@ -52,7 +52,7 @@ from uuid import UUID
 
 from .exceptions import DataFormatError, DataImportError, QueryError, SurrealDBError, TableNotFoundError
 from .protocol.cbor import Duration, RecordId, Table, _warn_naive_datetime
-from .utils import format_record_id, open_owner_only, require_int, validate_table_name
+from .utils import _open_owner_only, format_record_id, require_int, validate_table_name
 
 if TYPE_CHECKING:
     from .connection.base import BaseSurrealConnection
@@ -597,13 +597,13 @@ async def _open_sink(dest: JsonlDestination) -> _Sink:
     """
     Open ``dest`` for writing JSON Lines.
 
-    A path is opened by :func:`~surreal_sdk.utils.open_owner_only`, like a
+    A path is opened by :func:`~surreal_sdk.utils._open_owner_only`, like a
     dump (truncated, UTF-8, ``\n`` line ends on every platform, a new file
     created with mode ``0o600``), in a worker thread, and closed by
     :meth:`_Sink.close`; a text stream is written as is and never closed.
     """
     if isinstance(dest, (str, os.PathLike)):
-        file = await asyncio.to_thread(open_owner_only, os.fspath(dest), "w")
+        file = await asyncio.to_thread(_open_owner_only, os.fspath(dest), "w")
         return _Sink(file, file)
     return _Sink(dest, None)
 

@@ -483,8 +483,19 @@ def test_dump_and_jsonl_export_share_one_file_opener() -> None:
     from surreal_sdk import jsonl, utils
     from surreal_sdk.connection import http
 
-    assert http.open_owner_only is utils.open_owner_only
-    assert jsonl.open_owner_only is utils.open_owner_only
+    assert http._open_owner_only is utils._open_owner_only
+    assert jsonl._open_owner_only is utils._open_owner_only
+    assert "open_owner_only" not in utils.__all__
+    assert "_open_owner_only" not in utils.__all__
+
+
+def test_owner_only_opener_rejects_another_mode(tmp_path: Path) -> None:
+    from surreal_sdk.utils import _open_owner_only
+
+    dest = tmp_path / "never.txt"
+    with pytest.raises(ValueError, match="mode must be"):
+        _open_owner_only(str(dest), "a")  # type: ignore[call-overload]
+    assert not dest.exists()
 
 
 async def test_export_to_a_text_stream_is_not_closed(thread_spy: list[str]) -> None:
@@ -1228,6 +1239,7 @@ async def test_export_database_to_a_binary_stream_leaves_it_open(
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+@pytest.mark.usefixtures("umask_022")
 async def test_export_database_creates_a_new_file_owner_only(
     http_conn: Callable[[Handler], HTTPConnection], tmp_path: Path
 ) -> None:

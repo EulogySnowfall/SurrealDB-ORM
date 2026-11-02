@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from ..exceptions import ConnectionError, DataImportError, QueryError
 from ..protocol.rpc import RPCMethod, RPCRequest, RPCResponse
 from ..types import AuthResponse
-from ..utils import open_owner_only, unescape_record_id, validate_table_name
+from ..utils import _open_owner_only, unescape_record_id, validate_table_name
 
 logger = logging.getLogger(__name__)
 
@@ -867,7 +867,7 @@ class HTTPConnection(BaseSurrealConnection):
         async with stream as chunks:
             owned: IO[bytes] | None = None
             if isinstance(dest, (str, os.PathLike)):
-                owned = await asyncio.to_thread(open_owner_only, os.fspath(dest), "wb")
+                owned = await asyncio.to_thread(_open_owner_only, os.fspath(dest), "wb")
                 sink: SupportsWriteBytes = owned
             else:
                 sink = dest

@@ -18,7 +18,6 @@ __all__ = [
     "find_param_references",
     "format_record_id",
     "needs_id_escaping",
-    "open_owner_only",
     "require_int",
     "substitute_params",
     "unescape_record_id",
@@ -38,14 +37,14 @@ _PARAM_REFERENCE = re.compile(r"\$(\w+)", re.ASCII)
 
 
 @overload
-def open_owner_only(path: str, mode: Literal["wb"]) -> IO[bytes]: ...
+def _open_owner_only(path: str, mode: Literal["wb"]) -> IO[bytes]: ...
 
 
 @overload
-def open_owner_only(path: str, mode: Literal["w"]) -> IO[str]: ...
+def _open_owner_only(path: str, mode: Literal["w"]) -> IO[str]: ...
 
 
-def open_owner_only(path: str, mode: Literal["wb", "w"]) -> IO[Any]:
+def _open_owner_only(path: str, mode: Literal["wb", "w"]) -> IO[Any]:
     """
     Open ``path`` for writing database data: truncated, created with mode ``0o600`` when new.
 
@@ -66,8 +65,11 @@ def open_owner_only(path: str, mode: Literal["wb", "w"]) -> IO[Any]:
         IO[bytes] | IO[str]: The open file; the caller closes it.
 
     Raises:
+        ValueError: If ``mode`` is neither ``"wb"`` nor ``"w"``.
         OSError: If the file cannot be opened.
     """
+    if mode not in ("wb", "w"):
+        raise ValueError(f"mode must be 'wb' or 'w', not {mode!r}")
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
     fd = os.open(path, flags, 0o600)
     try:
