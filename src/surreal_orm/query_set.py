@@ -48,7 +48,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from surreal_sdk.jsonl import JsonlDestination
+    from surreal_sdk.jsonl import ImportReport, JsonlDestination, JsonlSource
     from surreal_sdk.streaming.live_select import ReconnectCallback
 
     from .cache import ConnectionIdentity
@@ -1219,7 +1219,22 @@ class QuerySet(Generic[T]):
         would silently ignore ``filter()``, ``order_by()``, ``limit()`` and
         the rest; only ``.variables()`` is carried over.
         """
-        if (
+        if self._has_read_clause():
+            raise ValueError(
+                f"{method}() runs on a bare QuerySet; constrain the walk with node_filter= / edge_filter= "
+                "instead of filter(), order_by(), limit() and the other read clauses"
+            )
+
+    def _has_read_clause(self) -> bool:
+        """
+        Tell whether the QuerySet carries any read clause.
+
+        Filters, ``Q``, order, limit, offset, select, group-by, annotations,
+        fetch, select/prefetch_related, cache, KNN, search, geo, a graph walk
+        or a traversal path; ``.variables()`` is not a read clause. Shared by
+        the graph methods and :meth:`import_jsonl`, each with its own message.
+        """
+        return bool(
             self._filters
             or self._q_filters
             or self._order_by
@@ -1237,11 +1252,7 @@ class QuerySet(Generic[T]):
             or self._geo_field
             or self._graph is not None
             or self._traversal_path
-        ):
-            raise ValueError(
-                f"{method}() runs on a bare QuerySet; constrain the walk with node_filter= / edge_filter= "
-                "instead of filter(), order_by(), limit() and the other read clauses"
-            )
+        )
 
     @staticmethod
     def _graph_depths(
@@ -3368,3 +3379,91 @@ class QuerySet(Generic[T]):
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         jsonl._require_cbor(client, "export_jsonl")  # before dest is opened
         return await jsonl._export(self._export_batches("export_jsonl", plan, client), dest, typed=typed)
+
+    # ── JSON Lines import ───────────────────────────────────────────────
+
+    async def import_jsonl(
+        self,
+        source: JsonlSource,
+        *,
+        batch_size: int = 1000,
+        max_batch_bytes: int = 1_048_576,
+        on_conflict: Literal["error", "ignore"] = "error",
+        raw: bool = False,
+    ) -> ImportReport:
+        """
+        Load JSON Lines into the model's table, in bounded batches of one ``INSERT`` each.
+
+        Reads like :meth:`surreal_sdk.connection.base.BaseSurrealConnection.import_jsonl`
+        on the model's connection (``using()`` and ``connection=`` apply): each
+        line is a raw database record (column names, as :meth:`export_jsonl`
+        writes them), a batch is written whole or not at all, and the batches
+        before a failure stay written. A record id of another table is moved
+        to the model's table by the server. A ``TableType.RELATION`` model
+        writes edges (``INSERT RELATION``); any other model lets the SDK read
+        the table's type.
+
+        The rows do not go through the model: no validation, no ``save()``,
+        and **no signal** (``pre_save`` / ``post_save`` ...). The query cache
+        of the model's table is cleared when the call ends, whether it
+        succeeded or not. Each batch is logged to ``QueryLogger`` (row and byte
+        counts, never the rows).
+
+        Args:
+            source: A path (a ``str`` is a path; UTF-8), a text stream (read
+                and left open), or an iterable or async iterable of lines.
+            batch_size: Rows per statement (``>= 1``).
+            max_batch_bytes: JSON bytes per statement (``>= 1``); a longer
+                single line is sent alone.
+            on_conflict: ``"error"`` (default) rejects a batch holding an
+                existing id; ``"ignore"`` skips such rows.
+            raw: ``True`` writes with ``OPTION IMPORT``: no type checks,
+                ``ASSERT``, ``VALUE``, ``DEFAULT`` or event. Needs a system
+                user.
+
+        Returns:
+            ImportReport: The lines read, rows written and batches accepted.
+
+        Raises:
+            ValueError: If the QuerySet carries a read clause (``filter()``,
+                ``order_by()``, ``limit()``, ``traverse()``, ...), before any
+                I/O; on a JSON-protocol connection, an invalid
+                ``on_conflict`` or a size below its minimum.
+            TypeError: If ``batch_size`` or ``max_batch_bytes`` is not an
+                ``int``.
+            DataFormatError: On an invalid line (its number is in the
+                message), or a batch mixing edges and plain rows.
+            DataImportError: When a batch is rejected by the server or its
+                request fails; ``report`` holds the batches accepted before it.
+            OSError, UnicodeDecodeError: Reading the source fails.
+
+        Example::
+
+            async with SurrealDBConnectionManager.using("staging"):
+                report = await Post.objects().import_jsonl("posts.jsonl", on_conflict="ignore")
+            print(report.rows, report.batches)
+        """
+        from .cache import QueryCache
+        from .debug import _log_query
+        from .types import TableType
+
+        if self._has_read_clause():
+            raise ValueError(
+                "import_jsonl() writes the model's table; call it on Model.objects() without filter(), "
+                "order_by() or other read clauses"
+            )
+        relation = True if self.model.get_table_type() == TableType.RELATION else None
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+        try:
+            return await client.import_jsonl(
+                self._model_table,
+                source,
+                batch_size=batch_size,
+                max_batch_bytes=max_batch_bytes,
+                on_conflict=on_conflict,
+                raw=raw,
+                relation=relation,
+                _on_query=_log_query,
+            )
+        finally:
+            QueryCache.invalidate(self.model)

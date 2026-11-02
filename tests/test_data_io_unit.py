@@ -1,4 +1,4 @@
-"""Unit tests for the ORM half of v0.37.0 data I/O: ``QuerySet`` JSON Lines export (U11).
+"""Unit tests for the ORM half of v0.37.0 data I/O: ``QuerySet`` JSON Lines export (U11) and import (U12).
 
 No server: the client is a fake whose ``query()`` returns prepared replies, so
 the tests check the emitted statements, the bound variables and the lines.
@@ -19,14 +19,17 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.surreal_orm.debug import QueryLogger
+from src.surreal_orm.debug import QueryLogger, _log_query
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from src.surreal_orm.prefetch import Prefetch
 from src.surreal_orm.q import Q
 from src.surreal_orm.query_set import QuerySet
 from src.surreal_orm.search import SearchScore
+from src.surreal_orm.signals import post_save
 from src.surreal_orm.subquery import Subquery
-from surreal_sdk.jsonl import dumps_record
+from src.surreal_orm.types import TableType
+from surreal_sdk.exceptions import DataImportError
+from surreal_sdk.jsonl import ImportReport, dumps_record
 from surreal_sdk.protocol.cbor import RecordId
 
 
@@ -291,3 +294,140 @@ class TestJsonlLoggingAndExport:
         with _patch_client(client) as get_client:
             await _lines(DIOUPost.objects())
         get_client.assert_awaited_once_with(DIOUPost.get_connection_name())
+
+
+# ---------------------------------------------------------------------------
+# U12 — QuerySet.import_jsonl()
+# ---------------------------------------------------------------------------
+
+
+class DIOUEdge(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="diou_edge", table_type=TableType.RELATION)
+
+    id: str | None = None
+
+
+def _import_client(*, report: ImportReport | None = None, error: BaseException | None = None) -> Any:
+    """A CBOR client whose ``import_jsonl()`` logs two batches through ``_on_query``, then returns or raises."""
+    client = _client()
+
+    async def fake_import(table: str, source: Any, **kwargs: Any) -> ImportReport:
+        on_query = kwargs["_on_query"]
+        on_query("INSERT INTO diou_post $_x_rows;", {"_x_rows": {"rows": 2, "bytes": 40}}, 1.0)
+        on_query("INSERT INTO diou_post $_x_rows;", {"_x_rows": {"rows": 1, "bytes": 20}}, 1.0)
+        if error is not None:
+            raise error
+        assert report is not None
+        return report
+
+    client.import_jsonl = AsyncMock(side_effect=fake_import)
+    return client
+
+
+E10 = "import_jsonl() writes the model's table; call it on Model.objects() without filter(), order_by() or other read clauses"
+
+IMPORT_REFUSED: list[tuple[str, Callable[[QuerySet[Any]], QuerySet[Any]]]] = [
+    ("filter", lambda qs: qs.filter(published=True)),
+    ("q", lambda qs: qs.filter(Q(n=1) | Q(n=2))),
+    ("order_by", lambda qs: qs.order_by("n")),
+    ("limit", lambda qs: qs.limit(3)),
+    ("traverse", lambda qs: qs.traverse("->x->y")),
+    ("cache", lambda qs: qs.cache(ttl=10)),
+]
+
+
+class TestImportJsonl:
+    @pytest.mark.parametrize(("clause", "build"), IMPORT_REFUSED, ids=[c for c, _ in IMPORT_REFUSED])
+    async def test_e10_refuses_a_read_clause_before_any_io(
+        self, clause: str, build: Callable[[QuerySet[Any]], QuerySet[Any]]
+    ) -> None:
+        client = _import_client(report=ImportReport(table="diou_post", lines=0, rows=0, batches=0))
+        with _patch_client(client) as get_client, patch("src.surreal_orm.cache.QueryCache.invalidate") as invalidate:
+            with pytest.raises(ValueError) as excinfo:
+                await build(DIOUPost.objects()).import_jsonl(["{}"])
+            get_client.assert_not_awaited()
+        assert str(excinfo.value) == E10
+        client.import_jsonl.assert_not_awaited()
+        invalidate.assert_not_called()
+
+    async def test_writes_the_models_table_with_auto_relation(self) -> None:
+        report = ImportReport(table="diou_post", lines=3, rows=3, batches=2)
+        client = _import_client(report=report)
+        source = ['{"id": 1}', '{"id": 2}', '{"id": 3}']
+        with _patch_client(client) as get_client:
+            result = await DIOUPost.objects().import_jsonl(
+                source, batch_size=2, max_batch_bytes=100, on_conflict="ignore", raw=True
+            )
+        assert result is report
+        get_client.assert_awaited_once_with(DIOUPost.get_connection_name())
+        call = client.import_jsonl.await_args
+        assert call.args == ("diou_post", source)
+        kwargs = dict(call.kwargs)
+        assert kwargs.pop("_on_query") is _log_query
+        assert kwargs == {
+            "batch_size": 2,
+            "max_batch_bytes": 100,
+            "on_conflict": "ignore",
+            "raw": True,
+            "relation": None,
+        }
+
+    async def test_relation_model_forces_edges(self) -> None:
+        client = _import_client(report=ImportReport(table="diou_edge", lines=0, rows=0, batches=0))
+        with _patch_client(client):
+            await DIOUEdge.objects().import_jsonl([])
+        call = client.import_jsonl.await_args
+        assert call.args[0] == "diou_edge"
+        assert call.kwargs["relation"] is True
+
+    async def test_defaults_are_the_sdks(self) -> None:
+        client = _import_client(report=ImportReport(table="diou_post", lines=0, rows=0, batches=0))
+        with _patch_client(client):
+            await DIOUPost.objects().import_jsonl([])
+        kwargs = client.import_jsonl.await_args.kwargs
+        assert (kwargs["batch_size"], kwargs["max_batch_bytes"]) == (1000, 1_048_576)
+        assert (kwargs["on_conflict"], kwargs["raw"]) == ("error", False)
+
+    async def test_cache_is_invalidated_on_success(self) -> None:
+        client = _import_client(report=ImportReport(table="diou_post", lines=0, rows=0, batches=0))
+        with _patch_client(client), patch("src.surreal_orm.cache.QueryCache.invalidate") as invalidate:
+            await DIOUPost.objects().import_jsonl([])
+        invalidate.assert_called_once_with(DIOUPost)
+
+    async def test_cache_is_invalidated_when_a_batch_is_rejected(self) -> None:
+        report = ImportReport(table="diou_post", lines=2, rows=2, batches=1)
+        error = DataImportError("Batch at lines 3-3 was rejected by diou_post: boom", errors=["boom"], report=report)
+        client = _import_client(error=error)
+        with _patch_client(client), patch("src.surreal_orm.cache.QueryCache.invalidate") as invalidate:
+            with pytest.raises(DataImportError) as excinfo:
+                await DIOUPost.objects().import_jsonl(['{"id": 1}'])
+        assert excinfo.value is error
+        assert excinfo.value.report == report
+        invalidate.assert_called_once_with(DIOUPost)
+
+    async def test_no_signal_is_sent(self) -> None:
+        spy = AsyncMock()
+        post_save.connect(DIOUPost)(spy)
+        try:
+            client = _import_client(report=ImportReport(table="diou_post", lines=3, rows=3, batches=2))
+            with _patch_client(client):
+                await DIOUPost.objects().import_jsonl(['{"id": 1}', '{"id": 2}', '{"id": 3}'])
+        finally:
+            post_save.disconnect(spy, sender=DIOUPost)
+        spy.assert_not_called()
+        spy.assert_not_awaited()
+
+    async def test_batches_are_logged(self) -> None:
+        client = _import_client(report=ImportReport(table="diou_post", lines=3, rows=3, batches=2))
+        async with QueryLogger() as log:
+            with _patch_client(client):
+                await DIOUPost.objects().import_jsonl([])
+        assert [q.sql for q in log.queries] == ["INSERT INTO diou_post $_x_rows;"] * 2
+        assert [q.variables for q in log.queries] == [
+            {"_x_rows": {"rows": 2, "bytes": 40}},
+            {"_x_rows": {"rows": 1, "bytes": 20}},
+        ]
+
+    async def test_graph_guard_message_is_unchanged(self) -> None:
+        with pytest.raises(ValueError, match=r"^paths_from\(\) runs on a bare QuerySet"):
+            DIOUPost.objects().filter(n=1)._reject_read_clauses("paths_from")

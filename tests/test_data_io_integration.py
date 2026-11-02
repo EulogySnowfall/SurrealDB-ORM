@@ -15,7 +15,9 @@ single line over the HTTP RPC limit fails as E8b with the report.
 
 I6 (export half): an ORM model with a ``ForeignKey``, a ``Decimal``, a
 ``datetime`` and an aliased column; ``filter()`` and ``limit()`` select the
-exported rows, which carry the column name, not the alias.
+exported rows, which carry the column name, not the alias. I6 (import half):
+the export loads into another database through ``using()`` as models equal to
+the originals, and drops the cached result of the target table.
 """
 
 from __future__ import annotations
@@ -473,3 +475,41 @@ async def test_orm_iter_jsonl_honours_limit(orm_posts: list[DIOPost]) -> None:
     lines = [line async for line in DIOPost.objects().limit(3).iter_jsonl(batch_size=2)]
 
     assert [loads_record(line)["id"] for line in lines] == [RecordId("dio_post", f"p{i}") for i in range(3)]
+
+
+# ---------------------------------------------------------------------------
+# I6 — ORM import (QuerySet.import_jsonl)
+# ---------------------------------------------------------------------------
+
+DST_DB = "test_data_io_dst"
+DST = "dio_dst"
+
+
+async def test_orm_import_loads_the_export_into_another_database(orm_posts: list[DIOPost], tmp_path: Path) -> None:
+    path = tmp_path / "posts.jsonl"
+    await DIOPost.objects().filter(published=True).export_jsonl(path, batch_size=2)
+    originals = await DIOPost.objects().filter(published=True).order_by("id").exec()
+    assert len(originals) == 4
+
+    SurrealDBConnectionManager.add_connection(DST, url=URL, user="root", password="root", namespace=NS, database=DST_DB)
+    try:
+        dst = await SurrealDBConnectionManager.get_client(DST)  # the ORM's connection creates the database
+        await dst.query("REMOVE TABLE IF EXISTS dio_post; DEFINE TABLE dio_post SCHEMALESS;")
+        async with SurrealDBConnectionManager.using(DST):
+            assert await DIOPost.objects().cache(ttl=60).exec() == []  # cached: an empty table
+
+            report = await DIOPost.objects().import_jsonl(path, batch_size=3)
+
+            cached = await DIOPost.objects().cache(ttl=60).exec()  # the import dropped the cached []
+            loaded = await DIOPost.objects().order_by("id").exec()
+        assert report == ImportReport(table="dio_post", lines=4, rows=4, batches=2)
+        assert len(cached) == 4
+        assert [p.model_dump() for p in loaded] == [p.model_dump() for p in originals]
+        for post in loaded:
+            assert isinstance(post.price, Decimal)
+            assert post.created_at.tzinfo is not None
+    finally:
+        try:
+            await (await SurrealDBConnectionManager.get_client(DST)).query("REMOVE TABLE IF EXISTS dio_post;")
+        finally:
+            await SurrealDBConnectionManager.remove_connection(DST)
