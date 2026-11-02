@@ -1,5 +1,5 @@
 """Unit tests for the SDK's JSON Lines batch I/O: export (``iter_records()``, ``export_jsonl()``, U6) and import
-(``import_jsonl()``, U7), and the HTTP database dump (``export_database*()``, U8).
+(``import_jsonl()``, U7), the HTTP database dump (``export_database*()``, U8) and restore (``import_database()``, U9).
 
 A fake connection records every ``query()`` call and answers from a script, so
 the statements, the bound cursor and the stop conditions are checked without a
@@ -1248,4 +1248,294 @@ async def test_export_stream_body_may_stop_iterating_early(http_conn: Callable[[
             assert chunk == DUMP_CHUNKS[0]
             break
 
+    assert conn._inflight_rpcs == 0
+
+
+# ---------------------------------------------------------------------------
+# import_database() (U9)
+# ---------------------------------------------------------------------------
+
+DUMP = b"OPTION IMPORT;\nDEFINE TABLE t TYPE NORMAL SCHEMALESS PERMISSIONS NONE;\n" + b"INSERT [{ id: t:1 }];\n" * 9000
+ALREADY = "Database record `t:1` already exists"
+ERR_LIST = [
+    {"kind": "AlreadyExists", "result": ALREADY, "status": "ERR", "time": "1µs", "type": None},
+    {"kind": "NotFound", "result": "The table 'u' does not exist", "status": "ERR", "time": "1µs", "type": None},
+]
+FORBIDDEN = {
+    "code": 403,
+    "details": "Forbidden",
+    "description": "Not allowed to do this.",
+    "information": "IAM error: Not enough permissions to perform this action",
+}
+
+
+def import_handler(
+    requests: list[httpx.Request],
+    *,
+    status: int = 200,
+    payload: Any = (),
+    text: str | None = None,
+    seen: list[Any] | None = None,
+    conn: list[HTTPConnection] | None = None,
+) -> Handler:
+    """An ``/import`` endpoint: reads the streamed body, answers ``status`` with ``payload`` (JSON) or ``text``."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if seen is not None and conn:
+            seen.append(conn[0]._inflight_rpcs)
+        if text is not None:
+            return httpx.Response(status, text=text)
+        return httpx.Response(status, json=list(payload) if isinstance(payload, tuple) else payload)
+
+    return handler
+
+
+async def _agen(parts: list[bytes]) -> AsyncIterator[bytes]:
+    for part in parts:
+        yield part
+
+
+class Counting(io.BytesIO):
+    """A binary stream recording the size of each ``read()``."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.sizes: list[int] = []
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        self.sizes.append(-1 if size is None else size)
+        return super().read(size)
+
+
+async def test_import_posts_c9_streamed_and_returns_none_on_200_empty_list(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    requests: list[httpx.Request] = []
+    holder: list[HTTPConnection] = []
+    seen: list[Any] = []
+    conn = http_conn(import_handler(requests, seen=seen, conn=holder))
+    holder.append(conn)
+    conn._token = "tok"
+
+    result = await conn.import_database(DUMP)  # type: ignore[func-returns-value]
+
+    assert result is None
+    (request,) = requests
+    assert request.method == "POST" and request.url.path == "/import"
+    assert request.content == DUMP
+    assert request.headers["Surreal-NS"] == "ns"
+    assert request.headers["Surreal-DB"] == "db"
+    assert request.headers["Authorization"] == "Bearer tok"
+    assert request.headers["Accept"] == "application/json"
+    assert "Content-Type" not in request.headers
+    # streamed: chunked, never a Content-Length holding the whole dump in one body
+    assert request.headers["Transfer-Encoding"] == "chunked"
+    assert "Content-Length" not in request.headers
+    # D20: no client timeout on the transfer
+    assert request.extensions["timeout"] == {"connect": None, "read": None, "write": None, "pool": None}
+    assert seen == [1]
+    assert conn._inflight_rpcs == 0
+    assert conn._released.is_set()
+
+
+async def test_import_sends_no_authorization_without_a_token(http_conn: Callable[[Handler], HTTPConnection]) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(import_handler(requests))
+
+    await conn.import_database(b"OPTION IMPORT;")
+
+    assert "Authorization" not in requests[0].headers
+
+
+async def test_import_from_a_path_reads_64_kib_chunks_off_the_event_loop(
+    http_conn: Callable[[Handler], HTTPConnection], tmp_path: Path, thread_spy: list[str]
+) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(import_handler(requests))
+    path = tmp_path / "db.surql"
+    path.write_bytes(DUMP)
+
+    await conn.import_database(path)
+    await conn.import_database(str(path))
+
+    assert [r.content for r in requests] == [DUMP, DUMP]
+    reads = -(-len(DUMP) // (64 * 1024)) + 1  # every chunk, then the empty read at the end
+    # open, each read, close: all in a worker thread
+    assert thread_spy == (["open"] + ["read"] * reads + ["close"]) * 2
+
+
+async def test_import_from_a_binary_stream_reads_64_kib_chunks_and_leaves_it_open(
+    http_conn: Callable[[Handler], HTTPConnection], thread_spy: list[str]
+) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(import_handler(requests))
+    stream = Counting(DUMP)
+
+    await conn.import_database(stream)
+
+    assert requests[0].content == DUMP
+    assert set(stream.sizes) == {64 * 1024}
+    assert len(thread_spy) == len(stream.sizes)
+    assert not stream.closed
+
+
+async def test_import_from_an_async_iterable_streams_its_chunks(http_conn: Callable[[Handler], HTTPConnection]) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(import_handler(requests))
+    parts = [b"OPTION IMPORT;\n", b"DEFINE TABLE t;\n", b"INSERT [{ id: t:1 }];\n"]
+
+    await conn.import_database(_agen(parts))
+
+    assert requests[0].content == b"".join(parts)
+
+
+async def test_import_slices_bytes_in_64_kib_chunks() -> None:
+    from surreal_sdk.connection.http import _slice_chunks
+
+    sizes = [len(chunk) async for chunk in _slice_chunks(DUMP)]
+
+    assert sum(sizes) == len(DUMP)
+    assert sizes[:-1] == [64 * 1024] * (len(sizes) - 1)
+    assert 0 < sizes[-1] <= 64 * 1024
+
+
+@pytest.mark.parametrize("status", [200, 422])
+async def test_import_statement_errors_are_e12a_whatever_the_status(
+    http_conn: Callable[[Handler], HTTPConnection], status: int
+) -> None:
+    conn = http_conn(import_handler([], status=status, payload=ERR_LIST))
+
+    with pytest.raises(DataImportError) as caught:
+        await conn.import_database(DUMP)
+
+    error = caught.value
+    assert str(error) == f"Import failed: 2 statement(s) rejected; first: {ALREADY}"
+    assert error.errors == [ALREADY, "The table 'u' does not exist"]
+    assert error.code == status
+    assert error.report is None
+    assert conn._inflight_rpcs == 0
+
+
+async def test_import_other_status_is_e12b_with_the_server_information(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    conn = http_conn(import_handler([], status=403, payload=FORBIDDEN))
+
+    with pytest.raises(DataImportError) as caught:
+        await conn.import_database(DUMP)
+
+    information = FORBIDDEN["information"]
+    assert str(caught.value) == f"Import failed: HTTP 403 - {information}"
+    assert caught.value.errors == [information]
+    assert caught.value.code == 403
+    assert caught.value.report is None
+    assert conn._inflight_rpcs == 0
+
+
+async def test_import_other_status_without_json_is_e12b_with_the_text(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    conn = http_conn(import_handler([], status=502, text="Bad gateway"))
+
+    with pytest.raises(DataImportError, match=r"^Import failed: HTTP 502 - Bad gateway$") as caught:
+        await conn.import_database(DUMP)
+
+    assert caught.value.errors == ["Bad gateway"]
+    assert caught.value.code == 502
+
+
+@pytest.mark.parametrize(
+    "cause",
+    [httpx.ReadError(""), httpx.WriteError("broken pipe"), httpx.RemoteProtocolError("server disconnected")],
+    ids=["read", "write", "protocol"],
+)
+async def test_import_transport_error_is_e12c(http_conn: Callable[[Handler], HTTPConnection], cause: Exception) -> None:
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise cause
+
+    conn = http_conn(fail)
+
+    with pytest.raises(DataImportError) as caught:
+        await conn.import_database(DUMP)
+
+    error = caught.value
+    assert str(error) == (
+        f"Import failed: the connection was closed during the upload ({cause!r}); the server stops reading a body "
+        "it rejects up front: one that does not start with OPTION IMPORT;, a user without import rights, or a "
+        "missing database"
+    )
+    assert error.errors == [repr(cause)]
+    assert error.code is None
+    assert error.report is None
+    assert error.__cause__ is cause
+    assert conn._inflight_rpcs == 0
+
+
+async def test_import_transport_error_closes_the_opened_file(
+    http_conn: Callable[[Handler], HTTPConnection], tmp_path: Path, thread_spy: list[str]
+) -> None:
+    def fail(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError("")
+
+    conn = http_conn(fail)
+    path = tmp_path / "db.surql"
+    path.write_bytes(DUMP)
+
+    with pytest.raises(DataImportError):
+        await conn.import_database(path)
+
+    assert thread_spy[0] == "open" and thread_spy[-1] == "close"
+
+
+async def test_import_closes_a_connection_marked_close_when_idle(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    holder: list[HTTPConnection] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await holder[0]._close_when_idle()  # a cancelled reconnect() drain: the upload is in use
+        assert holder[0]._client is not None
+        return httpx.Response(200, json=[])
+
+    conn = http_conn(handler)
+    holder.append(conn)
+
+    await conn.import_database(DUMP)
+
+    assert conn._client is None  # the upload was the last use: it closed the connection
+
+
+async def test_import_not_connected_is_e13(tmp_path: Path) -> None:
+    conn = HTTPConnection("http://fake", "ns", "db")
+
+    with pytest.raises(ConnectionError, match=r"^Not connected\. Call connect\(\) first\.$"):
+        await conn.import_database(DUMP)
+    assert conn._inflight_rpcs == 0
+
+
+@pytest.mark.parametrize("source", [42, None, [b"OPTION IMPORT;"], {"a": 1}])
+async def test_import_refuses_an_unsupported_source_before_any_request(
+    http_conn: Callable[[Handler], HTTPConnection], source: Any
+) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(import_handler(requests))
+
+    with pytest.raises(TypeError, match="source must be a path, bytes, a binary stream or an async iterable of bytes"):
+        await conn.import_database(source)
+
+    assert requests == []
+    assert conn._inflight_rpcs == 0
+
+
+async def test_import_missing_path_raises_os_error_before_any_request(
+    http_conn: Callable[[Handler], HTTPConnection], tmp_path: Path
+) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(import_handler(requests))
+
+    with pytest.raises(FileNotFoundError):
+        await conn.import_database(tmp_path / "missing.surql")
+
+    assert requests == []
     assert conn._inflight_rpcs == 0

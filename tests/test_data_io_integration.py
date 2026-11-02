@@ -20,8 +20,15 @@ the export loads into another database through ``using()`` as models equal to
 the originals, and drops the cached result of the target table.
 
 I9: ``export_database()`` sends the requested sections only (``tables=``,
-``records=False``, ``users=False``). I11 (export half): a database ``EDITOR``
-can export.
+``records=False``, ``users=False``). I11: a database ``EDITOR`` can export and
+cannot import (E12b 403).
+
+I7: a dump restored into an empty database gives the same schema and rows,
+compared as the server writes them in JSON (ns datetimes, geometry, ``NULL``).
+I8: restoring again fails on the existing rows (E12a, 422 on 3.3 and 200 on
+3.2); a body without ``OPTION IMPORT;`` is E12b 400 when small and E12c when
+large (the server closes before reading it); existing definitions are replaced
+and target-only ones kept; an existing row fails its own ``INSERT`` only.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from pydantic import Field
 
@@ -587,3 +595,206 @@ async def test_a_database_editor_can_export(dump_source: HTTPConnection) -> None
     finally:
         await editor.close()
     assert f"DEFINE TABLE {DUMP_B} " in text and "dio-row-b" in text
+
+
+async def test_a_database_editor_cannot_import_e12b_403(dump_source: HTTPConnection) -> None:
+    editor = HTTPConnection(URL, NS, DB)
+    await editor.connect()
+    try:
+        await editor.signin(DUMP_USER, DUMP_PASS, namespace=NS, database=DB)
+        with pytest.raises(DataImportError) as caught:
+            await editor.import_database(f"OPTION IMPORT;\nCREATE {DUMP_A}:9 SET v = 'editor';\n".encode())
+    finally:
+        await editor.close()
+
+    assert caught.value.code == 403
+    assert str(caught.value).startswith("Import failed: HTTP 403 - ")
+    assert "Not enough permissions" in caught.value.errors[0]
+    rows = (await dump_source.query(f"SELECT * FROM {DUMP_A}:9;")).first_result.records
+    assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# I7 / I8 — database restore (HTTPConnection.import_database)
+# ---------------------------------------------------------------------------
+
+SRC_DB = "test_data_io_src"
+RESTORE_DB = "test_data_io_restore"
+R_PEOPLE = "dio_r"
+R_PLACES = "dio_s"
+R_EDGES = "dio_e"
+RESTORED = (R_PEOPLE, R_PLACES, R_EDGES)
+SOURCE_SCHEMA = (
+    f"DEFINE TABLE {R_PEOPLE} SCHEMAFULL PERMISSIONS NONE; "
+    f"DEFINE FIELD name ON {R_PEOPLE} TYPE string; "
+    f"DEFINE FIELD at ON {R_PEOPLE} TYPE datetime; "
+    f"DEFINE INDEX {R_PEOPLE}_name ON {R_PEOPLE} FIELDS name UNIQUE; "
+    f"DEFINE TABLE {R_EDGES} TYPE RELATION IN {R_PEOPLE} OUT {R_PLACES} SCHEMALESS; "
+    "DEFINE FUNCTION fn::dio_f($x: int) { RETURN $x + 1; }; "
+    "DEFINE PARAM $dio_p VALUE 7; "
+    f"CREATE {R_PEOPLE}:1 SET name = 'ann', at = d'2020-01-02T03:04:05.123456789Z'; "
+    f"CREATE {R_PEOPLE}:2 SET name = 'bob', at = d'2021-06-01T00:00:00Z'; "
+    f"CREATE {R_PLACES}:1 SET loc = (1.5, 2.5), gone = NULL, n = 1.10dec; "
+    f"CREATE {R_PLACES}:⟨7 x⟩ SET loc = (-73.98, 40.74), tags = ['a', 'b']; "
+    f"RELATE {R_PEOPLE}:1->{R_EDGES}->{R_PLACES}:1 SET w = 1; "
+    f"RELATE {R_PEOPLE}:2->{R_EDGES}->{R_PLACES}:⟨7 x⟩ SET w = 2;"
+)
+
+
+async def _database(name: str) -> HTTPConnection:
+    """A root ``HTTPConnection`` on a new, empty database ``name`` (created first: ``/import`` needs it, M45)."""
+    admin = await _open("http")
+    try:
+        response = await admin.query(f"REMOVE DATABASE IF EXISTS {name}; DEFINE DATABASE {name};")
+        assert response.is_ok, response.raw
+    finally:
+        await admin.close()
+    conn = HTTPConnection(URL, NS, name)
+    await conn.connect()
+    await conn.signin("root", "root")
+    return conn
+
+
+async def _drop_database(name: str) -> None:
+    admin = await _open("http")
+    try:
+        await admin.query(f"REMOVE DATABASE IF EXISTS {name};")
+    finally:
+        await admin.close()
+
+
+async def _texts(conn: HTTPConnection, sql: str) -> list[Any]:
+    """The results of ``sql`` as the server writes them in JSON (``/sql``): ns datetimes, geometry and ``NULL`` kept."""
+    statements = await conn.sql(sql)
+    assert all(statement["status"] == "OK" for statement in statements), statements
+    return [statement["result"] for statement in statements]
+
+
+def _schema_sql() -> str:
+    return "INFO FOR DB; " + " ".join(f"INFO FOR TABLE {table};" for table in RESTORED)
+
+
+def _rows_sql(*tables: str) -> str:
+    return " ".join(f"SELECT * FROM {table} ORDER BY id;" for table in tables)
+
+
+@pytest.fixture(scope="module")
+async def dump_file(tmp_path_factory: pytest.TempPathFactory) -> AsyncGenerator[tuple[Path, list[Any], list[Any]], None]:
+    """The dump of ``test_data_io_src`` (two tables, an edge table, an index, a function, a param), its schema and rows."""
+    source = await _database(SRC_DB)
+    try:
+        response = await source.query(SOURCE_SCHEMA)
+        assert response.is_ok, response.raw
+        path = tmp_path_factory.mktemp("restore") / "src.surql"
+        await source.export_database(path)
+        schema = await _texts(source, _schema_sql())
+        rows = await _texts(source, _rows_sql(*RESTORED))
+    finally:
+        await source.close()
+    try:
+        yield path, schema, rows
+    finally:
+        await _drop_database(SRC_DB)
+        await _drop_database(RESTORE_DB)
+
+
+@pytest.fixture
+async def target() -> AsyncGenerator[HTTPConnection, None]:
+    conn = await _database(RESTORE_DB)
+    try:
+        yield conn
+    finally:
+        await conn.close()
+
+
+async def test_restore_into_an_empty_database_reproduces_schema_and_rows(
+    dump_file: tuple[Path, list[Any], list[Any]], target: HTTPConnection
+) -> None:
+    path, schema, rows = dump_file
+    assert rows[0][0]["at"] == "2020-01-02T03:04:05.123456789Z"  # the ns digits are compared, not their decoded form
+    assert rows[1][0]["gone"] is None and "gone" in rows[1][0]  # NULL, not NONE
+
+    await target.import_database(path)
+
+    assert await _texts(target, _schema_sql()) == schema
+    assert await _texts(target, _rows_sql(*RESTORED)) == rows
+    assert await _texts(target, "RETURN fn::dio_f(1); RETURN $dio_p;") == [2, 7]
+
+
+async def test_restoring_the_same_dump_again_is_e12a(
+    dump_file: tuple[Path, list[Any], list[Any]], target: HTTPConnection
+) -> None:
+    path, _, rows = dump_file
+    await target.import_database(path)
+
+    with pytest.raises(DataImportError) as caught:
+        await target.import_database(path.read_bytes())
+
+    error = caught.value
+    assert error.code in (200, 422)  # 422 on 3.3, 200 on 3.2 (M10)
+    assert str(error).startswith(f"Import failed: {len(error.errors)} statement(s) rejected; first: ")
+    assert all("already exists" in message for message in error.errors), error.errors
+    assert await _texts(target, _rows_sql(*RESTORED)) == rows
+
+
+async def test_a_small_body_without_option_import_is_e12b_400(target: HTTPConnection) -> None:
+    with pytest.raises(DataImportError) as caught:
+        await target.import_database(f"CREATE {R_PEOPLE}:9 SET name = 'x';\n".encode())
+
+    assert caught.value.code == 400
+    assert "Import requires `OPTION IMPORT;` as the first statement" in str(caught.value)
+    assert caught.value.errors == [str(caught.value).removeprefix("Import failed: HTTP 400 - ")]
+
+
+async def test_a_large_body_rejected_up_front_is_e12c(target: HTTPConnection) -> None:
+    # M46: the server answers 400 after the first statement and closes without reading the rest;
+    # with more left to send than the socket buffers hold, httpx sees the closed connection instead
+    # of the response. 16 MiB: at 4 MiB the buffers can still take the whole body now and then.
+    statement = f"CREATE {R_PEOPLE}:9 SET name = 'x';\n".encode()
+    body = statement * (16 * 1024 * 1024 // len(statement) + 1)
+
+    with pytest.raises(DataImportError) as caught:
+        await target.import_database(body)
+
+    assert caught.value.code is None
+    assert isinstance(caught.value.__cause__, httpx.TransportError)
+    assert str(caught.value).startswith("Import failed: the connection was closed during the upload (")
+    assert await _texts(target, "RETURN (INFO FOR DB).tables;") == [{}]  # nothing was run
+
+
+async def test_restore_replaces_existing_definitions_and_keeps_target_only_ones(
+    dump_file: tuple[Path, list[Any], list[Any]], target: HTTPConnection
+) -> None:
+    # A target prepared by migrations / define_table(): the dumped table exists with another
+    # definition and an extra field, and holds no row (M43).
+    path, schema, rows = dump_file
+    await _texts(
+        target,
+        f"DEFINE TABLE {R_PEOPLE} SCHEMALESS PERMISSIONS FULL; DEFINE FIELD extra ON {R_PEOPLE} TYPE option<string>;",
+    )
+
+    await target.import_database(path)
+
+    info_db, info_people = (await _texts(target, f"INFO FOR DB; INFO FOR TABLE {R_PEOPLE};"))[:2]
+    assert info_db["tables"][R_PEOPLE] == schema[0]["tables"][R_PEOPLE]
+    assert "extra" in info_people["fields"]
+    assert {k: v for k, v in info_people["fields"].items() if k != "extra"} == schema[1]["fields"]
+    assert await _texts(target, _rows_sql(*RESTORED)) == rows
+
+
+async def test_an_existing_row_fails_its_insert_only_e12a(
+    dump_file: tuple[Path, list[Any], list[Any]], target: HTTPConnection
+) -> None:
+    path, _, rows = dump_file
+    await _texts(target, f"CREATE {R_PEOPLE}:1 SET name = 'kept', at = d'2000-01-01T00:00:00Z';")
+
+    with pytest.raises(DataImportError) as caught:
+        await target.import_database(path)
+
+    error = caught.value
+    assert error.code in (200, 422)
+    assert error.errors == [f"Database record `{R_PEOPLE}:1` already exists"]
+    people, places, edges = await _texts(target, _rows_sql(*RESTORED))
+    assert [(row["id"], row["name"]) for row in people] == [(f"{R_PEOPLE}:1", "kept")]  # its INSERT failed whole
+    assert places == rows[1]
+    assert edges == rows[2]
