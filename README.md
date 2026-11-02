@@ -37,11 +37,19 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.37.1
+
+**Fix release.** `surreal-orm dump` (no `-o`) and `surreal-orm restore -` open the binary stdout/stdin with
+`click.open_file("-")` instead of `click.get_binary_stream()`, which Click 8.5 deprecates and Click 9.0 removes
+([#456](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/456)). No `DeprecationWarning` on Click 8.5, and both
+commands keep working on Click 9; the bytes written and read are unchanged. SurrealDB pin unchanged (3.3.5). See
+[CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.37.0
 
 **Minor release — ML & Data** ([#440](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/440)). JSON Lines
 import/export of a table and dump/restore of a whole database, in the SDK, the ORM and the CLI. Two SDK fixes: a string
-`Duration` can be bound again, and WebSocket replies above 4 MiB arrive. SurrealML inference is not shipped (it cannot
+`Duration` can now be bound, and WebSocket replies above 4 MiB arrive. SurrealML inference is not shipped (it cannot
 be used on the official SurrealDB 3.x images; moved to the backlog,
 [#450](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/450)). SurrealDB pin unchanged (3.3.5). See
 [CHANGELOG.md](CHANGELOG.md) for the full notes.
