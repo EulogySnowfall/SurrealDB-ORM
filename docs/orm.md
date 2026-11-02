@@ -12,6 +12,7 @@ A Django-style ORM for SurrealDB with async support and Pydantic validation.
 - [QuerySet API](#queryset-api)
 - [Filtering](#filtering)
 - [Ordering, Limit & Offset](#ordering-limit--offset)
+- [Nested Paths & Destructuring](#nested-paths--destructuring)
 - [Transactions](#transactions)
 - [Aggregations](#aggregations)
 - [Bulk Operations](#bulk-operations)
@@ -327,6 +328,12 @@ users = await User.objects().filter(status="active", age=30).exec()
 | `endswith`     | `ENDSWITH`    | `filter(name__endswith="ce")`                   |
 | `isnull`       | `IS NULL`     | `filter(deleted_at__isnull=True)`               |
 | `regex`        | `~`           | `filter(email__regex=r".*@gmail\.com")`         |
+| `any`          | `[WHERE …]`   | `filter(items__any=Q(qty__gt=2))`               |
+| `all`          | `[WHERE …]`   | `filter(items__all=Q(qty__gte=1))`              |
+| `none`         | `[WHERE …]`   | `filter(items__none=Q(sku="discontinued"))`     |
+
+`any`, `all` and `none` take a `Q` tested against each element of an array field: see
+[Nested Paths & Destructuring](#nested-paths--destructuring).
 
 ### Examples
 
@@ -420,6 +427,318 @@ users = await (
     .offset(0)
     .exec()
 )
+```
+
+---
+
+## Nested Paths & Destructuring
+
+SurrealDB reads inside nested objects and arrays with idioms: `items[WHERE qty > 2]` keeps the matching elements of
+an array, `.?` stops on a missing value (optional chaining), `.{sku, total: price}` destructures. The ORM has two
+entry points for them:
+
+- **element filters**, the lookups `__any`, `__all` and `__none` in `filter()` and `Q`, which select records by the
+  elements of an array field;
+- **`FieldPath`**, used in `annotate()`, which projects a nested value of each record (a filtered array, one element,
+  a destructured object) and attaches it to the model instances.
+
+Every value is bound as a query parameter (`$_fN` in filters, `$_paN` in annotations); every field name is checked
+when the call is made (letters, digits and underscores, dotted paths of those), so nothing a user types reaches the
+query text.
+
+The examples on this page use these records:
+
+```python
+from typing import Any
+
+from surreal_orm import BaseSurrealModel, FieldPath, Q, SurrealConfigDict
+
+
+class Order(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="shop_order")
+
+    id: str | None = None
+    customer: dict[str, Any] | None = None
+    items: Any = None
+    tags: Any = None
+    orders: list[dict[str, Any]] | None = None
+    buyer: Any = None
+    note: str | None = None
+
+
+await Order.raw_query("""
+CREATE shop_customer:ann CONTENT { name: 'Ann', tier: 'gold' };
+CREATE shop_order:o1 CONTENT {
+    customer: { name: 'Ann', address: { city: 'Paris', zip: '75001' }, orders: [{ total: 5 }, { total: 200 }] },
+    buyer: shop_customer:ann,
+    items: [{ sku: 'a', qty: 1, price: 10 }, { sku: 'b', qty: 5, price: 3 }, { sku: 'c', qty: 2, price: 50 }],
+    tags: ['x', 'xy'],
+    orders: [{ status: 'open', lines: [{ qty: 1 }, { qty: 3 }] }, { status: 'done', lines: [] }]
+};
+CREATE shop_order:o2 CONTENT {
+    customer: { name: 'Bob' },
+    items: [{ sku: 'a', qty: 3, price: 10 }],
+    tags: ['z'],
+    orders: [{ status: 'open', lines: [{ qty: 1 }] }]
+};
+CREATE shop_order:o3 CONTENT { items: [], tags: [] };
+CREATE shop_order:o4 CONTENT { items: { sku: 'z', qty: 9 }, tags: 'x' };  -- not arrays
+CREATE shop_order:o5 CONTENT { note: 'no arrays' };
+""")
+```
+
+### Element Filters: `__any`, `__all`, `__none`
+
+The value of the lookup is a `Q`, evaluated **per element** of the array. Its keys are relative to the element:
+`qty` is the element's `qty`.
+
+| Lookup | Matches | SurrealQL (`F` the field, `C` the element condition) |
+| --- | --- | --- |
+| `F__any=Q(...)` | at least one element matches | `(type::is_array(F) AND F[WHERE C])` |
+| `F__all=Q(...)` | every element matches; an empty array matches; a missing or non-array field does not | `(type::is_array(F) AND NOT (F[WHERE NOT (C)]))` |
+| `F__none=Q(...)` | no element matches, so an empty array and a missing or non-array field match (`NOT any`) | `NOT (type::is_array(F) AND F[WHERE C])` |
+
+The `type::is_array()` guard makes a field that is not an array (o4's object `items`, its string `tags`) behave the
+same on SurrealDB 3.2.x and 3.3.x: it never matches `__any` or `__all`.
+
+```python
+from surreal_orm import Q
+
+await Order.objects().filter(items__any=Q(qty__gt=2)).exec()   # o1, o2
+# SELECT * FROM shop_order WHERE (type::is_array(items) AND items[WHERE qty > $_f0]);   {_f0: 2}
+
+await Order.objects().filter(items__all=Q(qty__gt=1)).exec()   # o2, o3 (o3's items is [])
+await Order.objects().filter(items__none=Q(qty__gt=2)).exec()  # o3, o4, o5
+await Order.objects().filter(items__any=Q(qty__gt=2)).count()  # 2
+
+# Element conditions combine like any Q, and ~Q(x__any=...) is x__none
+await Order.objects().filter(Q(items__any=Q(sku="a") | Q(sku="b")) | Q(note="no arrays")).exec()  # o1, o2, o5
+await Order.objects().filter(~Q(items__any=Q(qty__gt=2))).exec()  # o3, o4, o5
+
+# A variable declared with variables() can be referenced inside
+await Order.objects().variables(min=4).filter(items__any=Q(qty__gt="$min")).exec()  # o1
+```
+
+**Scalar elements: `this`.** Inside an element condition the key `this` (exactly that name) is the element itself
+(`$this`), for arrays of strings, numbers or records. Outside an element condition, `this` is an ordinary field name.
+
+```python
+await Order.objects().filter(tags__any=Q(this__startswith="x")).exec()  # o1 (o4's tags is a string, not an array)
+await Order.objects().filter(tags__any=Q(this__in=["z", "q"])).exec()  # o2
+```
+
+**Nested arrays.** An element condition may itself use `__any` / `__all` / `__none`; a dotted field part reaches an
+array through objects:
+
+```python
+# Orders that have an open sub-order with a line of more than 2
+await Order.objects().filter(orders__any=Q(status="open", lines__any=Q(qty__gt=2))).exec()  # o1
+
+# customer is an object, customer.orders an array
+await Order.objects().filter(**{"customer.orders__any": Q(total__gt=100)}).exec()  # o1
+```
+
+Element filters work wherever `filter()` and `Q` do: `count()` and the aggregations, `bulk_update()`,
+`bulk_delete()`, `cache()`, `live()`, the inner QuerySet of a `Subquery`, and the `node_filter` / `edge_filter` of
+`reachable_from()`:
+
+```python
+await Order.objects().filter(items__all=Q(qty__gt=1)).bulk_update({"flagged": True})  # 2 (o2, o3)
+await Order.objects().filter(items__any=Q(qty__gt=2)).bulk_delete()  # 2 (o1, o2)
+
+async with Order.objects().filter(items__any=Q(qty__gt=2, sku__in=["a", "b"])).live() as stream:
+    async for event in stream:
+        ...  # only records with an element of qty > 2 and sku "a" or "b"
+```
+
+Rules:
+
+- Keys are database column names, as in every filter. Values inside an element are not converted for `ForeignKey`
+  columns (the elements are not model fields): compare record links with a `RecordId`.
+- The `Q` must hold at least one condition (`Q()`, `Q() | Q()` and `~Q()` are refused), and a `Subquery` value is not
+  accepted inside it. Both are checked when the `Q(...)` or the `filter()` call is made.
+- Relation filters (`RelationQuerySet`, `get_related()`) do not accept these lookups.
+
+### `FieldPath`: Nested Values as Annotations
+
+`FieldPath` builds a path step by step; every method returns a new `FieldPath` and checks its arguments at the call.
+`annotate(alias=FieldPath(...))` adds the path's value to each record as `alias`:
+
+| Step | SurrealQL | Value |
+| --- | --- | --- |
+| `FieldPath("a.b")` | `a.b` | a field, or a dotted path through objects |
+| `.field("c")` | `P.c` | a field of the current value; on an array, the list of each element's `c` |
+| `.where(*q, **lookups)` | `P.?[WHERE C]` | the elements of the current value matching every condition; keys relative to the element, `this` the element |
+| `.first()` / `.last()` / `.at(n)` | `P[0]` / `P[$]` / `P[n]` | one element; `None` out of range; `n >= 0` (there is no negative index) |
+| `.pick("a", k="x.y", m=FieldPath("z"))` | `P.{a, k: x.y, m: z}` | destructuring: positional names, then `key=` a dotted path or a `FieldPath` read from the object; on an array, applied to each element; on a record link, to the linked record |
+
+```python
+from surreal_orm import FieldPath, Q
+
+orders = await Order.objects().annotate(
+    big=FieldPath("items").where(qty__gt=1).pick("sku", total="price"),
+    who=FieldPath("customer").pick("name", city="address.city"),
+    qty_a=FieldPath("items").where(sku="a").first().field("qty"),
+    last_sku=FieldPath("items").last().field("sku"),
+    second=FieldPath("items").at(1).field("sku"),
+    b=FieldPath("buyer").pick("name", "tier"),  # follows the record link
+).exec()
+# SELECT *, items.?[WHERE qty > $_pa0].{sku, total: price} AS big, customer.{name, city: address.city} AS who,
+#     items.?[WHERE sku = $_pa1][0].qty AS qty_a, items[$].sku AS last_sku, items[1].sku AS second,
+#     buyer.{name, tier} AS b FROM shop_order;   {_pa0: 1, _pa1: "a"}
+
+o1 = next(o for o in orders if o.id == "o1")
+o1.big       # [{"sku": "b", "total": 3}, {"sku": "c", "total": 50}]
+o1.who       # {"name": "Ann", "city": "Paris"}
+o1.qty_a     # 1
+o1.last_sku  # "c"
+o1.second    # "b"
+o1.b         # {"name": "Ann", "tier": "gold"}
+
+o2 = next(o for o in orders if o.id == "o2")
+(o2.big, o2.who, o2.qty_a, o2.last_sku, o2.second, o2.b)
+# ([{"sku": "a", "total": 10}], {"name": "Bob", "city": None}, 3, "a", None, None)
+```
+
+The values are attached to the model instances as attributes, as decoded from the server (dicts, lists, `RecordId`,
+`datetime`; no Pydantic conversion); with mypy, read them with `getattr()` or a `# type: ignore[attr-defined]`. When
+the records do not validate as the model (a narrow `select()`), the dicts returned carry the alias as a key.
+`exec()`, `all()`, `first()` and `get(id)` all compute the annotations:
+
+```python
+qs = Order.objects().annotate(city=FieldPath("customer.address.city"), s0=FieldPath("items").field("sku").first())
+order = await qs.get("o1")
+(order.city, order.s0)  # ("Paris", "a")
+```
+
+A `where()` takes the same conditions as an element filter, `Q` objects included, and an element condition may use
+the element lookups itself:
+
+```python
+FieldPath("items").where(Q(qty__gt=2) | Q(sku="a")).field("sku")
+# items.?[WHERE (qty > $_pa0 OR sku = $_pa1)].sku   ->  o1 ["a", "b"], o2 ["a"], o3 []
+FieldPath("orders").where(lines__any=Q(qty__gt=2)).field("status")
+# orders.?[WHERE (type::is_array(lines) AND lines[WHERE qty > $_pa0])].status   ->  o1 ["open"], o2 []
+```
+
+#### Each Step Applies to the Value Built So Far
+
+`FieldPath("items").field("sku").first()` is **the first sku**, not the first character of each sku. The server
+would apply an index or a `[WHERE …]` written after a field access to each element of the list (`items.sku[0]` gives
+`[None, None, None]`), so the ORM writes the path built so far in parentheses before such a step:
+
+```python
+FieldPath("items").field("sku").first()                    # (items.sku)[0]           ->  o1 "a"
+FieldPath("items").field("sku").last()                     # (items.sku)[$]           ->  o1 "c"
+FieldPath("items").field("sku").at(1)                      # (items.sku)[1]           ->  o1 "b"
+FieldPath("items").pick("sku").first()                     # (items.{sku})[0]         ->  o1 {"sku": "a"}
+FieldPath("items").field("sku").where(this="b")            # (items.sku).?[WHERE $this = $_pa0]  ->  o1 ["b"], o2 []
+FieldPath("items").where(qty__gt=1).field("sku").first()   # (items.?[WHERE qty > $_pa0].sku)[0]  ->  o1 "b", o2 "a"
+FieldPath("customer.orders").where(total__gt=100)          # (customer.orders).?[WHERE total > $_pa0]  ->  o1 [{"total": 200}]
+```
+
+After a `where()` or an index, nothing is wrapped: `FieldPath("items").where(sku="a").first().field("qty")` is
+`items.?[WHERE sku = $_pa0][0].qty`. The same rule holds inside a `pick()` value.
+
+#### Optional Chaining
+
+A missing, `NONE` or `NULL` value at any step makes the whole path `None`, through every step and the parentheses
+above; a record link to a missing record gives `None` too. With the records above, `FieldPath("customer.address.city")`
+is `None` for o2 (no address) and for o3, o4 and o5, and `FieldPath("buyer").pick("name", "tier")` is `None` for every order but o1. The ORM
+writes `.?` before each `[WHERE …]` of a path, the one place where the server needs it.
+
+**Limit:** a `where()` reached on a value that exists but is **not an array** (o4's object `items`) gives `None` on
+SurrealDB 3.3.x and a filtered one-element array on 3.2.x: `FieldPath("items").where(qty__gt=1).pick("sku",
+total="price")` is `None` for o4 on 3.3.x, `[{"sku": "z", "total": None}]` on 3.2.x. Filtering a field that is not
+an array is a schema mismatch, not a supported case.
+
+#### Filtering Inside Each Element
+
+To filter an array **inside each element** of another array, there is one way for a projection and one for a filter:
+
+```python
+# Projection: a pick() value with its own where()
+FieldPath("orders").where(status="open").pick("status", lines=FieldPath("lines").where(qty__gt=1))
+# orders.?[WHERE status = $_pa0].{status, lines: lines.?[WHERE qty > $_pa1]}
+# o1 [{"status": "open", "lines": [{"qty": 3}]}], o2 [{"status": "open", "lines": []}]
+
+FieldPath("orders").where(status="open").pick(
+    "status", first=FieldPath("lines").field("qty").first(), l=FieldPath("lines").field("qty").last()
+)
+# orders.?[WHERE status = $_pa0].{status, first: (lines.qty)[0], l: (lines.qty)[$]}
+# o1 [{"status": "open", "first": 1, "l": 3}], o2 [{"status": "open", "first": 1, "l": 1}]
+
+# Filter: nest the element lookups
+await Order.objects().filter(orders__any=Q(lines__any=Q(qty__gt=2))).exec()  # o1
+```
+
+`FieldPath("orders").where(status="open").field("lines").where(qty__gt=1)` raises `ValueError` at the call: the second
+`where()` would test each kept order's whole `lines` array instead of filtering inside it.
+
+> **Warning — a field read through an array is not filtered per element.** When a path or a filter key reads a field
+> through an array (`FieldPath("orders.lines")`, `FieldPath("orders").field("lines")`, the key `orders.lines__any`),
+> the value is one array per element, and a `where()` or an element filter on it gives a wrong answer on both 3.2.x
+> and 3.3.x. The ORM cannot see that `orders` is an array, so it does not refuse these. Measured on the records above:
+>
+> ```python
+> FieldPath("orders").field("lines").where(qty__gt=1)
+> # o1 [[{"qty": 1}, {"qty": 3}], []], o2 [[{"qty": 1}]]: each order's lines, unfiltered
+>
+> await Order.objects().filter(**{"orders.lines__any": Q(qty__gt=5)}).exec()
+> # o1, o2, although no line has qty > 5
+> await Order.objects().filter(orders__any=Q(lines__any=Q(qty__gt=5))).exec()
+> # [] (the nested form, correct)
+> ```
+>
+> Use the `pick()` and nested-lookup forms above.
+
+#### Ordering by an Annotation
+
+`FieldPath` is accepted by `annotate()` only (not by `select()`, `values()` or `order_by()`). To order by a nested
+value, annotate it and order by the alias:
+
+```python
+rows = await (
+    Order.objects()
+    .annotate(n=FieldPath("items").where(qty__gt=1).first().field("qty"))
+    .filter(items__any=Q(qty__gt=2))
+    .order_by("-n")
+    .limit(2)
+    .exec()
+)
+[(row.id, row.n) for row in rows]  # [("o1", 5), ("o2", 3)]
+# SELECT *, items.?[WHERE qty > $_pa0][0].qty AS n FROM shop_order
+#     WHERE (type::is_array(items) AND items[WHERE qty > $_f0]) ORDER BY n DESC LIMIT 2;
+```
+
+#### Errors
+
+Raised when the call is made, before any query is sent:
+
+| Call | Exception |
+| --- | --- |
+| a `Subquery` value inside an element condition (`where()`, `__any` / `__all` / `__none`) | `TypeError: A Subquery cannot be used inside an element condition ('<field>__<lookup>'): element conditions are evaluated per array element.` |
+| `annotate(alias=FieldPath(...))` with `alias` equal to `id`, a field, a field alias or an attribute of the model (`save`, `delete`, `record_id`, `objects`, ...) | `ValueError: Annotation alias '<alias>' clashes with <Model> (the record id, a field, a field alias or an attribute of the model); a FieldPath annotation needs a name of its own.` |
+| one `annotate()` call mixing `FieldPath` with `Aggregation` or `Subquery` annotations | `ValueError: FieldPath annotations cannot be combined with Aggregation or Subquery annotations (GROUP BY queries); run them as separate queries.` |
+| `live()` on a QuerySet with a `FieldPath` annotation | `ValueError: live() cannot be combined with FieldPath annotations: a live notification carries the record, not a projection.` |
+| `where()` after a `.field()` that follows an earlier `where()` | `ValueError: FieldPath.where() cannot follow .field('<name>') after an earlier where(): it would test each kept element's whole '<name>' value instead of filtering inside it. Put the condition in the earlier where(), or filter inside each element with pick(<key>=FieldPath('<name>').where(...)).` |
+
+`Subquery(qs)` refuses an inner QuerySet with a `FieldPath` annotation (`ValueError`), and a bad field name, an empty
+`where()` / `pick()`, a negative `at()` index or a key given twice in `pick()` raise `ValueError` / `TypeError` at the
+call.
+
+**A statement error is raised, not read as no records.** A query that uses an element filter or a `FieldPath`
+annotation raises `QueryError` when the server rejects the statement, instead of returning `[]`. The common case is a
+string lookup (`startswith`, `endswith`, `like`, `regex`, `icontains`, ...) inside an element condition when an
+element lacks that field: `string::starts_with()` rejects `NONE`, so the whole query fails.
+
+```python
+# One more record, whose only element has no sku
+await Order.raw_query("CREATE shop_order:o6 CONTENT { items: [{ qty: 1 }] };")
+
+await Order.objects().filter(items__any=Q(sku__startswith="a")).exec()
+# QueryError: Incorrect arguments for function string::starts_with(). Argument 1 was the wrong type.
+#     Expected `string` but found `NONE`
 ```
 
 ---
