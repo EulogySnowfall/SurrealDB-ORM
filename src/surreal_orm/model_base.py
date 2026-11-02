@@ -28,6 +28,8 @@ from .utils import format_thing, parse_record_id
 if TYPE_CHECKING:
     from surreal_sdk.transaction import BaseTransaction, HTTPTransaction
 
+    from .graph import GraphDirection
+    from .q import Q
     from .query_set import QuerySet
 
 
@@ -2270,6 +2272,230 @@ class BaseSurrealModel(BaseModel):
             return instances
 
         return records
+
+    # ==================== Recursive graph traversal shortcuts ====================
+
+    @overload
+    async def get_reachable(
+        self,
+        edge: "str | type[BaseSurrealModel]",
+        *,
+        model_class: None = ...,
+        max_depth: int | None = ...,
+        min_depth: int = ...,
+        direction: "GraphDirection" = ...,
+        node_filter: "Q | None" = ...,
+        edge_filter: "Q | None" = ...,
+        include_source: bool = ...,
+    ) -> list[Self]: ...
+
+    @overload
+    async def get_reachable(
+        self,
+        edge: "str | type[BaseSurrealModel]",
+        *,
+        model_class: type[_M],
+        max_depth: int | None = ...,
+        min_depth: int = ...,
+        direction: "GraphDirection" = ...,
+        node_filter: "Q | None" = ...,
+        edge_filter: "Q | None" = ...,
+        include_source: bool = ...,
+    ) -> list[_M]: ...
+
+    async def get_reachable(
+        self,
+        edge: "str | type[BaseSurrealModel]",
+        *,
+        model_class: "type[BaseSurrealModel] | None" = None,
+        max_depth: int | None = None,
+        min_depth: int = 1,
+        direction: "GraphDirection" = "out",
+        node_filter: "Q | None" = None,
+        edge_filter: "Q | None" = None,
+        include_source: bool = False,
+    ) -> list[Any]:
+        """
+        Records reachable from this one over *edge*, each record once.
+
+        Shortcut for ``QuerySet.reachable_from()`` on ``model_class.objects()``
+        (default: this instance's own model), run with ``exec()``. Every
+        argument means what it means there, and the same errors are raised
+        (an unsaved instance is a ``ValueError``). Use the QuerySet method to
+        add ``filter()``, ``order_by()``, ``limit()`` or an aggregate.
+
+        Args:
+            edge: The edge table, or a model class whose table is the edge.
+            model_class: Model of the records reached (default: this model).
+            max_depth: Highest number of hops (1-256), ``None`` for the
+                server's limit.
+            min_depth: Lowest number of hops returned (default 1).
+            direction: ``"out"``, ``"in"`` or ``"both"``.
+            node_filter: Condition every node walked must meet.
+            edge_filter: Condition every edge crossed must meet.
+            include_source: Return this record too (it must then be a record
+                of ``model_class``'s table).
+
+        Returns:
+            The records reached, in unspecified order.
+
+        Example:
+            friends = await alice.get_reachable("knows", max_depth=3)
+            posts = await alice.get_reachable("wrote", max_depth=1, model_class=Post)
+
+        SurrealQL equivalent:
+            SELECT * FROM $src.{1..3+collect}(->knows->person) WHERE id != $src;
+        """
+        queryset = (model_class or type(self)).objects()
+        return await queryset.reachable_from(
+            self,
+            edge,
+            max_depth=max_depth,
+            min_depth=min_depth,
+            direction=direction,
+            node_filter=node_filter,
+            edge_filter=edge_filter,
+            include_source=include_source,
+        ).exec()
+
+    @overload
+    async def get_paths(
+        self,
+        edge: "str | type[BaseSurrealModel]",
+        *,
+        max_depth: int,
+        model_class: None = ...,
+        min_depth: int = ...,
+        direction: Literal["out", "in"] = ...,
+        node_filter: "Q | None" = ...,
+        edge_filter: "Q | None" = ...,
+        include_source: bool = ...,
+    ) -> list[list[Self]]: ...
+
+    @overload
+    async def get_paths(
+        self,
+        edge: "str | type[BaseSurrealModel]",
+        *,
+        max_depth: int,
+        model_class: type[_M],
+        min_depth: int = ...,
+        direction: Literal["out", "in"] = ...,
+        node_filter: "Q | None" = ...,
+        edge_filter: "Q | None" = ...,
+        include_source: bool = ...,
+    ) -> list[list[_M]]: ...
+
+    async def get_paths(
+        self,
+        edge: "str | type[BaseSurrealModel]",
+        *,
+        max_depth: int,
+        model_class: "type[BaseSurrealModel] | None" = None,
+        min_depth: int = 1,
+        direction: Literal["out", "in"] = "out",
+        node_filter: "Q | None" = None,
+        edge_filter: "Q | None" = None,
+        include_source: bool = True,
+    ) -> list[list[Any]]:
+        """
+        Every maximal walk from this record over *edge*, as lists of records.
+
+        Shortcut for ``QuerySet.paths_from()`` on ``model_class.objects()``
+        (default: this instance's own model); same arguments, same errors,
+        same cost warning: the number of paths grows with the branching
+        factor to the power of ``max_depth`` (1-32), so pass an application
+        constant, never a request parameter. With ``model_class`` of another
+        table, pass ``include_source=False``: this record cannot be returned
+        as a record of that table.
+
+        Args:
+            edge: The edge table, or a model class whose table is the edge.
+            max_depth: Highest number of hops (1-32), required.
+            model_class: Model of the records walked (default: this model).
+            min_depth: Shortest walk returned, in hops (default 1).
+            direction: ``"out"`` or ``"in"``.
+            node_filter: Condition every node walked must meet.
+            edge_filter: Condition every edge crossed must meet.
+            include_source: Put this record first in every path (default).
+
+        Returns:
+            The paths, in unspecified order.
+
+        Example:
+            for path in await alice.get_paths("knows", max_depth=3):
+                print(" -> ".join(p.name for p in path))
+
+        SurrealQL equivalent:
+            $src.{1..3+path+inclusive}(->knows->person)
+        """
+        queryset = (model_class or type(self)).objects()
+        return await queryset.paths_from(
+            self,
+            edge,
+            max_depth=max_depth,
+            min_depth=min_depth,
+            direction=direction,
+            node_filter=node_filter,
+            edge_filter=edge_filter,
+            include_source=include_source,
+        )
+
+    async def get_shortest_path(
+        self,
+        target: _M,
+        edge: "str | type[BaseSurrealModel]",
+        *,
+        max_depth: int | None = None,
+        direction: "GraphDirection" = "out",
+        node_filter: "Q | None" = None,
+        edge_filter: "Q | None" = None,
+        include_source: bool = True,
+    ) -> list[_M] | None:
+        """
+        The path with the fewest hops from this record to *target* over *edge*.
+
+        Shortcut for ``QuerySet.shortest_path()`` on ``type(target).objects()``;
+        same arguments, same errors. Returns ``None`` when there is no path
+        within ``max_depth``. With a *target* of another table, pass
+        ``include_source=False``: this record cannot be returned as a record
+        of that table.
+
+        Args:
+            target: The saved record the path ends at.
+            edge: The edge table, or a model class whose table is the edge.
+            max_depth: Highest number of hops (1-256), or ``None`` for the
+                server's limit.
+            direction: ``"out"``, ``"in"`` or ``"both"``.
+            node_filter: Condition every node after this one must meet, the
+                target included.
+            edge_filter: Condition every edge crossed must meet.
+            include_source: Put this record first in the path (default).
+
+        Returns:
+            ``[self, …, target]`` (``[…, target]`` without the source), or
+            ``None`` for no path.
+
+        Example:
+            path = await alice.get_shortest_path(dave, "knows")
+
+        SurrealQL equivalent:
+            $src.{..+shortest=$dst+inclusive}(->knows->person)
+        """
+        return (
+            await type(target)
+            .objects()
+            .shortest_path(
+                self,
+                target,
+                edge,
+                max_depth=max_depth,
+                direction=direction,
+                node_filter=node_filter,
+                edge_filter=edge_filter,
+                include_source=include_source,
+            )
+        )
 
     class DoesNotExist(Exception):
         """
