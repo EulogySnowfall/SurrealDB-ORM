@@ -58,6 +58,16 @@ class AQUInvoice(BaseSurrealModel):
     lines: list[dict[str, object]] = Field(default_factory=list)
 
 
+class AQUExtra(BaseSurrealModel):
+    """Orders whose model keeps unknown keys (``extra="allow"``)."""
+
+    model_config = SurrealConfigDict(table_name="aqu_extra", extra="allow")
+
+    id: str | None = None
+    status: str = Field(default="")
+    items: list[dict[str, object]] = Field(default_factory=list)
+
+
 def _subquery() -> Subquery:
     return Subquery(AQUOrder.objects().select("id"))
 
@@ -279,8 +289,11 @@ class TestWhere:
             (FieldPath("orders").where(status="open").pick("a").field("b"), "b"),
             (FieldPath("orders").where(status="open").field("a").field("b"), "b"),
             (FieldPath("orders").where(status="open").field("a.b"), "a.b"),
+            (FieldPath("orders").where(status="open").field("lines").pick("qty"), "lines"),
+            (FieldPath("orders").where(status="open").pick("a").field("b").pick("c"), "b"),
+            (FieldPath("orders").where(status="open").field("a").pick("x").field("b").pick("y"), "b"),
         ],
-        ids=["field", "pick-field", "field-field", "dotted-field"],
+        ids=["field", "pick-field", "field-field", "dotted-field", "field-pick", "pick-field-pick", "field-pick-field-pick"],
     )
     def test_e17_refused(self, path: FieldPath, name: str) -> None:
         with pytest.raises(ValueError) as info:
@@ -299,11 +312,26 @@ class TestWhere:
             FieldPath("orders").where(status="open").pick("a"),
             FieldPath("orders").where(status="open").first().field("a"),
             FieldPath("orders").where(status="open").at(1).pick("x").field("a"),
+            FieldPath("orders").where(status="open").pick("a").pick("b"),
+            FieldPath("orders").where(status="open").first().field("lines").pick("qty"),
+            FieldPath("orders").where(status="open").field("lines").last().pick("qty"),
             FieldPath("orders").where(status="open"),
             FieldPath("a.b"),
             FieldPath("orders").field("a").field("b"),
         ],
-        ids=["field", "pick", "where-pick", "where-first-field", "where-at-pick-field", "where", "dotted", "fields"],
+        ids=[
+            "field",
+            "pick",
+            "where-pick",
+            "where-first-field",
+            "where-at-pick-field",
+            "where-pick-pick",
+            "where-first-field-pick",
+            "where-field-last-pick",
+            "where",
+            "dotted",
+            "fields",
+        ],
     )
     def test_e17_accepted(self, path: FieldPath) -> None:
         assert isinstance(path.where(qty__gt=1)._steps[-1], _WhereStep)
@@ -1173,6 +1201,64 @@ class TestExecAttaches:
             order = await qs.first()
         run.assert_awaited_once_with("SELECT *, items[0] AS big FROM aqu_order LIMIT 1;")
         assert order.big == {"sku": "a"}  # type: ignore[attr-defined]
+
+    async def test_alias_keys_never_reach_the_model(self) -> None:
+        rows = [_row(big=[{"sku": "b"}])]
+        qs = AQUExtra.objects().annotate(big=FieldPath("items").first())
+        with patch.object(QuerySet, "_execute_query", new=AsyncMock(return_value=rows)):
+            (order,) = await qs.exec()
+        assert order.big == [{"sku": "b"}]  # type: ignore[attr-defined]
+        assert order.__pydantic_extra__ == {}
+        assert rows[0]["big"] == [{"sku": "b"}]  # the rows themselves are not changed
+
+    async def test_save_and_update_do_not_write_attached_values(self) -> None:
+        rows = [_row(id=RecordId(table="aqu_extra", id="o1"), big=[{"sku": "b"}], _knn_distance=0.5, other=1)]
+        qs = AQUExtra.objects().annotate(big=FieldPath("items").first()).similar_to("items", [1.0], limit=1)
+        with patch.object(QuerySet, "_execute_query", new=AsyncMock(return_value=rows)):
+            (order,) = await qs.exec()
+        order.status = "done"
+        with patch.object(AQUExtra, "_execute_save", new=AsyncMock()) as run:
+            await order.save()
+        data = run.await_args.args[3]
+        assert data == {"status": "done", "other": 1}  # a real extra field is still written
+
+        tx = AsyncMock()
+        await order.update(tx=tx)
+        tx.merge.assert_awaited_once_with("aqu_extra:o1", {"status": "done", "other": 1})
+
+    async def test_knn_distance_never_reaches_the_model(self) -> None:
+        rows = [_row(_knn_distance=0.5)]
+        qs = AQUExtra.objects().similar_to("items", [1.0, 2.0], limit=1)
+        with patch.object(QuerySet, "_execute_query", new=AsyncMock(return_value=rows)):
+            (order,) = await qs.exec()
+        assert order._knn_distance == 0.5  # type: ignore[attr-defined]
+        assert order.__pydantic_extra__ == {}
+
+
+class TestAllWithPathAnnotation:
+    async def test_routed_through_exec(self) -> None:
+        qs = _orders().annotate(big=FieldPath("items").first())
+        client = AsyncMock()
+        client.select.return_value.records = [_row()]
+        with (
+            patch.object(QuerySet, "_execute_query", new=AsyncMock(return_value=[_row(big={"sku": "a"})])) as run,
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new=AsyncMock(return_value=client)),
+        ):
+            (order,) = await qs.all()
+        client.select.assert_not_called()
+        run.assert_awaited_once_with("SELECT *, items[0] AS big FROM aqu_order;")
+        assert order.big == {"sku": "a"}  # type: ignore[attr-defined]
+
+    async def test_without_path_annotation_unchanged(self) -> None:
+        client = AsyncMock()
+        client.select.return_value.records = [_row()]
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new=AsyncMock(return_value=client)),
+            patch.object(QuerySet, "_execute_query") as run,
+        ):
+            await _orders().all()
+        run.assert_not_called()
+        client.select.assert_awaited_once_with("aqu_order")
 
 
 class TestGetWithPathAnnotation:

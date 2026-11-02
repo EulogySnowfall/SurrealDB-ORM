@@ -602,7 +602,8 @@ o2 = next(o for o in orders if o.id == "o2")
 
 The values are attached to the model instances as attributes, as decoded from the server (dicts, lists, `RecordId`,
 `datetime`; no Pydantic conversion); with mypy, read them with `getattr()` or a `# type: ignore[attr-defined]`. When
-the records do not validate as the model (a narrow `select()`), the dicts returned carry the alias as a key.
+the records do not validate as the model (a narrow `select()`), the dicts returned carry the alias as a key. The
+values are never model fields, even with `extra="allow"`: a later `save()` does not write them.
 `exec()`, `all()`, `first()` and `get(id)` all compute the annotations:
 
 ```python
@@ -673,7 +674,9 @@ await Order.objects().filter(orders__any=Q(lines__any=Q(qty__gt=2))).exec()  # o
 ```
 
 `FieldPath("orders").where(status="open").field("lines").where(qty__gt=1)` raises `ValueError` at the call: the second
-`where()` would test each kept order's whole `lines` array instead of filtering inside it.
+`where()` would test each kept order's whole `lines` array instead of filtering inside it. A `pick()` after that
+`field()` does not change it (`...field("lines").pick("qty").where(qty__gt=1)` is refused too); an index step in between
+(`where(...).first().field("lines").where(...)`) or a `pick()` right after the first `where()` is accepted.
 
 > **Warning — a field read through an array is not filtered per element.** When a path or a filter key reads a field
 > through an array (`FieldPath("orders.lines")`, `FieldPath("orders").field("lines")`, the key `orders.lines__any`),
@@ -721,7 +724,7 @@ Raised when the call is made, before any query is sent:
 | `annotate(alias=FieldPath(...))` with `alias` equal to `id`, a field, a field alias or an attribute of the model (`save`, `delete`, `record_id`, `objects`, ...) | `ValueError: Annotation alias '<alias>' clashes with <Model> (the record id, a field, a field alias or an attribute of the model); a FieldPath annotation needs a name of its own.` |
 | one `annotate()` call mixing `FieldPath` with `Aggregation` or `Subquery` annotations | `ValueError: FieldPath annotations cannot be combined with Aggregation or Subquery annotations (GROUP BY queries); run them as separate queries.` |
 | `live()` on a QuerySet with a `FieldPath` annotation | `ValueError: live() cannot be combined with FieldPath annotations: a live notification carries the record, not a projection.` |
-| `where()` after a `.field()` that follows an earlier `where()` | `ValueError: FieldPath.where() cannot follow .field('<name>') after an earlier where(): it would test each kept element's whole '<name>' value instead of filtering inside it. Put the condition in the earlier where(), or filter inside each element with pick(<key>=FieldPath('<name>').where(...)).` |
+| `where()` after a `.field()` (or a `.field()` then `.pick()`) that follows an earlier `where()` | `ValueError: FieldPath.where() cannot follow .field('<name>') after an earlier where(): it would test each kept element's whole '<name>' value instead of filtering inside it. Put the condition in the earlier where(), or filter inside each element with pick(<key>=FieldPath('<name>').where(...)).` |
 
 `Subquery(qs)` refuses an inner QuerySet with a `FieldPath` annotation (`ValueError`), and a bad field name, an empty
 `where()` / `pick()`, a negative `at()` index or a key given twice in `pick()` raise `ValueError` / `TypeError` at the

@@ -395,6 +395,40 @@ async def test_first_with_a_path_annotation() -> None:
     assert order.city is None  # type: ignore[attr-defined]
 
 
+async def test_all_with_a_path_annotation() -> None:
+    rows = await _orders().annotate(city=FieldPath("customer.address.city"), big=FieldPath("items").where(qty__gt=1)).all()
+    assert all(isinstance(row, AQIOrder) for row in rows)
+    got = {str(row.id): (row.city, row.big) for row in rows}  # type: ignore[attr-defined]
+    assert got == {
+        "o1": ("Paris", [{"sku": "b", "qty": 5, "price": 3}, {"sku": "c", "qty": 2, "price": 50}]),
+        "o2": (None, [{"sku": "a", "qty": 3, "price": 10}]),
+        "o3": (None, []),
+        "o4": (None, _d6(None, [{"sku": "z", "qty": 9}])),
+        "o5": (None, None),
+    }
+
+
+class AQIExtra(BaseSurrealModel):
+    """``aqi_order`` read by a model that keeps unknown keys."""
+
+    model_config = SurrealConfigDict(table_name="aqi_order", extra="allow")
+
+    id: str | None = None
+    items: Any = None
+    note: str | None = None
+
+
+async def test_annotation_is_not_saved_on_an_extra_allow_model() -> None:
+    rows = await AQIExtra.objects().annotate(big=FieldPath("items").where(qty__gt=1)).exec()
+    order = next(row for row in rows if str(row.id) == "o1")
+    assert order.big == [{"sku": "b", "qty": 5, "price": 3}, {"sku": "c", "qty": 2, "price": 50}]  # type: ignore[attr-defined]
+    order.items = [{"sku": "a", "qty": 1, "price": 10}]
+    await order.save()
+    (stored,) = await AQIOrder.raw_query("SELECT * FROM aqi_order:o1;")
+    assert "big" not in stored
+    assert stored["items"] == [{"sku": "a", "qty": 1, "price": 10}]
+
+
 # ---------------------------------------------------------------------------
 # I4 — C17: bulk writes on an element filter
 # ---------------------------------------------------------------------------

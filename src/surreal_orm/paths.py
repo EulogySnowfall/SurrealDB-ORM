@@ -146,9 +146,11 @@ class FieldPath:
             TypeError: If a positional argument is not a ``Q``, or a
                 condition holds a ``Subquery`` value.
             ValueError: If there is no condition, a key is not a valid filter
-                key, or the ``where()`` would follow a ``field()`` step that
-                follows an earlier ``where()`` (the server would then test each
-                kept element's whole value instead of filtering inside it).
+                key, or the ``where()`` would follow a ``field()`` step (with
+                or without ``pick()`` steps after it) that follows an earlier
+                ``where()`` with no index step in between (the server would
+                then test each kept element's whole value instead of filtering
+                inside it).
         """
         for arg in conditions:
             if not isinstance(arg, Q):
@@ -170,16 +172,22 @@ class FieldPath:
 
         After ``where()``, a ``field()`` step reads the field of each kept
         element; a ``where()`` on that list tests each element's whole value,
-        and an array value comes back unfiltered. An index step in between
-        selects one element, which makes the shape correct again.
+        and an array value comes back unfiltered. A ``pick()`` placed after
+        that ``field()`` does not change it: it destructures each of those
+        whole values, and the ``where()`` still tests them whole. An index
+        step in between selects one element, which makes the shape correct
+        again; a ``pick()`` alone right after the ``where()`` yields objects
+        and is not refused.
         """
-        if not self._steps or not isinstance(self._steps[-1], _FieldStep):
-            return
-        name = self._steps[-1].name
-        for step in reversed(self._steps[:-1]):
+        name: str | None = None
+        for step in reversed(self._steps):
             if isinstance(step, _IndexStep):
                 return
-            if isinstance(step, _WhereStep):
+            if isinstance(step, _FieldStep) and name is None:
+                name = step.name
+            elif isinstance(step, _WhereStep):
+                if name is None:
+                    return
                 raise ValueError(
                     f"FieldPath.where() cannot follow .field({name!r}) after an earlier where(): it would test each "
                     f"kept element's whole {name!r} value instead of filtering inside it. Put the condition in the "

@@ -440,6 +440,10 @@ class BaseSurrealModel(BaseModel):
     # This helps distinguish between create (first save) and update (subsequent saves).
     _db_persisted: bool = PrivateAttr(default=False)
 
+    # Names of the values a query attached to this instance (annotations,
+    # ``_knn_distance``, ``Prefetch(to_attr=...)``); never written by save().
+    _attached: set[str] = PrivateAttr(default_factory=set)
+
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Register subclasses and process computed field defaults."""
         # Process computed fields BEFORE Pydantic processes the class.
@@ -723,6 +727,23 @@ class BaseSurrealModel(BaseModel):
         if computed:
             fields.update(computed.keys())
         return fields
+
+    def _attach_value(self, name: str, value: Any) -> None:
+        """Attach a value computed by a query (an annotation, a prefetch) to the instance.
+
+        The value is set without validation and the name is remembered, so
+        ``save()`` / ``update()`` never write it: on a model with
+        ``extra="allow"``, the next validated assignment would otherwise move it
+        into the model's extra fields, and the next save would store it as a
+        column.
+        """
+        object.__setattr__(self, name, value)
+        if name not in type(self).model_fields:
+            self._attached.add(name)
+
+    def _attached_names(self) -> set[str]:
+        """The names attached by :meth:`_attach_value` that are not model fields."""
+        return set(self._attached)
 
     @classmethod
     def get_foreign_key_targets(cls) -> dict[str, str | None]:
@@ -1071,11 +1092,12 @@ class BaseSurrealModel(BaseModel):
             tx=tx,
         )
 
-        # Build exclude set: always exclude 'id' and any server-generated fields
+        # Build exclude set: always exclude 'id' and any server-generated fields,
+        # and the values a query attached to the instance (never columns).
         exclude_fields = {"id"} | self.get_server_fields()
         id = self.get_id()
         table = self.get_table_name()
-        data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
+        data = self.model_dump(exclude=exclude_fields | self._attached_names(), exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
         data = self._coerce_foreign_keys(data)
 
@@ -1372,8 +1394,9 @@ class BaseSurrealModel(BaseModel):
         """
         self._check_not_view()
 
-        # Build exclude set: always exclude 'id' and any server-generated fields
-        exclude_fields = {"id"} | self.get_server_fields()
+        # Build exclude set: always exclude 'id' and any server-generated fields,
+        # and the values a query attached to the instance (never columns).
+        exclude_fields = {"id"} | self.get_server_fields() | self._attached_names()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
         # data keeps the original values for signals; only the wire copy is coerced
