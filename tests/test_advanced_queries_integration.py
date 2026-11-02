@@ -27,6 +27,7 @@ from src.surreal_orm import (
     ModelChangeEvent,
     Q,
     QueryCache,
+    Subquery,
     SurrealConfigDict,
     SurrealDBConnectionManager,
 )
@@ -475,6 +476,17 @@ async def test_statement_error_from_a_path_annotation() -> None:
     await AQIOrder.raw_query("CREATE aqi_order:o6 CONTENT { items: [{ qty: 1 }] };")
     with pytest.raises(QueryError, match="NONE"):
         await _orders().annotate(a=FieldPath("items").where(sku__startswith="a")).exec()
+
+
+async def test_statement_error_from_a_subquery() -> None:
+    """The hoisted ``LET`` of an inner element filter fails alone; the outer read must not say ``[]``."""
+    await AQIOrder.raw_query("CREATE aqi_order:o6 CONTENT { items: [{ qty: 1 }] };")
+    inner = _orders().filter(items__any=Q(sku__startswith="a")).select("buyer")
+    with pytest.raises(QueryError, match="NONE"):
+        await _orders().filter(buyer__in=Subquery(inner)).exec()
+    nested = _orders().filter(buyer__in=Subquery(inner)).select("buyer")
+    with pytest.raises(QueryError, match="NONE"):
+        await _orders().filter(buyer__in=Subquery(nested)).exec()
 
 
 # ---------------------------------------------------------------------------

@@ -1509,3 +1509,65 @@ class TestStatementErrors:
         with _patch_client(_client(_ok([_row()]), _err())):
             (order,) = await _orders().prefetch_related(prefetch).exec()
         assert order.aqu_tagged == []  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# U11b — a Subquery's inner element filters count too
+# ---------------------------------------------------------------------------
+
+
+def _inner_with_any() -> QuerySet[AQUOrder]:
+    return AQUOrder.objects().filter(items__any=Q(sku__startswith="a")).select("status")
+
+
+def _let_err_select_ok() -> QueryResponse:
+    """The hoisted ``LET`` is rejected, the outer ``SELECT`` reads an unset ``$_sq0``."""
+    return QueryResponse(
+        results=[
+            QueryResult(status=ResponseStatus.ERR, result="Expected string but found NONE"),
+            QueryResult(status=ResponseStatus.OK, result=[]),
+        ]
+    )
+
+
+class TestSubqueryStatementErrors:
+    @pytest.mark.parametrize("where", ["filter", "q", "not-q"])
+    async def test_inner_element_filter_raises(self, where: str) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        sub = Subquery(_inner_with_any())
+        qs = {
+            "filter": lambda: _orders().filter(status__in=sub),
+            "q": lambda: _orders().filter(Q(note="n") | Q(status__in=sub)),
+            "not-q": lambda: _orders().filter(~Q(status__in=sub)),
+        }[where]()
+        assert qs._uses_element_conditions()
+        with _patch_client(_client(_let_err_select_ok())):
+            with pytest.raises(QueryError, match="Expected string but found NONE"):
+                await qs.exec()
+
+    async def test_nested_subquery_raises(self) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        middle = AQUOrder.objects().filter(status__in=Subquery(_inner_with_any())).select("status")
+        qs = _orders().filter(status__in=Subquery(middle))
+        assert qs._uses_element_conditions()
+        with _patch_client(_client(_let_err_select_ok())):
+            with pytest.raises(QueryError, match="Expected string but found NONE"):
+                await qs.exec()
+
+    async def test_annotate_subquery_raises(self) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        qs = _orders().values("status").annotate(n=Subquery(_inner_with_any()))
+        assert qs._uses_element_conditions()
+        with _patch_client(_client(_let_err_select_ok())):
+            with pytest.raises(QueryError, match="Expected string but found NONE"):
+                await qs._execute_annotate()
+
+    async def test_subquery_without_element_lookup_unchanged(self) -> None:
+        inner = AQUOrder.objects().filter(status="open").select("status")
+        qs = _orders().filter(status__in=Subquery(inner))
+        assert not qs._uses_element_conditions()
+        with _patch_client(_client(_let_err_select_ok())):
+            assert await qs.exec() == []

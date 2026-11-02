@@ -1450,7 +1450,11 @@ class QuerySet(Generic[T]):
 
         Walks the keyword filters, the ``Q`` filters at any depth (an element
         condition's own ``Q`` included) and the traversal's node and edge
-        filters.
+        filters. A ``Subquery`` value, in any of them or among the
+        annotations, counts when its inner QuerySet uses one, at any nesting
+        depth (:meth:`_value_uses_element_conditions`): the hoisted ``LET``
+        is rejected on its own, and the outer ``SELECT`` then reads an unset
+        ``$_sqN`` as no rows.
         """
 
         def in_q(q: Q) -> bool:
@@ -1459,14 +1463,21 @@ class QuerySet(Generic[T]):
         def child_uses(child: Q | tuple[str, str, Any]) -> bool:
             if isinstance(child, Q):
                 return in_q(child)
-            return child[1] in ELEMENT_LOOKUPS
+            return child[1] in ELEMENT_LOOKUPS or self._value_uses_element_conditions(child[2])
 
-        if any(lookup in ELEMENT_LOOKUPS for _, lookup, _ in self._filters):
+        if any(lookup in ELEMENT_LOOKUPS or self._value_uses_element_conditions(value) for _, lookup, value in self._filters):
             return True
         if any(in_q(q) for q in self._q_filters):
             return True
+        if any(self._value_uses_element_conditions(value) for value in self._annotations.values()):
+            return True
         walk = self._graph
         return walk is not None and any(f is not None and in_q(f) for f in (walk.node_filter, walk.edge_filter))
+
+    @staticmethod
+    def _value_uses_element_conditions(value: Any) -> bool:
+        """Whether *value* is a ``Subquery`` whose inner QuerySet uses an element lookup."""
+        return isinstance(value, Subquery) and value.queryset._uses_element_conditions()
 
     def _check_statement_errors(self, result: Any, query: str) -> None:
         """
@@ -1481,7 +1492,8 @@ class QuerySet(Generic[T]):
           set: an element condition is evaluated on every element of a
           possibly heterogeneous array, and a string lookup on an element
           lacking the field fails the statement (``Expected string but found
-          NONE``).
+          NONE``). A ``Subquery``'s inner filters are included: its hoisted
+          ``LET`` fails alone and the outer ``SELECT`` would read no rows.
 
         Any other QuerySet keeps reading such a response as no records.
         """
