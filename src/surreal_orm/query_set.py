@@ -10,7 +10,7 @@ from pydantic_core import ValidationError
 
 from . import BaseSurrealModel, SurrealDBConnectionManager
 from .aggregations import Aggregation
-from .constants import LOOKUP_OPERATORS, like_to_regex
+from .constants import ELEMENT_LOOKUPS, LOOKUP_OPERATORS, like_to_regex
 from .enum import OrderBy
 from .geo import GeoDistance
 from .graph import (
@@ -29,8 +29,9 @@ from .graph import (
     rid_key,
     to_graph_record,
 )
+from .paths import FieldPath, _FieldStep, _IndexStep, _PickStep, _WhereStep
 from .prefetch import Prefetch
-from .q import Q
+from .q import Q, check_element_lookup, q_has_condition, subquery_in_element_condition_message
 from .search import SearchHighlight, SearchScore
 from .subquery import Subquery
 from .utils import (
@@ -61,6 +62,22 @@ from surreal_sdk.protocol.cbor import RecordId
 from .model_base import SurrealDbError, _raise_on_statement_error, _to_record_link
 
 logger = logging.getLogger(__name__)
+
+# Element lookups whose rendering is one parenthesized group, so a negation
+# goes in front of it (``NOT (type::is_array(F) AND …)``) rather than around it.
+_GROUPED_ELEMENT_LOOKUPS = frozenset({"any", "all"})
+
+
+def _is_element_group(children: list[Q | tuple[str, str, Any]]) -> bool:
+    """Whether ``children`` render to exactly one ``__any`` / ``__all`` leaf (through non-negated ``Q``s)."""
+    rendered = [child for child in children if not isinstance(child, Q) or q_has_condition(child)]
+    if len(rendered) != 1:
+        return False
+    child = rendered[0]
+    if isinstance(child, Q):
+        return not child.negated and _is_element_group(child.children)
+    return child[1] in _GROUPED_ELEMENT_LOOKUPS
+
 
 T = TypeVar("T", bound="BaseSurrealModel")
 
@@ -116,7 +133,7 @@ class QuerySet(Generic[T]):
         # _variables, and those must never make a "$name" value a reference.
         self._declared_variables: frozenset[str] = frozenset()
         self._group_by_fields: list[str] = []
-        self._annotations: dict[str, Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance] = {}
+        self._annotations: dict[str, Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance | FieldPath] = {}
         # Vector similarity search (KNN)
         self._knn_field: str | None = None
         self._knn_vector: list[float] | None = None
@@ -203,6 +220,9 @@ class QuerySet(Generic[T]):
             - containsall, containsany
             - startswith, istartswith, endswith, iendswith
             - match, regex, iregex, isnull
+            - any, all, none: element filters on an array field; the value is a ``Q``
+              evaluated against each element (``items__any=Q(qty__gt=2)``), where the
+              key ``this`` is the element itself (``tags__any=Q(this__startswith="x")``)
 
         Args:
             *args (Q): Q objects for complex query expressions (OR, NOT).
@@ -226,7 +246,19 @@ class QuerySet(Generic[T]):
                 Q(name__contains=search) | Q(email__contains=search),
                 role="admin",
             )
+
+            # Element filters: at least one / every / no element matches
+            queryset.filter(items__any=Q(qty__gt=2))
+            queryset.filter(items__all=Q(qty__gte=1))
+            queryset.filter(items__none=Q(sku="discontinued"))
             ```
+
+        Raises:
+            TypeError: If a positional argument is not a ``Q``, an element
+                lookup's value is not a ``Q``, or an element condition holds a
+                ``Subquery`` value.
+            ValueError: If a key is not a valid filter key, or an element
+                lookup's ``Q`` holds no condition.
         """
         for arg in args:
             if isinstance(arg, Q):
@@ -235,6 +267,7 @@ class QuerySet(Generic[T]):
                 raise TypeError(f"filter() positional arguments must be Q objects, got {type(arg).__name__!r}.")
         for key, value in kwargs.items():
             field_name, lookup = self._parse_lookup(key)
+            check_element_lookup(field_name, lookup, value)
             self._filters.append((field_name, lookup, value))
         return self
 
@@ -379,21 +412,28 @@ class QuerySet(Generic[T]):
 
     def annotate(
         self,
-        **aggregations: (Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance),
+        **aggregations: (Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance | FieldPath),
     ) -> Self:
         """
-        Add aggregation functions, subqueries, search annotations, or geo distances.
+        Add aggregation functions, subqueries, search annotations, geo distances or nested paths.
 
         This method is used in conjunction with `values()` to perform GROUP BY operations,
         with `search()` / `similar_to()` to add relevance scores and highlights,
         or with `nearby()` to add distance annotations.
 
         Each keyword argument should be an Aggregation instance (Count, Sum, Avg, Min, Max),
-        a Subquery instance, a SearchScore, a SearchHighlight, or a GeoDistance.
+        a Subquery instance, a SearchScore, a SearchHighlight, a GeoDistance or a FieldPath.
+
+        A ``FieldPath`` is a row annotation: its value is computed per record
+        (``SELECT *, <path> AS <alias>``) and attached to each model instance
+        returned by ``exec()`` / ``first()`` / ``get()``, as the raw decoded
+        value (dicts, lists, ``RecordId``...). A missing, ``NONE`` or ``NULL``
+        value anywhere on the path gives ``None``. ``order_by("<alias>")``
+        orders by it.
 
         Args:
             **aggregations: Keyword arguments where keys are alias names and values are
-                Aggregation, Subquery, SearchScore, SearchHighlight, or GeoDistance instances.
+                Aggregation, Subquery, SearchScore, SearchHighlight, GeoDistance or FieldPath instances.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
@@ -415,18 +455,58 @@ class QuerySet(Generic[T]):
                 relevance=SearchScore(0),
                 snippet=SearchHighlight("<b>", "</b>", 0),
             ).exec()
+
+            # Nested paths: element filters, indexes, destructuring
+            orders = await Order.objects().annotate(
+                big_items=FieldPath("items").where(qty__gt=1).pick("sku", total="price"),
+                first_sku=FieldPath("items").field("sku").first(),
+            ).exec()
+            orders[0].big_items  # [{"sku": "b", "total": 3}, ...]
             ```
 
         Raises:
             ValueError: If an alias is not an identifier (letters, digits and
                 underscores, starting with a letter or underscore). Aliases are
                 written into the query as ``... AS <alias>``, so they are checked
-                here, before the queryset changes.
+                here, before the queryset changes. Also if a ``FieldPath``
+                annotation is mixed with ``Aggregation`` / ``Subquery`` ones, or
+                its alias is ``id``, a field (or field alias) of the model or
+                an attribute of the model class: the column would replace that
+                field in the result, and attaching the value would shadow a
+                method on the instance.
         """
         for alias in aggregations:
             validate_identifier(alias, "annotation alias")
+        path_aliases = [alias for alias, value in aggregations.items() if isinstance(value, FieldPath)]
+        if path_aliases:
+            if any(isinstance(value, (Aggregation, Subquery)) for value in aggregations.values()):
+                raise ValueError(
+                    "FieldPath annotations cannot be combined with Aggregation or Subquery annotations "
+                    "(GROUP BY queries); run them as separate queries."
+                )
+            taken = self._model_names()
+            for alias in path_aliases:
+                if alias in taken or hasattr(self.model, alias):
+                    raise ValueError(
+                        f"Annotation alias {alias!r} clashes with {self.model.__name__} (the record id, a field, a "
+                        "field alias or an attribute of the model); a FieldPath annotation needs a name of its own."
+                    )
         self._annotations = aggregations
         return self
+
+    def _model_names(self) -> set[str]:
+        """``id``, the model's field names and their aliases: names a row annotation must not take."""
+        names = {"id"}
+        for name, info in self.model.model_fields.items():
+            names.add(name)
+            for alias in (info.alias, info.validation_alias, info.serialization_alias):
+                if isinstance(alias, str):
+                    names.add(alias)
+        return names
+
+    def _path_annotations(self) -> list[tuple[str, FieldPath]]:
+        """The ``FieldPath`` annotations, in ``annotate()`` order."""
+        return [(alias, value) for alias, value in self._annotations.items() if isinstance(value, FieldPath)]
 
     # ==================== Relation Query Methods ====================
 
@@ -1364,15 +1444,60 @@ class QuerySet(Generic[T]):
             return []
         return ["id != $_g_src"]
 
-    def _check_graph_response(self, result: Any, query: str) -> None:
+    def _uses_element_conditions(self) -> bool:
         """
-        Raise a statement error of *result* when a traversal is set.
+        Whether a filter of this QuerySet uses ``__any`` / ``__all`` / ``__none``.
 
-        A recursive idiom past the server's limit fails as a statement error
-        (``Exceeded the idiom recursion limit of 256.``) inside a successful
-        RPC; read as records, it would look like an empty result.
+        Walks the keyword filters, the ``Q`` filters at any depth (an element
+        condition's own ``Q`` included) and the traversal's node and edge
+        filters. A ``Subquery`` value, in any of them or among the
+        annotations, counts when its inner QuerySet uses one, at any nesting
+        depth (:meth:`_value_uses_element_conditions`): the hoisted ``LET``
+        is rejected on its own, and the outer ``SELECT`` then reads an unset
+        ``$_sqN`` as no rows.
         """
-        if self._graph is not None:
+
+        def in_q(q: Q) -> bool:
+            return any(child_uses(child) for child in q.children)
+
+        def child_uses(child: Q | tuple[str, str, Any]) -> bool:
+            if isinstance(child, Q):
+                return in_q(child)
+            return child[1] in ELEMENT_LOOKUPS or self._value_uses_element_conditions(child[2])
+
+        if any(lookup in ELEMENT_LOOKUPS or self._value_uses_element_conditions(value) for _, lookup, value in self._filters):
+            return True
+        if any(in_q(q) for q in self._q_filters):
+            return True
+        if any(self._value_uses_element_conditions(value) for value in self._annotations.values()):
+            return True
+        walk = self._graph
+        return walk is not None and any(f is not None and in_q(f) for f in (walk.node_filter, walk.edge_filter))
+
+    @staticmethod
+    def _value_uses_element_conditions(value: Any) -> bool:
+        """Whether *value* is a ``Subquery`` whose inner QuerySet uses an element lookup."""
+        return isinstance(value, Subquery) and value.queryset._uses_element_conditions()
+
+    def _check_statement_errors(self, result: Any, query: str) -> None:
+        """
+        Raise a statement error of *result* for the queries that must not read it as no records.
+
+        A statement the server rejects comes back as ``status: ERR`` inside a
+        successful RPC, with no records. That is raised when:
+
+        - a traversal is set: a recursive idiom past the server's limit fails
+          as ``Exceeded the idiom recursion limit of 256.``;
+        - a filter uses an element lookup or a ``FieldPath`` annotation is
+          set: an element condition is evaluated on every element of a
+          possibly heterogeneous array, and a string lookup on an element
+          lacking the field fails the statement (``Expected string but found
+          NONE``). A ``Subquery``'s inner filters are included: its hoisted
+          ``LET`` fails alone and the outer ``SELECT`` would read no rows.
+
+        Any other QuerySet keeps reading such a response as no records.
+        """
+        if self._graph is not None or self._path_annotations() or self._uses_element_conditions():
             _raise_on_statement_error(result, query)
 
     def _reject_graph(self, method: str) -> None:
@@ -1530,7 +1655,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         return result.all_records
 
@@ -1571,7 +1696,7 @@ class QuerySet(Generic[T]):
             if isinstance(annotation, Subquery):
                 sub_sql = annotation.to_surql(sub_vars, counter, prelude, self._declared_variables)
                 select_parts.append(f"{sub_sql} AS {alias}")
-            else:
+            elif not isinstance(annotation, FieldPath):  # never a FieldPath: annotate() refuses the mix
                 select_parts.append(annotation.to_surql(alias))
 
         if sub_vars:
@@ -1633,7 +1758,10 @@ class QuerySet(Generic[T]):
 
             if not source_ids:
                 for inst in instances:
-                    object.__setattr__(inst, to_attr, [])
+                    if isinstance(inst, BaseSurrealModel):
+                        inst._attach_value(to_attr, [])
+                    else:
+                        object.__setattr__(inst, to_attr, [])
                 continue
 
             # Build batch query for this relation (treated as edge table).
@@ -1654,7 +1782,10 @@ class QuerySet(Generic[T]):
                     extra_vars = fvars
                 query = f"SELECT in, out.* FROM {relation_name} WHERE in IN [{id_list}]{extra_where};"
 
-            result = await client.query(remove_quotes_for_variables(query), extra_vars)
+            sent = remove_quotes_for_variables(query)
+            result = await client.query(sent, extra_vars)
+            if custom_qs is not None:
+                custom_qs._check_statement_errors(result, sent)
 
             # Group results by source (the 'in' field)
             grouped: dict[str, list[dict[str, Any]]] = {}
@@ -1674,7 +1805,7 @@ class QuerySet(Generic[T]):
                     sid = inst.get_id()
                     thing = format_thing(self._model_table, sid) if sid else ""
                     related = grouped.get(thing, [])
-                    object.__setattr__(inst, to_attr, related)
+                    inst._attach_value(to_attr, related)
 
     def _coerce_filter_value(
         self,
@@ -1732,6 +1863,7 @@ class QuerySet(Generic[T]):
         declared: Collection[str] = frozenset(),
         *,
         prefix: str = "_f",
+        field_sql: str | None = None,
     ) -> str:
         """
         Render a single filter condition to a parameterized SurrealQL expression.
@@ -1757,6 +1889,10 @@ class QuerySet(Generic[T]):
             prefix: Name prefix of the bound variables. A clause compiled
                 beside the ordinary filters (a graph traversal step) binds
                 under its own prefix so the two never share a name.
+            field_sql: Text written for the field instead of ``field_name``,
+                after ``field_name`` has been validated. Only used for the
+                element itself (``this`` → ``$this``) inside an element
+                condition.
 
         Returns:
             str: The rendered SurrealQL condition.
@@ -1765,6 +1901,25 @@ class QuerySet(Generic[T]):
         # The field part is written into the query, so it is checked here as
         # well as when the key is parsed: Q children can be built by hand.
         parse_filter_key(f"{field_name}__{lookup_name}")
+
+        # ── Element lookups (__any / __all / __none) ─────────────────
+        # Checked again here: a Q's children can be set by hand. The
+        # type::is_array() guard is required on 3.2.x, which wraps a
+        # non-array value in a one-element array and filters it; truthiness
+        # (not count()) because count() skips NONE / 0 / false elements.
+        if lookup_name in ELEMENT_LOOKUPS:
+            check_element_lookup(field_name, lookup_name, value)
+            condition = QuerySet._render_element_condition(value, variables, counter, prelude, declared, prefix=prefix)
+            if not condition:
+                raise ValueError(f"Lookup '{lookup_name}' on {field_name!r} needs a non-empty Q() element condition.")
+            array = field_sql if field_sql is not None else field_name
+            if lookup_name == "all":
+                return f"(type::is_array({array}) AND NOT ({array}[WHERE NOT ({condition})]))"
+            matches = f"(type::is_array({array}) AND {array}[WHERE {condition}])"
+            return f"NOT {matches}" if lookup_name == "none" else matches
+
+        if field_sql is not None:
+            field_name = field_sql
 
         # ── Helper: bind a value as $<prefix>N and return the var name ─
         def _bind(val: Any) -> str:
@@ -1918,19 +2073,159 @@ class QuerySet(Generic[T]):
                     self._render_condition(field_name, lookup_name, value, variables, counter, prelude, declared, prefix=prefix)
                 )
 
+        return QuerySet._join_q_parts(q, parts)
+
+    @staticmethod
+    def _join_q_parts(q: Q, parts: list[str]) -> str:
+        """
+        Join the rendered children of ``q`` with its connector, then negate it if ``q`` is negated.
+
+        Several parts are parenthesized. A negated ``q`` is written ``NOT (…)``,
+        except when what it negates is a single ``__any`` / ``__all`` leaf,
+        which already renders as one parenthesized group: ``NOT`` then goes in
+        front of it, so ``~Q(items__any=…)`` renders exactly like
+        ``items__none=…``. Every other text is unchanged.
+
+        Args:
+            q: The ``Q`` whose children were rendered.
+            parts: The non-empty rendered children, in order.
+
+        Returns:
+            str: The expression, or ``""`` when there is no part.
+        """
         if not parts:
             return ""
-
-        connector = f" {q.connector} "
-        result = connector.join(parts)
-
+        result = f" {q.connector} ".join(parts)
         if len(parts) > 1:
             result = f"({result})"
-
         if q.negated:
-            result = f"NOT ({result})"
-
+            result = f"NOT {result}" if _is_element_group(q.children) else f"NOT ({result})"
         return result
+
+    @staticmethod
+    def _render_element_condition(
+        q: Q,
+        variables: dict[str, Any],
+        counter: list[int],
+        prelude: list[str] | None = None,
+        declared: Collection[str] = frozenset(),
+        *,
+        prefix: str = "_f",
+    ) -> str:
+        """
+        Render an element condition: the ``Q`` of ``__any`` / ``__all`` / ``__none`` (and of ``FieldPath.where()``).
+
+        Same algorithm as :meth:`_render_q` (parenthesization, ``NOT (…)``),
+        with keys relative to the element: no foreign-key coercion (elements
+        are not model fields), and the key ``this`` is the element itself
+        (``$this``). Values bind under ``prefix`` with the caller's counter,
+        so they never collide with the surrounding filters.
+
+        Args:
+            q: The element condition.
+            variables: Mutable dict collecting the bound variables.
+            counter: Mutable single-element list ``[int]``, the bind counter.
+            prelude: Passed through to :meth:`_render_condition`.
+            declared: Variable names a ``$name`` value may refer to.
+            prefix: Name prefix of the bound variables.
+
+        Returns:
+            str: The rendered condition, ``""`` when ``q`` holds none.
+
+        Raises:
+            TypeError: If a leaf's value is a ``Subquery`` (evaluated per element, it cannot be hoisted).
+        """
+        parts: list[str] = []
+        for child in q.children:
+            if isinstance(child, Q):
+                rendered = QuerySet._render_element_condition(child, variables, counter, prelude, declared, prefix=prefix)
+                if rendered:
+                    parts.append(rendered)
+            else:
+                field_name, lookup_name, value = child
+                if isinstance(value, Subquery):
+                    raise TypeError(subquery_in_element_condition_message(field_name, lookup_name))
+                parts.append(
+                    QuerySet._render_condition(
+                        field_name,
+                        lookup_name,
+                        value,
+                        variables,
+                        counter,
+                        prelude,
+                        declared,
+                        prefix=prefix,
+                        field_sql="$this" if field_name == "this" else None,
+                    )
+                )
+        return QuerySet._join_q_parts(q, parts)
+
+    @staticmethod
+    def _render_field_path(
+        path: FieldPath,
+        variables: dict[str, Any],
+        counter: list[int],
+        declared: Collection[str] = frozenset(),
+        *,
+        prefix: str = "_pa",
+    ) -> str:
+        """
+        Render a ``FieldPath`` as a SurrealQL idiom, its values bound under ``prefix``.
+
+        Every step applies to the value built so far. The server does not
+        compose that way on its own: after a field access (a dotted root, a
+        ``field()`` or a ``pick()`` step), an unparenthesized ``[n]``, ``[$]``
+        or ``[WHERE`` is applied to each mapped element, and 3.2.x and 3.3.x
+        disagree on the result for a scalar list. So, before an index or a
+        ``where()`` step, the text is parenthesized when it ends with a field
+        access (``(items.sku)[0]`` is the first sku); after a single-name
+        root, an index or a ``where()`` it is left bare.
+
+        ``.?`` is written before ``[WHERE`` only: it turns a missing or
+        ``NULL`` array into ``NONE`` (3.2.x gives ``[NONE]`` without it) and
+        changes nothing before the other steps, which already yield ``NONE``
+        on a missing value.
+
+        Args:
+            path: The path to render.
+            variables: Mutable dict collecting the bound variables.
+            counter: Mutable single-element list ``[int]``, the bind counter.
+            declared: Variable names a ``$name`` value may refer to.
+            prefix: Name prefix of the bound variables.
+
+        Returns:
+            str: The idiom, relative to the record (or, for a ``pick()``
+            value, to the destructured object).
+        """
+        text = path._root
+        ends_with_field = "." in text
+        for step in path._steps:
+            if isinstance(step, (_IndexStep, _WhereStep)) and ends_with_field:
+                text = f"({text})"
+            if isinstance(step, _FieldStep):
+                text = f"{text}.{step.name}"
+            elif isinstance(step, _IndexStep):
+                text = f"{text}[{step.index}]"
+            elif isinstance(step, _WhereStep):
+                condition = QuerySet._render_element_condition(
+                    step.condition, variables, counter, None, declared, prefix=prefix
+                )
+                if not condition:
+                    raise ValueError("FieldPath.where() needs at least one condition.")
+                text = f"{text}.?[WHERE {condition}]"
+            else:
+                entries: list[str] = []
+                for key, source in step.entries:
+                    if isinstance(source, FieldPath):
+                        rendered = QuerySet._render_field_path(source, variables, counter, declared, prefix=prefix)
+                        entries.append(f"{key}: {rendered}")
+                    elif source == key:
+                        entries.append(key)
+                    else:
+                        entries.append(f"{key}: {source}")
+                text = f"{text}.{{{', '.join(entries)}}}"
+            ends_with_field = isinstance(step, (_FieldStep, _PickStep))
+        return text
 
     def _build_where_parts(self, prelude: list[str] | None = None) -> tuple[list[str], dict[str, Any]]:
         """
@@ -1996,6 +2291,15 @@ class QuerySet(Generic[T]):
         for alias, annotation in self._annotations.items():
             if isinstance(annotation, (SearchScore, SearchHighlight, GeoDistance)):
                 extra_select.append(annotation.to_surql(alias))
+
+        # FieldPath annotate: one column per path, values bound as $_paN
+        # (one counter per compile, annotation order then step order).
+        path_vars: dict[str, Any] = {}
+        path_counter: list[int] = [0]
+        for alias, path in self._path_annotations():
+            rendered = self._render_field_path(path, path_vars, path_counter, self._declared_variables)
+            extra_select.append(f"{rendered} AS {alias}")
+        self._variables.update(path_vars)
 
         # The FROM source: the table, or a traversal idiom (binds $_g_src).
         source = self._from_clause()
@@ -2170,18 +2474,31 @@ class QuerySet(Generic[T]):
         for alias, annotation in self._annotations.items():
             if isinstance(annotation, (SearchScore, SearchHighlight)):
                 extra_keys.add(alias)
+        # A FieldPath value is attached even when the server leaves the key
+        # out (NONE): the path then reads None, never an AttributeError.
+        path_keys = {alias for alias, _ in self._path_annotations()}
+        extra_keys |= path_keys
 
+        # The model is built from each record without these keys: on a model
+        # with ``extra="allow"``, Pydantic would keep them as extra fields and
+        # the next save() would write them as columns. A key that is also a
+        # model name (``id``, a field or its alias) stays: it is that field.
+        to_model: Any = results
         if extra_keys and isinstance(results, list):
+            strip = extra_keys - self._model_names()
+            to_model = []
             for record in results:
                 if isinstance(record, dict):
-                    extras = {k: record.get(k) for k in extra_keys if k in record}
+                    extras = {k: record.get(k) for k in extra_keys if k in record or k in path_keys}
                     extra_fields_per_record.append(extras)
+                    to_model.append({k: v for k, v in record.items() if k not in strip})
                 else:
                     extra_fields_per_record.append({})
+                    to_model.append(record)
 
         try:
             # surrealdb SDK 1.0.8 returns records directly, not wrapped in {"result": ...}
-            parsed = self.model.from_db(cast(dict[str, Any] | list[Any] | None, results))
+            parsed = self.model.from_db(cast(dict[str, Any] | list[Any] | None, to_model))
         except ValidationError as e:
             logger.info(f"Pydantic invalid format for the class, returning dict value: {e}")
             parsed = results
@@ -2191,7 +2508,7 @@ class QuerySet(Generic[T]):
             for i, inst in enumerate(parsed):
                 if i < len(extra_fields_per_record) and isinstance(inst, BaseSurrealModel):
                     for k, v in extra_fields_per_record[i].items():
-                        object.__setattr__(inst, k, v)
+                        inst._attach_value(k, v)
 
         # ── Prefetch related ─────────────────────────────────────────────
         if self._prefetch_related and isinstance(parsed, list):
@@ -2269,9 +2586,11 @@ class QuerySet(Generic[T]):
         """
         # Allow 'id' keyword to be used as alias for 'id_item'
         record_id = id if id is not None else id_item
-        if record_id and self._graph is not None:
+        if record_id and (self._graph is not None or self._path_annotations()):
             # A traversal is the source, not a filter: look the id up among
             # the reachable records, on a copy so this QuerySet is unchanged.
+            # A FieldPath annotation is computed by the SELECT, which a plain
+            # record fetch would skip: same route.
             _, id_part = parse_record_id(str(record_id))
             lookup = copy.copy(self)
             lookup._filters = [*self._filters, ("id", "exact", RecordId(table=self._model_table, id=id_part))]
@@ -2308,6 +2627,9 @@ class QuerySet(Generic[T]):
         Fetch all records from the associated table.
 
         This method retrieves every record from the table without applying any filters, limits, or ordering.
+        With a graph traversal or a ``FieldPath`` annotation, it runs the compiled query instead, like
+        ``exec()`` (the annotation values are computed by that query), so the queryset's filters,
+        ordering and limits apply.
 
         Returns:
             list[BaseSurrealModel]: A list of model instances representing all records in the table.
@@ -2320,9 +2642,11 @@ class QuerySet(Generic[T]):
             all_users = await queryset.all()
             ```
         """
-        if self._graph is not None:
+        if self._graph is not None or self._path_annotations():
             # The traversal is the source of the query, not a filter: reading
-            # the whole table would be a wrong answer.
+            # the whole table would be a wrong answer. A FieldPath annotation
+            # is computed by the compiled SELECT, which a plain table read
+            # would leave out.
             return await self.exec()
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.select(self._model_table)
@@ -2403,7 +2727,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2433,7 +2757,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2464,7 +2788,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2495,7 +2819,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2525,7 +2849,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2592,7 +2916,7 @@ class QuerySet(Generic[T]):
         for qr in result.results:
             if qr.is_error and isinstance(qr.result, str) and TableNotFoundError.is_table_not_found(qr.result):
                 raise TableNotFoundError(message=qr.result, query=final_query)
-        self._check_graph_response(result, final_query)
+        self._check_statement_errors(result, final_query)
 
         # SDK returns QueryResponse, extract all records
         return cast(list[Any], result.all_records)
@@ -2796,8 +3120,10 @@ class QuerySet(Generic[T]):
             return current_count
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        sent = remove_quotes_for_variables(query)
+        result = await client.query(sent, self._variables)
         self._invalidate_cache()
+        self._check_statement_errors(result, sent)
         return len(result.all_records)
 
     async def bulk_delete(self, atomic: bool = False) -> int:
@@ -2836,8 +3162,10 @@ class QuerySet(Generic[T]):
             return current_count
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        sent = remove_quotes_for_variables(query)
+        result = await client.query(sent, self._variables)
         self._invalidate_cache()
+        self._check_statement_errors(result, sent)
         return len(result.all_records)
 
     # ==================== Upsert Methods ====================
@@ -3013,7 +3341,10 @@ class QuerySet(Generic[T]):
         for idx, instance in enumerate(instances):
             record_id = instance.get_id() if hasattr(instance, "get_id") else getattr(instance, "id", None)
 
-            data = instance.model_dump(exclude_unset=True, by_alias=True)
+            # Values a query attached (annotations, ``_knn_distance``) are not
+            # columns; on an ``extra="allow"`` model a validated assignment moves
+            # them into the extra fields, so name them explicitly.
+            data = instance.model_dump(exclude=instance._write_excluded_names(), exclude_unset=True, by_alias=True)
             data.pop("id", None)
             data = instance._coerce_foreign_keys(data)
 
@@ -3130,6 +3461,11 @@ class QuerySet(Generic[T]):
         """
         # A LIVE SELECT on a recursive idiom is refused by the server.
         self._reject_graph("live")
+        if self._path_annotations():
+            raise ValueError(
+                "live() cannot be combined with FieldPath annotations: "
+                "a live notification carries the record, not a projection."
+            )
 
         from .live import LiveModelStream
 

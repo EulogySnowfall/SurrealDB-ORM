@@ -103,6 +103,10 @@ class Subquery:
         # traversal would be silently dropped.
         if getattr(qs, "_graph", None) is not None:
             raise ValueError("Subquery() cannot be combined with reachable_from()")
+        # The sub-SELECT has no projection of its own beyond select(): a
+        # FieldPath annotation would be silently dropped too.
+        if qs._path_annotations():
+            raise ValueError("Subquery() cannot be combined with FieldPath annotations.")
 
         # SELECT clause — use VALUE for single-field selects so
         # the result is a flat array (required for IN subqueries).
