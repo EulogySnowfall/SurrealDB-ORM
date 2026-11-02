@@ -11,10 +11,12 @@ Supports:
 - Live Select Streams (async iterator pattern)
 - Change Feeds streaming (HTTP, stateless)
 - Typed function calls
+- JSON Lines codec for decoded values (``surreal_sdk.jsonl``)
 """
 
 from typing import Any
 
+from . import jsonl
 from .connection.base import BaseSurrealConnection
 from .connection.http import HTTPConnection
 from .connection.pool import ConnectionPool
@@ -22,6 +24,8 @@ from .connection.websocket import WebSocketConnection
 from .exceptions import (
     AuthenticationError,
     ConnectionError,
+    DataFormatError,
+    DataImportError,
     QueryError,
     SurrealDBError,
     TableNotFoundError,
@@ -38,6 +42,7 @@ from .functions import (
     StringFunctions,
     TimeFunctions,
 )
+from .jsonl import ImportReport
 from .protocol.cbor import (
     CBOR_AVAILABLE,
     Duration,
@@ -136,6 +141,11 @@ __all__ = [
     "TimeoutError",
     "TransactionError",
     "TransactionConflictError",
+    "DataFormatError",
+    "DataImportError",
+    # JSON Lines import/export
+    "ImportReport",
+    "jsonl",
     # Query-string helpers
     "find_param_references",
     "substitute_params",
