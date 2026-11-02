@@ -1213,3 +1213,197 @@ class TestGetWithPathAnnotation:
             await _orders().get("o1")
         run.assert_not_called()
         client.select.assert_awaited_once_with("aqu_order:o1")
+
+
+# ---------------------------------------------------------------------------
+# U9 — the other compile paths: bulk writes, live(), Subquery
+# ---------------------------------------------------------------------------
+
+
+def _ok(rows: Any) -> QueryResponse:
+    return QueryResponse(results=[QueryResult(status=ResponseStatus.OK, result=rows)])
+
+
+def _err(message: str = "Expected string but found NONE") -> QueryResponse:
+    return QueryResponse(results=[QueryResult(status=ResponseStatus.ERR, result=message)])
+
+
+def _client(*responses: QueryResponse) -> AsyncMock:
+    client = AsyncMock()
+    client.query = AsyncMock(side_effect=list(responses))
+    return client
+
+
+def _patch_client(client: AsyncMock) -> Any:
+    return patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", AsyncMock(return_value=client))
+
+
+E14 = "live() cannot be combined with FieldPath annotations: a live notification carries the record, not a projection."
+E15 = "Subquery() cannot be combined with FieldPath annotations."
+
+
+class TestBulkWrites:
+    async def test_c17_bulk_delete(self) -> None:
+        client = _client(_ok([{"id": 1}, {"id": 2}]))
+        with _patch_client(client):
+            assert await _orders().filter(items__any=Q(qty__gt=2)).bulk_delete() == 2
+        query, variables = client.query.call_args.args
+        assert query == "DELETE FROM aqu_order WHERE (type::is_array(items) AND items[WHERE qty > $_f0]) RETURN BEFORE;"
+        assert variables == {"_f0": 2}
+
+    async def test_c17b_bulk_update(self) -> None:
+        client = _client(_ok([{"id": 1}, {"id": 2}]))
+        with _patch_client(client):
+            assert await _orders().filter(items__all=Q(qty__gt=1)).bulk_update({"flagged": True}) == 2
+        query, variables = client.query.call_args.args
+        assert query == (
+            "UPDATE aqu_order SET flagged = $_bu0 WHERE (type::is_array(items) AND NOT (items[WHERE NOT (qty > $_f0)]));"
+        )
+        assert variables == {"_f0": 1, "_bu0": True}
+
+
+class TestLiveCompile:
+    def test_c18(self) -> None:
+        stream = _orders().filter(items__any=Q(qty__gt=2, sku__in=["a", "b"])).live()
+        assert stream._where == "(type::is_array(items) AND items[WHERE (qty > $_f0 AND sku IN $_f1)])"
+        assert stream._params == {"_f0": 2, "_f1": ["a", "b"]}
+
+    def test_c26_this(self) -> None:
+        stream = _orders().filter(tags__any=Q(this__startswith="x")).live()
+        assert stream._where == "(type::is_array(tags) AND tags[WHERE string::starts_with($this, $_f0)])"
+        assert stream._params == {"_f0": "x"}
+
+    def test_e14(self) -> None:
+        with pytest.raises(ValueError) as exc:
+            _orders().annotate(p=FieldPath("x")).live()
+        assert str(exc.value) == E14
+
+    def test_other_annotations_still_accepted(self) -> None:
+        from src.surreal_orm import SearchScore
+
+        stream = _orders().filter(status="open").annotate(score=SearchScore(0)).live()
+        assert stream._where == "status = $_f0"
+
+
+class TestSubqueryCompile:
+    def test_inner_element_filter_shares_the_counter(self) -> None:
+        inner = AQUOrder.objects().filter(items__any=Q(qty__gt=2)).select("id")
+        qs = _orders().filter(status="open", id__in=Subquery(inner))
+        sql = qs._compile_query()
+        assert sql == (
+            "LET $_sq0 = (SELECT VALUE id FROM aqu_order WHERE (type::is_array(items) AND items[WHERE qty > $_f1])); "
+            "SELECT * FROM aqu_order WHERE status = $_f0 AND id IN $_sq0;"
+        )
+        assert qs._variables == {"_f0": "open", "_f1": 2}
+
+    def test_e15(self) -> None:
+        inner = AQUOrder.objects().annotate(p=FieldPath("items").first()).select("id")
+        qs = _orders().filter(id__in=Subquery(inner))
+        with pytest.raises(ValueError) as exc:
+            qs._compile_query()
+        assert str(exc.value) == E15
+
+    def test_e15_inline_form_too(self) -> None:
+        inner = AQUOrder.objects().annotate(p=FieldPath("items").first()).select("id")
+        with pytest.raises(ValueError) as exc:
+            _orders().filter(id__in=Subquery(inner)).live()
+        assert str(exc.value) == E15
+
+
+# ---------------------------------------------------------------------------
+# U11 — statement errors are raised for queries using these constructs
+# ---------------------------------------------------------------------------
+
+
+class AQUTagged(BaseSurrealModel):
+    """Edge-table rows of a prefetch, with a scalar array."""
+
+    model_config = SurrealConfigDict(table_name="aqu_tagged")
+
+    id: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+def _with_element() -> list[QuerySet[AQUOrder]]:
+    return [
+        _orders().filter(items__any=Q(qty__gt=2)),
+        _orders().filter(Q(status="x") | Q(items__none=Q(sku__startswith="a"))),
+        _orders().filter(Q(status="x") & (Q(note="n") | Q(items__all=Q(qty__gt=1)))),
+        _orders().filter(~Q(tags__any=Q(this="x"))),
+        _orders().annotate(big=FieldPath("items").where(qty__gt=1)),
+        _orders().reachable_from("aqu_order:o1", "aqu_next", node_filter=Q(items__any=Q(qty__gt=2))),
+        _orders().reachable_from("aqu_order:o1", "aqu_next"),
+    ]
+
+
+class TestStatementErrors:
+    @pytest.mark.parametrize("index", range(7), ids=["filter", "q-or", "q-nested", "not-q-this", "path", "graph-step", "graph"])
+    async def test_exec_raises(self, index: int) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        qs = _with_element()[index]
+        with _patch_client(_client(_err())):
+            with pytest.raises(QueryError, match="Expected string but found NONE"):
+                await qs.exec()
+
+    async def test_count_raises(self) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        with _patch_client(_client(_err())):
+            with pytest.raises(QueryError):
+                await _orders().filter(items__any=Q(sku__startswith="a")).count()
+
+    async def test_conflict_is_a_conflict(self) -> None:
+        from surreal_sdk.exceptions import TransactionConflictError
+
+        message = "Transaction conflict: Resource busy. This transaction can be retried"
+        with _patch_client(_client(_err(message))):
+            with pytest.raises(TransactionConflictError):
+                await _orders().filter(items__any=Q(qty__gt=2)).exec()
+
+    async def test_plain_queryset_unchanged(self) -> None:
+        with _patch_client(_client(_err())):
+            assert await _orders().filter(status="open").exec() == []
+
+    async def test_bulk_update_raises(self) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        with _patch_client(_client(_err())):
+            with pytest.raises(QueryError):
+                await _orders().filter(items__any=Q(sku__startswith="a")).bulk_update({"flagged": True})
+
+    async def test_bulk_delete_raises(self) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        with _patch_client(_client(_err())):
+            with pytest.raises(QueryError):
+                await _orders().filter(items__any=Q(sku__startswith="a")).bulk_delete()
+
+    async def test_plain_bulk_writes_unchanged(self) -> None:
+        with _patch_client(_client(_err(), _err())):
+            assert await _orders().filter(status="open").bulk_update({"flagged": True}) == 0
+            assert await _orders().filter(status="open").bulk_delete() == 0
+
+    async def test_prefetch_raises(self) -> None:
+        from src.surreal_orm import Prefetch
+        from surreal_sdk.exceptions import QueryError
+
+        prefetch = Prefetch("aqu_tagged", queryset=AQUTagged.objects().filter(tags__any=Q(this__startswith="x")))
+        client = _client(_ok([_row()]), _err())
+        with _patch_client(client):
+            with pytest.raises(QueryError):
+                await _orders().prefetch_related(prefetch).exec()
+        query, variables = client.query.call_args.args
+        assert query == (
+            "SELECT in, out.* FROM aqu_tagged WHERE in IN [aqu_order:o1] AND "
+            "(type::is_array(tags) AND tags[WHERE string::starts_with($this, $_f0)]);"
+        )
+        assert variables == {"_f0": "x"}
+
+    async def test_prefetch_without_element_lookup_unchanged(self) -> None:
+        from src.surreal_orm import Prefetch
+
+        prefetch = Prefetch("aqu_tagged", queryset=AQUTagged.objects().filter(id="x"))
+        with _patch_client(_client(_ok([_row()]), _err())):
+            (order,) = await _orders().prefetch_related(prefetch).exec()
+        assert order.aqu_tagged == []  # type: ignore[attr-defined]

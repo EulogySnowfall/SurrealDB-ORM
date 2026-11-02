@@ -1444,15 +1444,48 @@ class QuerySet(Generic[T]):
             return []
         return ["id != $_g_src"]
 
-    def _check_graph_response(self, result: Any, query: str) -> None:
+    def _uses_element_conditions(self) -> bool:
         """
-        Raise a statement error of *result* when a traversal is set.
+        Whether a filter of this QuerySet uses ``__any`` / ``__all`` / ``__none``.
 
-        A recursive idiom past the server's limit fails as a statement error
-        (``Exceeded the idiom recursion limit of 256.``) inside a successful
-        RPC; read as records, it would look like an empty result.
+        Walks the keyword filters, the ``Q`` filters at any depth (an element
+        condition's own ``Q`` included) and the traversal's node and edge
+        filters.
         """
-        if self._graph is not None:
+
+        def in_q(q: Q) -> bool:
+            return any(child_uses(child) for child in q.children)
+
+        def child_uses(child: Q | tuple[str, str, Any]) -> bool:
+            if isinstance(child, Q):
+                return in_q(child)
+            return child[1] in ELEMENT_LOOKUPS
+
+        if any(lookup in ELEMENT_LOOKUPS for _, lookup, _ in self._filters):
+            return True
+        if any(in_q(q) for q in self._q_filters):
+            return True
+        walk = self._graph
+        return walk is not None and any(f is not None and in_q(f) for f in (walk.node_filter, walk.edge_filter))
+
+    def _check_statement_errors(self, result: Any, query: str) -> None:
+        """
+        Raise a statement error of *result* for the queries that must not read it as no records.
+
+        A statement the server rejects comes back as ``status: ERR`` inside a
+        successful RPC, with no records. That is raised when:
+
+        - a traversal is set: a recursive idiom past the server's limit fails
+          as ``Exceeded the idiom recursion limit of 256.``;
+        - a filter uses an element lookup or a ``FieldPath`` annotation is
+          set: an element condition is evaluated on every element of a
+          possibly heterogeneous array, and a string lookup on an element
+          lacking the field fails the statement (``Expected string but found
+          NONE``).
+
+        Any other QuerySet keeps reading such a response as no records.
+        """
+        if self._graph is not None or self._path_annotations() or self._uses_element_conditions():
             _raise_on_statement_error(result, query)
 
     def _reject_graph(self, method: str) -> None:
@@ -1610,7 +1643,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         return result.all_records
 
@@ -1734,7 +1767,10 @@ class QuerySet(Generic[T]):
                     extra_vars = fvars
                 query = f"SELECT in, out.* FROM {relation_name} WHERE in IN [{id_list}]{extra_where};"
 
-            result = await client.query(remove_quotes_for_variables(query), extra_vars)
+            sent = remove_quotes_for_variables(query)
+            result = await client.query(sent, extra_vars)
+            if custom_qs is not None:
+                custom_qs._check_statement_errors(result, sent)
 
             # Group results by source (the 'in' field)
             grouped: dict[str, list[dict[str, Any]]] = {}
@@ -2662,7 +2698,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2692,7 +2728,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2723,7 +2759,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2754,7 +2790,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2784,7 +2820,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(query, self._variables)
-        self._check_graph_response(result, query)
+        self._check_statement_errors(result, query)
 
         if result.all_records:
             record = result.all_records[0]
@@ -2851,7 +2887,7 @@ class QuerySet(Generic[T]):
         for qr in result.results:
             if qr.is_error and isinstance(qr.result, str) and TableNotFoundError.is_table_not_found(qr.result):
                 raise TableNotFoundError(message=qr.result, query=final_query)
-        self._check_graph_response(result, final_query)
+        self._check_statement_errors(result, final_query)
 
         # SDK returns QueryResponse, extract all records
         return cast(list[Any], result.all_records)
@@ -3055,8 +3091,10 @@ class QuerySet(Generic[T]):
             return current_count
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        sent = remove_quotes_for_variables(query)
+        result = await client.query(sent, self._variables)
         self._invalidate_cache()
+        self._check_statement_errors(result, sent)
         return len(result.all_records)
 
     async def bulk_delete(self, atomic: bool = False) -> int:
@@ -3095,8 +3133,10 @@ class QuerySet(Generic[T]):
             return current_count
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        sent = remove_quotes_for_variables(query)
+        result = await client.query(sent, self._variables)
         self._invalidate_cache()
+        self._check_statement_errors(result, sent)
         return len(result.all_records)
 
     # ==================== Upsert Methods ====================
@@ -3389,6 +3429,11 @@ class QuerySet(Generic[T]):
         """
         # A LIVE SELECT on a recursive idiom is refused by the server.
         self._reject_graph("live")
+        if self._path_annotations():
+            raise ValueError(
+                "live() cannot be combined with FieldPath annotations: "
+                "a live notification carries the record, not a projection."
+            )
 
         from .live import LiveModelStream
 

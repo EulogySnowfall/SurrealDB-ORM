@@ -15,13 +15,23 @@ The data (spec §1.1), written with ``raw_query()`` because o4's object
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
 import pytest
 
-from src.surreal_orm import BaseSurrealModel, FieldPath, Q, SurrealConfigDict, SurrealDBConnectionManager
+from src.surreal_orm import (
+    BaseSurrealModel,
+    FieldPath,
+    ModelChangeEvent,
+    Q,
+    QueryCache,
+    SurrealConfigDict,
+    SurrealDBConnectionManager,
+)
 from src.surreal_orm.query_set import QuerySet
+from surreal_sdk.exceptions import QueryError
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_advanced_queries"
@@ -383,3 +393,150 @@ async def test_first_with_a_path_annotation() -> None:
     order = await _orders().filter(note="no arrays").annotate(city=FieldPath("customer.address.city")).first()
     assert str(order.id) == "o5"
     assert order.city is None  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# I4 — C17: bulk writes on an element filter
+# ---------------------------------------------------------------------------
+
+
+async def _flagged() -> list[str]:
+    return await _ids(_orders().filter(flagged=True))
+
+
+async def test_c17_bulk_delete() -> None:
+    assert await _orders().filter(items__any=Q(qty__gt=2)).bulk_delete() == 2
+    assert await _ids(_orders()) == ["o3", "o4", "o5"]
+
+
+async def test_c17b_bulk_update() -> None:
+    assert await _orders().filter(items__all=Q(qty__gt=1)).bulk_update({"flagged": True}) == 2
+    assert await _flagged() == ["o2", "o3"]
+
+
+async def test_bulk_writes_atomic() -> None:
+    assert await _orders().filter(items__all=Q(qty__gt=1)).bulk_update({"flagged": True}, atomic=True) == 2
+    assert await _flagged() == ["o2", "o3"]
+    assert await _orders().filter(items__any=Q(qty__gt=2)).bulk_delete(atomic=True) == 2
+    assert await _ids(_orders()) == ["o3", "o4", "o5"]
+
+
+# ---------------------------------------------------------------------------
+# I5 — a statement error is raised, not read as no records (M11)
+# ---------------------------------------------------------------------------
+
+
+async def test_statement_error_is_raised() -> None:
+    await AQIOrder.raw_query("CREATE aqi_order:o6 CONTENT { items: [{ qty: 1 }] };")
+    with pytest.raises(QueryError, match="NONE"):
+        await _orders().filter(items__any=Q(sku__startswith="a")).exec()
+    with pytest.raises(QueryError, match="NONE"):
+        await _orders().filter(items__any=Q(sku__startswith="a")).count()
+    with pytest.raises(QueryError, match="NONE"):
+        await _orders().filter(items__any=Q(sku__startswith="a")).bulk_delete()
+    assert len(await _ids(_orders())) == 6  # nothing deleted
+
+
+async def test_statement_error_from_a_path_annotation() -> None:
+    await AQIOrder.raw_query("CREATE aqi_order:o6 CONTENT { items: [{ qty: 1 }] };")
+    with pytest.raises(QueryError, match="NONE"):
+        await _orders().annotate(a=FieldPath("items").where(sku__startswith="a")).exec()
+
+
+# ---------------------------------------------------------------------------
+# I6, I11 — live() with an element filter (C18, C26)
+# ---------------------------------------------------------------------------
+
+
+async def _write(sql: str) -> None:
+    client = await SurrealDBConnectionManager.get_client()
+    response = await client.query(sql)
+    assert response.is_ok, response.raw
+
+
+async def _live_events(qs: QuerySet[AQIOrder], decoys: list[str], match: str) -> list[str]:
+    """
+    Open ``qs.live()``, write the decoys, the match, the decoys again, then a sentinel copy of the match.
+
+    Notifications on one connection arrive in order, so the first two events
+    are ``l_match`` then ``l_sentinel`` only if no decoy was notified: the
+    filter fired exactly once for the writes before the sentinel.
+    """
+    events: list[str] = []
+    async with qs.live() as stream:
+        for i, decoy in enumerate(decoys):
+            await _write(f"CREATE aqi_order:l_decoy{i} CONTENT {decoy};")
+        await _write(f"CREATE aqi_order:l_match CONTENT {match};")
+        for i, decoy in enumerate(decoys):
+            await _write(f"CREATE aqi_order:l_after{i} CONTENT {decoy};")
+        await _write(f"CREATE aqi_order:l_sentinel CONTENT {match};")
+        for _ in range(2):
+            event: ModelChangeEvent[AQIOrder] = await asyncio.wait_for(anext(stream), timeout=5.0)
+            events.append(f"{event.action.value} {event.record_id}")
+    return events
+
+
+async def test_c18_live() -> None:
+    qs = _orders().filter(items__any=Q(qty__gt=2, sku__in=["a", "b"]))
+    decoys = [
+        "{ items: [{ sku: 'a', qty: 1 }, { sku: 'z', qty: 9 }] }",  # no element matches both conditions
+        "{ items: 7 }",  # a scalar
+        "{ items: { sku: 'a', qty: 9 } }",  # an object
+    ]
+    events = await _live_events(qs, decoys, "{ items: [{ sku: 'b', qty: 5 }] }")
+    assert events == ["CREATE aqi_order:l_match", "CREATE aqi_order:l_sentinel"]
+
+
+async def test_c26_live_this() -> None:
+    qs = _orders().filter(tags__any=Q(this__startswith="x"))
+    decoys = [
+        "{ tags: ['a', 'b'] }",  # no element matches
+        "{ tags: 'xyz' }",  # a string
+        "{ note: 'no tags' }",  # missing
+    ]
+    events = await _live_events(qs, decoys, "{ tags: ['a', 'xa'] }")
+    assert events == ["CREATE aqi_order:l_match", "CREATE aqi_order:l_sentinel"]
+
+
+# ---------------------------------------------------------------------------
+# I7 — composition with reachable_from() (M21)
+# ---------------------------------------------------------------------------
+
+
+async def test_composition_with_a_traversal() -> None:
+    await AQIOrder.raw_query(
+        "DELETE aqi_next; "
+        "RELATE aqi_order:o1->aqi_next->aqi_order:o2; "
+        "RELATE aqi_order:o2->aqi_next->aqi_order:o3; "
+        "RELATE aqi_order:o1->aqi_next->aqi_order:o4;"
+    )
+    rows = (
+        await _orders()
+        .reachable_from("aqi_order:o1", "aqi_next", max_depth=3, node_filter=Q(items__all=Q(qty__gt=0)))
+        .filter(items__any=Q(qty__gt=2))
+        .annotate(big=FieldPath("items").where(qty__gt=1).field("sku"))
+        .exec()
+    )
+    assert [(str(row.id), row.big) for row in rows] == [("o2", ["a"])]  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# I8 — cache() on an element-filter query
+# ---------------------------------------------------------------------------
+
+
+async def test_cache_hit_then_invalidated_by_save() -> None:
+    QueryCache.clear()
+    try:
+        qs = _orders().filter(items__any=Q(qty__gt=2)).cache(ttl=60)
+        assert await _ids(qs) == ["o1", "o2"]
+        # Written behind the ORM's back: no invalidation, the cached result is served.
+        await _write("UPDATE aqi_order:o3 SET items = [{ sku: 'q', qty: 9 }];")
+        assert await _ids(_orders().filter(items__any=Q(qty__gt=2)).cache(ttl=60)) == ["o1", "o2"]
+        # An ORM write invalidates the table's entries.
+        order = await _orders().get("o5")
+        order.note = "changed"
+        await order.save()
+        assert await _ids(_orders().filter(items__any=Q(qty__gt=2)).cache(ttl=60)) == ["o1", "o2", "o3"]
+    finally:
+        QueryCache.clear()
