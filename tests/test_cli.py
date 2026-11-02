@@ -1101,6 +1101,90 @@ class TestU14RestoreCommand:
         assert "No such file or directory" in result.stderr
 
 
+@pytest.fixture
+def i456_deprecated_binary_stream() -> Iterator[MagicMock]:
+    """Make ``click.get_binary_stream`` warn as Click 8.5 does, whatever Click is installed.
+
+    The lock pins a Click that does not warn yet, so without this the two
+    stdout/stdin tests above stay green on code that breaks on Click 8.5
+    (warning) and 9.0 (removed). The original is read, and the patch undone,
+    with warnings ignored: on Click 8.5 reading the attribute is what warns.
+    """
+    import click
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        original = click.get_binary_stream
+
+    def deprecated(name: str) -> Any:
+        warnings.warn("'get_binary_stream' is deprecated and will be removed in Click 9.0.", DeprecationWarning, stacklevel=2)
+        return original(name)
+
+    spy = MagicMock(side_effect=deprecated)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        patcher = patch.object(click, "get_binary_stream", new=spy)
+        patcher.start()
+    try:
+        yield spy
+    finally:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            patcher.stop()
+
+
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+@pytest.mark.usefixtures("i280_restore_default_connection")
+class TestI456BinaryStdStreams:
+    """``dump`` and ``restore -`` open the binary standard streams without ``click.get_binary_stream()`` (#456)."""
+
+    def test_dump_to_stdout_does_not_call_the_deprecated_helper_nor_close_stdout(
+        self, runner: "CliRunner", cli_command, i456_deprecated_binary_stream: MagicMock
+    ) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        stdout: list[Any] = []
+
+        async def dump(dest: Any, **kwargs: Any) -> int:
+            await asyncio.sleep(0)
+            stdout.append(sys.stdout.buffer)
+            dest.write(b"OPTION IMPORT;\n")
+            return 15
+
+        with patch.object(SurrealDBConnectionManager, "dump_database", new=AsyncMock(side_effect=dump)):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "dump"])
+
+        assert result.exception is None, repr(result.exception)
+        assert result.exit_code == 0, result.output
+        assert result.stdout_bytes == b"OPTION IMPORT;\n"
+        i456_deprecated_binary_stream.assert_not_called()
+        assert len(stdout) == 1
+        assert stdout[0].closed is False
+
+    def test_restore_from_stdin_does_not_call_the_deprecated_helper_nor_close_stdin(
+        self, runner: "CliRunner", cli_command, i456_deprecated_binary_stream: MagicMock
+    ) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        received: list[bytes] = []
+        stdin: list[Any] = []
+
+        async def restore(source: Any, **kwargs: Any) -> None:
+            await asyncio.sleep(0)
+            stdin.append(sys.stdin.buffer)
+            received.append(source.read())
+
+        with patch.object(SurrealDBConnectionManager, "restore_database", new=AsyncMock(side_effect=restore)):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "restore", "-"], input=b"OPTION IMPORT;\n")
+
+        assert result.exception is None, repr(result.exception)
+        assert result.exit_code == 0, result.output
+        assert received == [b"OPTION IMPORT;\n"]
+        i456_deprecated_binary_stream.assert_not_called()
+        assert len(stdin) == 1
+        assert stdin[0].closed is False
+
+
 class _U14JsonlConnection(_SdkBaseConnection):
     """A connection whose ``query()`` returns ``rows`` once, so the real ``export_jsonl()`` runs."""
 
