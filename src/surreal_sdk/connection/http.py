@@ -741,8 +741,11 @@ class HTTPConnection(BaseSurrealConnection):
         rejected token is raised with ``code=401``.
 
         **A dump contains every user's password hash and the access
-        definitions** unless ``users=False, accesses=False``; keep it as
-        private as the credentials themselves.
+        definitions (including JWT keys)** unless users and accesses are
+        excluded: ``export_database_stream(users=False, accesses=False)``,
+        or ``surreal-orm dump --no-users --no-accesses -o app.surql`` from
+        the command line. Otherwise keep it as private as the credentials
+        themselves.
 
         Args:
             tables: Tables to dump (identifiers); ``None`` (default) dumps
@@ -845,7 +848,9 @@ class HTTPConnection(BaseSurrealConnection):
         A transfer error leaves the bytes already written in ``dest``.
 
         **A dump contains every user's password hash and the access
-        definitions** unless ``users=False, accesses=False``. A **new** file
+        definitions (including JWT keys)** unless users and accesses are
+        excluded: ``export_database(path, users=False, accesses=False)``, or
+        ``surreal-orm dump --no-users --no-accesses -o app.surql``. A **new** file
         is therefore created with mode ``0o600`` (readable by its owner
         only); an existing file is truncated and keeps its mode. On Windows
         the mode is ignored.

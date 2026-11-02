@@ -21,6 +21,7 @@ A custom Python SDK for SurrealDB with HTTP and WebSocket support.
   - [JSON Lines Format](#json-lines-format)
   - [Reading and Exporting a Table](#reading-and-exporting-a-table)
   - [Importing JSON Lines](#importing-json-lines)
+  - [Database Dump and Restore](#database-dump-and-restore)
 - [Durations](#durations)
 - [Typed Functions API](#typed-functions-api)
   - [Built-in Functions](#built-in-functions)
@@ -524,6 +525,64 @@ print(report.lines, report.rows, report.batches)
   `DEFAULT`, no events. It needs a system user (root, namespace or database), as the server refuses it to a record
   user.
 - Files and text streams are read in a worker thread, never on the event loop.
+
+### Database Dump and Restore
+
+`HTTPConnection` dumps a whole database through the server's `/export` endpoint and restores one through
+`/import`, in the server's own SurrealQL format (the one `surreal export` / `surreal import` use): `OPTION IMPORT;`,
+the definitions, then the rows as `INSERT` statements. Unlike JSON Lines, a dump keeps every value as the server
+stores it (geometry, ranges, nanosecond datetimes, `NULL`). These methods are **HTTP only** (there is no such
+endpoint over WebSocket); pooled connections are `HTTPConnection`s and have them too.
+
+```python
+async with SurrealDB.http("http://localhost:8000", "app", "prod") as conn:
+    await conn.signin("root", "root")
+
+    n = await conn.export_database("prod.surql")                     # whole database, returns bytes written
+    await conn.export_database("posts.surql", tables=["post"], users=False, accesses=False)
+    await conn.export_database("schema.surql", records=False)        # definitions only
+
+    async with conn.export_database_stream(tables=["post"]) as chunks:   # stream to any sink
+        async for chunk in chunks:
+            await sink.write(chunk)
+
+async with SurrealDB.http("http://localhost:8000", "app", "copy") as target:
+    await target.signin("root", "root")
+    await target.query("DEFINE DATABASE IF NOT EXISTS copy;")       # the database must exist
+    await target.import_database("prod.surql")   # a path, bytes, a binary stream or an async iterable of bytes
+```
+
+> **A dump contains user password hashes and access definitions (including JWT keys)** unless users and accesses
+> are excluded: `export_database(path, users=False, accesses=False)`, or
+> `surreal-orm dump --no-users --no-accesses -o app.surql`. Every section is included by default, as the server
+> does. A **new** dump file is created with mode `0o600` (readable by its owner only); an existing file is
+> truncated and keeps its mode. JSON Lines exports keep the process umask. A `VIEWER` user can dump: that is the
+> server's permission.
+
+Options of `export_database()` / `export_database_stream()`: `tables` (names; `None` = every table), `users`,
+`accesses`, `params`, `functions`, `analyzers`, `records` (`False` = definitions only), all `True` by default.
+Errors: a non-200 answer raises `QueryError` (`Export failed: HTTP {code} - ...`, `code` set); a transfer failure
+raises `ConnectionError` and leaves the bytes already written in the file.
+
+**What a restore does** (measured on SurrealDB 3.2 and 3.3):
+
+- It runs under the dump's `OPTION IMPORT;`: no field processing, no `ASSERT`, `VALUE` or events. The SDK never
+  adds `OPTION IMPORT;` itself, and a body without it is refused (HTTP 400). It needs a system user (root,
+  namespace or database `OWNER`); others get HTTP 403.
+- A definition of the same name (table, field, index, event, function, param) is **replaced** by the dump's; a
+  definition that is only in the target **stays**.
+- It is **not transactional**: a row that already exists makes its whole `INSERT` statement fail, and the other
+  statements, other tables included, are applied. Restore into a database whose dumped tables hold no rows.
+- **The database must exist**: otherwise the server reports `The database '<db>' does not exist`, even after
+  the dump's statements created it and wrote rows. `import_database()` runs no DDL; create the database first
+  (the ORM's connections create it on connect).
+- Errors raise `DataImportError`: `Import failed: {k} statement(s) rejected; first: ...` with every message in
+  `.errors` and the HTTP status in `.code` (422 on 3.3, 200 on 3.2); `Import failed: HTTP {code} - ...` for another
+  status; and, with `.code=None`, when the connection closes during the upload, which is how the server answers a
+  large body it rejects up front.
+- Both transfers have no client timeout and count as in flight, so `reconnect()` waits for them (up to its drain
+  timeout). There is no transient-`401` re-mint: a rejected token is raised with `code=401`. The server accepts an
+  import body up to 4 GiB.
 
 ---
 

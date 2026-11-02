@@ -637,6 +637,53 @@ except DataImportError as e:
 - Each export and import statement shows up in `QueryLogger`; for an import batch, `variables["_x_rows"]` is a
   summary `{"rows": n, "bytes": b}`, never the rows themselves.
 
+### Database Dump and Restore
+
+`SurrealDBConnectionManager.dump_database()` writes a whole database (or some tables) as a SurrealQL dump, in the
+server's own format (the one `surreal export` writes); `restore_database()` loads one back. A dump is lossless:
+geometry, nanosecond datetimes and `NULL` survive, which JSON Lines cannot carry. Both use a named connection
+(`connection=`, else the `using()` context, else `"default"`), always over HTTP.
+
+```python
+from surreal_orm import DataImportError, SurrealDBConnectionManager
+
+# Whole database
+await SurrealDBConnectionManager.dump_database("backup.surql")
+
+# Some tables (model classes or names), without credentials
+n = await SurrealDBConnectionManager.dump_database(
+    "posts.surql", tables=[Post, "audit"], users=False, accesses=False
+)
+
+# Restore into another database
+async with SurrealDBConnectionManager.using("restore_target"):
+    try:
+        await SurrealDBConnectionManager.restore_database("backup.surql")
+    except DataImportError as e:
+        print(e.code, e.errors)          # every statement the server rejected
+```
+
+> **A dump contains user password hashes and access definitions (including JWT keys)** unless users and accesses
+> are excluded: `dump_database(path, users=False, accesses=False)`, or
+> `surreal-orm dump --no-users --no-accesses -o app.surql`. Every section is included by default, as the server
+> does. A **new** dump file is created with mode `0o600` (readable by its owner only); an existing file is
+> truncated and keeps its mode.
+
+- Options: `tables` (model classes are read through `get_table_name()`; `None` = every table), `users`,
+  `accesses`, `params`, `functions`, `analyzers`, `records` (`False` = definitions only); all `True` by default.
+  `dest` is a path or a binary stream; `source` is a path, `bytes`, a binary stream or an async iterable of
+  `bytes`. Transfers are streamed and have no client timeout.
+- A restore runs under the dump's `OPTION IMPORT;`: **no signal is sent**, no `ASSERT`, `VALUE` or events run. It
+  needs a system user (root, namespace or database `OWNER`). The whole `QueryCache` is cleared afterwards, also
+  when the restore fails.
+
+**What a restore does to an existing database** (measured on SurrealDB 3.2 and 3.3): definitions of the same name
+(table, field, index, event, function, param) are **replaced** by the dump's, and definitions that are only in
+the target **stay**. So a database where migrations were applied, but whose dumped tables hold **no rows**,
+restores cleanly; the next `makemigrations` / `schema_diff` reports any difference as usual. The restore is **not
+transactional**: a row that already exists makes its own `INSERT` fail with `DataImportError`, and the other
+statements, other tables included, are applied. The database must exist: the ORM creates it when it connects.
+
 ---
 
 ## Relations & Graph Traversal

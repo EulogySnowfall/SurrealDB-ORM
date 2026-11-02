@@ -19,6 +19,10 @@ exported rows, which carry the column name, not the alias. I6 (import half):
 the export loads into another database through ``using()`` as models equal to
 the originals, and drops the cached result of the target table.
 
+I10: ``SurrealDBConnectionManager.dump_database(tables=[DIOPost])`` writes a
+``0o600`` file that ``restore_database()`` loads into another database under
+``using()``, dropping the cached result there.
+
 I9: ``export_database()`` sends the requested sections only (``tables=``,
 ``records=False``, ``users=False``). I11: a database ``EDITOR`` can export and
 cannot import (E12b 403).
@@ -46,6 +50,7 @@ import pytest
 from pydantic import Field
 
 from src.surreal_orm import SurrealDBConnectionManager
+from src.surreal_orm.cache import QueryCache
 from src.surreal_orm.fields.relation import ForeignKey
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from surreal_sdk.connection.base import BaseSurrealConnection
@@ -520,6 +525,42 @@ async def test_orm_import_loads_the_export_into_another_database(orm_posts: list
         for post in loaded:
             assert isinstance(post.price, Decimal)
             assert post.created_at.tzinfo is not None
+    finally:
+        try:
+            await (await SurrealDBConnectionManager.get_client(DST)).query("REMOVE TABLE IF EXISTS dio_post;")
+        finally:
+            await SurrealDBConnectionManager.remove_connection(DST)
+
+
+# ---------------------------------------------------------------------------
+# I10 — ORM dump/restore (SurrealDBConnectionManager.dump_database / restore_database)
+# ---------------------------------------------------------------------------
+
+
+async def test_orm_dump_and_restore_into_another_database_clears_the_cache(orm_posts: list[DIOPost], tmp_path: Path) -> None:
+    path = tmp_path / "posts.surql"
+    written = await SurrealDBConnectionManager.dump_database(path, tables=[DIOPost], users=False, accesses=False)
+    assert written == path.stat().st_size > 0
+    assert path.stat().st_mode & 0o777 == 0o600
+    dump = path.read_text(encoding="utf-8")
+    assert "DEFINE TABLE dio_post " in dump and "DEFINE TABLE dio_author " not in dump  # model class → its table
+
+    SurrealDBConnectionManager.add_connection(DST, url=URL, user="root", password="root", namespace=NS, database=DST_DB)
+    try:
+        dst = await SurrealDBConnectionManager.get_client(DST)  # the ORM's connection creates the database
+        # Defined and empty, as after migrations: the dump's definition replaces it (D24).
+        await dst.query("REMOVE TABLE IF EXISTS dio_post; DEFINE TABLE dio_post SCHEMALESS;")
+        QueryCache.clear()  # the I6 import test cached this query on DST; a raw REMOVE does not invalidate it
+        async with SurrealDBConnectionManager.using(DST):
+            assert await DIOPost.objects().cache(ttl=60).exec() == []  # cached: an empty table
+
+            await SurrealDBConnectionManager.restore_database(path)
+
+            cached = await DIOPost.objects().cache(ttl=60).exec()  # the restore dropped the cached []
+            restored = await DIOPost.objects().order_by("id").exec()
+        originals = await DIOPost.objects().order_by("id").exec()
+        assert len(cached) == len(originals) == 6
+        assert [p.model_dump() for p in restored] == [p.model_dump() for p in originals]
     finally:
         try:
             await (await SurrealDBConnectionManager.get_client(DST)).query("REMOVE TABLE IF EXISTS dio_post;")

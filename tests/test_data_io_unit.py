@@ -457,3 +457,138 @@ class TestDataIoExports:
             assert callable(getattr(jsonl, name)) or name == "JSONL_TAGS"
         assert surreal_sdk.DataImportError is DataImportError
         assert surreal_sdk.ImportReport is ImportReport
+
+
+# ---------------------------------------------------------------------------
+# U13 — SurrealDBConnectionManager.dump_database() / restore_database()
+# ---------------------------------------------------------------------------
+
+
+def _dump_clients() -> dict[str, Any]:
+    """Two connected fake ``HTTPConnection``s, ``default`` and ``diou_other``, returned by ``get_client()``'s fast path."""
+    clients: dict[str, Any] = {}
+    for name in ("default", "diou_other"):
+        client = AsyncMock()
+        client.is_connected = True
+        client.export_database = AsyncMock(return_value=42)
+        client.import_database = AsyncMock(return_value=None)
+        clients[name] = client
+    return clients
+
+
+def _registry(clients: dict[str, Any]) -> Any:
+    from contextlib import ExitStack
+
+    from src.surreal_orm.connection_config import ConnectionConfig
+    from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+    config = ConnectionConfig(url="http://localhost:8000", user="root", password="root", namespace="ns", database="db")
+    stack = ExitStack()
+    stack.enter_context(patch.dict(SurrealDBConnectionManager._configs, {name: config for name in clients}, clear=True))
+    stack.enter_context(patch.dict(SurrealDBConnectionManager._clients, clients, clear=True))
+    return stack
+
+
+ALL_OPTIONS = {"users": True, "accesses": True, "params": True, "functions": True, "analyzers": True, "records": True}
+
+
+class TestDumpRestoreDatabase:
+    async def test_dump_uses_the_default_connection_and_passes_every_option(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        clients = _dump_clients()
+        with _registry(clients):
+            written = await SurrealDBConnectionManager.dump_database("backup.surql")
+
+        assert written == 42
+        clients["default"].export_database.assert_awaited_once_with("backup.surql", tables=None, **ALL_OPTIONS)
+        clients["diou_other"].export_database.assert_not_awaited()
+
+    async def test_dump_follows_using_and_connection(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        clients = _dump_clients()
+        with _registry(clients):
+            async with SurrealDBConnectionManager.using("diou_other"):
+                await SurrealDBConnectionManager.dump_database("a.surql", users=False, accesses=False)
+            await SurrealDBConnectionManager.dump_database("b.surql", connection="diou_other", records=False)
+
+        calls = clients["diou_other"].export_database.await_args_list
+        assert [c.args for c in calls] == [("a.surql",), ("b.surql",)]
+        assert calls[0].kwargs == {**ALL_OPTIONS, "tables": None, "users": False, "accesses": False}
+        assert calls[1].kwargs == {**ALL_OPTIONS, "tables": None, "records": False}
+        clients["default"].export_database.assert_not_awaited()
+
+    async def test_dump_reads_model_classes_through_get_table_name(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        clients = _dump_clients()
+        sink = io.BytesIO()
+        with _registry(clients):
+            await SurrealDBConnectionManager.dump_database(sink, tables=[DIOUPost, "audit", DIOUScore])
+
+        clients["default"].export_database.assert_awaited_once_with(
+            sink, tables=["diou_post", "audit", "diou_score"], **ALL_OPTIONS
+        )
+
+    @pytest.mark.parametrize("bad", ["a b", "t\n", "x;REMOVE TABLE y", ""])
+    async def test_dump_refuses_a_bad_table_name_e5_before_any_io(self, bad: str) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        clients = _dump_clients()
+        with _registry(clients), patch.object(SurrealDBConnectionManager, "get_client", new_callable=AsyncMock) as gc:
+            with pytest.raises(ValueError, match=re.escape(f"Invalid table name: {bad!r} (expected an identifier)")):
+                await SurrealDBConnectionManager.dump_database("x.surql", tables=["ok", bad])
+        gc.assert_not_awaited()
+
+    async def test_dump_refuses_a_single_string_for_tables(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        clients = _dump_clients()
+        with _registry(clients), pytest.raises(TypeError, match="tables must be a sequence"):
+            await SurrealDBConnectionManager.dump_database("x.surql", tables="diou_post")  # type: ignore[arg-type]
+        clients["default"].export_database.assert_not_awaited()
+
+    async def test_restore_follows_connection_resolution(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        clients = _dump_clients()
+        with _registry(clients):
+            await SurrealDBConnectionManager.restore_database(b"OPTION IMPORT;")
+            async with SurrealDBConnectionManager.using("diou_other"):
+                await SurrealDBConnectionManager.restore_database("a.surql")
+            await SurrealDBConnectionManager.restore_database(Path("b.surql"), connection="diou_other")
+
+        clients["default"].import_database.assert_awaited_once_with(b"OPTION IMPORT;")
+        assert [c.args for c in clients["diou_other"].import_database.await_args_list] == [
+            ("a.surql",),
+            (Path("b.surql"),),
+        ]
+
+    async def test_restore_clears_the_whole_cache_on_success(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        clients = _dump_clients()
+        with _registry(clients), patch("src.surreal_orm.cache.QueryCache.clear") as clear:
+            await SurrealDBConnectionManager.restore_database(b"OPTION IMPORT;")
+        clear.assert_called_once_with()
+
+    async def test_restore_clears_the_whole_cache_on_error(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        clients = _dump_clients()
+        error = DataImportError("Import failed: 1 statement(s) rejected; first: boom", errors=["boom"], code=422)
+        clients["default"].import_database.side_effect = error
+        with _registry(clients), patch("src.surreal_orm.cache.QueryCache.clear") as clear:
+            with pytest.raises(DataImportError) as raised:
+                await SurrealDBConnectionManager.restore_database(b"OPTION IMPORT;")
+        assert raised.value is error
+        clear.assert_called_once_with()
+
+    async def test_dump_does_not_touch_the_cache(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        clients = _dump_clients()
+        with _registry(clients), patch("src.surreal_orm.cache.QueryCache.clear") as clear:
+            await SurrealDBConnectionManager.dump_database(io.BytesIO())
+        clear.assert_not_called()
