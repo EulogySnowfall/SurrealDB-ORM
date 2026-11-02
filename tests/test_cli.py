@@ -6,7 +6,10 @@ Uses Click's CliRunner for testing CLI commands without database connections.
 
 import asyncio
 import dataclasses
+import os
 import shutil
+import stat
+import sys
 import tempfile
 import threading
 import warnings
@@ -16,6 +19,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+
+from surreal_sdk.connection.base import BaseSurrealConnection as _SdkBaseConnection
+from surreal_sdk.protocol.cbor import RecordId
+from surreal_sdk.types import QueryResponse as _SdkQueryResponse
 
 
 def mock_run_async_factory(return_value: Any = None, exception: Exception | None = None):
@@ -916,3 +923,356 @@ class TestI280CommandsEndToEnd:
         assert "Goodbye!" in result.output
         client.query.assert_awaited_once_with("RETURN 42;")
         assert prompted_inside_loop == [False, False]
+
+
+# ---------------------------------------------------------------------------
+# U14 — data commands: dump, restore, export-jsonl, import-jsonl (v0.37.0)
+#
+# The real run_async runs every command (0.34.11 lesson): only the connection
+# manager's methods and the SDK client are mocked.
+# ---------------------------------------------------------------------------
+
+_U14_GROUP = ["-n", "u14", "-d", "u14"]
+
+
+def _u14_client(**methods: Any) -> MagicMock:
+    """A fake SDK client whose named methods are AsyncMocks."""
+    client = MagicMock()
+    for name, method in methods.items():
+        setattr(client, name, method)
+    return client
+
+
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+@pytest.mark.usefixtures("i280_restore_default_connection")
+class TestU14DumpCommand:
+    """``surreal-orm dump`` maps its options onto ``dump_database()``."""
+
+    def test_help_warns_about_password_hashes_and_the_file_mode(self, runner: "CliRunner", cli_command) -> None:
+        result = runner.invoke(cli_command, ["dump", "--help"])
+
+        assert result.exit_code == 0, result.output
+        text = " ".join(result.output.split())
+        assert "password hashes" in text
+        assert "--no-users --no-accesses" in text
+        assert "readable by its owner only" in text
+        assert "0o600" in text
+
+    def test_defaults_dump_everything_to_stdout_as_bytes(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        async def dump(dest: Any, **kwargs: Any) -> int:
+            await asyncio.sleep(0)
+            dest.write(b"OPTION IMPORT;\n")
+            return 15
+
+        mock = AsyncMock(side_effect=dump)
+        with patch.object(SurrealDBConnectionManager, "dump_database", new=mock):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "dump"])
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout_bytes == b"OPTION IMPORT;\n"
+        assert result.stderr == ""
+        mock.assert_awaited_once()
+        assert mock.await_args.kwargs == {
+            "tables": None,
+            "users": True,
+            "accesses": True,
+            "params": True,
+            "functions": True,
+            "analyzers": True,
+            "records": True,
+        }
+        config = SurrealDBConnectionManager.get_config("default")
+        assert config is not None
+        assert (config.namespace, config.database) == ("u14", "u14")
+
+    def test_options_map_to_keywords_and_output_goes_to_the_file(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        mock = AsyncMock(return_value=1234)
+        with patch.object(SurrealDBConnectionManager, "dump_database", new=mock):
+            result = runner.invoke(
+                cli_command,
+                [
+                    *_U14_GROUP,
+                    "dump",
+                    "-o",
+                    "backup.surql",
+                    "--table",
+                    "post",
+                    "--table",
+                    "audit",
+                    "--no-users",
+                    "--no-accesses",
+                    "--no-params",
+                    "--no-functions",
+                    "--no-analyzers",
+                    "--schema-only",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock.assert_awaited_once_with(
+            "backup.surql",
+            tables=["post", "audit"],
+            users=False,
+            accesses=False,
+            params=False,
+            functions=False,
+            analyzers=False,
+            records=False,
+        )
+        assert result.stdout == ""
+        assert result.stderr == "Dumped 1234 bytes to backup.surql\n"
+
+    def test_a_failure_prints_the_message_and_exits_1(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+        from surreal_sdk.exceptions import QueryError
+
+        mock = AsyncMock(side_effect=QueryError("Export failed: HTTP 403 - Forbidden", code=403))
+        with patch.object(SurrealDBConnectionManager, "dump_database", new=mock):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "dump", "-o", "x.surql"])
+
+        assert result.exit_code == 1
+        assert "Export failed: HTTP 403 - Forbidden" in result.stderr
+
+
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+@pytest.mark.usefixtures("i280_restore_default_connection")
+class TestU14RestoreCommand:
+    """``surreal-orm restore PATH`` (``-`` = stdin) calls ``restore_database()``."""
+
+    def test_restores_a_path(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        mock = AsyncMock(return_value=None)
+        with patch.object(SurrealDBConnectionManager, "restore_database", new=mock):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "restore", "backup.surql"])
+
+        assert result.exit_code == 0, result.output
+        mock.assert_awaited_once_with("backup.surql")
+        assert result.stdout == "Restored backup.surql\n"
+
+    def test_dash_reads_the_dump_from_stdin_as_bytes(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        received: list[bytes] = []
+
+        async def restore(source: Any, **kwargs: Any) -> None:
+            await asyncio.sleep(0)
+            received.append(source.read())
+
+        mock = AsyncMock(side_effect=restore)
+        with patch.object(SurrealDBConnectionManager, "restore_database", new=mock):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "restore", "-"], input=b"OPTION IMPORT;\n")
+
+        assert result.exit_code == 0, result.output
+        assert received == [b"OPTION IMPORT;\n"]
+        assert result.stdout == "Restored -\n"
+
+    def test_import_error_prints_every_error_line_and_exits_1(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+        from surreal_sdk.exceptions import DataImportError
+
+        error = DataImportError(
+            "Import failed: 2 statement(s) rejected; first: Database record `post:1` already exists",
+            errors=["Database record `post:1` already exists", "Database record `post:2` already exists"],
+            code=200,
+        )
+        mock = AsyncMock(side_effect=error)
+        with patch.object(SurrealDBConnectionManager, "restore_database", new=mock):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "restore", "backup.surql"])
+
+        assert result.exit_code == 1
+        assert "Restored" not in result.output
+        assert "Import failed: 2 statement(s) rejected" in result.stderr
+        assert "Database record `post:1` already exists" in result.stderr
+        assert "Database record `post:2` already exists" in result.stderr
+
+    def test_other_failure_prints_the_message_and_exits_1(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        mock = AsyncMock(side_effect=FileNotFoundError("[Errno 2] No such file or directory: 'nope.surql'"))
+        with patch.object(SurrealDBConnectionManager, "restore_database", new=mock):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "restore", "nope.surql"])
+
+        assert result.exit_code == 1
+        assert "No such file or directory" in result.stderr
+
+
+class _U14JsonlConnection(_SdkBaseConnection):
+    """A connection whose ``query()`` returns ``rows`` once, so the real ``export_jsonl()`` runs."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        super().__init__("http://fake", "u14", "u14")
+        self.protocol = "cbor"
+        self._replies = [rows]
+
+    async def connect(self) -> "_U14JsonlConnection":
+        return self
+
+    async def close(self) -> None:
+        return None
+
+    async def _send_rpc(self, request: Any) -> Any:
+        raise AssertionError("export_jsonl() goes through query()")
+
+    def transaction(self) -> Any:
+        raise AssertionError("not used")
+
+    async def query(self, sql: str, vars: dict[str, Any] | None = None) -> _SdkQueryResponse:
+        rows = self._replies.pop(0) if self._replies else []
+        return _SdkQueryResponse.from_rpc_result([{"status": "OK", "result": rows, "time": ""}])
+
+
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+@pytest.mark.usefixtures("i280_restore_default_connection")
+class TestU14ExportJsonlCommand:
+    """``surreal-orm export-jsonl TABLE`` calls the SDK client's ``export_jsonl()``."""
+
+    def test_defaults_write_typed_lines_to_stdout(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        async def export(table: str, dest: Any, **kwargs: Any) -> int:
+            await asyncio.sleep(0)
+            dest.write('{"id":{"$record":"post:1"}}\n')
+            return 1
+
+        client = _u14_client(export_jsonl=AsyncMock(side_effect=export))
+        with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "export-jsonl", "post"])
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == '{"id":{"$record":"post:1"}}\n'
+        assert result.stderr == ""
+        assert client.export_jsonl.await_args.args[0] == "post"
+        assert client.export_jsonl.await_args.kwargs == {"batch_size": 1000, "typed": True}
+
+    def test_output_batch_size_and_plain(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        client = _u14_client(export_jsonl=AsyncMock(return_value=42))
+        with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+            result = runner.invoke(
+                cli_command,
+                [*_U14_GROUP, "export-jsonl", "post", "-o", "post.jsonl", "--batch-size", "50", "--plain"],
+            )
+
+        assert result.exit_code == 0, result.output
+        client.export_jsonl.assert_awaited_once_with("post", "post.jsonl", batch_size=50, typed=False)
+        assert result.stdout == ""
+        assert result.stderr == "Exported 42 records to post.jsonl\n"
+
+    def test_help_states_the_file_mode(self, runner: "CliRunner", cli_command) -> None:
+        result = runner.invoke(cli_command, ["export-jsonl", "--help"])
+
+        assert result.exit_code == 0, result.output
+        text = " ".join(result.output.split())
+        assert "readable by its owner only" in text
+        assert "0o600" in text
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_output_file_is_owner_only(self, runner: "CliRunner", cli_command, tmp_path: Path, existing: bool) -> None:
+        """The real SDK ``export_jsonl()`` opens ``-o``: new → 0o600, an owner-only file stays 0o600 and is truncated."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        path = tmp_path / "post.jsonl"
+        if existing:
+            path.write_text("stale\n" * 50, encoding="utf-8")
+            path.chmod(0o600)
+        client = _U14JsonlConnection([{"id": RecordId("post", 1)}])
+        previous = os.umask(0o022)
+        try:
+            with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+                result = runner.invoke(cli_command, [*_U14_GROUP, "export-jsonl", "post", "-o", str(path)])
+        finally:
+            os.umask(previous)
+
+        assert result.exit_code == 0, result.output
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert path.read_text(encoding="utf-8") == '{"id":{"$record":["post",1]}}\n'
+
+    def test_a_failure_prints_the_message_and_exits_1(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        error = ValueError("Invalid table name: 'a b' (expected an identifier)")
+        client = _u14_client(export_jsonl=AsyncMock(side_effect=error))
+        with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "export-jsonl", "a b"])
+
+        assert result.exit_code == 1
+        assert "Invalid table name: 'a b' (expected an identifier)" in result.stderr
+
+
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+@pytest.mark.usefixtures("i280_restore_default_connection")
+class TestU14ImportJsonlCommand:
+    """``surreal-orm import-jsonl TABLE PATH`` calls the SDK client's ``import_jsonl()``."""
+
+    def test_defaults_and_the_report_line(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+        from surreal_sdk import ImportReport
+
+        report = ImportReport(table="post", lines=3, rows=3, batches=1)
+        client = _u14_client(import_jsonl=AsyncMock(return_value=report))
+        with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "import-jsonl", "post", "post.jsonl"])
+
+        assert result.exit_code == 0, result.output
+        client.import_jsonl.assert_awaited_once_with("post", "post.jsonl", batch_size=1000, on_conflict="error", raw=False)
+        assert result.stdout == "Imported 3 rows in 1 batches\n"
+
+    def test_options_and_stdin(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+        from surreal_sdk import ImportReport
+
+        received: list[str] = []
+
+        async def load(table: str, source: Any, **kwargs: Any) -> ImportReport:
+            await asyncio.sleep(0)
+            received.append(source.read())
+            return ImportReport(table=table, lines=2, rows=2, batches=2)
+
+        client = _u14_client(import_jsonl=AsyncMock(side_effect=load))
+        with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+            result = runner.invoke(
+                cli_command,
+                [*_U14_GROUP, "import-jsonl", "post", "-", "--batch-size", "1", "--ignore-existing", "--raw"],
+                input='{"a":1}\n{"a":2}\n',
+            )
+
+        assert result.exit_code == 0, result.output
+        assert received == ['{"a":1}\n{"a":2}\n']
+        assert client.import_jsonl.await_args.kwargs == {"batch_size": 1, "on_conflict": "ignore", "raw": True}
+        assert result.stdout == "Imported 2 rows in 2 batches\n"
+
+    def test_import_error_prints_the_message_and_what_was_written(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+        from surreal_sdk import DataImportError, ImportReport
+
+        error = DataImportError(
+            "Batch at lines 1001-2000 was rejected by post: Database record `post:1500` already exists",
+            errors=["Database record `post:1500` already exists"],
+            report=ImportReport(table="post", lines=2000, rows=1000, batches=1),
+        )
+        client = _u14_client(import_jsonl=AsyncMock(side_effect=error))
+        with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "import-jsonl", "post", "post.jsonl"])
+
+        assert result.exit_code == 1
+        assert "Imported" not in result.stdout
+        assert "Batch at lines 1001-2000 was rejected by post" in result.stderr
+        assert "1000 rows in 1 batches were written before the error" in result.stderr
+
+    def test_a_format_error_prints_the_message_and_exits_1(self, runner: "CliRunner", cli_command) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+        from surreal_sdk import DataFormatError
+
+        client = _u14_client(import_jsonl=AsyncMock(side_effect=DataFormatError("Line 2: invalid JSON (oops)")))
+        with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+            result = runner.invoke(cli_command, [*_U14_GROUP, "import-jsonl", "post", "post.jsonl"])
+
+        assert result.exit_code == 1
+        assert "Line 2: invalid JSON (oops)" in result.stderr

@@ -27,15 +27,20 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from surreal_sdk import HTTPConnection, WebSocketConnection
+from surreal_sdk.connection.http import DumpDestination, DumpSource
 from surreal_sdk.exceptions import SurrealDBError
 from surreal_sdk.transaction import HTTPTransaction
+from surreal_sdk.utils import validate_table_name
 
 from .connection_config import ConnectionConfig
+
+if TYPE_CHECKING:
+    from .model_base import BaseSurrealModel
 
 logger = logging.getLogger(__name__)
 
@@ -792,6 +797,148 @@ class SurrealDBConnectionManager:
         """
         client = await cls.get_client()
         return client.transaction()
+
+    # -----------------------------------------------------------------------
+    # Database dump / restore
+    # -----------------------------------------------------------------------
+
+    @classmethod
+    async def dump_database(
+        cls,
+        dest: DumpDestination,
+        *,
+        connection: str | None = None,
+        tables: Sequence[str | type[BaseSurrealModel]] | None = None,
+        users: bool = True,
+        accesses: bool = True,
+        params: bool = True,
+        functions: bool = True,
+        analyzers: bool = True,
+        records: bool = True,
+    ) -> int:
+        """
+        Write a SurrealQL dump of a connection's database to ``dest``.
+
+        The dump is the server's own format (the one ``surreal export``
+        writes): ``OPTION IMPORT;``, the definitions, then the rows as
+        ``INSERT`` statements. It keeps every value as the server stores it
+        (geometry, nanosecond datetimes, ``NULL``), which JSON Lines cannot.
+        Delegates to :meth:`HTTPConnection.export_database` on the resolved
+        connection; the transfer is streamed and has no client timeout.
+
+        **A dump contains every user's password hash and the access
+        definitions (including JWT keys)** unless users and accesses are
+        excluded: ``dump_database(path, users=False, accesses=False)``, or
+        ``surreal-orm dump --no-users --no-accesses -o app.surql``. A **new**
+        file is created with mode ``0o600`` (readable by its owner only); an
+        existing file is truncated and keeps its mode.
+
+        Example::
+
+            await SurrealDBConnectionManager.dump_database("backup.surql")
+            await SurrealDBConnectionManager.dump_database(
+                "posts.surql", tables=[Post, "audit"], users=False, accesses=False
+            )
+
+        Args:
+            dest: A path (created or truncated) or a binary stream, which is
+                written to and left open.
+            connection: Connection name; ``None`` uses the active one
+                (``using()`` context, then ``"default"``).
+            tables: Tables to dump, as names or model classes (read through
+                ``get_table_name()``); ``None`` (default) dumps every table.
+            users: Include ``DEFINE USER`` statements (password hashes).
+            accesses: Include ``DEFINE ACCESS`` statements (keys, record
+                access logic).
+            params: Include ``DEFINE PARAM`` statements.
+            functions: Include ``DEFINE FUNCTION`` statements.
+            analyzers: Include ``DEFINE ANALYZER`` statements.
+            records: Include the tables' rows; ``False`` dumps definitions
+                only.
+
+        Returns:
+            int: The number of bytes written.
+
+        Raises:
+            ValueError: Before any request, if a table name is not an
+                identifier (``Invalid table name: …``).
+            TypeError: Before any request, if ``tables`` is a single string.
+            ConnectionError, QueryError, OSError: As
+                :meth:`HTTPConnection.export_database`.
+        """
+        names = cls._dump_table_names(tables)
+        client = await cls.get_client(connection)
+        return await client.export_database(
+            dest,
+            tables=names,
+            users=users,
+            accesses=accesses,
+            params=params,
+            functions=functions,
+            analyzers=analyzers,
+            records=records,
+        )
+
+    @staticmethod
+    def _dump_table_names(tables: Sequence[str | type[BaseSurrealModel]] | None) -> list[str] | None:
+        """The validated table names of a ``dump_database(tables=...)`` argument (models read by ``get_table_name()``)."""
+        if tables is None:
+            return None
+        if isinstance(tables, str):
+            raise TypeError("tables must be a sequence of table names or model classes, not a str")
+        return [validate_table_name(entry if isinstance(entry, str) else entry.get_table_name()) for entry in tables]
+
+    @classmethod
+    async def restore_database(cls, source: DumpSource, *, connection: str | None = None) -> None:
+        """
+        Restore a SurrealQL dump into a connection's database.
+
+        Delegates to :meth:`HTTPConnection.import_database` on the resolved
+        connection; ``source`` is a path (a ``str`` is always a path), the
+        dump's ``bytes``, a binary stream or an async iterable of ``bytes``,
+        streamed to the server. The database is created when the ORM
+        connects, so it exists.
+
+        What a restore does, as measured on SurrealDB 3.2 and 3.3:
+
+        - It runs under the dump's ``OPTION IMPORT;``: no field processing,
+          no ``ASSERT``/``VALUE``, no events, **no ORM signal**. It needs a
+          system user (root, namespace or database ``OWNER``).
+        - A definition of the same name (table, field, index, event,
+          function, param) is **replaced** by the dump's; a definition only
+          in the target **stays**. A target where migrations were applied
+          restores cleanly as long as the dumped tables hold no rows.
+        - It is **not transactional**: a row that already exists fails its
+          own ``INSERT`` statement (``DataImportError``) and the other
+          statements, other tables included, are applied.
+
+        The whole :class:`QueryCache` is cleared afterwards, also when the
+        restore fails, since any table may have changed.
+
+        Example::
+
+            async with SurrealDBConnectionManager.using("restore_target"):
+                await SurrealDBConnectionManager.restore_database("backup.surql")
+
+        Args:
+            source: The dump to restore.
+            connection: Connection name; ``None`` uses the active one
+                (``using()`` context, then ``"default"``).
+
+        Raises:
+            DataImportError: If the server rejects statements, answers with
+                an error status or closes the connection during the upload
+                (see :meth:`HTTPConnection.import_database`).
+            TypeError, ConnectionError, OSError: As
+                :meth:`HTTPConnection.import_database`.
+        """
+        from .cache import QueryCache
+
+        try:
+            client = await cls.get_client(connection)
+            await client.import_database(source)
+        finally:
+            QueryCache.clear()
 
     # -----------------------------------------------------------------------
     # Internal helpers

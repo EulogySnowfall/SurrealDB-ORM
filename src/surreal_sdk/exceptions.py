@@ -4,6 +4,13 @@ SurrealDB SDK Exceptions.
 Custom exception hierarchy for the SDK.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .jsonl import ImportReport
+
 
 class SurrealDBError(Exception):
     """Base exception for all SurrealDB SDK errors."""
@@ -32,6 +39,50 @@ class QueryError(SurrealDBError):
     def __init__(self, message: str, query: str | None = None, code: int | None = None):
         self.query = query
         super().__init__(message, code)
+
+
+class DataFormatError(SurrealDBError, ValueError):
+    """Raised when a value cannot be written to, or read from, a JSON Lines file.
+
+    At export, a value the codec cannot carry losslessly (a tuple, which is how
+    the SDK decodes a geometry, a range or an out-of-range datetime; a ``set``;
+    a non-finite ``Decimal``); at import, a line that is not a JSON object or
+    holds a malformed tag. It is a ``ValueError`` as well, so callers that
+    already catch bad input keep working.
+
+    Attributes:
+        line: The 1-based line number of the input, when known.
+        path: The dotted field path of the offending value (``loc``,
+            ``nested.arr[2]``), when known.
+    """
+
+    def __init__(self, message: str, *, line: int | None = None, path: str | None = None):
+        self.line = line
+        self.path = path
+        super().__init__(message)
+
+
+class DataImportError(QueryError):
+    """Raised when the server rejects, or never receives, an import batch.
+
+    Attributes:
+        errors: The server's messages (or the transport error's text).
+        code: The HTTP status or RPC code, when there is one.
+        report: What was written before the failure, for a JSON Lines import;
+            ``None`` for a database import.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        errors: list[str],
+        code: int | None = None,
+        report: ImportReport | None = None,
+    ):
+        self.errors = errors
+        self.report = report
+        super().__init__(message, code=code)
 
 
 class TableNotFoundError(QueryError):

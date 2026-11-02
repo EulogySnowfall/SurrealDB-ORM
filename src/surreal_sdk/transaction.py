@@ -11,11 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
 from .exceptions import TransactionConflictError, TransactionError
-from .utils import _ESCAPED_ID_UNIT, substitute_params, unescape_record_id
-
-#: A table, relation or field name SurrealQL reads without delimiters.
-#: Always used with ``fullmatch``: ``$`` would also accept a trailing newline.
-_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+from .utils import _ESCAPED_ID_UNIT, _IDENTIFIER_RE, substitute_params, unescape_record_id
 
 #: A record ID part that SurrealQL reads as an integer when written inline
 #: (``users:1``, ``users:-5``), provided it fits in a signed 64-bit integer;

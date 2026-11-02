@@ -5,9 +5,12 @@ Provides stateless HTTP-based connection, ideal for microservices and serverless
 """
 
 import asyncio
+import contextlib
 import logging
+import os
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Sequence
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import IO, TYPE_CHECKING, Any, Literal, Protocol, Self
 
 import httpx
 
@@ -15,10 +18,10 @@ from .base import BaseSurrealConnection
 
 if TYPE_CHECKING:
     from ..transaction import HTTPTransaction
-from ..exceptions import ConnectionError, QueryError
+from ..exceptions import ConnectionError, DataImportError, QueryError
 from ..protocol.rpc import RPCMethod, RPCRequest, RPCResponse
 from ..types import AuthResponse
-from ..utils import unescape_record_id
+from ..utils import _open_owner_only, unescape_record_id, validate_table_name
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,51 @@ _AUTH_RETRY_BACKOFFS_S: tuple[float, ...] = (0.1, 0.25, 0.5, 1.0)
 # the result is discarded. Task-local, so a concurrent ``signin()`` from another
 # task is unaffected.
 _REMINT_FOR_GENERATION: ContextVar[int | None] = ContextVar("_REMINT_FOR_GENERATION", default=None)
+
+
+class SupportsWriteBytes(Protocol):
+    """A binary stream ``export_database()`` can write to (a file opened ``"wb"``, ``io.BytesIO``, …)."""
+
+    def write(self, data: bytes, /) -> object: ...
+
+
+#: Where ``HTTPConnection.export_database()`` writes a dump: a path (a new file
+#: is created readable by its owner only) or a binary stream, left open.
+type DumpDestination = str | os.PathLike[str] | SupportsWriteBytes
+
+
+class SupportsReadBytes(Protocol):
+    """A binary stream ``import_database()`` can read from (a file opened ``"rb"``, ``io.BytesIO``, …)."""
+
+    def read(self, size: int = -1, /) -> bytes: ...
+
+
+#: What ``HTTPConnection.import_database()`` restores: a path (a ``str`` is
+#: always a path), the dump's bytes, a binary stream (read, left open) or an
+#: async iterable of ``bytes`` chunks.
+type DumpSource = str | os.PathLike[str] | bytes | SupportsReadBytes | AsyncIterable[bytes]
+
+#: Size of the chunks ``import_database()`` reads from a path, a stream or ``bytes``.
+_IMPORT_CHUNK_SIZE = 64 * 1024
+
+
+async def _read_chunks(stream: SupportsReadBytes) -> AsyncGenerator[bytes, None]:
+    """``stream``'s bytes in chunks of ``_IMPORT_CHUNK_SIZE``, each read in a worker thread."""
+    while chunk := await asyncio.to_thread(stream.read, _IMPORT_CHUNK_SIZE):
+        yield chunk
+
+
+async def _slice_chunks(data: bytes) -> AsyncGenerator[bytes, None]:
+    """``data`` in chunks of ``_IMPORT_CHUNK_SIZE``."""
+    view = memoryview(data)
+    for start in range(0, len(view), _IMPORT_CHUNK_SIZE):
+        yield bytes(view[start : start + _IMPORT_CHUNK_SIZE])
+
+
+async def _pass_chunks(chunks: AsyncIterable[bytes]) -> AsyncGenerator[bytes, None]:
+    """The caller's chunks as they come (an async generator, so httpx streams it)."""
+    async for chunk in chunks:
+        yield chunk
 
 
 class HTTPConnection(BaseSurrealConnection):
@@ -323,12 +371,30 @@ class HTTPConnection(BaseSurrealConnection):
         connection is closed before returning (a failure to close is logged,
         not raised).
         """
-        if not self._client:
+        async with self._inflight() as client:
+            return await self._post_rpc(client, request)
+
+    @contextlib.asynccontextmanager
+    async def _inflight(self) -> AsyncIterator[httpx.AsyncClient]:
+        """Count one request as in flight on this connection while the block runs.
+
+        Yields the current client. Used by every request ``_drain_and_close``
+        must wait for: RPC requests and the ``/export`` / ``/import`` transfers.
+        On exit, however the block ends, the request stops counting, waiters
+        are woken, and if it was the last use of a connection marked by
+        ``_close_when_idle`` the connection is closed (a failure to close is
+        logged, not raised).
+
+        Raises:
+            ConnectionError: If not connected (nothing is counted).
+        """
+        client = self._client
+        if not client:
             raise ConnectionError("Not connected. Call connect() first.")
 
         self._inflight_rpcs += 1
         try:
-            return await self._post_rpc(self._client, request)
+            yield client
         finally:
             self._inflight_rpcs -= 1
             self._released.set()
@@ -624,6 +690,319 @@ class HTTPConnection(BaseSurrealConnection):
                 query=query,
                 code=e.response.status_code,
             )
+
+    # ------------------------------------------------------------------
+    # Database dump (/export)
+    # ------------------------------------------------------------------
+
+    def export_database_stream(
+        self,
+        *,
+        tables: Sequence[str] | None = None,
+        users: bool = True,
+        accesses: bool = True,
+        params: bool = True,
+        functions: bool = True,
+        analyzers: bool = True,
+        records: bool = True,
+    ) -> contextlib.AbstractAsyncContextManager[AsyncIterator[bytes]]:
+        """
+        Stream a SurrealQL dump of the database from the server's ``/export`` endpoint.
+
+        The dump is the server's own format (``OPTION IMPORT;``, then the
+        definitions and ``INSERT`` statements), the one ``surreal export``
+        writes and :meth:`import_database` restores. Entering the returned
+        context sends the request; it yields the dump's bytes, decoded from
+        any transfer compression, chunk by chunk as the server sends them::
+
+            async with conn.export_database_stream(tables=["person"]) as chunks:
+                async for chunk in chunks:
+                    await sink.write(chunk)
+
+        The transfer has no client timeout and counts as in flight for the
+        whole block, so ``reconnect()`` waits for it (up to its drain timeout,
+        after which it is cut). There is no transient-``401`` re-mint: a
+        rejected token is raised with ``code=401``.
+
+        **A dump contains every user's password hash and the access
+        definitions (including JWT keys)** unless users and accesses are
+        excluded: ``export_database_stream(users=False, accesses=False)``,
+        or ``surreal-orm dump --no-users --no-accesses -o app.surql`` from
+        the command line. Otherwise keep it as private as the credentials
+        themselves.
+
+        Args:
+            tables: Tables to dump (identifiers); ``None`` (default) dumps
+                every table. A table that does not exist dumps nothing.
+            users: Include ``DEFINE USER`` statements.
+            accesses: Include ``DEFINE ACCESS`` statements.
+            params: Include ``DEFINE PARAM`` statements.
+            functions: Include ``DEFINE FUNCTION`` statements.
+            analyzers: Include ``DEFINE ANALYZER`` statements.
+            records: Include the tables' rows; ``False`` dumps definitions only.
+
+        Returns:
+            An async context manager yielding an async iterator of ``bytes``.
+
+        Raises:
+            ValueError: At the call, if a table name is not an identifier.
+            TypeError: At the call, if ``tables`` is a single string.
+            ConnectionError: On entering, if not connected; on entering or
+                while iterating, if the transfer fails
+                (``Export failed: …``, the ``httpx`` error as ``__cause__``).
+            QueryError: On entering, if the server answers with another
+                status than 200 (``Export failed: HTTP {code} - {text}``,
+                ``code`` set).
+        """
+        body = {
+            "users": users,
+            "accesses": accesses,
+            "params": params,
+            "functions": functions,
+            "analyzers": analyzers,
+            "tables": self._export_tables(tables),
+            "records": records,
+        }
+        return self._export_stream(body)
+
+    @staticmethod
+    def _export_tables(tables: Sequence[str] | None) -> bool | list[str]:
+        """The ``tables`` value of an ``/export`` body: ``True`` for all, else the validated names."""
+        if tables is None:
+            return True
+        if isinstance(tables, str):
+            raise TypeError("tables must be a sequence of table names, not a str")
+        return [validate_table_name(name) for name in tables]
+
+    @contextlib.asynccontextmanager
+    async def _export_stream(self, body: dict[str, Any]) -> AsyncIterator[AsyncIterator[bytes]]:
+        """Send ``POST /export`` with ``body`` and yield the response's bytes (see ``export_database_stream``)."""
+        async with self._inflight() as client:
+            request = client.build_request("POST", "/export", json=body, headers=self._json_headers, timeout=None)
+            try:
+                response = await client.send(request, stream=True)
+            except httpx.TransportError as exc:
+                raise ConnectionError(f"Export failed: {exc!r}") from exc
+            try:
+                if response.status_code != 200:
+                    try:
+                        await response.aread()
+                    except httpx.TransportError as exc:
+                        raise ConnectionError(f"Export failed: {exc!r}") from exc
+                    raise QueryError(
+                        message=f"Export failed: HTTP {response.status_code} - {response.text}",
+                        code=response.status_code,
+                    )
+                chunks = self._export_chunks(response)
+                try:
+                    yield chunks
+                finally:
+                    await chunks.aclose()  # a block that stops iterating early
+            finally:
+                await response.aclose()
+
+    @staticmethod
+    async def _export_chunks(response: httpx.Response) -> AsyncGenerator[bytes, None]:
+        """The decoded body of an ``/export`` response; a transport error becomes ``ConnectionError``."""
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        except httpx.TransportError as exc:
+            raise ConnectionError(f"Export failed: {exc!r}") from exc
+
+    async def export_database(
+        self,
+        dest: DumpDestination,
+        *,
+        tables: Sequence[str] | None = None,
+        users: bool = True,
+        accesses: bool = True,
+        params: bool = True,
+        functions: bool = True,
+        analyzers: bool = True,
+        records: bool = True,
+    ) -> int:
+        """
+        Write a SurrealQL dump of the database to ``dest``.
+
+        Streams :meth:`export_database_stream` (same options) chunk by chunk;
+        every file operation (open, each write, close) runs in a worker
+        thread. The destination is opened only once the server has accepted
+        the request, so an error status leaves an existing file untouched.
+        A transfer error leaves the bytes already written in ``dest``.
+
+        **A dump contains every user's password hash and the access
+        definitions (including JWT keys)** unless users and accesses are
+        excluded: ``export_database(path, users=False, accesses=False)``, or
+        ``surreal-orm dump --no-users --no-accesses -o app.surql``. A **new** file
+        is therefore created with mode ``0o600`` (readable by its owner
+        only); an existing file is truncated and keeps its mode. On Windows
+        the mode is ignored.
+
+        Args:
+            dest: A path (created or truncated) or a binary stream, which is
+                written to and left open.
+            tables, users, accesses, params, functions, analyzers, records:
+                See :meth:`export_database_stream`.
+
+        Returns:
+            int: The number of bytes written.
+
+        Raises:
+            ValueError, TypeError, ConnectionError, QueryError: As
+                :meth:`export_database_stream`; argument errors are raised
+                before ``dest`` is opened.
+            OSError: If ``dest`` cannot be opened or written.
+        """
+        stream = self.export_database_stream(
+            tables=tables,
+            users=users,
+            accesses=accesses,
+            params=params,
+            functions=functions,
+            analyzers=analyzers,
+            records=records,
+        )
+        written = 0
+        async with stream as chunks:
+            owned: IO[bytes] | None = None
+            if isinstance(dest, (str, os.PathLike)):
+                owned = await asyncio.to_thread(_open_owner_only, os.fspath(dest), "wb")
+                sink: SupportsWriteBytes = owned
+            else:
+                sink = dest
+            try:
+                async for chunk in chunks:
+                    await asyncio.to_thread(sink.write, chunk)
+                    written += len(chunk)
+            finally:
+                if owned is not None:
+                    await asyncio.to_thread(owned.close)
+        return written
+
+    # ------------------------------------------------------------------
+    # Database restore (/import)
+    # ------------------------------------------------------------------
+
+    async def import_database(self, source: DumpSource) -> None:
+        """
+        Restore a SurrealQL dump through the server's ``/import`` endpoint.
+
+        ``source`` is streamed to the server in chunks of 64 KiB: a path (a
+        ``str`` is always a path; opened, read and closed in a worker thread),
+        the dump's ``bytes``, a binary stream (read in a worker thread and
+        left open) or an async iterable of ``bytes`` chunks. The body is sent
+        as is: a dump from :meth:`export_database` or ``surreal export``
+        starts with ``OPTION IMPORT;``, which the server requires, and the SDK
+        never adds it.
+
+        Under ``OPTION IMPORT`` the server runs the statements without field
+        processing, events or live notifications. The restore is **not
+        transactional**: a rejected statement does not stop the ones after it,
+        so on error the database holds what the other statements wrote. A
+        definition of the same name (table, field, index, event, function,
+        param) is replaced by the dump's, one only in the target is kept, and
+        a row that already exists makes its whole ``INSERT`` fail.
+
+        **The database must exist**: the server reports
+        ``The database '<db>' does not exist`` for every body otherwise, even
+        after a ``DEFINE TABLE`` of the dump created it and wrote rows. Create
+        it first (``DEFINE DATABASE IF NOT EXISTS``); this method runs no DDL.
+        The server allows imports to a root, namespace or database ``OWNER``
+        user only.
+
+        The transfer has no client timeout and counts as in flight for the
+        whole upload, so ``reconnect()`` waits for it (up to its drain
+        timeout, after which it is cut). There is no transient-``401``
+        re-mint: a rejected token is raised with ``code=401``.
+
+        Args:
+            source: The dump to restore.
+
+        Raises:
+            TypeError: At the call, if ``source`` is none of the types above.
+            ConnectionError: If not connected (nothing is sent).
+            OSError: If the path cannot be opened or read.
+            DataImportError: If the server rejects statements
+                (``Import failed: {k} statement(s) rejected; first: …``,
+                ``errors`` every message, ``code`` the HTTP status: 422 on
+                SurrealDB 3.3, 200 on 3.2); if it answers with another status
+                (``Import failed: HTTP {code} - …``, e.g. 400 for a body
+                without ``OPTION IMPORT;``, 403 for a user without import
+                rights); or if the connection fails during the transfer
+                (``code`` is ``None``, the ``httpx`` error is ``__cause__``),
+                which is also what a server that rejects the request before
+                reading a large body looks like.
+        """
+        if not isinstance(source, (bytes, bytearray, memoryview, str, os.PathLike, AsyncIterable)) and not callable(
+            getattr(source, "read", None)
+        ):
+            raise TypeError(
+                f"source must be a path, bytes, a binary stream or an async iterable of bytes, got {type(source).__name__}"
+            )
+
+        async with self._inflight() as client:
+            owned: IO[bytes] | None = None
+            body: AsyncGenerator[bytes, None]
+            if isinstance(source, (bytes, bytearray, memoryview)):
+                body = _slice_chunks(bytes(source))
+            elif isinstance(source, (str, os.PathLike)):
+                owned = await asyncio.to_thread(open, os.fspath(source), "rb")
+                body = _read_chunks(owned)
+            elif isinstance(source, AsyncIterable):
+                body = _pass_chunks(source)
+            else:
+                body = _read_chunks(source)
+            try:
+                response = await client.post("/import", content=body, headers=self._import_headers, timeout=None)
+            except httpx.TransportError as exc:
+                raise DataImportError(
+                    f"Import failed: the connection was closed during the upload ({exc!r}); the server stops "
+                    "reading a body it rejects up front: one that does not start with OPTION IMPORT;, a user "
+                    "without import rights, or a missing database",
+                    errors=[repr(exc)],
+                ) from exc
+            finally:
+                await body.aclose()
+                if owned is not None:
+                    await asyncio.to_thread(owned.close)
+        self._check_import_response(response)
+
+    @property
+    def _import_headers(self) -> dict[str, str]:
+        """Headers of an ``/import`` request (C9): no ``Content-Type``, the body is SurrealQL text."""
+        h = {"Surreal-NS": self.namespace, "Surreal-DB": self.database, "Accept": "application/json"}
+        if self._token:
+            h["Authorization"] = f"Bearer {self._token}"
+        return h
+
+    @staticmethod
+    def _check_import_response(response: httpx.Response) -> None:
+        """Raise ``DataImportError`` unless ``response`` is a ``200`` without rejected statements.
+
+        Statement errors come back as a JSON list of the ``ERR`` statements
+        only, with status 422 on SurrealDB 3.3 and 200 on 3.2; both are read
+        the same way. Any other non-200 answer is a request error, whose
+        ``information`` (or text) is the message.
+        """
+        status = response.status_code
+        try:
+            payload: Any = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, list):
+            messages = [str(item.get("result")) for item in payload if isinstance(item, dict) and item.get("status") == "ERR"]
+            if messages:
+                raise DataImportError(
+                    f"Import failed: {len(messages)} statement(s) rejected; first: {messages[0]}",
+                    errors=messages,
+                    code=status,
+                )
+        if status == 200:
+            return
+        information = payload.get("information") if isinstance(payload, dict) else None
+        detail = information if isinstance(information, str) and information else response.text
+        raise DataImportError(f"Import failed: HTTP {status} - {detail}", errors=[detail], code=status)
 
     async def health(self) -> bool:
         """

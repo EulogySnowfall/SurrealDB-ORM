@@ -14,7 +14,9 @@ Custom CBOR Tags used by SurrealDB:
 - TAG_STRING_DECIMAL (10): Decimal as string
 - TAG_DATETIME (12): DateTime, received as an ISO 8601 string or a [seconds, nanoseconds]
   pair (a datetime is sent as the standard tag 0, which SurrealDB reads)
-- TAG_STRING_DURATION (14): Duration as string
+- TAG_STRING_DURATION (13): Duration as a string ("1h30m")
+- TAG_CUSTOM_DURATION (14): Duration as a compact [seconds, nanoseconds] array, the
+  only form SurrealDB sends; it rejects a string under this tag
 """
 
 from __future__ import annotations
@@ -40,7 +42,8 @@ TAG_RECORDID = 8
 TAG_STRING_UUID = 9
 TAG_STRING_DECIMAL = 10
 TAG_DATETIME = 12
-TAG_STRING_DURATION = 14
+TAG_STRING_DURATION = 13
+TAG_CUSTOM_DURATION = 14
 
 #: Shown for a naive ``datetime``. It names no value, so Python's default
 #: warning filter reports it once per call site rather than once per value.
@@ -100,12 +103,24 @@ class Table:
 
 @dataclass
 class Duration:
-    """Represents a SurrealDB duration."""
+    """
+    Represents a SurrealDB duration.
 
-    value: str
+    ``value`` is either a duration string (``"1h30m"``), sent as CBOR tag 13,
+    or the compact form SurrealDB itself sends, a tuple of seconds and
+    nanoseconds (``(5400,)``, ``(5400, 1)``, ``()`` for zero), sent as tag 14.
+    """
+
+    value: str | tuple[int, ...]
 
     def __str__(self) -> str:
-        return self.value
+        """Return a SurrealQL duration literal (``"1h30m"``, ``"5400s1ns"``, ``"0ns"``)."""
+        if isinstance(self.value, str):
+            return self.value
+        seconds = self.value[0] if len(self.value) > 0 else 0
+        nanoseconds = self.value[1] if len(self.value) > 1 else 0
+        text = (f"{seconds}s" if seconds else "") + (f"{nanoseconds}ns" if nanoseconds else "")
+        return text or "0ns"
 
 
 def _preprocess_for_cbor(data: Any) -> Any:
@@ -203,8 +218,12 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
         # Encode UUID as tagged string
         encoder.encode(CBORTag(TAG_STRING_UUID, str(value)))
     elif isinstance(value, Duration):
-        # Encode Duration as tagged string
-        encoder.encode(CBORTag(TAG_STRING_DURATION, value.value))
+        # Tag 14 carries only the compact array: a string there is a parse
+        # error for the whole request (HTTP 400, no reply over WebSocket).
+        if isinstance(value.value, str):
+            encoder.encode(CBORTag(TAG_STRING_DURATION, value.value))
+        else:
+            encoder.encode(CBORTag(TAG_CUSTOM_DURATION, list(value.value)))
     else:
         # Fall back to raising TypeError for unsupported types
         raise TypeError(f"Cannot CBOR encode {type(value)}")
@@ -262,6 +281,10 @@ def _cbor_tag_decoder(tag: Any, immutable: bool) -> Any:
                     return tag.value
         return tag.value
     elif tag.tag == TAG_STRING_DURATION:
+        return Duration(value=tag.value)
+    elif tag.tag == TAG_CUSTOM_DURATION:
+        if isinstance(tag.value, (list, tuple)):
+            return Duration(value=tuple(tag.value))
         return Duration(value=tag.value)
     else:
         # Return raw tagged value for unknown tags

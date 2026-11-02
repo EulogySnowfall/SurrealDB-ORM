@@ -8,7 +8,13 @@ from collections.abc import Callable, Collection, Mapping
 from typing import Any, TypeVar
 
 from surreal_sdk.protocol.cbor import _warn_naive_datetime
+
+# The ``as`` imports are re-exports under their public names: the SDK hosts the
+# one integer check and the one record-ID writer both layers use.
+from surreal_sdk.utils import escape_record_id as escape_record_id
 from surreal_sdk.utils import find_param_references, substitute_params, unescape_record_id
+from surreal_sdk.utils import needs_id_escaping as needs_id_escaping
+from surreal_sdk.utils import require_int as require_int
 
 from .constants import VALID_LOOKUPS
 
@@ -20,36 +26,6 @@ F = TypeVar("F", bound=Callable[..., Any])
 # Ends with ``\Z``, not ``$``: ``$`` also matches before a final newline, so
 # ``"name\n"`` passed ``.match()``. Call sites use ``fullmatch()`` all the same.
 SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
-
-
-def require_int(name: str, value: object, *, minimum: int) -> int:
-    """
-    Check that ``value`` is an integer of at least ``minimum`` and return it.
-
-    Pagination, KNN and search-reference arguments are written into the query text, so only an
-    ``int`` is accepted: a string (even a numeric one), a float or a ``bool``
-    raises ``TypeError``, and a value below ``minimum`` raises ``ValueError``.
-    The result is always a plain ``int``, so an ``int`` subclass with its own
-    ``__format__`` renders as its numeric value.
-
-    Args:
-        name: Argument name, used in the error message.
-        value: The value passed by the caller.
-        minimum: The smallest accepted value.
-
-    Returns:
-        int: ``value`` as a plain ``int``.
-
-    Raises:
-        TypeError: If ``value`` is not an ``int`` or is a ``bool``.
-        ValueError: If ``value`` is below ``minimum``.
-    """
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"{name} must be an int, got {type(value).__name__}")
-    number = int.__index__(value)
-    if number < minimum:
-        raise ValueError(f"{name} must be >= {minimum}, got {number}")
-    return number
 
 
 def validate_identifier(name: str, context: str = "identifier") -> None:
@@ -222,80 +198,12 @@ def remove_quotes_for_variables(query: str) -> str:
     return re.sub(r"'(\$[a-zA-Z_]\w*)'", r"\1", query)
 
 
-def needs_id_escaping(record_id: str) -> bool:
-    """
-    Check if a record ID needs to be escaped in SurrealQL.
-
-    Record IDs that start with a digit or contain special characters
-    need to be wrapped in backticks or Unicode angle brackets.
-
-    Args:
-        record_id: The record ID string (without table prefix)
-
-    Returns:
-        True if the ID needs escaping, False otherwise
-
-    Examples:
-        needs_id_escaping("abc123")  # False - starts with letter
-        needs_id_escaping("7abc")    # True - starts with digit
-        needs_id_escaping("test-id") # True - contains hyphen
-        needs_id_escaping("test.id") # True - contains dot
-    """
-    if not record_id:
-        return False
-
-    # IDs starting with a digit need escaping
-    if record_id[0].isdigit():
-        return True
-
-    # IDs containing special characters need escaping
-    # Valid unescaped characters: letters, digits, underscore
-    # SurrealDB allows alphanumeric and underscore without escaping
-    if not SAFE_IDENTIFIER_RE.fullmatch(record_id):
-        return True
-
-    return False
-
-
-def escape_record_id(record_id: str) -> str:
-    r"""
-    Escape a record ID for use in SurrealQL if needed.
-
-    Uses SurrealDB's backtick-delimited form for IDs that contain special
-    characters or start with a digit. Inside that form SurrealDB reads ``\``
-    as an escape character, so a backslash is written ``\\`` and a backtick
-    ``\``` — the backslash first, otherwise the backslash added in front of a
-    backtick would itself be doubled.
-
-    This is the only place a record ID is turned into SurrealQL text:
-    :func:`format_thing` and every query builder go through it.
-    :func:`surreal_sdk.utils.unescape_record_id` reads the result back.
-
-    Args:
-        record_id: The record ID string (without table prefix)
-
-    Returns:
-        The escaped record ID (with backticks if needed)
-
-    Examples:
-        escape_record_id("abc123")   # "abc123" - no escaping needed
-        escape_record_id("7abc")     # "`7abc`" - escaped
-        escape_record_id("test-id")  # "`test-id`" - escaped
-        escape_record_id("a`b")      # "`a\`b`"
-        escape_record_id("dir\\")    # "`dir\\`"
-    """
-    if needs_id_escaping(record_id):
-        escaped = record_id.replace("\\", "\\\\").replace("`", "\\`")
-        return f"`{escaped}`"
-    return record_id
-
-
 def format_thing(table: str, record_id: str) -> str:
     """
     Format a full SurrealDB thing reference (table:id).
 
     Properly escapes the record ID if it contains special characters
-    or starts with a digit.
+    or starts with a digit, through :func:`surreal_sdk.utils.escape_record_id`.
 
     Args:
         table: The table name
