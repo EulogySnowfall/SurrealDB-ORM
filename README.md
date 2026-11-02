@@ -37,6 +37,16 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.37.2
+
+**Fix release.** A `.cache()` read is no longer served stale after a write that fires no model signal
+(`atomic_append()`, `atomic_remove()`, `atomic_set_add()`, `bulk_update()`, `bulk_delete()`, `upsert()`,
+`bulk_upsert()`, `delete_table()`), and invalidation no longer depends on `QueryCache.configure()` having been called
+([#267](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/267)). A successful ORM write now always drops the
+written table's cached entries. `raw_query()`, `call_function()`, relation edges and writes from other processes are
+still not tracked: call `QueryCache.invalidate(Model)` after them. SurrealDB pin unchanged (3.3.5). See
+[CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.37.1
 
 **Fix release.** `surreal-orm dump` (no `-o`) and `surreal-orm restore -` open the binary stdout/stdin with

@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.37.1)
+> Context document for Claude AI - Last updated: November 2026 (0.37.2)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.37.1 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.37.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,26 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.37.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.37.2
+
+One fix, #267 via #460 (`cache.py`, `model_base.py`, `query_set.py`). Pin
+unchanged (3.3.5). `v2`: same defect, backport tracked in #463.
+
+- **Two independent gaps.** Invalidation rode only on `post_save` /
+  `post_update` / `post_delete`, which the atomic array helpers and the
+  `QuerySet` bulk/upsert paths and `delete_table()` never fire; and the
+  handlers were connected only by `configure()`, which is optional, so a
+  process that never called it had no invalidation at all.
+- **`set()` and `QuerySet.cache()` connect the handlers** (idempotent via
+  `_signals_connected`). Each signal-less write calls
+  `QueryCache.invalidate()` once its statement is accepted (after
+  `_raise_on_statement_error()`, after the commit for `atomic=True`); a write
+  that raises leaves the cache as it was.
+- **Open (review suggestions on #460):** relation writes (`relate()`,
+  `remove_relation()`, `remove_all_relations()`, relation managers) never
+  invalidate the edge table; `save(tx=)` / `bulk_create(atomic=True)`
+  invalidate when queued, not at the HTTP commit.
 
 ### What's New in 0.37.1
 
