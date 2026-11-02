@@ -6,6 +6,58 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.37.3] - 2026-11-02
+
+**Fix release.** One SDK fix, #441 via #461 (`surreal_sdk/protocol/rpc.py`,
+`connection/websocket.py`, `streaming/live_select.py`,
+`streaming/live_query.py`, `surreal_orm/live.py`). The SurrealDB pin is
+unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x). `v2`: the
+`DIFF` placement and the encoding path were already fixed by #442 (0.21.31);
+the DIFF record id and model validation are tracked in #466.
+
+### Fixed
+
+- **`live(diff=True)` never started on SurrealDB 3.x.** Every live-query
+  builder rendered `DIFF` after the table or the `WHERE` clause
+  (`LIVE SELECT * FROM t [WHERE ...] DIFF`), a parse error on 3.x, so no DIFF
+  subscription could start (`QuerySet.live(diff=True)`,
+  `live_select(diff=True)`, `WebSocketConnection.live(diff=True)`,
+  `LiveQuery`, `RPCRequest.live()`). They now share one renderer that emits
+  `LIVE SELECT DIFF FROM t [WHERE ...]`, on resubscribe too. With
+  `diff=False` (the default) the text is unchanged (#441).
+- **A DIFF notification named no record.** Its result is a list of JSON
+  patches with no id. `LiveChange.record_id` (and so
+  `ModelChangeEvent.record_id`) is now taken from the notification's
+  `record` field instead of being an empty string; `changed_fields` lists the
+  patched fields (#441).
+- **`LiveModelStream` ended at the first DIFF notification** on a model with
+  a required field: it validated the empty result against the model and
+  raised `ValidationError`. `event.instance` now carries the id only, as for
+  a `DELETE` (#441).
+
+### Changed
+
+- **Behaviour change:** over WebSocket, a parameter the encoder refuses (for
+  example `object()`, a lone surrogate under CBOR) now reaches the caller as
+  the encoder's own `TypeError` / `ValueError`, not as `ConnectionError`.
+  Nothing is sent, no request stays pending, and the connection stays usable.
+  `ConnectionError` now means only a connection problem (#441).
+- **Behaviour change:** in DIFF mode, `ModelChangeEvent.instance` holds only
+  the id; the change is in `event.changed_fields` (#441).
+
+### Migration notes
+
+- Nothing to migrate for `diff=False` (the default). Code that caught
+  `ConnectionError` for encoding errors over WebSocket must catch
+  `TypeError` / `ValueError`. Code using `live(diff=True)` must read the
+  change from `event.changed_fields` (or re-fetch the record).
+
+### Known limitations
+
+- A DIFF event keeps the names of the changed fields but not the patch
+  values: `LiveChange.result` and `ModelChangeEvent.raw` are `{}` and
+  `before` is `None`, so a caller knows which field changed but not to what.
+
 ## [0.37.2] - 2026-11-02
 
 **Fix release.** One ORM fix, #267 via #460 (`surreal_orm/cache.py`,

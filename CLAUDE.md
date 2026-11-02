@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.37.2)
+> Context document for Claude AI - Last updated: November 2026 (0.37.3)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.37.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.37.3 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,30 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.37.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.37.3
+
+One fix, #441 via #461 (`protocol/rpc.py`, `connection/websocket.py`,
+`streaming/live_select.py`, `streaming/live_query.py`, `surreal_orm/live.py`).
+Pin unchanged (3.3.5). `v2`: `DIFF` placement and encoding already fixed by
+#442; record id and DIFF validation tracked in #466.
+
+- **One renderer for `LIVE SELECT`.** The private `_live_select_sql()` in
+  `protocol/rpc.py` writes `LIVE SELECT [DIFF | *] FROM <table> [WHERE ...]`
+  for `LiveSelectStream.start()`, `_resubscribe_one()`,
+  `WebSocketConnection.live()`, `LiveQuery.subscribe()` and
+  `RPCRequest.live()`. Five builders had each appended `DIFF` at the end,
+  which 3.x does not parse, so DIFF mode had never started on `main`.
+- **Fixing the text exposed two more defects.** A DIFF result is a list of
+  patches with no id: `LiveChange.from_dict()` falls back to the
+  notification's `record`. `LiveModelStream` built the instance with
+  `from_db({})` and raised on any required field; it uses the id alone now.
+- **`WebSocketConnection._send_rpc()` encodes before registering the reply
+  future and outside the catch-all** that turned everything into
+  `ConnectionError`. Behaviour change: encoder `TypeError` / `ValueError`
+  reach the caller, as over HTTP.
+- **Open (review suggestion on #461):** DIFF events keep field names but not
+  patch values (`result` / `raw` are `{}`, `before` is `None`).
 
 ### What's New in 0.37.2
 

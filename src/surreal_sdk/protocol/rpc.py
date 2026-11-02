@@ -15,6 +15,22 @@ from uuid import UUID
 from . import cbor as cbor_module
 
 
+def _live_select_sql(table: str, where: str | None = None, diff: bool = False) -> str:
+    """Render ``LIVE SELECT [DIFF | *] FROM <table> [WHERE <where>]``.
+
+    The one place a ``LIVE SELECT`` statement is written: the first
+    subscription and its re-creation after a reconnect must send exactly the
+    same text. ``DIFF`` replaces the projection; SurrealDB 3.x refuses it as a
+    trailing clause (``LIVE SELECT * FROM t WHERE x = 1 DIFF`` is a parse
+    error). The caller validates *table*; *where* is written as given and
+    its values belong in bound parameters.
+    """
+    sql = f"LIVE SELECT {'DIFF' if diff else '*'} FROM {table}"
+    if where:
+        sql += f" WHERE {where}"
+    return sql
+
+
 def _strip_none_values(data: Any) -> Any:
     """
     Recursively strip None values from dicts for JSON protocol.
@@ -172,10 +188,7 @@ class RPCRequest:
     @classmethod
     def live(cls, table: str, diff: bool = False, request_id: int = 1) -> "RPCRequest":
         """Create a live query request."""
-        sql = f"LIVE SELECT * FROM {table}"
-        if diff:
-            sql += " DIFF"
-        return cls(method="query", params=[sql, {}], id=request_id)
+        return cls(method="query", params=[_live_select_sql(table, diff=diff), {}], id=request_id)
 
     @classmethod
     def kill(cls, live_id: str, request_id: int = 1) -> "RPCRequest":

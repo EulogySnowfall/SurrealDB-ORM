@@ -859,7 +859,7 @@ class TestLiveSelectStreamBindsParams:
         await LiveSelectStream(conn, "users", where="prefs = $_f0", params=params, diff=True).start()  # type: ignore[arg-type]
 
         sql, sent = conn.calls[0]
-        assert sql.endswith(" DIFF")
+        assert sql == "LIVE SELECT DIFF FROM users WHERE prefs = $_f0"
         assert "theme" not in sql and "dark" not in sql
         assert sent == params
 
@@ -961,7 +961,7 @@ class TestResubscribeBindsParams:
 
         await conn._resubscribe_one(sub)
 
-        assert recorder.calls == [("LIVE SELECT * FROM players DIFF", None)]
+        assert recorder.calls == [("LIVE SELECT DIFF FROM players", None)]
 
 
 class TestParseId:
