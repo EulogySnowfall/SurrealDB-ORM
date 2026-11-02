@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.36.0)
+> Context document for Claude AI - Last updated: November 2026 (0.36.1)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.36.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.36.1 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,42 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.36.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.36.1
+
+Three fixes: #391 via #418 (`surreal_sdk/connection/pool.py`), #417 via #422
+(`query_set.py`, `aggregations.py`, `geo.py`, `search.py`, `utils.py`) and
+#263 via #443 (`surreal_sdk/exceptions.py`, `transaction.py`). Pin unchanged
+(3.3.5). `v2`: backports tracked in #445 (#418), #444 (#422) and #446 (#443).
+
+- **`ConnectionPool` resets authentication on release.** It keeps, per
+  connection, the token it minted with its own credentials (plus the HTTP
+  `signin()` arguments) and a credentials generation; `set_credentials()`
+  bumps the generation, so a token from older credentials is never put back.
+  HTTP restores locally; WebSocket sends `authenticate` (or `invalidate`
+  without pool credentials). A failed or interrupted reset closes the
+  connection (shielded close) instead of pooling it.
+- **`annotate()` aliases go through `validate_identifier()`** for every
+  annotation class, and each `to_surql(alias)` re-checks. Aggregation and
+  `GeoDistance` fields use `validate_field_path()` (dotted paths now allowed
+  for `Sum`/`Avg`/`Min`/`Max`). The `GeoDistance` point is copied at
+  construction into a tuple of plain finite numbers, and that copy is what
+  renders. `SearchScore`/`SearchHighlight` `ref` is an `int` ≥ 0, checked at
+  construction. The int check is shared as `surreal_orm.utils.require_int`
+  (was `query_set._require_int`; #433's depth checks use it too).
+- **Conflict detection is the server's sentence.** `_CONFLICT_PATTERNS` is
+  only `"this transaction can be retried"` (3.3.5 and 3.2.6 wording). The
+  commit cascade marker is `"Cannot COMMIT: the transaction was"`, so a
+  `Cannot COMMIT: Transaction conflict: …` is the cause and raises
+  `TransactionConflictError`. This resolves the first 0.35.4 open item: the
+  cancellation-only fallback no longer matches `retry_on_conflict`.
+- **Open (review suggestions):** `"not executed due to a cancelled
+  transaction"` is still not in `_CANCELLED_STATEMENT_ERRORS` (ordering covers
+  it), `streaming/change_feed.py` still treats any `"Cannot COMMIT"` as
+  cascade, and the match is not anchored to the end of the message (#443);
+  the pool rewrites `_token`/`_authenticated`/`_signin_args` without
+  `_auth_changed()` (#418); `ref`/`field`/`point` can be reassigned after
+  construction and skip the checks (#422).
 
 ### What's New in 0.36.0
 

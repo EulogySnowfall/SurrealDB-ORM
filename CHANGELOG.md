@@ -6,6 +6,102 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.36.1] - 2026-11-02
+
+**Fix release.** Three fixes: a pooled SDK connection is returned to the
+pool's own authentication state when it is released (#391 via #418),
+`annotate()` aliases and the aggregation, geo and search arguments are
+checked before any query is built (#417 via #422), and only the server's
+retryable wording counts as a transaction conflict (#263 via #443). Read
+*Behaviour change* below if you keep a caller-set identity on a pooled
+connection, pass non-`int` match references to `SearchScore` /
+`SearchHighlight`, or catch `TransactionConflictError` for errors other than
+a write conflict. The SurrealDB pin is unchanged (tested against 3.3.5,
+supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **A pooled SDK connection (`ConnectionPool`, HTTP and WebSocket) is
+  returned to the pool's own authentication state when released.** A
+  `signin()`, `signup()`, `authenticate()` or `invalidate()` made by one
+  caller no longer carries over to the next caller of the same connection.
+  With pool credentials, the pool's token is put back; without credentials,
+  the connection comes back unauthenticated. A connection whose reset fails
+  is closed instead of being reused (#391).
+- **A connection signing in with the pool's credentials while
+  `set_credentials()` changes them now signs in again with the new
+  credentials** instead of keeping a token minted from the old ones (#391).
+- **`QuerySet.annotate()` checks every alias** (letters, digits and
+  underscores, starting with a letter or underscore) and raises `ValueError`
+  before any query is built. This applies to every annotation class:
+  `Count`, `Sum`, `Avg`, `Min`, `Max`, `SearchScore`, `SearchHighlight`,
+  `GeoDistance`, `Subquery`. `to_surql(alias)` checks the alias too (#417).
+- **`GeoDistance` checks its field** (a field name or dotted path,
+  `ValueError` otherwise). Its point must be a `(longitude, latitude)` pair
+  of `int` / `float` (`TypeError` for `bool`, strings or a wrong length) with
+  finite values (`ValueError`) (#417).
+- **`SearchScore` and `SearchHighlight` validate the match reference `ref`
+  when they are built**: it must be an `int` (not `bool`) of at least 0,
+  `TypeError` for any other type, `ValueError` for a negative value.
+  Previously `SearchScore` wrote the value into the query as given, and
+  `SearchHighlight` silently truncated a float or coerced a bool when it was
+  rendered (#417).
+- **`TransactionConflictError.is_conflict_error()` matches only the server's
+  retryable wording** (`This transaction can be retried`). A failed `ASSERT`
+  whose rejected value contains "conflict", or that names a field such as
+  `conflicts`, raises `QueryError` from `atomic_append()` /
+  `atomic_remove()` / `atomic_set_add()` instead of
+  `TransactionConflictError`, and `@retry_on_conflict` no longer retries it.
+  The bare `conflict`, `failed transaction` and `document changed` patterns
+  are gone: the last does not exist in SurrealDB 3.3, and `failed
+  transaction` is the message of the statements a failed transaction did not
+  run (#263).
+- **`HTTPTransaction.commit()` raises `TransactionConflictError` for a
+  conflict detected at commit time.** SurrealDB 3.3 reports it on the
+  `COMMIT` statement (`Cannot COMMIT: Transaction conflict: ... This
+  transaction can be retried`), which used to be treated as part of the
+  cancellation cascade and raised as a plain `TransactionError` (#263).
+
+### Behaviour change
+
+- **On release, a pooled WebSocket connection sends one `authenticate` RPC**
+  (or `invalidate` when the pool has no credentials); an HTTP connection is
+  reset locally, with no request. A connection whose pool token has run out,
+  or whose pool credentials changed while it was in use, signs in again on
+  release. Code that relied on a pooled connection keeping a caller-set
+  identity across acquisitions must sign in again after each `acquire()`
+  (#391).
+- **An invalid alias, aggregation/geo field or coordinate now raises at
+  `annotate()` or at construction**, where it used to give a parse error or a
+  different query. `SearchScore("1")`, `SearchScore(1.5)`,
+  `SearchHighlight(..., ref=True)` and similar non-int references now raise
+  at construction instead of producing a query. `Sum` / `Avg` / `Min` / `Max`
+  now accept dotted paths (`Sum("address.city")`), which they used to reject.
+  Valid input renders exactly the same SurrealQL as before (#417).
+- **An error is treated as retryable only if its message contains `This
+  transaction can be retried`** (checked on SurrealDB 3.3.5 and 3.2.6). Code
+  that caught `TransactionConflictError` for other messages containing
+  "conflict" gets `QueryError` / `TransactionError` now. This also covers the
+  cancellation-only fallback of `HTTPTransaction.commit()` (`Transaction
+  commit failed: The query was not executed due to a failed transaction`):
+  it used to match through `failed transaction`, so a function decorated
+  with `@retry_on_conflict` was retried on it; it is raised at once now
+  (#263).
+
+### Upgrading
+
+- Pass an `int` match reference to `SearchScore` / `SearchHighlight` (e.g.
+  `SearchScore(0)`).
+- Sign in again after each `ConnectionPool.acquire()` if a caller needs an
+  identity other than the pool's.
+
+### Docs
+
+- The README "What's New in 0.34.6" bullet on `schema_diff()` /
+  `makemigrations` now states the parser fix's real scope (a permission
+  condition naming a field such as `type`, or an `ASSERT` with a
+  comparison) (#263).
+
 ## [0.36.0] - 2026-10-30
 
 **Minor release — Graph Power (roadmap v0.36.0, #430 via #433).** Recursive
