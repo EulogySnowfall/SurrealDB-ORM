@@ -3344,7 +3344,7 @@ class QuerySet(Generic[T]):
             # Values a query attached (annotations, ``_knn_distance``) are not
             # columns; on an ``extra="allow"`` model a validated assignment moves
             # them into the extra fields, so name them explicitly.
-            data = instance.model_dump(exclude=instance._attached_names(), exclude_unset=True, by_alias=True)
+            data = instance.model_dump(exclude=instance._write_excluded_names(), exclude_unset=True, by_alias=True)
             data.pop("id", None)
             data = instance._coerce_foreign_keys(data)
 

@@ -1,4 +1,5 @@
 import logging
+import weakref
 from datetime import UTC, datetime
 from typing import (
     TYPE_CHECKING,
@@ -74,9 +75,16 @@ def _raise_on_statement_error(response: QueryResponse, query: str) -> None:
             raise error
 
 
-# Instance ``__dict__`` key holding the names a query attached to the instance
-# (annotations, ``_knn_distance``, ``Prefetch(to_attr=...)``), which
-# save(), update() and QuerySet.bulk_upsert() never write. See _attached_names().
+# Names a query attached to each instance (annotations, ``_knn_distance``,
+# ``Prefetch(to_attr=...)``), which save(), update() and QuerySet.bulk_upsert()
+# never write. Keyed by ``id(instance)`` (a model instance is not hashable) and
+# dropped by a ``weakref.finalize`` when the instance is collected, so an id is
+# never reused while its entry exists. Kept outside the model data: validated
+# input can neither supply nor change it. See _attached_names().
+_ATTACHED_NAMES: dict[int, frozenset[str]] = {}
+
+# Key that the attached names were once stored under in the instance data. A
+# value under this key in validated input names nothing and is never written.
 _ATTACHED_KEY = "_sorm_attached"
 
 # Global registry of all SurrealDB models for migration introspection
@@ -736,36 +744,63 @@ class BaseSurrealModel(BaseModel):
         ``save()``, ``update()`` and ``QuerySet.bulk_upsert()`` never write it: on a model with
         ``extra="allow"``, the next validated assignment would otherwise move it
         into the model's extra fields, and the next save would store it as a
-        column.
+        column. A model field is set but never remembered.
         """
         object.__setattr__(self, name, value)
         if name not in type(self).model_fields:
-            names = frozenset({*self._attached_names(), name}) - {_ATTACHED_KEY}
-            object.__setattr__(self, _ATTACHED_KEY, names)
+            self._set_attached_names(self._attached_names() | {name})
 
-    def _attached_names(self) -> set[str]:
+    def _set_attached_names(self, names: frozenset[str]) -> None:
+        """Record ``names`` as this instance's attached names (replacing any previous set)."""
+        key = id(self)
+        if key not in _ATTACHED_NAMES:
+            weakref.finalize(self, _ATTACHED_NAMES.pop, key, None)
+        _ATTACHED_NAMES[key] = names
+
+    def _attached_names(self) -> frozenset[str]:
         """The names attached by :meth:`_attach_value` that are not model fields.
 
-        The names live in the instance ``__dict__`` under ``_sorm_attached``, as
-        a ``frozenset`` that each attach replaces. Not in a Pydantic private
-        attribute: ``BaseModel.__eq__`` compares ``__pydantic_private__``, so an
-        instance with an attached value would no longer equal the same record
-        loaded without it, and ``model_copy()`` would share a mutable set with
-        the original. Pydantic's ``__eq__`` ignores ``__dict__`` keys that are not
-        fields, and a copy gets its own ``__dict__``.
-
-        On a model with ``extra="allow"``, a validated assignment moves every
-        non-field ``__dict__`` key (the attached values and this one) into
-        ``__pydantic_extra__``, so both places are read, and the storage key is
-        part of the result so that no dump writes it.
+        The names are kept outside the model data, in a module registry keyed by
+        the instance. Not in a Pydantic private attribute: ``BaseModel.__eq__``
+        compares ``__pydantic_private__``, so an instance with an attached value
+        would no longer equal the same record loaded without it. Not in the
+        instance ``__dict__`` either: on a model with ``extra="allow"`` a
+        validated assignment moves every non-field ``__dict__`` key into the
+        extra fields, where validated input can supply the same key. Nothing
+        that :meth:`model_validate`, ``__init__`` or :meth:`from_db` accepts can
+        change this set; copies get their own entry (see :meth:`__copy__`).
         """
-        found: set[str] = set()
-        extra = self.__pydantic_extra__ or {}
-        for source in (self.__dict__, extra):
-            if _ATTACHED_KEY in source:
-                found.add(_ATTACHED_KEY)
-                found.update(source[_ATTACHED_KEY])
-        return found
+        names = _ATTACHED_NAMES.get(id(self), frozenset())
+        return names - type(self).model_fields.keys()
+
+    def _write_excluded_names(self) -> set[str]:
+        """Names every write path leaves out of the dump, on top of ``id`` and server fields.
+
+        The attached names, plus the reserved ``_sorm_attached`` key so that an
+        extra value under it is never stored.
+        """
+        return {*self._attached_names(), _ATTACHED_KEY}
+
+    def __copy__(self) -> Self:
+        """Shallow copy (``copy.copy``, ``model_copy()``) carrying the attached names.
+
+        The copy carries the attached values in its own ``__dict__``, so it gets
+        the same names under its own registry entry: an attach on one never
+        changes what the other's writes exclude.
+        """
+        copied = super().__copy__()
+        names = self._attached_names()
+        if names:
+            copied._set_attached_names(names)
+        return copied
+
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
+        """Deep copy (``copy.deepcopy``, ``model_copy(deep=True)``) carrying the attached names."""
+        copied = super().__deepcopy__(memo)
+        names = self._attached_names()
+        if names:
+            copied._set_attached_names(names)
+        return copied
 
     @classmethod
     def get_foreign_key_targets(cls) -> dict[str, str | None]:
@@ -1119,7 +1154,7 @@ class BaseSurrealModel(BaseModel):
         exclude_fields = {"id"} | self.get_server_fields()
         id = self.get_id()
         table = self.get_table_name()
-        data = self.model_dump(exclude=exclude_fields | self._attached_names(), exclude_unset=True, by_alias=True)
+        data = self.model_dump(exclude=exclude_fields | self._write_excluded_names(), exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
         data = self._coerce_foreign_keys(data)
 
@@ -1418,7 +1453,7 @@ class BaseSurrealModel(BaseModel):
 
         # Build exclude set: always exclude 'id' and any server-generated fields,
         # and the values a query attached to the instance (never columns).
-        exclude_fields = {"id"} | self.get_server_fields() | self._attached_names()
+        exclude_fields = {"id"} | self.get_server_fields() | self._write_excluded_names()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
         # data keeps the original values for signals; only the wire copy is coerced

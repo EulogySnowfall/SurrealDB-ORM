@@ -1285,6 +1285,83 @@ class TestAttachedNamesStorage:
         order._attach_value("status", "x")  # a model field is never recorded
         assert order._attached_names() == set()
 
+    def test_copy_carries_the_names_of_the_attached_values_it_copies(self) -> None:
+        original = AQUExtra(id="o1")
+        original._attach_value("big", 1)
+        for copy in (original.model_copy(), original.model_copy(deep=True)):
+            assert copy._attached_names() == {"big"}
+            copy.status = "done"  # the copied value moves into the extra fields
+            assert "big" in copy._write_excluded_names()  # and still no write path sends it
+        assert original._attached_names() == {"big"}
+
+    def test_names_are_not_part_of_the_instance_data(self) -> None:
+        order = AQUExtra(id="o1")
+        order._attach_value("big", 1)
+        order.status = "done"
+        assert "_sorm_attached" not in order.__dict__
+        assert "_sorm_attached" not in (order.__pydantic_extra__ or {})
+
+
+_SOURCES = ["init", "model_validate", "from_db"]
+
+
+def _extra_instance(source: str) -> AQUExtra:
+    """An ``extra="allow"`` instance built from input whose extra key names real fields."""
+    payload: dict[str, Any] = {
+        "id": "o1",
+        "status": "done",
+        "items": [{"sku": "a"}],
+        "_sorm_attached": ["status", "items", "id"],
+    }
+    if source == "init":
+        return AQUExtra(**payload)
+    if source == "model_validate":
+        return AQUExtra.model_validate(payload)
+    loaded = AQUExtra.from_db({**payload, "id": RecordId(table="aqu_extra", id="o1")})
+    assert isinstance(loaded, AQUExtra)
+    loaded.status = "done"  # a validated assignment, as after a load and an edit
+    loaded.items = [{"sku": "a"}]
+    return loaded
+
+
+class TestAttachedNamesNeverComeFromInput:
+    """Validated input cannot change which fields a write sends (review of #469)."""
+
+    @pytest.mark.parametrize("bad", [["status"], "status", 5, None, [5, "items"], {"status": 1}])
+    def test_input_key_names_nothing(self, bad: Any) -> None:
+        order = AQUExtra(id="o1", status="done", _sorm_attached=bad)
+        assert order._attached_names() == set()
+        assert order._write_excluded_names() == {"_sorm_attached"}
+
+    @pytest.mark.parametrize("source", _SOURCES)
+    async def test_save_writes_the_named_fields(self, source: str) -> None:
+        order = _extra_instance(source)
+        with patch.object(AQUExtra, "_execute_save", new=AsyncMock()) as run:
+            await order.save()
+        data = run.await_args.args[3]
+        assert data == {"status": "done", "items": [{"sku": "a"}]}
+
+    @pytest.mark.parametrize("source", _SOURCES)
+    async def test_update_writes_the_named_fields(self, source: str) -> None:
+        order = _extra_instance(source)
+        tx = AsyncMock()
+        await order.update(tx=tx)
+        tx.merge.assert_awaited_once_with("aqu_extra:o1", {"status": "done", "items": [{"sku": "a"}]})
+
+    @pytest.mark.parametrize("source", _SOURCES)
+    @pytest.mark.parametrize("on_conflict", [None, {"status": "dup"}])
+    async def test_bulk_upsert_writes_the_named_fields(self, on_conflict: dict[str, Any] | None, source: str) -> None:
+        order = _extra_instance(source)
+        client = AsyncMock()
+        client.query.return_value.all_records = []
+        with patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new=AsyncMock(return_value=client)):
+            await AQUExtra.objects().bulk_upsert([order], on_conflict=on_conflict)
+        query, variables = client.query.await_args.args
+        assert "status" in query
+        assert "items" in query
+        assert "_sorm_attached" not in query
+        assert not any("_sorm_attached" in name for name in variables)
+
 
 class TestAllWithPathAnnotation:
     async def test_routed_through_exec(self) -> None:
