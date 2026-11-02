@@ -28,12 +28,16 @@ SURREALDB_DATABASE = "test_issue_441"
 
 
 class I441Item(BaseSurrealModel):
-    """A record with a filter field and a field the tests change."""
+    """A record with a required filter field and a field the tests change.
+
+    ``tag`` is required on purpose: a DIFF event must not validate the
+    (empty) record against the model.
+    """
 
     model_config = SurrealConfigDict(table_name="i441_items")
 
     id: str | None = None
-    tag: str | None = None
+    tag: str
     n: int | None = None
 
 
@@ -90,6 +94,9 @@ async def test_queryset_live_diff_with_filter_receives_update() -> None:
     assert event.action == LiveAction.UPDATE
     assert event.record_id == "i441_items:a"
     assert event.changed_fields == ["n"]
+    # A DIFF notification carries patches, not the record: the instance has the id only.
+    assert isinstance(event.instance, I441Item)
+    assert event.instance.id == "a"
 
 
 @pytest.mark.integration

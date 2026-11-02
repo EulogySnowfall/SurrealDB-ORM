@@ -17,12 +17,14 @@ from typing import Any
 
 import pytest
 
+from src.surreal_orm import BaseSurrealModel, SurrealConfigDict
+from src.surreal_orm.live import LiveModelStream
 from surreal_sdk.connection.websocket import WebSocketConnection
 from surreal_sdk.exceptions import ConnectionError as SdkConnectionError
 from surreal_sdk.exceptions import TimeoutError as SdkTimeoutError
 from surreal_sdk.protocol.rpc import RPCRequest, _live_select_sql
 from surreal_sdk.streaming.live_query import LiveQuery
-from surreal_sdk.streaming.live_select import LiveSelectStream, LiveSubscriptionParams
+from surreal_sdk.streaming.live_select import LiveAction, LiveChange, LiveSelectStream, LiveSubscriptionParams
 from surreal_sdk.types import QueryResponse
 
 
@@ -128,7 +130,6 @@ class TestDiffNotification:
 
     def test_record_id_comes_from_the_notification(self) -> None:
         from surreal_sdk.protocol.cbor import RecordId
-        from surreal_sdk.streaming.live_select import LiveChange
 
         change = LiveChange.from_dict(
             {
@@ -144,7 +145,6 @@ class TestDiffNotification:
         assert change.result == {}
 
     def test_full_record_id_still_wins(self) -> None:
-        from surreal_sdk.streaming.live_select import LiveChange
 
         change = LiveChange.from_dict({"action": "CREATE", "record": "other:x", "result": {"id": "orders:a"}})
 
@@ -206,3 +206,56 @@ class TestWebSocketEncodingErrors:
             await conn.query("RETURN 1")
         assert len(sock.sent) == 1
         assert conn._pending == {}
+
+
+class U441Required(BaseSurrealModel):
+    """A model with a required field, the shape most models have."""
+
+    model_config = SurrealConfigDict(table_name="u441_required")
+
+    id: str | None = None
+    name: str
+
+
+class TestOrmDiffEvent:
+    """``LiveModelStream`` in DIFF mode builds its event without validating ``{}``.
+
+    A DIFF notification's result is a list of patches, so ``LiveChange.result``
+    is ``{}``. Validating it against a model with a required field raised from
+    ``__anext__`` and ended the stream on its first notification.
+    """
+
+    def _diff_change(self, action: str) -> LiveChange:
+        return LiveChange.from_dict(
+            {
+                "action": action,
+                "id": "live-1",
+                "record": "u441_required:a",
+                "result": [{"op": "replace", "path": "/name", "value": "z"}],
+            }
+        )
+
+    @pytest.mark.parametrize("action", ["CREATE", "UPDATE"])
+    def test_diff_event_on_a_model_with_a_required_field(self, action: str) -> None:
+        stream = LiveModelStream(model=U441Required, connection=None, table="u441_required", diff=True)
+
+        event = stream._to_event(self._diff_change(action))
+
+        assert event.action == LiveAction(action)
+        assert isinstance(event.instance, U441Required)
+        assert event.instance.id == "a"
+        assert event.record_id == "u441_required:a"
+        assert event.changed_fields == ["name"]
+
+    def test_full_record_still_validated_without_diff(self) -> None:
+        stream = LiveModelStream(model=U441Required, connection=None, table="u441_required")
+        change = LiveChange(
+            id="live-1",
+            action=LiveAction.UPDATE,
+            record_id="u441_required:a",
+            result={"id": "a", "name": "z"},
+        )
+
+        event = stream._to_event(change)
+
+        assert event.instance.name == "z"
