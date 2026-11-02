@@ -37,6 +37,31 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.36.1
+
+**Fix release.** Pooled connections are reset to the pool's identity on release
+([#391](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/391)), `annotate()` aliases and the aggregation, geo and
+search arguments are checked before any query ([#417](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/417)),
+and only the server's retryable wording counts as a transaction conflict
+([#263](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/263)). SurrealDB pin unchanged (3.3.5). See
+[CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+- **`ConnectionPool` resets authentication on release.** A `signin()` / `signup()` / `authenticate()` /
+  `invalidate()` made by one caller no longer carries over to the next caller of the same connection: it gets the
+  pool's token back (or no authentication when the pool has no credentials). A connection whose reset fails is closed.
+- **`annotate()` and its arguments are checked.** Aliases must be identifiers; `Sum` / `Avg` / `Min` / `Max` /
+  `GeoDistance` fields must be field names or dotted paths (`Sum("address.city")` now works); the `GeoDistance` point
+  must be a finite `(longitude, latitude)` pair; `SearchScore` / `SearchHighlight` take an `int` `ref` of at least 0.
+  Valid input renders the same SurrealQL as before.
+- **Transaction conflicts are matched on the server's wording.** Only `This transaction can be retried` makes an error
+  a `TransactionConflictError`, so an `ASSERT` failure mentioning "conflict" is a `QueryError` and
+  `@retry_on_conflict` no longer retries it. A conflict reported at `COMMIT` by `HTTPTransaction.commit()` is a
+  `TransactionConflictError` now.
+- **Behaviour change:** sign in again after each `acquire()` if a caller needs an identity other than the pool's; a
+  pooled WebSocket connection sends one `authenticate` (or `invalidate`) RPC on release. Invalid annotation arguments
+  raise `ValueError` / `TypeError` at `annotate()` or at construction. Code that caught `TransactionConflictError` for
+  other "conflict" messages gets `QueryError` / `TransactionError`.
+
 ## What's New in 0.36.0
 
 **Minor release — Graph Power** ([#430](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/430)). Recursive graph
