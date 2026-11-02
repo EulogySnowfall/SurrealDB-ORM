@@ -1226,6 +1226,22 @@ class TestExecAttaches:
         await order.update(tx=tx)
         tx.merge.assert_awaited_once_with("aqu_extra:o1", {"status": "done", "other": 1})
 
+    @pytest.mark.parametrize("on_conflict", [None, {"status": "dup"}])
+    async def test_bulk_upsert_does_not_write_attached_values(self, on_conflict: dict[str, Any] | None) -> None:
+        rows = [_row(id=RecordId(table="aqu_extra", id="o1"), big=[{"sku": "b"}], other=1)]
+        qs = AQUExtra.objects().annotate(big=FieldPath("items").first())
+        with patch.object(QuerySet, "_execute_query", new=AsyncMock(return_value=rows)):
+            (order,) = await qs.exec()
+        order.items = order.items[:1]  # a validated assignment moves `big` into the extra fields
+        client = AsyncMock()
+        client.query.return_value.all_records = []
+        with patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new=AsyncMock(return_value=client)):
+            await AQUExtra.objects().bulk_upsert([order], on_conflict=on_conflict)
+        query, variables = client.query.await_args.args
+        assert "big" not in query
+        assert not any(name.endswith("_big") for name in variables)
+        assert "other" in query  # a real extra field is still written
+
     async def test_knn_distance_never_reaches_the_model(self) -> None:
         rows = [_row(_knn_distance=0.5)]
         qs = AQUExtra.objects().similar_to("items", [1.0, 2.0], limit=1)

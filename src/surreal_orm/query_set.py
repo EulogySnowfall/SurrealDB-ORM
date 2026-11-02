@@ -3329,7 +3329,10 @@ class QuerySet(Generic[T]):
         for idx, instance in enumerate(instances):
             record_id = instance.get_id() if hasattr(instance, "get_id") else getattr(instance, "id", None)
 
-            data = instance.model_dump(exclude_unset=True, by_alias=True)
+            # Values a query attached (annotations, ``_knn_distance``) are not
+            # columns; on an ``extra="allow"`` model a validated assignment moves
+            # them into the extra fields, so name them explicitly.
+            data = instance.model_dump(exclude=instance._attached_names(), exclude_unset=True, by_alias=True)
             data.pop("id", None)
             data = instance._coerce_foreign_keys(data)
 

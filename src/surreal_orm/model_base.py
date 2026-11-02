@@ -441,7 +441,7 @@ class BaseSurrealModel(BaseModel):
     _db_persisted: bool = PrivateAttr(default=False)
 
     # Names of the values a query attached to this instance (annotations,
-    # ``_knn_distance``, ``Prefetch(to_attr=...)``); never written by save().
+    # ``_knn_distance``, ``Prefetch(to_attr=...)``); never written by save(), update() or bulk_upsert().
     _attached: set[str] = PrivateAttr(default_factory=set)
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -732,7 +732,7 @@ class BaseSurrealModel(BaseModel):
         """Attach a value computed by a query (an annotation, a prefetch) to the instance.
 
         The value is set without validation and the name is remembered, so
-        ``save()`` / ``update()`` never write it: on a model with
+        ``save()``, ``update()`` and ``QuerySet.bulk_upsert()`` never write it: on a model with
         ``extra="allow"``, the next validated assignment would otherwise move it
         into the model's extra fields, and the next save would store it as a
         column.
