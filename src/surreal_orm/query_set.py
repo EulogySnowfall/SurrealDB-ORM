@@ -1287,8 +1287,8 @@ class QuerySet(Generic[T]):
 
         high: int | None = None
         if max_depth is not None or require_max:
-            high = _capped("max_depth", _require_int("max_depth", max_depth, minimum=1))
-        low = _capped("min_depth", _require_int("min_depth", min_depth, minimum=1))
+            high = _capped("max_depth", require_int("max_depth", max_depth, minimum=1))
+        low = _capped("min_depth", require_int("min_depth", min_depth, minimum=1))
         if high is not None and low > high:
             raise ValueError(f"min_depth ({low}) must be <= max_depth ({high})")
         return low, high
