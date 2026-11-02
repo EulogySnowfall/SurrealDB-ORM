@@ -1,13 +1,16 @@
 """Tests for QueryCache — v0.11.0."""
 
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from src.surreal_orm.cache import QueryCache
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from src.surreal_orm.signals import Signal, post_delete, post_save, post_update
+from surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
 
 # ── Test model ───────────────────────────────────────────────────────────────
 
@@ -237,6 +240,143 @@ class TestQueryCacheExport:
         import src.surreal_orm as orm
 
         assert "QueryCache" in orm.__all__
+
+
+# ── Issue #267: every ORM write invalidates, with or without configure() ────
+
+
+def _u267_ok(records: list[dict[str, Any]] | None = None) -> QueryResponse:
+    """One statement SurrealDB accepted."""
+    return QueryResponse(results=[QueryResult(status=ResponseStatus.OK, result=records or [])])
+
+
+def _u267_client() -> AsyncMock:
+    client = AsyncMock()
+    client.query = AsyncMock(return_value=_u267_ok([{"id": "cache_users:r1", "name": "n", "count": 1}]))
+    client.delete = AsyncMock(return_value=None)
+    return client
+
+
+class _U267Transaction:
+    """Stands in for ``HTTPTransaction``: an async context manager with ``query``."""
+
+    def __init__(self) -> None:
+        self.query = AsyncMock(return_value=_u267_ok([{"id": "cache_users:r1", "name": "n"}]))
+
+    async def __aenter__(self) -> "_U267Transaction":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+def _u267_fill() -> None:
+    QueryCache.set("mine", ["stale"], "cache_users", connection=("default", "http://h:8000", "ns", "db"))
+    QueryCache.set("mine-no-conn", ["stale"], "cache_users")
+    QueryCache.set("other", ["kept"], "orders")
+
+
+_U267_WRITES: dict[str, Callable[[], Awaitable[Any]]] = {
+    "atomic_append": lambda: CacheUser.atomic_append("r1", "tags", "x"),
+    "atomic_remove": lambda: CacheUser.atomic_remove("r1", "tags", "x"),
+    "atomic_set_add": lambda: CacheUser.atomic_set_add("r1", "tags", "x"),
+    "bulk_update": lambda: CacheUser.objects().filter(age__gte=1).bulk_update({"name": "n"}),
+    "bulk_update_atomic": lambda: CacheUser.objects().filter(age__gte=1).bulk_update({"name": "n"}, atomic=True),
+    "bulk_delete": lambda: CacheUser.objects().filter(age__gte=1).bulk_delete(),
+    "bulk_delete_atomic": lambda: CacheUser.objects().filter(age__gte=1).bulk_delete(atomic=True),
+    "upsert": lambda: CacheUser.objects().upsert({"name": "n"}, id="r1"),
+    "upsert_on_conflict": lambda: CacheUser.objects().upsert({"name": "n"}, id="r1", on_conflict={"age": 2}),
+    "bulk_upsert": lambda: CacheUser.objects().bulk_upsert([CacheUser(id="r1", name="n")]),
+    "bulk_upsert_atomic": lambda: CacheUser.objects().bulk_upsert([CacheUser(id="r1", name="n")], atomic=True),
+    "delete_table": lambda: CacheUser.objects().delete_table(),
+}
+
+
+class TestEveryWriteInvalidates:
+    """Issue #267 — writes that fire no model signal still drop the table's entries."""
+
+    @pytest.mark.parametrize("write", list(_U267_WRITES))
+    async def test_write_drops_only_its_table(self, write: str) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        _u267_fill()
+        with (
+            patch.object(SurrealDBConnectionManager, "get_client", AsyncMock(return_value=_u267_client())),
+            patch.object(SurrealDBConnectionManager, "transaction", AsyncMock(return_value=_U267Transaction())),
+        ):
+            await _U267_WRITES[write]()
+
+        assert QueryCache.get("mine") is None
+        assert QueryCache.get("mine-no-conn") is None
+        assert QueryCache.get("other") == ["kept"]
+
+    @pytest.mark.parametrize("helper", ["atomic_append", "atomic_remove", "atomic_set_add"])
+    async def test_rejected_atomic_write_raises_before_invalidating(self, helper: str) -> None:
+        """Only an accepted write has to invalidate; a rejected one raises first."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+        from surreal_sdk.exceptions import QueryError
+
+        client = _u267_client()
+        client.query = AsyncMock(return_value=QueryResponse(results=[QueryResult(status=ResponseStatus.ERR, result="nope")]))
+        _u267_fill()
+        with (
+            patch.object(SurrealDBConnectionManager, "get_client", AsyncMock(return_value=client)),
+            pytest.raises(QueryError),
+        ):
+            await getattr(CacheUser, helper)("r1", "tags", "x")
+        assert QueryCache.get("other") == ["kept"]
+
+
+@pytest.fixture
+def _u267_fresh_signals() -> Iterator[None]:
+    """No handler connected and ``_signals_connected`` reset; restored afterwards."""
+    signals = (post_save, post_update, post_delete)
+    saved = [dict((k, list(v)) for k, v in sig._handlers.items()) for sig in signals]
+    saved_flag = QueryCache._signals_connected
+    for sig in signals:
+        sig._handlers.clear()
+    QueryCache._signals_connected = False
+    try:
+        yield
+    finally:
+        for sig, handlers in zip(signals, saved, strict=True):
+            sig._handlers.clear()
+            sig._handlers.update(handlers)
+        QueryCache._signals_connected = saved_flag
+
+
+@pytest.mark.usefixtures("_u267_fresh_signals")
+class TestSignalsConnectWithoutConfigure:
+    """Issue #267 — invalidation does not depend on a ``configure()`` call."""
+
+    @staticmethod
+    def _receivers() -> list[int]:
+        return [len(sig._handlers.get(None, [])) for sig in (post_save, post_update, post_delete)]
+
+    def test_set_connects_the_handlers_once(self) -> None:
+        QueryCache.set("k1", [1], "cache_users")
+        QueryCache.set("k2", [2], "cache_users")
+        assert QueryCache._signals_connected is True
+        assert self._receivers() == [1, 1, 1]
+
+    def test_queryset_cache_connects_the_handlers_once(self) -> None:
+        CacheUser.objects().cache(ttl=30)
+        CacheUser.objects().cache(ttl=30)
+        assert QueryCache._signals_connected is True
+        assert self._receivers() == [1, 1, 1]
+        QueryCache.configure()
+        assert self._receivers() == [1, 1, 1]
+
+    async def test_save_drops_the_entry_without_configure(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        QueryCache.set("k", ["stale"], "cache_users")
+        client = _u267_client()
+        client.upsert = AsyncMock(return_value={"id": "cache_users:r1", "name": "n"})
+        client.merge = AsyncMock(return_value={"id": "cache_users:r1", "name": "n"})
+        with patch.object(SurrealDBConnectionManager, "get_client", AsyncMock(return_value=client)):
+            await CacheUser(id="r1", name="n").save()
+        assert QueryCache.get("k") is None
 
 
 # ==================== Integration Tests ====================

@@ -6,6 +6,47 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.37.2] - 2026-11-02
+
+**Fix release.** One ORM fix, #267 via #460 (`surreal_orm/cache.py`,
+`model_base.py`, `query_set.py`). The SurrealDB pin is unchanged (tested
+against 3.3.5, supported range 3.2.x – 3.3.x). `v2` has the same defect:
+backport tracked in #463.
+
+### Fixed
+
+- **A `.cache()` read is no longer served stale after `atomic_append()`,
+  `atomic_remove()`, `atomic_set_add()`, `bulk_update()`, `bulk_delete()`,
+  `upsert()`, `bulk_upsert()` or `delete_table()`**, including with
+  `atomic=True` (the entries are dropped after the commit). These writes fire
+  no model signal, so they never invalidated the cache (#267).
+- **Cache invalidation no longer depends on `QueryCache.configure()`.** The
+  invalidation handlers were connected only by `configure()`, so a process
+  that never called it kept stale entries even after `save()`.
+  `QuerySet.cache()` and `QueryCache.set()` now connect them, once (#267).
+
+### Changed
+
+- **Behaviour change:** a successful ORM write always drops the written
+  table's cached entries, whether or not `configure()` was called. A write
+  the server rejects (the method raises) may leave them in place.
+
+### Migration notes
+
+- None needed. `raw_query()`, `call_function()`, `DEFINE EVENT` side effects
+  and writes from other processes are still not tracked: call
+  `QueryCache.invalidate(Model)` after them, or rely on the TTL.
+
+### Known limitations
+
+- `relate()`, `remove_relation()`, `remove_all_relations()` and the relation
+  managers write to the edge table without invalidating it: a model mapped to
+  that edge table and read with `.cache()` stays stale after them. Call
+  `QueryCache.invalidate(EdgeModel)`.
+- `save(tx=)` and `bulk_create(atomic=True)` invalidate when the statement is
+  queued, not when the HTTP transaction commits, so a `.cache()` read from
+  another task between the two can store the pre-commit rows.
+
 ## [0.37.1] - 2026-11-02
 
 **Fix release.** One CLI fix, #456 via #458 (`surreal_orm/cli/commands.py`
