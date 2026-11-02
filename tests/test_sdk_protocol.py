@@ -281,7 +281,7 @@ class TestRPCRequest:
 
     def test_live_factory_diff(self) -> None:
         req = RPCRequest.live("users", diff=True)
-        assert "DIFF" in req.params[0]
+        assert req.params[0] == "LIVE SELECT DIFF FROM users"
 
     def test_kill_factory(self) -> None:
         req = RPCRequest.kill("uuid-123")

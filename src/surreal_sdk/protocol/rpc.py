@@ -68,6 +68,34 @@ class SurrealJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+def live_select_query(table: str, where: str | None = None, diff: bool = False) -> str:
+    """
+    Write the ``LIVE SELECT`` statement for *table*.
+
+    ``DIFF`` takes the place of the projection: ``LIVE SELECT DIFF FROM t
+    WHERE ...``. SurrealDB rejects ``DIFF`` anywhere after ``FROM``
+    (``LIVE SELECT * FROM t WHERE x = 1 DIFF`` and ``LIVE SELECT * FROM t
+    DIFF`` are parse errors on 2.7.0), so every live-query builder writes the
+    statement here.
+
+    The table name and the WHERE clause are written as given: callers check
+    the name and render the clause's values.
+
+    Args:
+        table: Table to watch
+        where: Optional WHERE clause, without the ``WHERE`` keyword
+        diff: If True, the notifications carry JSON patches instead of records
+
+    Returns:
+        The statement, e.g. ``"LIVE SELECT DIFF FROM t WHERE x = 1"``
+    """
+    projection = "DIFF" if diff else "*"
+    sql = f"LIVE SELECT {projection} FROM {table}"
+    if where:
+        sql += f" WHERE {where}"
+    return sql
+
+
 @dataclass
 class RPCRequest:
     """
@@ -177,10 +205,7 @@ class RPCRequest:
     @classmethod
     def live(cls, table: str, diff: bool = False, request_id: int = 1) -> "RPCRequest":
         """Create a live query request."""
-        sql = f"LIVE SELECT * FROM {table}"
-        if diff:
-            sql += " DIFF"
-        return cls(method="query", params=[sql, {}], id=request_id)
+        return cls(method="query", params=[live_select_query(table, diff=diff), {}], id=request_id)
 
     @classmethod
     def kill(cls, live_id: str, request_id: int = 1) -> "RPCRequest":
