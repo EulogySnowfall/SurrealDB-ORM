@@ -13,6 +13,7 @@ from typing import Any, Self
 
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
+from ..protocol.rpc import _live_select_sql
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
@@ -55,6 +56,10 @@ class LiveChange:
         # Extract record ID from result
         if isinstance(result, dict) and "id" in result:
             record_id = str(result["id"])
+        elif data.get("record") is not None:
+            # DIFF mode: the result is a list of patches with no id; SurrealDB
+            # names the record in the notification itself.
+            record_id = str(data["record"])
 
         # Parse changed fields if present (DIFF mode)
         changed_fields: list[str] = []
@@ -181,11 +186,7 @@ class LiveSelectStream:
         if self._active:
             raise LiveQueryError("Live select already active")
 
-        sql = f"LIVE SELECT * FROM {self.table}"
-        if self.where:
-            sql += f" WHERE {self.where}"
-        if self.diff:
-            sql += " DIFF"
+        sql = _live_select_sql(self.table, self.where, self.diff)
 
         try:
             # The WHERE values are bound, never written into the SQL text:
