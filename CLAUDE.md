@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.35.6)
+> Context document for Claude AI - Last updated: October 2026 (0.36.0)
 
 ## Project Vision
 
@@ -10,14 +10,43 @@
 
 ---
 
-## Current Version: 0.35.6 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.4)
+## Current Version: 0.36.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.4**  | 0.35.x      | Active development              |
+| `main` | **3.3.5**  | 0.36.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.36.0
+
+Graph Power, roadmap v0.36.0 (#430 via #433): `surreal_orm/graph.py` (new),
+`query_set.py`, `model_base.py`, `subquery.py`, `__init__.py`. ORM only, the
+SDK is unchanged. Pin 3.3.5 (0.35.7, monitor auto-release); 0.35.8 was the
+Dependabot `tornado` 6.6 auto-release (dev-only, notebook tooling). Both
+backfilled in this release. `v2`: n/a (feature).
+
+- **Three traversals on SurrealDB's recursive idiom.** `reachable_from()`
+  (`{min..max+collect}`) returns a `QuerySet` that chains with filters,
+  ordering, pagination and the aggregates, which count the reachable records
+  only. `paths_from()` (`+path`, `max_depth` required, capped at 32) and
+  `shortest_path()` (`+shortest`, unweighted BFS) are terminal. Instance
+  shortcuts `get_reachable()` / `get_paths()` / `get_shortest_path()`.
+- **A `QuerySet` carrying `_graph` must never render a bare `FROM <table>`.**
+  Every path that cannot honour the traversal (`_reject_graph()` and its
+  siblings) raises `ValueError` before any query: bulk writes, `upsert()`, `live()`,
+  `changes()`, `query()`, `hybrid_search()`, `graph_query()`, `cache()`,
+  `Subquery(qs)`, `Prefetch(queryset=qs)`, and combining with
+  `similar_to()` / `search()` / `nearby()`. Adding a new read or write path
+  means deciding which side of that rule it is on.
+- **Bindings**: source `$_g_src`, target `$_g_dst`, step filters `$_gN` (the
+  filter renderers take a prefix now, so they sit beside the outer `$_fN`).
+  Requires CBOR: under `protocol="json"` record values are strings and the
+  traversals return nothing.
+- **#147 XPASSes on 3.3.5** (checked three times during this release). The
+  `LET` prelude stays while the 3.2 line is supported; re-check on 3.2.x
+  before removing it.
 
 ### What's New in 0.35.6
 

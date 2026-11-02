@@ -6,6 +6,128 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.36.0] - 2026-10-30
+
+**Minor release — Graph Power (roadmap v0.36.0, #430 via #433).** Recursive
+graph traversal on top of SurrealDB's recursive idiom (`{min..max+collect}`,
+`+path`, `+shortest`): the records reachable over an edge within a depth
+range, every maximal path from a record, and the shortest path between two
+records, as chainable `QuerySet` methods and as instance shortcuts. ORM layer
+only; the SDK is unchanged. No change for existing calls. The SurrealDB pin
+is 3.3.5 (moved in 0.35.7); supported range 3.2.x – 3.3.x, and the new
+traversals are tested on 3.3.5 and on 3.2.6. Also documents the 0.35.7 and
+0.35.8 auto-releases below.
+
+### Added
+
+- **`QuerySet.reachable_from(source, edge, *, max_depth=None, min_depth=1,
+  direction="out", node_filter=None, edge_filter=None,
+  include_source=False)`** — the records reachable over `edge` within the
+  depth range (`{min..max+collect}`), each once. Chains with `filter()`, `Q`,
+  `order_by()`, `limit()`, `offset()`, `select()`, `fetch()`, `get()`,
+  `first()` and `all()`.
+- **Aggregates over a traversal** — `count()`, `sum()`, `avg()`, `min()`,
+  `max()` and `values().annotate()` on a `reachable_from()` QuerySet aggregate
+  over the reachable records only (the source excluded unless
+  `include_source=True`). On a traversal, a statement error from these
+  aggregates (e.g. past SurrealDB's idiom recursion limit of 256) raises
+  `QueryError` instead of returning `0` / `None` / an empty grouping.
+- **`QuerySet.paths_from(source, edge, *, max_depth, min_depth=1,
+  direction="out"|"in", node_filter=None, edge_filter=None,
+  include_source=True) -> list[list[T]]`** (`+path`) — every maximal walk
+  from a record, in one batch. Path order is unspecified; cycles are not cut,
+  so a record can appear several times in one path. A path holding a record
+  the session cannot select is dropped, with one warning. `max_depth` is
+  required and capped at `MAX_PATH_DEPTH` (32); the number of paths grows
+  exponentially with it, so use a small application constant, never a
+  request parameter. `direction="both"` is refused, and so is any read clause
+  on the QuerySet (`filter`, `order_by`, `limit`, …): use `node_filter=` /
+  `edge_filter=`.
+- **`QuerySet.shortest_path(source, target, edge, *, max_depth=None,
+  direction="out", node_filter=None, edge_filter=None, include_source=True)
+  -> list[T] | None`** (`+shortest`, unweighted BFS, fewest hops) — records
+  in walk order. `None` when there is no path within `max_depth`, whatever the
+  server sends (NONE, or the frontier paths when the depth bound is hit), and
+  also when a record on the path cannot be loaded (one warning naming it).
+  `shortest_path(x, x)` returns the trivial path `[x]` (`[]` with
+  `include_source=False`, `None` if the record does not exist), not the
+  server's shortest cycle.
+- **Instance shortcuts** — `BaseSurrealModel.get_reachable(edge, *,
+  model_class=None, ...)`, `get_paths(edge, *, max_depth, model_class=None,
+  ...)` and `get_shortest_path(target, edge, ...)`; return types follow
+  `model_class` (`list[Self]` / `list[_M]`) or the target's class. With a
+  `model_class` or target of another table, pass `include_source=False`, as
+  with the QuerySet methods.
+- **`GraphDirection`, `MAX_GRAPH_DEPTH` (256) and `MAX_PATH_DEPTH` (32)**
+  exported from `surreal_orm`.
+- **A traversal is never silently dropped.** A `reachable_from()` QuerySet
+  raises `ValueError` `<method>() cannot be combined with reachable_from()`
+  before any query in `live()`, `changes()`, `query()`, `hybrid_search()`,
+  `graph_query()`, `bulk_update()`, `bulk_delete()`, `upsert()`,
+  `bulk_upsert()` and `delete_table()`; when combined with `similar_to()`,
+  `search()` or `nearby()` (at compile: `exec()`, `count()`, the aggregates,
+  `annotate()`); in `Subquery(qs)`; and in `Prefetch(queryset=qs)` (at
+  `prefetch_related()` and again at `exec()`). `cache()` +
+  `reachable_from()` raises at `exec()`: edge writes fire no signal, so
+  nothing would invalidate a cached traversal.
+
+### Notes
+
+- The source, the target and the step-filter values are bound (`$_g_src`,
+  `$_g_dst`, `$_gN`). Depths are 1–256 (1–32 for `paths_from()`); a walk past
+  256 hops raises `QueryError`. Result order is unspecified.
+- `node_filter` / `edge_filter` prune the walk, while `filter()` filters the
+  result. `include_source=True` needs a source in the queried table.
+  `edge_filter` converts `in`/`out` values to records (instance, `RecordId`,
+  `"table:id"`) and rejects a bare id; a `⟨…⟩` key raises.
+- Requires the CBOR protocol (the default): under `protocol="json"` record
+  values are strings and the traversals return nothing.
+- Upstream #147 (an inline uncorrelated sub-SELECT with `ORDER BY` + `LIMIT`
+  sharing its budget across outer rows) no longer reproduces on SurrealDB
+  3.3.5: the tracking test XPASSes. `Subquery` keeps its `LET` prelude while
+  the 3.2 line is supported.
+
+### Documentation
+
+- `docs/orm.md` gains a recursive-traversal section, and
+  `examples/04_relations_graph.ipynb` a "Recursive Traversal, Paths and
+  Shortest Path" section and three Summary rows.
+- `docs/roadmap.md` marks v0.36.0 done; `SECURITY.md` moves the supported
+  `main` line to 0.36.x (SurrealDB floor unchanged, 3.2).
+
+---
+
+## [0.35.8] - 2026-10-29
+
+**Dependency maintenance release.** No library code changes vs 0.35.7.
+Auto-released by the Dependabot flow; entry backfilled in 0.36.0.
+
+### Security
+
+- **`tornado` 6.5.9 → 6.6 in `uv.lock` (#426)** — GHSA-r4j5-9xpp-3985
+  (event-loop blocking and excess memory use from chunked bodies with many
+  small chunks), GHSA-pw9p-v7r6-gx4p (open redirect in `RedirectHandler` via
+  protocol-relative URLs) and GHSA-pcg2-g6cj-q92c (quadratic CPU use parsing
+  HTTP headers with line folding). `tornado` reaches the lock only through
+  the notebook tooling of the dev group (`ipykernel`, `jupyter-client`); it
+  is not a dependency of the published package.
+
+---
+
+## [0.35.7] - 2026-10-29
+
+**SurrealDB pin release.** No library code changes vs 0.35.6. Auto-released
+by the SurrealDB version monitor; entry backfilled in 0.36.0.
+
+### Changed
+
+- **SurrealDB pin 3.3.4 → 3.3.5 (#424)** — `.surrealdb-version` and
+  `devops/docker-compose.yml`. Not a security release upstream. The monitor
+  ran the integration suite against 3.3.5 before proposing the bump.
+  Supported range unchanged (3.2.x – 3.3.x).
+
+---
+
 ## [0.35.6] - 2026-10-28
 
 **Fix release.** Two fixes: string `DEFAULT` values and `SearchHighlight`
