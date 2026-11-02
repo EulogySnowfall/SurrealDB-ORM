@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from .utils import parse_filter_key
@@ -79,3 +80,26 @@ class Q:
         if self.connector == self.OR:
             return f"Q.OR({self.children!r})"
         return f"Q({self.children!r})"
+
+
+def iter_q_leaves(q: Q) -> Iterator[tuple[str, str, Any]]:
+    """Yield every leaf condition ``(field, lookup, value)`` of ``q``, at any depth.
+
+    Walks ``children`` depth first, in order. The values themselves are not
+    entered: a ``Q`` used as a lookup value is a leaf's value, not a child.
+    """
+    for child in q.children:
+        if isinstance(child, Q):
+            yield from iter_q_leaves(child)
+        else:
+            yield child
+
+
+def q_has_condition(q: Q) -> bool:
+    """Return ``True`` when ``q`` holds a leaf condition at some depth.
+
+    This is the same as "``q`` renders to a non-empty text": a leaf always
+    renders, while ``Q()``, ``Q() | Q()``, ``Q() & Q()`` and ``~Q()`` render to
+    nothing. ``Q(a=1) | Q()`` has a condition.
+    """
+    return next(iter_q_leaves(q), None) is not None

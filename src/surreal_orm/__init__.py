@@ -63,6 +63,7 @@ from .model_base import (
     SurrealDbError,
     get_registered_models,
 )
+from .paths import FieldPath
 from .prefetch import Prefetch
 from .q import Q
 from .query_set import QuerySet
@@ -107,6 +108,7 @@ __all__ = [
     "QuerySet",
     "OrderBy",
     "Q",
+    "FieldPath",
     # Aggregations
     "Aggregation",
     "Count",
