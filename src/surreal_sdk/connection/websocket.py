@@ -23,7 +23,7 @@ import builtins
 
 from ..exceptions import ConnectionError, LiveQueryError, TimeoutError
 from ..protocol import cbor as cbor_module
-from ..protocol.rpc import RPCRequest, RPCResponse
+from ..protocol.rpc import RPCRequest, RPCResponse, live_select_query
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
@@ -340,11 +340,7 @@ class WebSocketConnection(BaseSurrealConnection):
         if not _SAFE_TABLE_RE.fullmatch(params.table):
             raise ValueError(f"Invalid table name: {params.table!r}")
         # Build query
-        sql = f"LIVE SELECT * FROM {params.table}"
-        if params.where:
-            sql += f" WHERE {params.where}"
-        if params.diff:
-            sql += " DIFF"
+        sql = live_select_query(params.table, params.where, params.diff)
 
         # Inline params (LIVE SELECT does not support session variables)
         if params.params:
@@ -412,13 +408,24 @@ class WebSocketConnection(BaseSurrealConnection):
             The RPC response
 
         Raises:
-            ConnectionError: If not connected
+            ConnectionError: If not connected, or if sending fails
             TimeoutError: If request times out
+            ValueError: A parameter cannot be encoded (e.g. an out-of-range
+                ``Decimal``); nothing is sent
+            TypeError: A parameter has a type the protocol cannot encode;
+                nothing is sent
         """
         if not self._ws or not self._connected:
             raise ConnectionError("Not connected. Call connect() first.")
 
         request.id = self._next_request_id()
+
+        # Encode before registering the request and before the try block: an
+        # argument that cannot be encoded (an out-of-range Decimal, an
+        # unsupported type) raises its own ValueError/TypeError, nothing is
+        # sent and no pending entry is left, instead of a ConnectionError the
+        # caller cannot tell from a lost connection.
+        payload: bytes | str = request.to_cbor() if self.protocol == "cbor" else request.to_json()
 
         # Create future for response
         loop = asyncio.get_running_loop()
@@ -427,10 +434,10 @@ class WebSocketConnection(BaseSurrealConnection):
 
         try:
             # Send request using configured protocol
-            if self.protocol == "cbor":
-                await self._ws.send_bytes(request.to_cbor())
+            if isinstance(payload, bytes):
+                await self._ws.send_bytes(payload)
             else:
-                await self._ws.send_str(request.to_json())
+                await self._ws.send_str(payload)
 
             # Wait for response with timeout
             response = await asyncio.wait_for(future, timeout=self.timeout)
@@ -467,9 +474,7 @@ class WebSocketConnection(BaseSurrealConnection):
         """
         if not _SAFE_TABLE_RE.fullmatch(table):
             raise ValueError(f"Invalid table name: {table!r}")
-        sql = f"LIVE SELECT * FROM {table}"
-        if diff:
-            sql += " DIFF"
+        sql = live_select_query(table, diff=diff)
 
         try:
             response = await self.query(sql)

@@ -95,7 +95,7 @@ class TestRPCRequest:
         request = RPCRequest.live("orders", diff=True)
 
         assert request.method == "query"
-        assert "LIVE SELECT * FROM orders DIFF" in request.params[0]
+        assert request.params[0] == "LIVE SELECT DIFF FROM orders"
 
     def test_kill_factory(self) -> None:
         """Test kill factory method."""

@@ -19,6 +19,7 @@ Custom CBOR Tags used by SurrealDB:
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import ROUND_HALF_UP, Context, Decimal
@@ -40,6 +41,24 @@ TAG_STRING_UUID = 9
 TAG_STRING_DECIMAL = 10
 TAG_DATETIME = 12
 TAG_STRING_DURATION = 14
+
+#: Shown for a naive ``datetime``. It names no value, so Python's default
+#: warning filter reports it once per call site rather than once per value.
+_NAIVE_DATETIME_WARNING = (
+    "A naive datetime was sent to SurrealDB and read as UTC. "
+    "Attach a tzinfo (for example datetime.now(UTC)) to send a different instant."
+)
+
+
+def _warn_naive_datetime() -> None:
+    """Warn that a naive ``datetime`` is being sent as a UTC instant.
+
+    SurrealDB only stores UTC instants, so a ``datetime`` with no ``tzinfo``
+    is read as UTC. It is a ``RuntimeWarning`` attributed to the caller
+    (``stacklevel=2``): the CBOR encoder and ``live()``'s literal renderer each
+    report it once per process under the default filter.
+    """
+    warnings.warn(_NAIVE_DATETIME_WARNING, RuntimeWarning, stacklevel=2)
 
 
 def needs_id_escaping(record_id: str) -> bool:
@@ -261,7 +280,11 @@ def _preprocess_for_cbor(data: Any) -> Any:
         return CBORTag(TAG_NONE, None)
     if isinstance(data, Decimal) and data.is_finite():
         return CBORTag(TAG_STRING_DECIMAL, format_decimal(data))
-    if isinstance(data, date) and not isinstance(data, datetime):
+    if isinstance(data, datetime):
+        if data.tzinfo is None:
+            _warn_naive_datetime()
+        return data
+    if isinstance(data, date):
         return datetime(data.year, data.month, data.day, tzinfo=UTC)
     if isinstance(data, dict):
         return {k: _preprocess_for_cbor(v) for k, v in data.items()}
@@ -280,6 +303,10 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
     Note: String record IDs (like "table:id") are NOT automatically converted
     to RecordId objects. The caller must use RecordId objects explicitly when
     needed (e.g., for record references in relation operations).
+
+    There is no ``datetime`` branch: cbor2 encodes every ``datetime``,
+    subclasses included, itself (tag 0, an ISO 8601 string), and :func:`encode`
+    gives it ``timezone=UTC`` for a naive one, so this hook never sees one.
     """
     if isinstance(value, RecordId):
         # Encode RecordId as tagged array [table, id]
@@ -287,12 +314,6 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
     elif isinstance(value, Table):
         # Encode Table as tagged string
         encoder.encode(CBORTag(TAG_TABLE, value.name))
-    elif isinstance(value, datetime):
-        # Encode datetime as tagged ISO 8601 string
-        # Ensure timezone-aware for consistency
-        if value.tzinfo is None:
-            value = value.replace(tzinfo=UTC)
-        encoder.encode(CBORTag(TAG_DATETIME, value.isoformat()))
     elif isinstance(value, UUID):
         # Encode UUID as tagged string
         encoder.encode(CBORTag(TAG_STRING_UUID, str(value)))
@@ -372,12 +393,17 @@ def encode(data: Any) -> bytes:
     Returns:
         CBOR-encoded bytes
 
+    A naive ``datetime`` is read as UTC, at any depth, and a ``RuntimeWarning``
+    says so: SurrealDB only stores UTC instants. Attach a ``tzinfo``
+    (``datetime.now(UTC)``) to send a different instant. A timezone-aware
+    ``datetime`` is encoded unchanged.
+
     Raises:
         ValueError: A ``Decimal`` is above the largest SurrealDB decimal in
             magnitude (see :func:`format_decimal`).
     """
     processed = _preprocess_for_cbor(data)
-    result: bytes = cbor2.dumps(processed, default=_cbor_default_encoder)
+    result: bytes = cbor2.dumps(processed, default=_cbor_default_encoder, timezone=UTC)
     return result
 
 

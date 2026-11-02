@@ -930,10 +930,11 @@ class TestFormatValue:
         assert _render(when) == "d'2026-02-01T12:30:00.250000+00:00'"
 
     def test_naive_datetime_is_read_as_utc(self) -> None:
-        """Like the CBOR encoder's datetime branch: a naive value means UTC."""
+        """Like a naive value bound as a parameter (``cbor.encode``): read as UTC, with a warning."""
         from datetime import datetime
 
-        assert _render(datetime(2026, 2, 1, 12, 30)) == "d'2026-02-01T12:30:00+00:00'"
+        with pytest.warns(RuntimeWarning, match="naive datetime"):
+            assert _render(datetime(2026, 2, 1, 12, 30)) == "d'2026-02-01T12:30:00+00:00'"
 
     def test_date(self) -> None:
         from datetime import date
@@ -1104,8 +1105,8 @@ class TestInlineParams:
         """``diff=True`` changes nothing in how the filter values are written.
 
         ``start()`` and the resubscription after a reconnect send the same
-        rendered WHERE clause. Where ``DIFF`` itself goes in the statement is a
-        separate matter, so this test only requires that it is there.
+        statement, with ``DIFF`` in place of the projection (``LIVE SELECT
+        DIFF FROM``): SurrealDB rejects ``DIFF`` after the ``WHERE`` clause.
         """
         from decimal import Decimal
 
@@ -1131,11 +1132,8 @@ class TestInlineParams:
             LiveSubscriptionParams(table="items", where=where, params=params, diff=True, callback=None, on_reconnect=None)
         )
 
-        rendered = "WHERE prefs = {'theme': 'dark'} AND price = 9.99dec AND author = `a`:`x\\`y`"
-        assert len(sent) == 2 and sent[0] == sent[1]
-        assert rendered in sent[0]
-        assert "DIFF" in sent[0]
-        assert "$" not in sent[0]
+        expected = "LIVE SELECT DIFF FROM items WHERE prefs = {'theme': 'dark'} AND price = 9.99dec AND author = `a`:`x\\`y`"
+        assert sent == [expected, expected]
 
 
 class TestParseId:

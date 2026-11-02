@@ -17,9 +17,14 @@ from uuid import UUID
 
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
-from ..protocol.cbor import RecordId, format_decimal
+from ..protocol.cbor import RecordId, _warn_naive_datetime, format_decimal
+from ..protocol.rpc import live_select_query
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
+
+#: The range of an ``int`` record id SurrealDB reads as a number (signed 64-bit).
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
 
 #: A ``$name`` parameter reference, read the way SurrealDB's lexer reads it.
 _PARAM_REF_RE = re.compile(r"\$([A-Za-z0-9_]+)", re.ASCII)
@@ -57,6 +62,11 @@ def _record_literal(value: RecordId) -> str:
     ``"123"`` is ``t:`123```, a different record from the numeric ``t:123``.
     An ``int`` id stays a bare number; an array, object or UUID id is written
     as that value's literal.
+
+    An ``int`` id outside the signed 64-bit range has no literal: SurrealDB
+    reads ``t:9223372036854775808`` as the *string* id ``"9223372036854775808"``
+    (checked on 2.7.0), a different record from the bound one, so it raises
+    ``TypeError`` like the other ids with no literal.
     """
     if not isinstance(value.table, str):
         raise TypeError(f"live() filter: record table must be a str, got {type(value.table).__name__}")
@@ -64,6 +74,8 @@ def _record_literal(value: RecordId) -> str:
     if isinstance(record_id, bool):
         raise TypeError("live() filter: a record id cannot be a bool")
     if isinstance(record_id, int):
+        if not _I64_MIN <= record_id <= _I64_MAX:
+            raise TypeError(f"live() filter: an int record id must fit a signed 64-bit integer, got {int.__repr__(record_id)}")
         id_text = int.__repr__(record_id)
     elif isinstance(record_id, str):
         id_text = _backtick_name(record_id)
@@ -242,7 +254,9 @@ class LiveSelectStream:
           rounded off as SurrealDB rounds them)
         - ``str`` → a single-quoted string with the same characters
         - ``UUID`` → ``u'...'``
-        - ``datetime`` → ``d'...'`` in UTC; a naive datetime is read as UTC
+        - ``datetime`` → ``d'...'`` in UTC; a naive datetime is read as UTC,
+          with a ``RuntimeWarning``, as :func:`~surreal_sdk.protocol.cbor.encode`
+          reads a bound one
         - ``date`` → ``d'YYYY-MM-DD'``, midnight UTC
         - ``list`` / ``tuple`` → an array; ``dict`` with ``str`` keys → an object
         - ``RecordId`` → the record link: the table and a string id between
@@ -282,6 +296,7 @@ class LiveSelectStream:
             return f"u'{value}'"
         if isinstance(value, datetime):
             if value.utcoffset() is None:
+                _warn_naive_datetime()
                 value = value.replace(tzinfo=UTC)
             return f"d'{value.astimezone(UTC).isoformat()}'"
         if isinstance(value, date):
@@ -346,11 +361,7 @@ class LiveSelectStream:
             raise LiveQueryError("Live select already active")
 
         # Build query with variable substitution
-        sql = f"LIVE SELECT * FROM {self.table}"
-        if self.where:
-            sql += f" WHERE {self.where}"
-        if self.diff:
-            sql += " DIFF"
+        sql = live_select_query(self.table, self.where, self.diff)
 
         # SurrealDB LIVE SELECT does not evaluate session variables set via
         # LET in the WHERE clause.  Inline them directly into the SQL.
