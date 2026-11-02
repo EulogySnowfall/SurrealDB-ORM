@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: October 2026 (0.21.30)
+> Context document for Claude AI - Last updated: November 2026 (0.21.31)
 
 <!-- -->
 
@@ -19,12 +19,29 @@
 
 ---
 
-## Current Version: 0.21.30 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.31 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.36.x   | Active development              |
+
+### What's New in 0.21.31
+
+One SDK fix, #258 via #442: the four follow-ups of the 0.21.14 reviews. Pin unchanged (2.7.0). `main`: same DIFF
+placement and WebSocket wrapping, tracked in #441.
+
+- **One `LIVE SELECT` builder.** `live_select_query()` in `protocol/rpc.py` writes `LIVE SELECT DIFF FROM <table>
+  [WHERE ...]`; `LiveSelectStream.start`, `WebSocketConnection.live` / `_resubscribe_one`, `LiveQuery.subscribe`
+  and `RPCRequest.live` all use it. 2.7.0 rejects `DIFF` after the table/`WHERE`, with or without a `WHERE`.
+- **`_record_literal()` refuses `int` ids outside i64** (`TypeError`): 2.7.0 reads `t:9223372036854775808` as a
+  string id. Both edges still render.
+- **cbor2 encodes `datetime` natively**, so the `default` hook's tzinfo branch was dead and a naive value raised
+  inside cbor2. `encode()` passes `timezone=UTC`; `_preprocess_for_cbor()` and `live()` warn with the same
+  `RuntimeWarning`; the dead branch is gone.
+- **`WebSocketConnection._send_rpc()` encodes before registering the future and outside the `try`**, so an encoder
+  `ValueError`/`TypeError` reaches the caller as itself, nothing is sent, no pending entry is left. A send failure
+  is still `ConnectionError`.
 
 ### What's New in 0.21.30
 
@@ -346,7 +363,7 @@ Bug fix, the `v2` port of #239 (#246, #253). No ORM API change.
   before writing any digit: above 79228162514264337593543950335 in magnitude it
   raises `ValueError`, and places beyond the 28th are rounded half away from zero,
   as 2.7.0 stores them.
-- **Known limitations, not fixed here:** `live(diff=True)` appends `DIFF` after the
+- **Known limitations, not fixed here (all four fixed in 0.21.31, #258):** `live(diff=True)` appends `DIFF` after the
   `WHERE` (`LIVE SELECT * FROM t WHERE ... DIFF`), a parse error on 2.7.0 with or
   without a `WHERE` (`main` builds it the same way); a naive `datetime` bound as a
   parameter still fails in cbor2 (no default timezone), only `live()` reads it as UTC;

@@ -6,6 +6,67 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.31] - 2026-11-02
+
+**Bug fix release (V2 LTS).** One SDK fix (#258, #442) that closes the four
+follow-ups left open by the 0.21.14 reviews: `live(diff=True)` subscriptions
+start, an out-of-range integer record id in a `live()` filter is refused, a
+naive `datetime` can be bound as a parameter, and WebSocket reports encoding
+errors as themselves. Read *Behaviour change* and *Migration*. No ORM API
+change. The SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Fixed
+
+- **`live(diff=True)` now sends `LIVE SELECT DIFF FROM <table> [WHERE ...]`
+  (#258).** This covers ORM `QuerySet.live(diff=True)`, SDK
+  `live_select(diff=True)`, `WebSocketConnection.live(diff=True)`,
+  `LiveQuery(diff=True)` and `RPCRequest.live(diff=True)`, as well as
+  auto-resubscribe after a reconnect. `DIFF` used to come after the table and
+  the `WHERE` clause, which SurrealDB rejects, so no DIFF subscription could
+  start. All builders share `surreal_sdk.protocol.rpc.live_select_query()`.
+  Statements with `diff=False` are unchanged. `main` builds the statement the
+  same way; that fix is tracked in #441.
+- **In a `live()` filter, a `RecordId` whose `int` id is outside the signed
+  64-bit range raises `TypeError` (#258).** The server reads such a literal
+  as a string id, so the filter used to compare against a different record.
+  `-2**63` and `2**63-1` still render.
+
+### Behaviour change
+
+- **A naive `datetime` bound as a query parameter (CBOR) is now sent as UTC
+  with a `RuntimeWarning` (#258).** It used to raise (`ConnectionError` over
+  WebSocket, an encode error over HTTP). `live()` filters already wrote it as
+  UTC; they now give the same warning. Attach a `tzinfo` to send another
+  instant.
+- **Over WebSocket, a parameter that cannot be encoded now raises the
+  original `ValueError`/`TypeError` instead of
+  `ConnectionError('Request failed: ...')` (#258)**, for example
+  `Decimal('1E+29')` or an unsupported type. Nothing is sent and the
+  connection stays usable. A send failure is still `ConnectionError`.
+
+### Migration
+
+- Code that catches `ConnectionError` around WebSocket queries to handle bad
+  arguments must catch `ValueError`/`TypeError` instead.
+- Code that relied on a naive `datetime` being refused should attach a
+  `tzinfo` or check for the `RuntimeWarning`.
+
+### Documentation
+
+- The 0.21.14 entry below no longer lists these as known limitations, and
+  its note on an out-of-range `Decimal` over WebSocket says it now raises
+  `ValueError` there too.
+
+### Verification
+
+Against SurrealDB 2.7.0 (#442): 3,396 unit tests on each of Python 3.12, 3.13
+and 3.14 and 775 integration tests pass (4 expected failures, the existing
+strict `xfail`s for integer record ids over WebSocket); `ruff` and `mypy`
+clean. The new and touched tests passed three times in a row.
+
+---
+
 ## [0.21.30] - 2026-10-30
 
 **Bug fix release (V2 LTS).** One fix, the `v2` port of #260 from `main`:
@@ -1106,8 +1167,8 @@ fail on the code before the fix, including all 7 integration tests.
 - **A `Decimal` outside SurrealDB's decimal range is refused before the
   request is sent (#246).** Above 79228162514264337593543950335 in magnitude,
   binding it or using it in a `live()` filter raises `ValueError` (over a
-  WebSocket connection, `query()` wraps it in the SDK's `ConnectionError`,
-  as it does for every encoding error). Binding it was rejected by SurrealDB
+  WebSocket connection, too, since 0.21.31; before, `query()` wrapped it in
+  the SDK's `ConnectionError`, #258). Binding it was rejected by SurrealDB
   before this release, like any `Decimal`. Places beyond the 28th are
   rounded half away from zero, which is what SurrealDB stores for a longer
   value.
@@ -1128,18 +1189,10 @@ Nothing changes for supported types.
 
 ### Known limitations
 
-Not changed by this release; each predates it.
-
-- `live(diff=True)` appends `DIFF` after the `WHERE` clause
-  (`LIVE SELECT * FROM t WHERE ... DIFF`). SurrealDB 2.7.0 rejects that as a
-  parse error, with or without a `WHERE`; it accepts
-  `LIVE SELECT DIFF FROM t WHERE ...`. DIFF-mode subscriptions therefore fail
-  on this line. `main` builds the statement the same way.
-- A naive `datetime` bound as a query parameter is still refused by the CBOR
-  encoder (no default timezone); only `live()` reads it as UTC.
-- A `RecordId` whose integer id is outside the signed 64-bit range is
-  written as a number SurrealDB reads back as a string id, so it does not
-  designate the bound record.
+None left. The three listed when 0.21.14 shipped (`DIFF` placed after the
+`WHERE` clause in `live(diff=True)`, a naive `datetime` refused as a bound
+parameter, an out-of-range integer record id in a `live()` filter) are fixed
+in 0.21.31 (#258).
 
 ### Verification
 
