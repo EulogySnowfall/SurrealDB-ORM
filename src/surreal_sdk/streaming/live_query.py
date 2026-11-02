@@ -12,6 +12,7 @@ from typing import Any
 
 from ..connection.websocket import WebSocketConnection
 from ..exceptions import LiveQueryError
+from ..protocol.rpc import _live_select_sql
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
@@ -131,11 +132,7 @@ class LiveQuery:
         self._callback = callback
 
         # Build query
-        sql = f"LIVE SELECT * FROM {self.table}"
-        if self.where:
-            sql += f" WHERE {self.where}"
-        if self.diff:
-            sql += " DIFF"
+        sql = _live_select_sql(self.table, self.where, self.diff)
 
         try:
             response = await self.connection.query(sql)
