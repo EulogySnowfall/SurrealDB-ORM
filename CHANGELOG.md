@@ -6,6 +6,123 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.38.0] - 2026-11-02
+
+**Minor release — Advanced Queries (roadmap v0.38.0, #457 via #469).**
+Element filters on arrays (`__any`, `__all`, `__none`) and `FieldPath`, a
+validated builder of nested path idioms (optional chaining, element filters,
+indexes, destructuring) used as an `annotate()` value. ORM layer only
+(`surreal_orm/paths.py` new, `query_set.py`, `q.py`, `model_base.py`,
+`subquery.py`, `constants.py`); no SDK, schema or DDL change. One fix: on
+an `extra="allow"` model, values a query attaches to an instance are no
+longer written back by `save()`. Read *Behaviour change* below: three lookup
+names are new, and the queries that use the new API raise on a statement
+error. The SurrealDB pin is unchanged (tested against 3.3.5,
+supported range 3.2.x – 3.3.x). `v2`: the attached-values fix is tracked in
+#470; the feature is `main` only.
+
+### Added
+
+- **Element filters on arrays**: `filter(items__any=Q(qty__gt=2))`,
+  `items__all=…`, `items__none=…`. The `Q` is evaluated per element (`this` is
+  the element of a scalar array) and nests
+  (`orders__any=Q(lines__any=Q(...))`). Rendered as SurrealQL
+  `items[WHERE …]` behind a `type::is_array()` guard, so a non-array field
+  never matches on either 3.2.x or 3.3.x. Works in `count()`, aggregates,
+  `bulk_update()`, `bulk_delete()`, `live()` and `Subquery` (through the
+  shared filter renderer). The value is checked when the `Q(...)` or the
+  `filter()` call is made (`TypeError` for a non-`Q` value or a `Subquery`
+  inside, `ValueError` for an empty `Q`) (#457).
+- **`FieldPath`** (exported from `surreal_orm`), an immutable builder of
+  nested path idioms. `field()`, `where()`, `first()`, `last()`, `at()` and
+  `pick()` check their arguments at the call (identifiers and dotted paths,
+  non-negative int indexes, `Q` conditions with no `Subquery`). Used as
+  `annotate(alias=FieldPath(...))`, it gives one column per path
+  (`SELECT *, <path> AS <alias>`, values bound as `$_paN`): nested fields,
+  `.where()` (rendered `.?[WHERE …]`), `first()`/`last()`/`at(n)`, and
+  `pick()` for destructuring (`.{sku, total: price}`, which also follows
+  record links). `exec()`, `first()`, `get()` and `all()` attach the value to
+  each instance as the raw decoded value (`all()` then runs the compiled
+  query, so the queryset's filters, ordering and limits apply). A missing,
+  `NONE` or `NULL` value anywhere on the path gives `None`, and
+  `order_by("<alias>")` orders by it (#457).
+- Every `FieldPath` step applies to the value built so far:
+  `FieldPath("items").field("sku").first()` is the first sku (rendered
+  `(items.sku)[0]`): a path that ends with a field access is wrapped in
+  parentheses before an index or a `where()` (#457).
+- `FieldPath.where()` raises `ValueError` after a `field()` step that follows
+  an earlier `where()` with no index step in between, whatever `pick()` steps
+  sit after that `field()` (e.g.
+  `FieldPath("orders").where(status="open").field("lines").pick("qty").where(qty__gt=1)`),
+  because the server would return that value unfiltered. To filter an array
+  inside each element use
+  `.pick("status", lines=FieldPath("lines").where(qty__gt=1))` (#457).
+- Errors: `live()` on a QuerySet with a `FieldPath` annotation raises
+  `ValueError` (a live notification carries the record, not a projection);
+  `Subquery()` of such a QuerySet raises `ValueError` at compile time. A
+  `FieldPath` annotation raises `ValueError` when its alias is `id`, a model
+  field, a field alias or a model attribute (`save`, `objects`, ...), and when
+  it is mixed with `Aggregation`/`Subquery` annotations in the same
+  `annotate()` call (#457).
+- Docs: the "Nested Paths & Destructuring" section of `docs/orm.md`; notebook
+  `examples/09_advanced_queries.ipynb`, section 4.
+
+### Fixed
+
+- **Values a query attaches to an instance were written as columns.**
+  `SearchScore`/`SearchHighlight` and `FieldPath` annotations,
+  `_knn_distance` and `Prefetch(to_attr=...)` are no longer written by a later
+  `save()`, `update()` or `QuerySet.bulk_upsert()` (UPSERT and `on_conflict`
+  branches) on a model with `extra="allow"`. A row that already received such
+  a column through a past save keeps it; remove it manually if needed. Before
+  any validated assignment, an attached value does not affect `==` (the
+  instance equals the same record loaded without it). On an `extra="allow"`
+  model, a validated assignment moves attached values into
+  `__pydantic_extra__`, where they count in `==` like any extra field; they
+  are still never written. `model_copy()` does not share the attached names
+  with the original (#457).
+
+### Changed
+
+- **Behaviour change:** `__any`, `__all`, `__none` are lookups now (they used
+  to raise "unknown lookup"). A field literally named `any`/`all`/`none` is
+  unaffected (`filter(any=1)` is still `exact`).
+- **Behaviour change:** a query using an element filter (`__any` / `__all` /
+  `__none`, in `filter()`, `Q`, a `reachable_from()`
+  `node_filter`/`edge_filter`, or inside a `Subquery`'s queryset at any
+  nesting depth, from `filter()`, `Q` and `annotate()`) or a `FieldPath`
+  annotation raises the statement error (`QueryError`, or
+  `TransactionConflictError` for a retryable conflict) instead of returning
+  `[]` — through `exec()`/`first()`/`get()`,
+  `count()`/`sum()`/`avg()`/`min()`/`max()`, the non-atomic
+  `bulk_update()`/`bulk_delete()`, and
+  `prefetch_related(Prefetch(queryset=...))` when that queryset uses an
+  element filter. Typical cause: a string lookup inside an element condition
+  on an element lacking the field ("Expected string but found NONE"). Other
+  querysets are unchanged; a `Subquery` without an element lookup still reads
+  a rejected statement as no records.
+- **Behaviour change:** `get(id)` on a QuerySet carrying a `FieldPath`
+  annotation runs a SELECT filtered on `id` instead of a direct record fetch.
+- `_sorm_attached` is reserved: on an `extra="allow"` model a field or column
+  with that name is never written by `save()`/`update()`/`bulk_upsert()`.
+
+### Migration notes
+
+- None: no schema, DDL or SDK change.
+
+### Known limitations
+
+- On 3.2.x, `FieldPath.where()` reached on a value that is not an array (and
+  not missing) returns a filtered one-element array, where 3.3.x returns
+  `None`.
+- A field read through an array is not filtered per element:
+  `FieldPath("orders").field("lines").where(qty__gt=1)` returns each order's
+  `lines` unfiltered; use `pick(lines=FieldPath("lines").where(...))` instead.
+- A dotted field part that crosses an array
+  (`filter(**{"orders.lines__any": Q(qty__gt=5)})`) matches records with no
+  such line on both versions; nest instead:
+  `orders__any=Q(lines__any=Q(...))`.
+
 ## [0.37.3] - 2026-11-02
 
 **Fix release.** One SDK fix, #441 via #461 (`surreal_sdk/protocol/rpc.py`,
