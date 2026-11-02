@@ -1,5 +1,5 @@
 """
-CLI commands for SurrealDB ORM migrations.
+CLI commands for SurrealDB ORM: migrations, introspection and data import/export.
 
 Uses click for command-line argument parsing.
 """
@@ -8,6 +8,9 @@ import asyncio
 import sys
 from pathlib import Path
 from typing import Any
+
+from surreal_sdk.exceptions import DataImportError
+from surreal_sdk.jsonl import ImportReport
 
 try:
     import click
@@ -71,6 +74,19 @@ async def _introspect_database(ctx: Any) -> Any:
         database=ctx.obj["database"],
     )
     return await DatabaseIntrospector().introspect()
+
+
+def _configure_connection(ctx: Any) -> None:
+    """Register the group's connection options as the ``"default"`` connection."""
+    from ..connection_manager import SurrealDBConnectionManager
+
+    SurrealDBConnectionManager.set_connection(
+        url=ctx.obj["url"],
+        user=ctx.obj["user"],
+        password=ctx.obj["password"],
+        namespace=ctx.obj["namespace"],
+        database=ctx.obj["database"],
+    )
 
 
 # Only define CLI if click is available
@@ -477,6 +493,190 @@ if click is not None:
         except Exception as e:
             click.echo(f"Schema diff failed: {e}", err=True)
             sys.exit(1)
+
+    # -----------------------------------------------------------------------
+    # Data commands: dump / restore (whole database), export-jsonl /
+    # import-jsonl (one table). They work on table names, not models, so the
+    # JSON Lines commands call the SDK client of the default connection.
+    # -----------------------------------------------------------------------
+
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.option(  # type: ignore[untyped-decorator]
+        "--output",
+        "-o",
+        help="Dump file path (default: write to stdout). A new file is created readable by its owner only (0o600).",
+    )
+    @click.option(  # type: ignore[untyped-decorator]
+        "--table",
+        "tables",
+        multiple=True,
+        help="Dump only this table (repeatable; default: every table)",
+    )
+    @click.option("--no-users", is_flag=True, help="Leave out DEFINE USER statements (password hashes)")  # type: ignore[untyped-decorator]
+    @click.option("--no-accesses", is_flag=True, help="Leave out DEFINE ACCESS statements (keys)")  # type: ignore[untyped-decorator]
+    @click.option("--no-params", is_flag=True, help="Leave out DEFINE PARAM statements")  # type: ignore[untyped-decorator]
+    @click.option("--no-functions", is_flag=True, help="Leave out DEFINE FUNCTION statements")  # type: ignore[untyped-decorator]
+    @click.option("--no-analyzers", is_flag=True, help="Leave out DEFINE ANALYZER statements")  # type: ignore[untyped-decorator]
+    @click.option("--schema-only", is_flag=True, help="Dump the definitions without the rows")  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
+    def dump(
+        ctx: click.Context,
+        output: str | None,
+        tables: tuple[str, ...],
+        no_users: bool,
+        no_accesses: bool,
+        no_params: bool,
+        no_functions: bool,
+        no_analyzers: bool,
+        schema_only: bool,
+    ) -> None:
+        """Dump the database as SurrealQL (the server's /export format).
+
+        The dump contains every user's password hash and the access
+        definitions (including JWT keys) unless --no-users --no-accesses is
+        given. A new -o file is created readable by its owner only (0o600);
+        an existing file is truncated and keeps its mode.
+        """
+        from ..connection_manager import SurrealDBConnectionManager
+
+        dest: Any = output if output else click.get_binary_stream("stdout")
+
+        async def run() -> int:
+            _configure_connection(ctx)
+            return await SurrealDBConnectionManager.dump_database(
+                dest,
+                tables=list(tables) if tables else None,
+                users=not no_users,
+                accesses=not no_accesses,
+                params=not no_params,
+                functions=not no_functions,
+                analyzers=not no_analyzers,
+                records=not schema_only,
+            )
+
+        try:
+            written = run_async(run())
+        except Exception as e:
+            click.echo(f"Dump failed: {e}", err=True)
+            sys.exit(1)
+        if output:
+            click.echo(f"Dumped {written} bytes to {output}", err=True)
+        else:
+            dest.flush()
+
+    @cli.command()  # type: ignore[untyped-decorator]
+    @click.argument("path")  # type: ignore[untyped-decorator]
+    @click.pass_context  # type: ignore[untyped-decorator]
+    def restore(ctx: click.Context, path: str) -> None:
+        """Restore a SurrealQL dump from PATH ('-' reads stdin).
+
+        Needs a system user. The restore is not transactional, sends no ORM
+        signal, replaces definitions of the same name and fails on rows that
+        already exist (the other statements are applied).
+        """
+        from ..connection_manager import SurrealDBConnectionManager
+
+        source: Any = click.get_binary_stream("stdin") if path == "-" else path
+
+        async def run() -> None:
+            _configure_connection(ctx)
+            await SurrealDBConnectionManager.restore_database(source)
+
+        try:
+            run_async(run())
+        except DataImportError as e:
+            click.echo(f"Restore failed: {e}", err=True)
+            for error in e.errors:
+                click.echo(f"  {error}", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Restore failed: {e}", err=True)
+            sys.exit(1)
+        click.echo(f"Restored {path}")
+
+    @cli.command(name="export-jsonl")  # type: ignore[untyped-decorator]
+    @click.argument("table")  # type: ignore[untyped-decorator]
+    @click.option("--output", "-o", help="JSON Lines file path (default: write to stdout)")  # type: ignore[untyped-decorator]
+    @click.option("--batch-size", default=1000, show_default=True, type=int, help="Rows read per query")  # type: ignore[untyped-decorator]
+    @click.option(  # type: ignore[untyped-decorator]
+        "--plain",
+        is_flag=True,
+        help="Write plain JSON (record ids, datetimes, decimals as strings); not importable losslessly",
+    )
+    @click.pass_context  # type: ignore[untyped-decorator]
+    def export_jsonl(ctx: click.Context, table: str, output: str | None, batch_size: int, plain: bool) -> None:
+        """Export TABLE as JSON Lines, one record per line, in id order."""
+        from ..connection_manager import SurrealDBConnectionManager
+
+        dest: Any = output if output else sys.stdout
+
+        async def run() -> int:
+            _configure_connection(ctx)
+            client = await SurrealDBConnectionManager.get_client()
+            count: int = await client.export_jsonl(table, dest, batch_size=batch_size, typed=not plain)
+            return count
+
+        try:
+            count = run_async(run())
+        except Exception as e:
+            click.echo(f"Export failed: {e}", err=True)
+            sys.exit(1)
+        if output:
+            click.echo(f"Exported {count} records to {output}", err=True)
+        else:
+            dest.flush()
+
+    @cli.command(name="import-jsonl")  # type: ignore[untyped-decorator]
+    @click.argument("table")  # type: ignore[untyped-decorator]
+    @click.argument("path")  # type: ignore[untyped-decorator]
+    @click.option("--batch-size", default=1000, show_default=True, type=int, help="Rows per INSERT statement")  # type: ignore[untyped-decorator]
+    @click.option(  # type: ignore[untyped-decorator]
+        "--ignore-existing",
+        is_flag=True,
+        help="Skip rows whose id already exists instead of failing",
+    )
+    @click.option(  # type: ignore[untyped-decorator]
+        "--raw",
+        is_flag=True,
+        help="Insert under OPTION IMPORT (no type checks, ASSERT, VALUE, DEFAULT or events; needs a system user)",
+    )
+    @click.pass_context  # type: ignore[untyped-decorator]
+    def import_jsonl(ctx: click.Context, table: str, path: str, batch_size: int, ignore_existing: bool, raw: bool) -> None:
+        """Import the JSON Lines file PATH into TABLE ('-' reads stdin).
+
+        Each batch is one atomic INSERT; on a rejected batch, the batches
+        before it stay written.
+        """
+        from ..connection_manager import SurrealDBConnectionManager
+
+        source: Any = sys.stdin if path == "-" else path
+
+        async def run() -> ImportReport:
+            _configure_connection(ctx)
+            client = await SurrealDBConnectionManager.get_client()
+            report: ImportReport = await client.import_jsonl(
+                table,
+                source,
+                batch_size=batch_size,
+                on_conflict="ignore" if ignore_existing else "error",
+                raw=raw,
+            )
+            return report
+
+        try:
+            report = run_async(run())
+        except DataImportError as e:
+            click.echo(f"Import failed: {e}", err=True)
+            if e.report is not None:
+                click.echo(
+                    f"{e.report.rows} rows in {e.report.batches} batches were written before the error",
+                    err=True,
+                )
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Import failed: {e}", err=True)
+            sys.exit(1)
+        click.echo(f"Imported {report.rows} rows in {report.batches} batches")
 
     @cli.command()  # type: ignore[untyped-decorator]
     @click.pass_context  # type: ignore[untyped-decorator]
