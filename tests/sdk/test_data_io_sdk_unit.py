@@ -1,5 +1,5 @@
 """Unit tests for the SDK's JSON Lines batch I/O: export (``iter_records()``, ``export_jsonl()``, U6) and import
-(``import_jsonl()``, U7).
+(``import_jsonl()``, U7), and the HTTP database dump (``export_database*()``, U8).
 
 A fake connection records every ``query()`` call and answers from a script, so
 the statements, the bound cursor and the stop conditions are checked without a
@@ -13,14 +13,18 @@ import asyncio
 import gc
 import io
 import json
+import stat
+import sys
 import weakref
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Literal, Self
 
+import httpx
 import pytest
 
 from surreal_sdk.connection.base import BaseSurrealConnection
+from surreal_sdk.connection.http import HTTPConnection
 from surreal_sdk.exceptions import (
     ConnectionError,
     DataFormatError,
@@ -915,3 +919,333 @@ async def test_import_rewrites_the_id_table_to_the_target(relation: bool) -> Non
 
     ids = [row["id"] for row in conn.calls[0][1]["_x_rows"]]
     assert ids == [RecordId("t", key), RecordId("t", 2), "plain"]
+
+
+# ---------------------------------------------------------------------------
+# export_database_stream() / export_database() (U8)
+# ---------------------------------------------------------------------------
+
+DUMP_CHUNKS = [b"OPTION IMPORT;\n", b"DEFINE TABLE t TYPE NORMAL SCHEMALESS PERMISSIONS NONE;\n", b"INSERT [{ id: t:1 }];\n"]
+DEFAULT_BODY = {
+    "users": True,
+    "accesses": True,
+    "params": True,
+    "functions": True,
+    "analyzers": True,
+    "tables": True,
+    "records": True,
+}
+
+Handler = Callable[[httpx.Request], Any]
+
+
+async def _chunks(parts: list[bytes], error: Exception | None = None) -> AsyncIterator[bytes]:
+    for part in parts:
+        yield part
+    if error is not None:
+        raise error
+
+
+def dump_handler(
+    requests: list[httpx.Request], *, status: int = 200, text: str = "", error: Exception | None = None
+) -> Handler:
+    """An ``/export`` endpoint answering ``DUMP_CHUNKS`` streamed (or ``status`` with ``text``)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if status != 200:
+            return httpx.Response(status, text=text)
+        return httpx.Response(200, content=_chunks(DUMP_CHUNKS, error))
+
+    return handler
+
+
+@pytest.fixture
+async def http_conn() -> AsyncIterator[Callable[[Handler], HTTPConnection]]:
+    """Build an ``HTTPConnection`` whose client answers through a ``MockTransport`` handler."""
+    clients: list[httpx.AsyncClient] = []
+
+    def build(handler: Handler) -> HTTPConnection:
+        conn = HTTPConnection("http://fake", "ns", "db")
+        conn._client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://fake")
+        clients.append(conn._client)
+        return conn
+
+    yield build
+    for client in clients:
+        await client.aclose()
+
+
+async def test_export_stream_posts_c8_with_the_full_default_body(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(dump_handler(requests))
+    conn._token = "tok"
+
+    async with conn.export_database_stream() as chunks:
+        received = [chunk async for chunk in chunks]
+
+    assert received == DUMP_CHUNKS
+    (request,) = requests
+    assert request.method == "POST" and request.url.path == "/export"
+    assert json.loads(request.content) == DEFAULT_BODY
+    assert request.headers["Surreal-NS"] == "ns"
+    assert request.headers["Surreal-DB"] == "db"
+    assert request.headers["Authorization"] == "Bearer tok"
+    assert request.headers["Content-Type"] == "application/json"
+    assert request.headers["Accept"] == "application/json"
+    # D20: no client timeout on the transfer (the connection's 30 s would cut a large dump)
+    assert request.extensions["timeout"] == {"connect": None, "read": None, "write": None, "pool": None}
+
+
+async def test_export_stream_sends_no_authorization_without_a_token(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(dump_handler(requests))
+
+    async with conn.export_database_stream() as chunks:
+        assert [chunk async for chunk in chunks] == DUMP_CHUNKS
+
+    assert "Authorization" not in requests[0].headers
+
+
+@pytest.mark.parametrize("option", ["users", "accesses", "params", "functions", "analyzers", "records"])
+async def test_export_stream_sends_each_option(http_conn: Callable[[Handler], HTTPConnection], option: str) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(dump_handler(requests))
+
+    async with conn.export_database_stream(**{option: False}) as chunks:
+        async for _ in chunks:
+            pass
+
+    assert json.loads(requests[0].content) == {**DEFAULT_BODY, option: False}
+
+
+async def test_export_stream_sends_the_table_list(http_conn: Callable[[Handler], HTTPConnection]) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(dump_handler(requests))
+
+    async with conn.export_database_stream(tables=("person", "post")) as chunks:
+        async for _ in chunks:
+            pass
+
+    assert json.loads(requests[0].content)["tables"] == ["person", "post"]
+
+
+@pytest.mark.parametrize("table", ["bad-name", "t\n", "", 1, "a.b"])
+def test_export_stream_validates_tables_e5_before_any_request(table: Any) -> None:
+    conn = HTTPConnection("http://fake", "ns", "db")  # not connected: E5 comes first, at the call
+    with pytest.raises(ValueError, match=r"^Invalid table name: .* \(expected an identifier\)$"):
+        conn.export_database_stream(tables=["ok", table])
+
+
+def test_export_stream_refuses_a_single_string_for_tables() -> None:
+    conn = HTTPConnection("http://fake", "ns", "db")
+    with pytest.raises(TypeError, match="tables must be a sequence of table names, not a str"):
+        conn.export_database_stream(tables="person")
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 500])
+async def test_export_stream_non_200_is_e11_with_the_code(http_conn: Callable[[Handler], HTTPConnection], status: int) -> None:
+    conn = http_conn(dump_handler([], status=status, text="Specify a namespace to use"))
+
+    with pytest.raises(QueryError) as caught:
+        async with conn.export_database_stream():
+            pytest.fail("the body must not run on an error status")
+
+    assert str(caught.value) == f"Export failed: HTTP {status} - Specify a namespace to use"
+    assert caught.value.code == status
+    assert conn._inflight_rpcs == 0
+
+
+async def test_export_stream_counts_in_flight_for_the_whole_transfer(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    conn = http_conn(dump_handler([]))
+    assert conn._inflight_rpcs == 0
+
+    async with conn.export_database_stream() as chunks:
+        assert conn._inflight_rpcs == 1
+        async for _ in chunks:
+            assert conn._inflight_rpcs == 1
+        assert conn._inflight_rpcs == 1
+
+    assert conn._inflight_rpcs == 0
+    assert conn._released.is_set()
+
+
+async def test_export_stream_releases_when_the_body_raises(http_conn: Callable[[Handler], HTTPConnection]) -> None:
+    conn = http_conn(dump_handler([]))
+
+    with pytest.raises(RuntimeError, match="sink failed"):
+        async with conn.export_database_stream() as chunks:
+            async for _ in chunks:
+                raise RuntimeError("sink failed")
+
+    assert conn._inflight_rpcs == 0
+
+
+async def test_export_stream_closes_a_connection_marked_close_when_idle(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    conn = http_conn(dump_handler([]))
+
+    async with conn.export_database_stream() as chunks:
+        await conn._close_when_idle()  # a cancelled reconnect() drain: the transfer is in use
+        assert conn._client is not None
+        assert [chunk async for chunk in chunks] == DUMP_CHUNKS
+
+    assert conn._client is None  # the transfer was the last use: it closed the connection
+
+
+async def test_export_stream_read_error_mid_stream_is_connection_error(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    cause = httpx.ReadError("peer closed")
+    conn = http_conn(dump_handler([], error=cause))
+    received: list[bytes] = []
+
+    with pytest.raises(ConnectionError) as caught:
+        async with conn.export_database_stream() as chunks:
+            async for chunk in chunks:
+                received.append(chunk)
+
+    assert received == DUMP_CHUNKS
+    assert str(caught.value) == f"Export failed: {cause!r}"
+    assert caught.value.__cause__ is cause
+    assert conn._inflight_rpcs == 0
+
+
+async def test_export_stream_refused_send_is_connection_error(http_conn: Callable[[Handler], HTTPConnection]) -> None:
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    conn = http_conn(refuse)
+
+    with pytest.raises(ConnectionError, match=r"^Export failed: ConnectError\('refused'\)$") as caught:
+        async with conn.export_database_stream():
+            pass
+
+    assert isinstance(caught.value.__cause__, httpx.ConnectError)
+    assert conn._inflight_rpcs == 0
+
+
+async def test_export_not_connected_is_e13() -> None:
+    conn = HTTPConnection("http://fake", "ns", "db")
+
+    with pytest.raises(ConnectionError, match=r"^Not connected\. Call connect\(\) first\.$"):
+        async with conn.export_database_stream():
+            pass
+    with pytest.raises(ConnectionError, match=r"^Not connected\. Call connect\(\) first\.$"):
+        await conn.export_database(io.BytesIO())
+    assert conn._inflight_rpcs == 0
+
+
+async def test_export_database_writes_every_chunk_and_returns_the_byte_count(
+    http_conn: Callable[[Handler], HTTPConnection], tmp_path: Path, thread_spy: list[str]
+) -> None:
+    requests: list[httpx.Request] = []
+    conn = http_conn(dump_handler(requests))
+    dest = tmp_path / "db.surql"
+
+    written = await conn.export_database(dest, tables=["t"], users=False, accesses=False)
+
+    assert written == sum(len(chunk) for chunk in DUMP_CHUNKS)
+    assert dest.read_bytes() == b"".join(DUMP_CHUNKS)
+    assert json.loads(requests[0].content) == {**DEFAULT_BODY, "tables": ["t"], "users": False, "accesses": False}
+    # open, one write per chunk, close: all off the event loop
+    assert len(thread_spy) == len(DUMP_CHUNKS) + 2
+    assert conn._inflight_rpcs == 0
+
+
+async def test_export_database_to_a_binary_stream_leaves_it_open(
+    http_conn: Callable[[Handler], HTTPConnection], thread_spy: list[str]
+) -> None:
+    conn = http_conn(dump_handler([]))
+    sink = io.BytesIO()
+
+    written = await conn.export_database(sink)
+
+    assert written == len(sink.getvalue())
+    assert sink.getvalue() == b"".join(DUMP_CHUNKS)
+    assert not sink.closed
+    assert len(thread_spy) == len(DUMP_CHUNKS)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+async def test_export_database_creates_a_new_file_owner_only(
+    http_conn: Callable[[Handler], HTTPConnection], tmp_path: Path
+) -> None:
+    conn = http_conn(dump_handler([]))
+    dest = tmp_path / "new.surql"
+
+    await conn.export_database(str(dest))
+
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+async def test_export_database_keeps_the_mode_of_an_existing_file(
+    http_conn: Callable[[Handler], HTTPConnection], tmp_path: Path
+) -> None:
+    conn = http_conn(dump_handler([]))
+    dest = tmp_path / "existing.surql"
+    dest.write_bytes(b"an older and much longer dump " * 10)
+    dest.chmod(0o644)
+
+    await conn.export_database(dest)
+
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o644
+    assert dest.read_bytes() == b"".join(DUMP_CHUNKS)  # truncated, then written
+
+
+async def test_export_database_error_status_leaves_an_existing_file_untouched(
+    http_conn: Callable[[Handler], HTTPConnection], tmp_path: Path
+) -> None:
+    conn = http_conn(dump_handler([], status=403, text="Not enough permissions"))
+    dest = tmp_path / "keep.surql"
+    dest.write_bytes(b"previous dump")
+
+    with pytest.raises(QueryError, match=r"^Export failed: HTTP 403 - Not enough permissions$"):
+        await conn.export_database(dest)
+
+    assert dest.read_bytes() == b"previous dump"
+    assert conn._inflight_rpcs == 0
+
+
+async def test_export_database_read_error_leaves_the_partial_file(
+    http_conn: Callable[[Handler], HTTPConnection], tmp_path: Path
+) -> None:
+    cause = httpx.ReadError("peer closed")
+    conn = http_conn(dump_handler([], error=cause))
+    dest = tmp_path / "partial.surql"
+
+    with pytest.raises(ConnectionError) as caught:
+        await conn.export_database(dest)
+
+    assert caught.value.__cause__ is cause
+    assert dest.read_bytes() == b"".join(DUMP_CHUNKS)
+    assert conn._inflight_rpcs == 0
+
+
+async def test_export_database_validates_before_opening_the_destination(tmp_path: Path) -> None:
+    conn = HTTPConnection("http://fake", "ns", "db")
+    dest = tmp_path / "never.surql"
+
+    with pytest.raises(ValueError, match="Invalid table name"):
+        await conn.export_database(dest, tables=["bad name"])
+
+    assert not dest.exists()
+
+
+async def test_export_stream_body_may_stop_iterating_early(http_conn: Callable[[Handler], HTTPConnection]) -> None:
+    conn = http_conn(dump_handler([]))
+
+    async with conn.export_database_stream() as chunks:
+        async for chunk in chunks:
+            assert chunk == DUMP_CHUNKS[0]
+            break
+
+    assert conn._inflight_rpcs == 0

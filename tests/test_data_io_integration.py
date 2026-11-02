@@ -18,6 +18,10 @@ I6 (export half): an ORM model with a ``ForeignKey``, a ``Decimal``, a
 exported rows, which carry the column name, not the alias. I6 (import half):
 the export loads into another database through ``using()`` as models equal to
 the originals, and drops the cached result of the target table.
+
+I9: ``export_database()`` sends the requested sections only (``tables=``,
+``records=False``, ``users=False``). I11 (export half): a database ``EDITOR``
+can export.
 """
 
 from __future__ import annotations
@@ -513,3 +517,73 @@ async def test_orm_import_loads_the_export_into_another_database(orm_posts: list
             await (await SurrealDBConnectionManager.get_client(DST)).query("REMOVE TABLE IF EXISTS dio_post;")
         finally:
             await SurrealDBConnectionManager.remove_connection(DST)
+
+
+# ---------------------------------------------------------------------------
+# I9 / I11 — database dump (HTTPConnection.export_database*)
+# ---------------------------------------------------------------------------
+
+DUMP_A = "dio_dump_a"
+DUMP_B = "dio_dump_b"
+DUMP_USER = "dio_dump_editor"
+DUMP_PASS = "dio-dump-pw"
+
+
+@pytest.fixture
+async def dump_source() -> AsyncGenerator[HTTPConnection, None]:
+    """Two small tables, a database ``EDITOR`` user and a param in ``test_data_io``."""
+    conn = await _open("http")
+    assert isinstance(conn, HTTPConnection)
+    cleanup = (
+        f"REMOVE TABLE IF EXISTS {DUMP_A}; REMOVE TABLE IF EXISTS {DUMP_B}; "
+        f"REMOVE USER IF EXISTS {DUMP_USER} ON DATABASE; REMOVE PARAM IF EXISTS $dio_dump_p;"
+    )
+    try:
+        await conn.query(cleanup)
+        response = await conn.query(
+            f"CREATE {DUMP_A}:1 SET v = 'dio-row-a'; CREATE {DUMP_B}:1 SET v = 'dio-row-b'; "
+            f"DEFINE USER {DUMP_USER} ON DATABASE PASSWORD '{DUMP_PASS}' ROLES EDITOR; "
+            "DEFINE PARAM $dio_dump_p VALUE 1;"
+        )
+        assert response.is_ok, response.raw
+        yield conn
+        await conn.query(cleanup)
+    finally:
+        await conn.close()
+
+
+async def _dump(conn: HTTPConnection, **options: Any) -> str:
+    async with conn.export_database_stream(**options) as chunks:
+        return b"".join([chunk async for chunk in chunks]).decode("utf-8")
+
+
+async def test_export_database_honours_tables_records_and_users(dump_source: HTTPConnection, tmp_path: Path) -> None:
+    path = tmp_path / "db.surql"
+    written = await dump_source.export_database(path, tables=[DUMP_A])
+    full = path.read_text(encoding="utf-8")
+    assert written == len(path.read_bytes())
+    statements = [line for line in full.splitlines() if line.strip() and not line.startswith("--")]
+    assert statements[0] == "OPTION IMPORT;"
+    assert f"DEFINE TABLE {DUMP_A} " in full and "dio-row-a" in full
+    assert f"DEFINE TABLE {DUMP_B} " not in full and "dio-row-b" not in full
+    assert f"DEFINE USER {DUMP_USER} ON DATABASE" in full
+    assert "DEFINE PARAM $dio_dump_p" in full
+
+    no_rows = await _dump(dump_source, tables=[DUMP_A, DUMP_B], records=False)
+    assert f"DEFINE TABLE {DUMP_A} " in no_rows and f"DEFINE TABLE {DUMP_B} " in no_rows
+    assert "INSERT" not in no_rows and "dio-row-a" not in no_rows
+
+    no_users = await _dump(dump_source, tables=[DUMP_A], users=False, params=False)
+    assert "DEFINE USER" not in no_users and "DEFINE PARAM" not in no_users
+    assert f"DEFINE TABLE {DUMP_A} " in no_users and "dio-row-a" in no_users
+
+
+async def test_a_database_editor_can_export(dump_source: HTTPConnection) -> None:
+    editor = HTTPConnection(URL, NS, DB)
+    await editor.connect()
+    try:
+        await editor.signin(DUMP_USER, DUMP_PASS, namespace=NS, database=DB)
+        text = await _dump(editor, tables=[DUMP_B])
+    finally:
+        await editor.close()
+    assert f"DEFINE TABLE {DUMP_B} " in text and "dio-row-b" in text
