@@ -9,6 +9,7 @@ tests need no server.
 
 from __future__ import annotations
 
+import pickle
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -19,6 +20,7 @@ import src.surreal_orm as orm
 from src.surreal_orm import BaseSurrealModel, FieldPath, Q, SurrealConfigDict
 from src.surreal_orm.constants import ELEMENT_LOOKUPS, VALID_LOOKUPS
 from src.surreal_orm.fields import ForeignKey
+from src.surreal_orm.model_base import _ATTACHED_NAMES
 from src.surreal_orm.paths import _FieldStep, _IndexStep, _PickStep, _WhereStep
 from src.surreal_orm.q import check_element_lookup, q_has_condition
 from src.surreal_orm.query_set import QuerySet
@@ -1300,6 +1302,33 @@ class TestAttachedNamesStorage:
         order.status = "done"
         assert "_sorm_attached" not in order.__dict__
         assert "_sorm_attached" not in (order.__pydantic_extra__ or {})
+
+    async def test_pickle_round_trip_carries_the_names(self) -> None:
+        loaded = AQUExtra.from_db({"id": RecordId(table="aqu_extra", id="o1"), "status": "open"})
+        assert isinstance(loaded, AQUExtra)
+        loaded._attach_value("big", [{"sku": "b"}])
+        order = pickle.loads(pickle.dumps(loaded))
+        assert order._attached_names() == {"big"}
+        order.status = "done"  # moves the unpickled `big` into the extra fields
+        with patch.object(AQUExtra, "_execute_save", new=AsyncMock()) as run:
+            await order.save()
+        assert run.await_args.args[3] == {"status": "done"}
+
+    def test_pickle_round_trip_without_attach_registers_nothing(self) -> None:
+        order = pickle.loads(pickle.dumps(AQUExtra(id="o1", status="open")))
+        assert order._attached_names() == set()
+        assert id(order) not in _ATTACHED_NAMES
+
+    @pytest.mark.parametrize("names", [["status", "big", 5], "big", None, 5])
+    def test_pickle_state_keeps_only_non_field_names(self, names: Any) -> None:
+        order = AQUExtra(id="o1")
+        order._attach_value("big", 1)
+        state = order.__getstate__()
+        state["_sorm_attached_names"] = names
+        restored = AQUExtra.__new__(AQUExtra)
+        restored.__setstate__(state)
+        expected = {"big"} if isinstance(names, list) else set()
+        assert restored._attached_names() == expected
 
 
 _SOURCES = ["init", "model_validate", "from_db"]

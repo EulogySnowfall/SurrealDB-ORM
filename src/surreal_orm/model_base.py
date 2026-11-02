@@ -87,6 +87,10 @@ _ATTACHED_NAMES: dict[int, frozenset[str]] = {}
 # value under this key in validated input names nothing and is never written.
 _ATTACHED_KEY = "_sorm_attached"
 
+# Key of the attached names in an instance's pickle state (see __getstate__).
+# Pickle state is not validated input: Pydantic's own keys all start with "__".
+_PICKLED_NAMES_KEY = "_sorm_attached_names"
+
 # Global registry of all SurrealDB models for migration introspection
 _MODEL_REGISTRY: list[type["BaseSurrealModel"]] = []
 
@@ -741,7 +745,8 @@ class BaseSurrealModel(BaseModel):
         """Attach a value computed by a query (an annotation, a prefetch) to the instance.
 
         The value is set without validation and the name is remembered, so
-        ``save()``, ``update()`` and ``QuerySet.bulk_upsert()`` never write it: on a model with
+        ``save()`` (and ``QuerySet.bulk_create()``, which saves through it),
+        ``update()`` and ``QuerySet.bulk_upsert()`` never write it: on a model with
         ``extra="allow"``, the next validated assignment would otherwise move it
         into the model's extra fields, and the next save would store it as a
         column. A model field is set but never remembered.
@@ -754,7 +759,8 @@ class BaseSurrealModel(BaseModel):
         """Record ``names`` as this instance's attached names (replacing any previous set)."""
         key = id(self)
         if key not in _ATTACHED_NAMES:
-            weakref.finalize(self, _ATTACHED_NAMES.pop, key, None)
+            # The callback only cleans this dict: nothing to do at interpreter exit.
+            weakref.finalize(self, _ATTACHED_NAMES.pop, key, None).atexit = False
         _ATTACHED_NAMES[key] = names
 
     def _attached_names(self) -> frozenset[str]:
@@ -801,6 +807,35 @@ class BaseSurrealModel(BaseModel):
         if names:
             copied._set_attached_names(names)
         return copied
+
+    def __getstate__(self) -> dict[Any, Any]:
+        """Pickle state: Pydantic's, plus the attached names.
+
+        The registry is keyed by ``id(self)``, which does not survive pickling,
+        while the attached values travel in ``__dict__``. Without the names, an
+        unpickled instance on a model with ``extra="allow"`` would write those
+        values as columns once a validated assignment moves them into the extra
+        fields.
+        """
+        state = super().__getstate__()
+        names = self._attached_names()
+        if names:
+            state[_PICKLED_NAMES_KEY] = sorted(names)
+        return state
+
+    def __setstate__(self, state: dict[Any, Any]) -> None:
+        """Restore the Pydantic state and re-register the attached names it carries.
+
+        Only ``str`` names that are not model fields are kept.
+        """
+        state = dict(state)
+        pickled = state.pop(_PICKLED_NAMES_KEY, None)
+        super().__setstate__(state)
+        if isinstance(pickled, list):
+            fields = type(self).model_fields.keys()
+            names = frozenset(name for name in pickled if isinstance(name, str) and name not in fields)
+            if names:
+                self._set_attached_names(names)
 
     @classmethod
     def get_foreign_key_targets(cls) -> dict[str, str | None]:
