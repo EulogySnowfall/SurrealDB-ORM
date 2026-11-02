@@ -790,3 +790,426 @@ class TestElementLookupErrorsAtCompile:
             with pytest.raises(ValueError) as excinfo:
                 qs._compile_query()
         assert str(excinfo.value) == _e5()
+
+
+# ---------------------------------------------------------------------------
+# U5 — FieldPath annotations: C7-C16, C19-C24 and rule P
+# ---------------------------------------------------------------------------
+
+
+def _compiled(**paths: FieldPath) -> tuple[str, dict[str, Any]]:
+    qs = _orders().annotate(**paths)
+    return qs._compile_query(), qs._variables
+
+
+class TestFieldPathSql:
+    """Texts and variables of C7-C16 and C19-C24 through ``_compile_query()``."""
+
+    def test_c7_where_then_pick(self) -> None:
+        sql, variables = _compiled(big=FieldPath("items").where(qty__gt=1).pick("sku", total="price"))
+        assert sql == "SELECT *, items.?[WHERE qty > $_pa0].{sku, total: price} AS big FROM aqu_order;"
+        assert variables == {"_pa0": 1}
+
+    def test_c8_pick_with_dotted_source(self) -> None:
+        sql, variables = _compiled(who=FieldPath("customer").pick("name", city="address.city"))
+        assert sql == "SELECT *, customer.{name, city: address.city} AS who FROM aqu_order;"
+        assert variables == {}
+
+    def test_c9_indexes(self) -> None:
+        sql, variables = _compiled(
+            qty_a=FieldPath("items").where(sku="a").first().field("qty"),
+            last_sku=FieldPath("items").last().field("sku"),
+            second=FieldPath("items").at(1).field("sku"),
+        )
+        assert sql == (
+            "SELECT *, items.?[WHERE sku = $_pa0][0].qty AS qty_a, items[$].sku AS last_sku, "
+            "items[1].sku AS second FROM aqu_order;"
+        )
+        assert variables == {"_pa0": "a"}
+
+    def test_c10_with_filter_order_and_limit(self) -> None:
+        qs = (
+            _orders()
+            .annotate(n=FieldPath("items").where(qty__gt=1).first().field("qty"))
+            .filter(items__any=Q(qty__gt=2))
+            .order_by("-n")
+            .limit(2)
+        )
+        assert qs._compile_query() == (
+            "SELECT *, items.?[WHERE qty > $_pa0][0].qty AS n FROM aqu_order WHERE (type::is_array(items) AND "
+            "items[WHERE qty > $_f0]) ORDER BY n DESC LIMIT 2;"
+        )
+        assert qs._variables == {"_pa0": 1, "_f0": 2}
+
+    def test_c12_or_condition(self) -> None:
+        sql, variables = _compiled(skus=FieldPath("items").where(Q(qty__gt=2) | Q(sku="a")).field("sku"))
+        assert sql == "SELECT *, items.?[WHERE (qty > $_pa0 OR sku = $_pa1)].sku AS skus FROM aqu_order;"
+        assert variables == {"_pa0": 2, "_pa1": "a"}
+
+    def test_c13_record_link(self) -> None:
+        sql, variables = _compiled(b=FieldPath("buyer").pick("name", "tier"))
+        assert sql == "SELECT *, buyer.{name, tier} AS b FROM aqu_order;"
+        assert variables == {}
+
+    def test_c14_declared_variable(self) -> None:
+        qs = _orders().variables(min=2).annotate(skus=FieldPath("items").where(qty__gt="$min").field("sku"))
+        assert qs._compile_query() == "SELECT *, items.?[WHERE qty > $min].sku AS skus FROM aqu_order;"
+        assert qs._variables == {"min": 2}
+
+    def test_undeclared_dollar_value_is_bound(self) -> None:
+        sql, variables = _compiled(skus=FieldPath("items").where(sku="$min").field("sku"))
+        assert sql == "SELECT *, items.?[WHERE sku = $_pa0].sku AS skus FROM aqu_order;"
+        assert variables == {"_pa0": "$min"}
+
+    def test_c15_nested_element_lookup(self) -> None:
+        sql, variables = _compiled(st=FieldPath("orders").where(lines__any=Q(qty__gt=2)).field("status"))
+        assert sql == (
+            "SELECT *, orders.?[WHERE (type::is_array(lines) AND lines[WHERE qty > $_pa0])].status AS st FROM aqu_order;"
+        )
+        assert variables == {"_pa0": 2}
+
+    def test_c16_where_inside_pick_value(self) -> None:
+        sql, variables = _compiled(
+            o=FieldPath("orders").where(status="open").pick("status", lines=FieldPath("lines").where(qty__gt=1))
+        )
+        assert sql == (
+            "SELECT *, orders.?[WHERE status = $_pa0].{status, lines: lines.?[WHERE qty > $_pa1]} AS o FROM aqu_order;"
+        )
+        assert variables == {"_pa0": "open", "_pa1": 1}
+
+    def test_c19_field_then_index(self) -> None:
+        sql, variables = _compiled(
+            s0=FieldPath("items").field("sku").first(),
+            sl=FieldPath("items").field("sku").last(),
+            s1=FieldPath("items").field("sku").at(1),
+        )
+        assert sql == "SELECT *, (items.sku)[0] AS s0, (items.sku)[$] AS sl, (items.sku)[1] AS s1 FROM aqu_order;"
+        assert variables == {}
+
+    def test_c20_pick_then_index(self) -> None:
+        sql, _ = _compiled(p0=FieldPath("items").pick("sku").first(), pl=FieldPath("items").pick("sku").last())
+        assert sql == "SELECT *, (items.{sku})[0] AS p0, (items.{sku})[$] AS pl FROM aqu_order;"
+
+    def test_c21_field_or_pick_then_where(self) -> None:
+        sql, variables = _compiled(
+            b=FieldPath("items").field("sku").where(this="b"),
+            pb=FieldPath("items").pick("sku").where(sku="b"),
+        )
+        assert sql == (
+            "SELECT *, (items.sku).?[WHERE $this = $_pa0] AS b, (items.{sku}).?[WHERE sku = $_pa1] AS pb FROM aqu_order;"
+        )
+        assert variables == {"_pa0": "b", "_pa1": "b"}
+
+    def test_c22_dotted_root_then_where(self) -> None:
+        sql, variables = _compiled(big=FieldPath("customer.orders").where(total__gt=100))
+        assert sql == "SELECT *, (customer.orders).?[WHERE total > $_pa0] AS big FROM aqu_order;"
+        assert variables == {"_pa0": 100}
+
+    def test_c23_where_field_then_index(self) -> None:
+        sql, variables = _compiled(
+            s=FieldPath("items").where(qty__gt=1).field("sku").first(),
+            e=FieldPath("items").where(qty__gt=1).field("sku").last(),
+        )
+        assert sql == (
+            "SELECT *, (items.?[WHERE qty > $_pa0].sku)[0] AS s, (items.?[WHERE qty > $_pa1].sku)[$] AS e FROM aqu_order;"
+        )
+        assert variables == {"_pa0": 1, "_pa1": 1}
+
+    def test_c24_rule_p_inside_pick_value(self) -> None:
+        sql, variables = _compiled(
+            o=FieldPath("orders")
+            .where(status="open")
+            .pick(
+                "status",
+                first=FieldPath("lines").field("qty").first(),
+                l=FieldPath("lines").field("qty").last(),
+            )
+        )
+        assert sql == (
+            "SELECT *, orders.?[WHERE status = $_pa0].{status, first: (lines.qty)[0], l: (lines.qty)[$]} AS o FROM aqu_order;"
+        )
+        assert variables == {"_pa0": "open"}
+
+    def test_pick_alias_with_the_same_plain_name_renders_bare(self) -> None:
+        sql, _ = _compiled(p=FieldPath("items").pick(sku="sku", total="price"))
+        assert sql == "SELECT *, items.{sku, total: price} AS p FROM aqu_order;"
+
+    def test_pick_positional_first_then_aliased(self) -> None:
+        sql, _ = _compiled(p=FieldPath("items").pick("a", "b", k="x.y", m=FieldPath("z").first()))
+        assert sql == "SELECT *, items.{a, b, k: x.y, m: z[0]} AS p FROM aqu_order;"
+
+    def test_after_select(self) -> None:
+        qs = _orders().select("id").annotate(a=FieldPath("items").first())
+        assert qs._compile_query() == "SELECT id, items[0] AS a FROM aqu_order;"
+
+    def test_after_other_extra_columns(self) -> None:
+        from src.surreal_orm import SearchScore
+
+        qs = _orders().search(title="x").annotate(score=SearchScore(0), a=FieldPath("items").first())
+        assert qs._compile_query() == (
+            "SELECT *, search::score(0) AS score, items[0] AS a FROM aqu_order WHERE title @0@ $_s0;"
+        )
+
+    def test_counter_runs_across_annotations_in_order(self) -> None:
+        sql, variables = _compiled(
+            a=FieldPath("items").where(qty=1, sku="a"),
+            b=FieldPath("items").where(qty=2),
+        )
+        assert sql == (
+            "SELECT *, items.?[WHERE (qty = $_pa0 AND sku = $_pa1)] AS a, items.?[WHERE qty = $_pa2] AS b FROM aqu_order;"
+        )
+        assert variables == {"_pa0": 1, "_pa1": "a", "_pa2": 2}
+
+    def test_compiling_twice_gives_the_same_text(self) -> None:
+        qs = _orders().annotate(a=FieldPath("items").where(qty=1)).filter(items__any=Q(qty=2))
+        first = qs._compile_query()
+        assert qs._compile_query() == first
+        assert qs._variables == {"_pa0": 1, "_f0": 2}
+
+    @pytest.mark.parametrize("bad", HOSTILE_NAMES)
+    def test_hostile_values_are_bound(self, bad: str) -> None:
+        sql, variables = _compiled(a=FieldPath("items").where(sku=bad))
+        assert sql == "SELECT *, items.?[WHERE sku = $_pa0] AS a FROM aqu_order;"
+        assert variables == {"_pa0": bad}
+
+
+def _path_sql(path: FieldPath) -> str:
+    variables: dict[str, Any] = {}
+    return QuerySet._render_field_path(path, variables, [0], frozenset())
+
+
+class TestRuleP:
+    """Before an index or a ``where()``, a path ending with a field access is parenthesized."""
+
+    @pytest.mark.parametrize(
+        ("base", "base_sql"),
+        [
+            (lambda: FieldPath("a.b"), "a.b"),
+            (lambda: FieldPath("a").field("b"), "a.b"),
+            (lambda: FieldPath("a").pick("b"), "a.{b}"),
+        ],
+        ids=["dotted-root", "field", "pick"],
+    )
+    @pytest.mark.parametrize(
+        ("step", "suffix"),
+        [
+            (lambda p: p.first(), "[0]"),
+            (lambda p: p.last(), "[$]"),
+            (lambda p: p.at(2), "[2]"),
+            (lambda p: p.where(x=1), ".?[WHERE x = $_pa0]"),
+        ],
+        ids=["first", "last", "at", "where"],
+    )
+    def test_wrapped_after_a_field_access(self, base: Any, base_sql: str, step: Any, suffix: str) -> None:
+        assert _path_sql(step(base())) == f"({base_sql}){suffix}"
+
+    @pytest.mark.parametrize(
+        ("base", "base_sql"),
+        [
+            (lambda: FieldPath("a"), "a"),
+            (lambda: FieldPath("a").first(), "a[0]"),
+            (lambda: FieldPath("a").where(y=0), "a.?[WHERE y = $_pa0]"),
+        ],
+        ids=["single-root", "index", "where"],
+    )
+    @pytest.mark.parametrize(
+        ("step", "suffix"),
+        [
+            (lambda p: p.first(), "[0]"),
+            (lambda p: p.last(), "[$]"),
+            (lambda p: p.at(2), "[2]"),
+        ],
+        ids=["first", "last", "at"],
+    )
+    def test_not_wrapped_otherwise(self, base: Any, base_sql: str, step: Any, suffix: str) -> None:
+        assert _path_sql(step(base())) == f"{base_sql}{suffix}"
+
+    def test_where_not_wrapped_after_single_root_index_or_where(self) -> None:
+        assert _path_sql(FieldPath("a").where(x=1)) == "a.?[WHERE x = $_pa0]"
+        assert _path_sql(FieldPath("a").first().where(x=1)) == "a[0].?[WHERE x = $_pa0]"
+        assert _path_sql(FieldPath("a").where(y=0).where(x=1)) == "a.?[WHERE y = $_pa0].?[WHERE x = $_pa1]"
+
+    def test_field_and_pick_steps_are_never_wrapped(self) -> None:
+        assert _path_sql(FieldPath("a.b").field("c").pick("d")) == "a.b.c.{d}"
+
+    def test_wrapped_text_continues_with_a_field(self) -> None:
+        assert _path_sql(FieldPath("items").field("sku").first().field("x")) == "(items.sku)[0].x"
+
+    def test_wrap_after_index_then_field(self) -> None:
+        path = FieldPath("orders").where(status="open").first().field("lines").where(qty__gt=1)
+        assert _path_sql(path) == "(orders.?[WHERE status = $_pa0][0].lines).?[WHERE qty > $_pa1]"
+
+    def test_nested_wraps(self) -> None:
+        assert _path_sql(FieldPath("a.b").first().field("c").last()) == "((a.b)[0].c)[$]"
+
+    def test_inside_a_pick_value(self) -> None:
+        path = FieldPath("orders").pick(first=FieldPath("lines").field("qty").first(), w=FieldPath("x.y").where(z=1))
+        assert _path_sql(path) == "orders.{first: (lines.qty)[0], w: (x.y).?[WHERE z = $_pa0]}"
+
+    def test_pick_value_at_root_not_wrapped_by_the_outer_path(self) -> None:
+        assert _path_sql(FieldPath("a").pick(k=FieldPath("b").first())) == "a.{k: b[0]}"
+
+    def test_prefix_and_counter_are_the_callers(self) -> None:
+        variables: dict[str, Any] = {}
+        counter = [3]
+        text = QuerySet._render_field_path(FieldPath("a").where(x=1), variables, counter, frozenset(), prefix="_zz")
+        assert text == "a.?[WHERE x = $_zz3]"
+        assert variables == {"_zz3": 1}
+        assert counter == [4]
+
+
+# ---------------------------------------------------------------------------
+# U8 — annotate() checks: E12, E13
+# ---------------------------------------------------------------------------
+
+
+class AQUAliased(BaseSurrealModel):
+    """A model with a field stored under another column name."""
+
+    model_config = SurrealConfigDict(table_name="aqu_aliased")
+
+    id: str | None = None
+    label: str = Field(default="", alias="db_col")
+
+
+def _e12(alias: str, model: str = "AQUOrder") -> str:
+    return (
+        f"Annotation alias {alias!r} clashes with {model} (the record id, a field, a field alias or an attribute "
+        "of the model); a FieldPath annotation needs a name of its own."
+    )
+
+
+E13 = (
+    "FieldPath annotations cannot be combined with Aggregation or Subquery annotations (GROUP BY queries); "
+    "run them as separate queries."
+)
+
+
+class TestAnnotateChecks:
+    @pytest.mark.parametrize(
+        "alias", ["id", "items", "status", "save", "delete", "merge", "record_id", "objects", "model_config"]
+    )
+    def test_e12(self, alias: str) -> None:
+        qs = _orders()
+        with pytest.raises(ValueError) as info:
+            qs.annotate(**{alias: FieldPath("items")})
+        assert str(info.value) == _e12(alias)
+        assert qs._annotations == {}
+
+    @pytest.mark.parametrize("alias", ["label", "db_col"])
+    def test_e12_field_alias_under_both_names(self, alias: str) -> None:
+        with pytest.raises(ValueError) as info:
+            AQUAliased.objects().annotate(**{alias: FieldPath("x")})
+        assert str(info.value) == _e12(alias, "AQUAliased")
+
+    def test_free_name_accepted(self) -> None:
+        qs = _orders().annotate(big=FieldPath("items"))
+        assert list(qs._annotations) == ["big"]
+
+    def test_search_score_alias_named_like_a_field_still_accepted(self) -> None:
+        from src.surreal_orm import SearchScore
+
+        qs = _orders().annotate(status=SearchScore(0))
+        assert list(qs._annotations) == ["status"]
+
+    def test_existing_alias_validation_unchanged(self) -> None:
+        with pytest.raises(ValueError, match=r"annotation alias"):
+            _orders().annotate(**{"a b": FieldPath("items")})
+
+    def test_e13_with_aggregation(self) -> None:
+        from src.surreal_orm import Count
+
+        with pytest.raises(ValueError) as info:
+            _orders().annotate(n=Count(), p=FieldPath("x"))
+        assert str(info.value) == E13
+
+    def test_e13_with_subquery(self) -> None:
+        with pytest.raises(ValueError) as info:
+            _orders().annotate(p=FieldPath("x"), s=_subquery())
+        assert str(info.value) == E13
+
+
+# ---------------------------------------------------------------------------
+# U10 — exec() attaches the values; get(id) and first() route through exec()
+# ---------------------------------------------------------------------------
+
+
+def _row(**extra: Any) -> dict[str, Any]:
+    return {"id": RecordId(table="aqu_order", id="o1"), "status": "open", "items": [{"sku": "a"}], **extra}
+
+
+class TestExecAttaches:
+    async def test_values_attached_on_instances(self) -> None:
+        link = RecordId(table="aqu_cust", id="ann")
+        rows = [_row(big=[{"sku": "b"}], who=link), _row(big=[], who=None)]
+        rows[1]["id"] = RecordId(table="aqu_order", id="o2")
+        qs = _orders().annotate(big=FieldPath("items").where(qty__gt=1), who=FieldPath("buyer"))
+        with patch.object(QuerySet, "_execute_query", new=AsyncMock(return_value=rows)) as run:
+            result = await qs.exec()
+        run.assert_awaited_once_with("SELECT *, items.?[WHERE qty > $_pa0] AS big, buyer AS who FROM aqu_order;")
+        assert [type(r) for r in result] == [AQUOrder, AQUOrder]
+        assert result[0].big == [{"sku": "b"}]  # type: ignore[attr-defined]
+        assert result[0].who is link  # type: ignore[attr-defined]  # raw RecordId kept
+        assert result[1].big == []  # type: ignore[attr-defined]
+        assert result[1].who is None  # type: ignore[attr-defined]
+
+    async def test_missing_key_attached_as_none(self) -> None:
+        qs = _orders().annotate(big=FieldPath("items").first())
+        with patch.object(QuerySet, "_execute_query", new=AsyncMock(return_value=[_row()])):
+            (order,) = await qs.exec()
+        assert order.big is None  # type: ignore[attr-defined]
+
+    async def test_dict_fallback_keeps_the_alias_keys(self) -> None:
+        rows = [_row(items=5, big=7)]  # items is not a list: the model does not validate
+        qs = _orders().annotate(big=FieldPath("items").first())
+        with patch.object(QuerySet, "_execute_query", new=AsyncMock(return_value=rows)):
+            result = await qs.exec()
+        assert isinstance(result[0], dict)
+        assert result[0]["big"] == 7
+
+    async def test_first_attaches_too(self) -> None:
+        qs = _orders().annotate(big=FieldPath("items").first())
+        with patch.object(QuerySet, "_execute_query", new=AsyncMock(return_value=[_row(big={"sku": "a"})])) as run:
+            order = await qs.first()
+        run.assert_awaited_once_with("SELECT *, items[0] AS big FROM aqu_order LIMIT 1;")
+        assert order.big == {"sku": "a"}  # type: ignore[attr-defined]
+
+
+class TestGetWithPathAnnotation:
+    async def test_routed_through_exec_with_an_id_filter(self) -> None:
+        qs = _orders().annotate(big=FieldPath("items").first())
+        seen: list[tuple[str, dict[str, Any]]] = []
+
+        async def fake(self: QuerySet[Any], query: str) -> list[Any]:
+            seen.append((query, dict(self._variables)))
+            return [_row(big={"sku": "a"})]
+
+        with (
+            patch.object(QuerySet, "_execute_query", new=fake),
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client") as get_client,
+        ):
+            order = await qs.get("aqu_order:o1")
+        get_client.assert_not_called()
+        assert seen == [
+            ("SELECT *, items[0] AS big FROM aqu_order WHERE id = $_f0;", {"_f0": RecordId(table="aqu_order", id="o1")})
+        ]
+        assert order.big == {"sku": "a"}  # type: ignore[attr-defined]
+        assert qs._filters == []
+
+    async def test_not_found(self) -> None:
+        qs = _orders().annotate(big=FieldPath("items").first())
+        with patch.object(QuerySet, "_execute_query", new=AsyncMock(return_value=[])):
+            with pytest.raises(AQUOrder.DoesNotExist):
+                await qs.get("o1")
+
+    async def test_without_path_annotation_unchanged(self) -> None:
+        client = AsyncMock()
+        client.select.return_value.is_empty = False
+        client.select.return_value.first = _row()
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new=AsyncMock(return_value=client)),
+            patch.object(QuerySet, "_execute_query") as run,
+        ):
+            await _orders().get("o1")
+        run.assert_not_called()
+        client.select.assert_awaited_once_with("aqu_order:o1")

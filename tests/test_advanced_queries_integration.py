@@ -20,11 +20,16 @@ from typing import Any
 
 import pytest
 
-from src.surreal_orm import BaseSurrealModel, Q, SurrealConfigDict, SurrealDBConnectionManager
+from src.surreal_orm import BaseSurrealModel, FieldPath, Q, SurrealConfigDict, SurrealDBConnectionManager
 from src.surreal_orm.query_set import QuerySet
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_advanced_queries"
+
+# Set from the server version (SDK ``version()``) by the module fixture: a
+# ``FieldPath.where()`` reached on a value that is not an array (o4) gives
+# ``None`` on 3.3.x and a filtered one-element array on 3.2.x (spec D6).
+ON_32 = False
 
 pytestmark = pytest.mark.integration
 
@@ -73,6 +78,10 @@ async def setup_connection() -> AsyncGenerator[None, Any]:
         SURREALDB_NAMESPACE,
         SURREALDB_DATABASE,
     )
+    client = await SurrealDBConnectionManager.get_client()
+    version = await client.version()
+    global ON_32
+    ON_32 = "3.2." in version
     yield
     await SurrealDBConnectionManager.close_connection()
     await SurrealDBConnectionManager.unset_connection()
@@ -152,3 +161,225 @@ async def test_dotted_field_part_through_an_array_is_the_documented_limitation()
     ``qty > 5``. The nested form is the correct one. If a server release changes this, this test says so."""
     assert await _ids(_orders().filter(**{"orders.lines__any": Q(qty__gt=5)})) == ["o1", "o2"]
     assert await _ids(_orders().filter(orders__any=Q(lines__any=Q(qty__gt=5)))) == []
+
+
+# ---------------------------------------------------------------------------
+# I2, I10, I12 (projection half) — FieldPath annotation values per record
+# ---------------------------------------------------------------------------
+
+IDS = ["o1", "o2", "o3", "o4", "o5"]
+
+
+def _d6(on_33: Any, on_32: Any) -> Any:
+    """The o4 cell of a ``where()`` reached on a non-array value (D6)."""
+    return on_32 if ON_32 else on_33
+
+
+async def _values(*aliases: str, **paths: FieldPath) -> dict[str, tuple[Any, ...] | Any]:
+    """Run ``annotate(**paths)`` and return ``{id: value}`` (one alias) or ``{id: (values...)}``."""
+    rows = await _orders().annotate(**paths).exec()
+    assert all(isinstance(row, AQIOrder) for row in rows)
+    names = aliases or tuple(paths)
+    out: dict[str, Any] = {}
+    for row in rows:
+        values = tuple(getattr(row, name) for name in names)
+        out[str(row.id)] = values[0] if len(values) == 1 else values
+    assert sorted(out) == IDS
+    return out
+
+
+async def test_c7_where_then_pick() -> None:
+    got = await _values(big=FieldPath("items").where(qty__gt=1).pick("sku", total="price"))
+    assert got == {
+        "o1": [{"sku": "b", "total": 3}, {"sku": "c", "total": 50}],
+        "o2": [{"sku": "a", "total": 10}],
+        "o3": [],
+        "o4": _d6(None, [{"sku": "z", "total": None}]),
+        "o5": None,
+    }
+
+
+async def test_c8_pick_with_dotted_source() -> None:
+    got = await _values(who=FieldPath("customer").pick("name", city="address.city"))
+    assert got == {
+        "o1": {"name": "Ann", "city": "Paris"},
+        "o2": {"name": "Bob", "city": None},
+        "o3": None,
+        "o4": None,
+        "o5": None,
+    }
+
+
+async def test_c9_indexes() -> None:
+    got = await _values(
+        qty_a=FieldPath("items").where(sku="a").first().field("qty"),
+        last_sku=FieldPath("items").last().field("sku"),
+        second=FieldPath("items").at(1).field("sku"),
+    )
+    assert got == {
+        "o1": (1, "c", "b"),
+        "o2": (3, "a", None),
+        "o3": (None, None, None),
+        "o4": (None, "z", None),
+        "o5": (None, None, None),
+    }
+
+
+async def test_c12_or_condition() -> None:
+    got = await _values(skus=FieldPath("items").where(Q(qty__gt=2) | Q(sku="a")).field("sku"))
+    assert got == {"o1": ["a", "b"], "o2": ["a"], "o3": [], "o4": _d6(None, ["z"]), "o5": None}
+
+
+async def test_c13_record_link() -> None:
+    got = await _values(b=FieldPath("buyer").pick("name", "tier"))
+    assert got == {"o1": {"name": "Ann", "tier": "gold"}, "o2": None, "o3": None, "o4": None, "o5": None}
+
+
+async def test_c14_declared_variable() -> None:
+    rows = await _orders().variables(min=2).annotate(skus=FieldPath("items").where(qty__gt="$min").field("sku")).exec()
+    got = {str(row.id): row.skus for row in rows}  # type: ignore[attr-defined]
+    assert got == {"o1": ["b"], "o2": ["a"], "o3": [], "o4": _d6(None, ["z"]), "o5": None}
+
+
+async def test_c15_nested_element_lookup() -> None:
+    got = await _values(st=FieldPath("orders").where(lines__any=Q(qty__gt=2)).field("status"))
+    assert got == {"o1": ["open"], "o2": [], "o3": None, "o4": None, "o5": None}
+
+
+async def test_c16_where_inside_pick_value() -> None:
+    got = await _values(o=FieldPath("orders").where(status="open").pick("status", lines=FieldPath("lines").where(qty__gt=1)))
+    assert got == {
+        "o1": [{"status": "open", "lines": [{"qty": 3}]}],
+        "o2": [{"status": "open", "lines": []}],
+        "o3": None,
+        "o4": None,
+        "o5": None,
+    }
+
+
+async def test_c24_rule_p_inside_pick_value() -> None:
+    got = await _values(
+        o=FieldPath("orders")
+        .where(status="open")
+        .pick("status", first=FieldPath("lines").field("qty").first(), l=FieldPath("lines").field("qty").last())
+    )
+    assert got == {
+        "o1": [{"status": "open", "first": 1, "l": 3}],
+        "o2": [{"status": "open", "first": 1, "l": 1}],
+        "o3": None,
+        "o4": None,
+        "o5": None,
+    }
+
+
+# I10 — composition matrix (rule P): every step applies to the value built so far.
+COMPOSITION = [
+    # field("sku") x {first, last, at(1), where} — C19, C21
+    ("field-first", lambda: FieldPath("items").field("sku").first(), {"o1": "a", "o2": "a"}, {}),
+    ("field-last", lambda: FieldPath("items").field("sku").last(), {"o1": "c", "o2": "a", "o4": "z"}, {}),
+    ("field-at1", lambda: FieldPath("items").field("sku").at(1), {"o1": "b"}, {}),
+    (
+        "field-where",
+        lambda: FieldPath("items").field("sku").where(this="b"),
+        {"o1": ["b"], "o2": [], "o3": []},
+        {"o4": (None, [])},
+    ),
+    # pick("sku") x {first, last, at(1), where} — C20, C21
+    ("pick-first", lambda: FieldPath("items").pick("sku").first(), {"o1": {"sku": "a"}, "o2": {"sku": "a"}}, {}),
+    (
+        "pick-last",
+        lambda: FieldPath("items").pick("sku").last(),
+        {"o1": {"sku": "c"}, "o2": {"sku": "a"}, "o4": {"sku": "z"}},
+        {},
+    ),
+    ("pick-at1", lambda: FieldPath("items").pick("sku").at(1), {"o1": {"sku": "b"}}, {}),
+    (
+        "pick-where",
+        lambda: FieldPath("items").pick("sku").where(sku="b"),
+        {"o1": [{"sku": "b"}], "o2": [], "o3": []},
+        {"o4": (None, [])},
+    ),
+    # C22 — a dotted root through objects
+    ("dotted-where", lambda: FieldPath("customer.orders").where(total__gt=100), {"o1": [{"total": 200}]}, {}),
+    # C23 — where() then field() then an index
+    (
+        "where-field-first",
+        lambda: FieldPath("items").where(qty__gt=1).field("sku").first(),
+        {"o1": "b", "o2": "a"},
+        {"o4": (None, "z")},
+    ),
+    (
+        "where-field-last",
+        lambda: FieldPath("items").where(qty__gt=1).field("sku").last(),
+        {"o1": "c", "o2": "a"},
+        {"o4": (None, "z")},
+    ),
+]
+
+
+@pytest.mark.parametrize(("path", "expected", "d6"), [c[1:] for c in COMPOSITION], ids=[c[0] for c in COMPOSITION])
+async def test_composition_matrix(
+    path: Callable[[], FieldPath], expected: dict[str, Any], d6: dict[str, tuple[Any, Any]]
+) -> None:
+    """Unlisted records are ``None``; ``d6`` holds the (3.3.x, 3.2.x) values of a ``where()`` on o4."""
+    want = {rid: expected.get(rid) for rid in IDS}
+    for rid, (on_33, on_32) in d6.items():
+        want[rid] = _d6(on_33, on_32)
+    assert await _values(v=path()) == want
+
+
+async def test_where_over_a_field_read_through_an_array_is_the_documented_limitation() -> None:
+    """L2 (M25): ``orders.lines`` is one array per order, and a ``where()`` on that list tests each whole array, so
+    the lists come back unfiltered. ``pick(lines=FieldPath("lines").where(...))`` (C16) is the correct form."""
+    got = await _values(lines=FieldPath("orders").field("lines").where(qty__gt=1))
+    assert got == {"o1": [[{"qty": 1}, {"qty": 3}], []], "o2": [[{"qty": 1}]], "o3": None, "o4": None, "o5": None}
+
+
+# ---------------------------------------------------------------------------
+# I3 — C10: ordering by an annotation alias, with a filter and a limit
+# ---------------------------------------------------------------------------
+
+
+async def test_c10_order_by_alias_and_limit() -> None:
+    rows = (
+        await _orders()
+        .annotate(n=FieldPath("items").where(qty__gt=1).first().field("qty"))
+        .filter(items__any=Q(qty__gt=2))
+        .order_by("-n")
+        .limit(2)
+        .exec()
+    )
+    assert [(str(row.id), row.n) for row in rows] == [("o1", 5), ("o2", 3)]  # type: ignore[attr-defined]
+
+    ascending = (
+        await _orders()
+        .annotate(n=FieldPath("items").where(qty__gt=1).first().field("qty"))
+        .filter(items__any=Q(qty__gt=2))
+        .order_by("n")
+        .exec()
+    )
+    assert [(str(row.id), row.n) for row in ascending] == [("o2", 3), ("o1", 5)]  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# I9 — get(id) and first() compute the annotation
+# ---------------------------------------------------------------------------
+
+
+async def test_get_with_a_path_annotation() -> None:
+    qs = _orders().annotate(city=FieldPath("customer.address.city"), s0=FieldPath("items").field("sku").first())
+    order = await qs.get("o1")
+    assert str(order.id) == "o1"
+    assert (order.city, order.s0) == ("Paris", "a")  # type: ignore[attr-defined]
+
+    partial = await qs.get("aqi_order:o5")
+    assert (partial.city, partial.s0) == (None, None)  # type: ignore[attr-defined]
+
+    with pytest.raises(AQIOrder.DoesNotExist):
+        await qs.get("missing")
+
+
+async def test_first_with_a_path_annotation() -> None:
+    order = await _orders().filter(note="no arrays").annotate(city=FieldPath("customer.address.city")).first()
+    assert str(order.id) == "o5"
+    assert order.city is None  # type: ignore[attr-defined]

@@ -29,6 +29,7 @@ from .graph import (
     rid_key,
     to_graph_record,
 )
+from .paths import FieldPath, _FieldStep, _IndexStep, _PickStep, _WhereStep
 from .prefetch import Prefetch
 from .q import Q, check_element_lookup, q_has_condition, subquery_in_element_condition_message
 from .search import SearchHighlight, SearchScore
@@ -132,7 +133,7 @@ class QuerySet(Generic[T]):
         # _variables, and those must never make a "$name" value a reference.
         self._declared_variables: frozenset[str] = frozenset()
         self._group_by_fields: list[str] = []
-        self._annotations: dict[str, Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance] = {}
+        self._annotations: dict[str, Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance | FieldPath] = {}
         # Vector similarity search (KNN)
         self._knn_field: str | None = None
         self._knn_vector: list[float] | None = None
@@ -411,21 +412,28 @@ class QuerySet(Generic[T]):
 
     def annotate(
         self,
-        **aggregations: (Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance),
+        **aggregations: (Aggregation | Subquery | SearchScore | SearchHighlight | GeoDistance | FieldPath),
     ) -> Self:
         """
-        Add aggregation functions, subqueries, search annotations, or geo distances.
+        Add aggregation functions, subqueries, search annotations, geo distances or nested paths.
 
         This method is used in conjunction with `values()` to perform GROUP BY operations,
         with `search()` / `similar_to()` to add relevance scores and highlights,
         or with `nearby()` to add distance annotations.
 
         Each keyword argument should be an Aggregation instance (Count, Sum, Avg, Min, Max),
-        a Subquery instance, a SearchScore, a SearchHighlight, or a GeoDistance.
+        a Subquery instance, a SearchScore, a SearchHighlight, a GeoDistance or a FieldPath.
+
+        A ``FieldPath`` is a row annotation: its value is computed per record
+        (``SELECT *, <path> AS <alias>``) and attached to each model instance
+        returned by ``exec()`` / ``first()`` / ``get()``, as the raw decoded
+        value (dicts, lists, ``RecordId``...). A missing, ``NONE`` or ``NULL``
+        value anywhere on the path gives ``None``. ``order_by("<alias>")``
+        orders by it.
 
         Args:
             **aggregations: Keyword arguments where keys are alias names and values are
-                Aggregation, Subquery, SearchScore, SearchHighlight, or GeoDistance instances.
+                Aggregation, Subquery, SearchScore, SearchHighlight, GeoDistance or FieldPath instances.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
@@ -447,18 +455,58 @@ class QuerySet(Generic[T]):
                 relevance=SearchScore(0),
                 snippet=SearchHighlight("<b>", "</b>", 0),
             ).exec()
+
+            # Nested paths: element filters, indexes, destructuring
+            orders = await Order.objects().annotate(
+                big_items=FieldPath("items").where(qty__gt=1).pick("sku", total="price"),
+                first_sku=FieldPath("items").field("sku").first(),
+            ).exec()
+            orders[0].big_items  # [{"sku": "b", "total": 3}, ...]
             ```
 
         Raises:
             ValueError: If an alias is not an identifier (letters, digits and
                 underscores, starting with a letter or underscore). Aliases are
                 written into the query as ``... AS <alias>``, so they are checked
-                here, before the queryset changes.
+                here, before the queryset changes. Also if a ``FieldPath``
+                annotation is mixed with ``Aggregation`` / ``Subquery`` ones, or
+                its alias is ``id``, a field (or field alias) of the model or
+                an attribute of the model class: the column would replace that
+                field in the result, and attaching the value would shadow a
+                method on the instance.
         """
         for alias in aggregations:
             validate_identifier(alias, "annotation alias")
+        path_aliases = [alias for alias, value in aggregations.items() if isinstance(value, FieldPath)]
+        if path_aliases:
+            if any(isinstance(value, (Aggregation, Subquery)) for value in aggregations.values()):
+                raise ValueError(
+                    "FieldPath annotations cannot be combined with Aggregation or Subquery annotations "
+                    "(GROUP BY queries); run them as separate queries."
+                )
+            taken = self._model_names()
+            for alias in path_aliases:
+                if alias in taken or hasattr(self.model, alias):
+                    raise ValueError(
+                        f"Annotation alias {alias!r} clashes with {self.model.__name__} (the record id, a field, a "
+                        "field alias or an attribute of the model); a FieldPath annotation needs a name of its own."
+                    )
         self._annotations = aggregations
         return self
+
+    def _model_names(self) -> set[str]:
+        """``id``, the model's field names and their aliases: names a row annotation must not take."""
+        names = {"id"}
+        for name, info in self.model.model_fields.items():
+            names.add(name)
+            for alias in (info.alias, info.validation_alias, info.serialization_alias):
+                if isinstance(alias, str):
+                    names.add(alias)
+        return names
+
+    def _path_annotations(self) -> list[tuple[str, FieldPath]]:
+        """The ``FieldPath`` annotations, in ``annotate()`` order."""
+        return [(alias, value) for alias, value in self._annotations.items() if isinstance(value, FieldPath)]
 
     # ==================== Relation Query Methods ====================
 
@@ -1601,7 +1649,7 @@ class QuerySet(Generic[T]):
             if isinstance(annotation, Subquery):
                 sub_sql = annotation.to_surql(sub_vars, counter, prelude, self._declared_variables)
                 select_parts.append(f"{sub_sql} AS {alias}")
-            else:
+            elif not isinstance(annotation, FieldPath):  # never a FieldPath: annotate() refuses the mix
                 select_parts.append(annotation.to_surql(alias))
 
         if sub_vars:
@@ -2059,6 +2107,73 @@ class QuerySet(Generic[T]):
                 )
         return QuerySet._join_q_parts(q, parts)
 
+    @staticmethod
+    def _render_field_path(
+        path: FieldPath,
+        variables: dict[str, Any],
+        counter: list[int],
+        declared: Collection[str] = frozenset(),
+        *,
+        prefix: str = "_pa",
+    ) -> str:
+        """
+        Render a ``FieldPath`` as a SurrealQL idiom, its values bound under ``prefix``.
+
+        Every step applies to the value built so far. The server does not
+        compose that way on its own: after a field access (a dotted root, a
+        ``field()`` or a ``pick()`` step), an unparenthesized ``[n]``, ``[$]``
+        or ``[WHERE`` is applied to each mapped element, and 3.2.x and 3.3.x
+        disagree on the result for a scalar list. So, before an index or a
+        ``where()`` step, the text is parenthesized when it ends with a field
+        access (``(items.sku)[0]`` is the first sku); after a single-name
+        root, an index or a ``where()`` it is left bare.
+
+        ``.?`` is written before ``[WHERE`` only: it turns a missing or
+        ``NULL`` array into ``NONE`` (3.2.x gives ``[NONE]`` without it) and
+        changes nothing before the other steps, which already yield ``NONE``
+        on a missing value.
+
+        Args:
+            path: The path to render.
+            variables: Mutable dict collecting the bound variables.
+            counter: Mutable single-element list ``[int]``, the bind counter.
+            declared: Variable names a ``$name`` value may refer to.
+            prefix: Name prefix of the bound variables.
+
+        Returns:
+            str: The idiom, relative to the record (or, for a ``pick()``
+            value, to the destructured object).
+        """
+        text = path._root
+        ends_with_field = "." in text
+        for step in path._steps:
+            if isinstance(step, (_IndexStep, _WhereStep)) and ends_with_field:
+                text = f"({text})"
+            if isinstance(step, _FieldStep):
+                text = f"{text}.{step.name}"
+            elif isinstance(step, _IndexStep):
+                text = f"{text}[{step.index}]"
+            elif isinstance(step, _WhereStep):
+                condition = QuerySet._render_element_condition(
+                    step.condition, variables, counter, None, declared, prefix=prefix
+                )
+                if not condition:
+                    raise ValueError("FieldPath.where() needs at least one condition.")
+                text = f"{text}.?[WHERE {condition}]"
+            else:
+                entries: list[str] = []
+                for key, source in step.entries:
+                    if isinstance(source, FieldPath):
+                        rendered = QuerySet._render_field_path(source, variables, counter, declared, prefix=prefix)
+                        entries.append(f"{key}: {rendered}")
+                    elif source == key:
+                        entries.append(key)
+                    else:
+                        entries.append(f"{key}: {source}")
+                text = f"{text}.{{{', '.join(entries)}}}"
+            ends_with_field = isinstance(step, (_FieldStep, _PickStep))
+        return text
+
     def _build_where_parts(self, prelude: list[str] | None = None) -> tuple[list[str], dict[str, Any]]:
         """
         Build all WHERE clause parts from both keyword filters and Q objects.
@@ -2123,6 +2238,15 @@ class QuerySet(Generic[T]):
         for alias, annotation in self._annotations.items():
             if isinstance(annotation, (SearchScore, SearchHighlight, GeoDistance)):
                 extra_select.append(annotation.to_surql(alias))
+
+        # FieldPath annotate: one column per path, values bound as $_paN
+        # (one counter per compile, annotation order then step order).
+        path_vars: dict[str, Any] = {}
+        path_counter: list[int] = [0]
+        for alias, path in self._path_annotations():
+            rendered = self._render_field_path(path, path_vars, path_counter, self._declared_variables)
+            extra_select.append(f"{rendered} AS {alias}")
+        self._variables.update(path_vars)
 
         # The FROM source: the table, or a traversal idiom (binds $_g_src).
         source = self._from_clause()
@@ -2297,11 +2421,15 @@ class QuerySet(Generic[T]):
         for alias, annotation in self._annotations.items():
             if isinstance(annotation, (SearchScore, SearchHighlight)):
                 extra_keys.add(alias)
+        # A FieldPath value is attached even when the server leaves the key
+        # out (NONE): the path then reads None, never an AttributeError.
+        path_keys = {alias for alias, _ in self._path_annotations()}
+        extra_keys |= path_keys
 
         if extra_keys and isinstance(results, list):
             for record in results:
                 if isinstance(record, dict):
-                    extras = {k: record.get(k) for k in extra_keys if k in record}
+                    extras = {k: record.get(k) for k in extra_keys if k in record or k in path_keys}
                     extra_fields_per_record.append(extras)
                 else:
                     extra_fields_per_record.append({})
@@ -2396,9 +2524,11 @@ class QuerySet(Generic[T]):
         """
         # Allow 'id' keyword to be used as alias for 'id_item'
         record_id = id if id is not None else id_item
-        if record_id and self._graph is not None:
+        if record_id and (self._graph is not None or self._path_annotations()):
             # A traversal is the source, not a filter: look the id up among
             # the reachable records, on a copy so this QuerySet is unchanged.
+            # A FieldPath annotation is computed by the SELECT, which a plain
+            # record fetch would skip: same route.
             _, id_part = parse_record_id(str(record_id))
             lookup = copy.copy(self)
             lookup._filters = [*self._filters, ("id", "exact", RecordId(table=self._model_table, id=id_part))]
