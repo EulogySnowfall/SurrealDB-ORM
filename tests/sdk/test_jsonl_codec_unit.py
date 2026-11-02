@@ -28,6 +28,20 @@ UID = UUID("0190f3b2-7c1e-7a4b-9f00-123456789abc")
 GEOMETRY_TEXT = "a tuple is how the SDK decodes a geometry, a range or an out-of-range datetime"
 
 
+def _frozen_mapping_type() -> type[Any]:
+    """The type cbor2 decodes a map used as a map key to (an object record id key, M22).
+
+    It is ``cbor2.frozendict`` up to Python 3.14 and the built-in ``frozendict``
+    from Python 3.15 on, where cbor2 no longer defines its own: take it from a
+    decode instead of naming either.
+    """
+    decoded = cbor2.loads(bytes.fromhex("a1a1616b0101"))  # {{"k": 1}: 1}
+    return type(next(iter(decoded)))
+
+
+FROZENDICT = _frozen_mapping_type()
+
+
 def round_trip(value: Any) -> Any:
     """Encode, go through JSON text, decode."""
     return decode_value(json.loads(json.dumps(encode_value(value), allow_nan=False)))
@@ -137,7 +151,7 @@ class TestRoundTrip:
         assert round_trip(value) == RecordId("person", [1, "a", [2, UID]])
 
     def test_record_id_with_frozendict_id_comes_back_as_dict(self) -> None:
-        value = RecordId("person", cbor2.frozendict({"k": 1, "u": UID}))
+        value = RecordId("person", FROZENDICT({"k": 1, "u": UID}))
         decoded = round_trip(value)
         assert decoded == RecordId("person", {"k": 1, "u": UID})
         assert type(decoded.id) is dict
@@ -153,7 +167,7 @@ class TestRoundTrip:
         assert decode_value({"$object": {"$uuid": {"$uuid": str(UID)}}}) == {"$uuid": UID}
 
     def test_frozendict_value_is_an_object(self) -> None:
-        assert round_trip({"o": cbor2.frozendict({"a": 1})}) == {"o": {"a": 1}}
+        assert round_trip({"o": FROZENDICT({"a": 1})}) == {"o": {"a": 1}}
 
     def test_tags_constant(self) -> None:
         assert (
