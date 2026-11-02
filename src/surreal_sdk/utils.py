@@ -8,13 +8,45 @@ way: ``surreal_orm`` imports from ``surreal_sdk``, never the reverse.
 import re
 from collections.abc import Mapping
 
-__all__ = ["find_param_references", "substitute_params", "unescape_record_id"]
+__all__ = ["find_param_references", "require_int", "substitute_params", "unescape_record_id"]
 
 #: A ``$name`` reference. ``\w+`` is greedy on purpose: it captures the whole
 #: identifier, so ``$state`` cannot match the prefix of ``$state_backup``.
 #: ``re.ASCII`` matches SurrealDB's own identifier lexer, which is ASCII — an
 #: accented name is not a reference the server would bind either.
 _PARAM_REFERENCE = re.compile(r"\$(\w+)", re.ASCII)
+
+
+def require_int(name: str, value: object, *, minimum: int) -> int:
+    """
+    Check that ``value`` is an integer of at least ``minimum`` and return it.
+
+    The one integer check of both layers: the ORM's pagination, KNN and
+    search-reference arguments are written into the query text, and the SDK's
+    sizes (``WebSocketConnection(max_message_size=)``) must be real numbers.
+    Only an ``int`` is accepted: a string (even a numeric one), a float or a
+    ``bool`` raises ``TypeError``, and a value below ``minimum`` raises
+    ``ValueError``. The result is always a plain ``int``, so an ``int``
+    subclass with its own ``__format__`` renders as its numeric value.
+
+    Args:
+        name: Argument name, used in the error message.
+        value: The value passed by the caller.
+        minimum: The smallest accepted value.
+
+    Returns:
+        int: ``value`` as a plain ``int``.
+
+    Raises:
+        TypeError: If ``value`` is not an ``int`` or is a ``bool``.
+        ValueError: If ``value`` is below ``minimum``.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{name} must be an int, got {type(value).__name__}")
+    number = int.__index__(value)
+    if number < minimum:
+        raise ValueError(f"{name} must be >= {minimum}, got {number}")
+    return number
 
 
 def find_param_references(query: str) -> set[str]:

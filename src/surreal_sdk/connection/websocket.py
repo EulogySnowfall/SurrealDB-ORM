@@ -24,12 +24,16 @@ import builtins
 from ..exceptions import ConnectionError, LiveQueryError, TimeoutError
 from ..protocol import cbor as cbor_module
 from ..protocol.rpc import RPCRequest, RPCResponse
-from ..utils import unescape_record_id
+from ..utils import require_int, unescape_record_id
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
 # Type alias for live query callbacks
 LiveCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
+
+
+class _ConnectionLost(ConnectionError):
+    """A request was pending when the socket dropped: raised to its caller as is."""
 
 
 class WebSocketConnection(BaseSurrealConnection):
@@ -51,6 +55,8 @@ class WebSocketConnection(BaseSurrealConnection):
         reconnect_interval: float = 1.0,
         max_reconnect_attempts: int = 5,
         protocol: str = "cbor",
+        *,
+        max_message_size: int | None = None,
     ):
         """
         Initialize WebSocket connection.
@@ -68,7 +74,18 @@ class WebSocketConnection(BaseSurrealConnection):
                 handles binary data and avoids string interpretation issues
                 (e.g., 'data:xxx' values being interpreted as record links).
                 Use "json" only for debugging or compatibility reasons.
+            max_message_size: The largest message the client accepts, in bytes.
+                ``None`` (the default) sets no client-side cap, like the HTTP
+                transport. A reply above the cap ends the socket, and the
+                request waiting for it raises ``ConnectionError``.
+
+        Raises:
+            TypeError: If ``max_message_size`` is not an ``int`` (a ``bool`` included).
+            ValueError: If ``max_message_size`` is below 1, or ``protocol`` is unknown.
         """
+        if max_message_size is not None:
+            max_message_size = require_int("max_message_size", max_message_size, minimum=1)
+
         # Normalize URL to WebSocket
         if url.startswith("http://"):
             url = url.replace("http://", "ws://", 1)
@@ -89,6 +106,7 @@ class WebSocketConnection(BaseSurrealConnection):
         self.auto_reconnect = auto_reconnect
         self.reconnect_interval = reconnect_interval
         self.max_reconnect_attempts = max_reconnect_attempts
+        self.max_message_size = max_message_size
 
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -100,6 +118,14 @@ class WebSocketConnection(BaseSurrealConnection):
         self._reconnect_task: asyncio.Task[None] | None = None
         self._closing = False
         self._callback_tasks: set[asyncio.Task[Any]] = set()  # Track fire-and-forget callback tasks
+
+    def _max_msg_size(self) -> int:
+        """The ``max_msg_size`` given to aiohttp: ``0`` means no cap.
+
+        aiohttp caps a received message at 4 MiB unless told otherwise; a
+        larger reply then ended the socket instead of arriving.
+        """
+        return 0 if self.max_message_size is None else self.max_message_size
 
     def _next_request_id(self) -> int:
         """Generate next request ID."""
@@ -121,6 +147,7 @@ class WebSocketConnection(BaseSurrealConnection):
                 self.url,
                 timeout=ClientWSTimeout(ws_close=self.timeout),
                 protocols=[self.protocol],  # Use configured protocol (json or cbor)
+                max_msg_size=self._max_msg_size(),
             )
             self._connected = True
 
@@ -189,12 +216,23 @@ class WebSocketConnection(BaseSurrealConnection):
             self._session = None
 
     async def _read_loop(self) -> None:
-        """Background task to read WebSocket messages."""
-        if not self._ws:
+        """Background task to read WebSocket messages.
+
+        When the socket ends (closed by the server, an aiohttp ``ERROR`` such as
+        a message above ``max_message_size``, or an exception) every request
+        still waiting for a reply fails with ``ConnectionError`` at once: no
+        reply for it can arrive on the socket a reconnect opens, so it would
+        otherwise wait for its whole timeout. ``close()`` (and the cancellation
+        it does) is left to :meth:`_cleanup`.
+        """
+        ws = self._ws
+        if not ws:
             return
 
+        error: BaseException | None = None
+        ended = False
         try:
-            async for msg in self._ws:
+            async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     await self._handle_message_json(msg.data)
                 elif msg.type == aiohttp.WSMsgType.BINARY:
@@ -205,15 +243,39 @@ class WebSocketConnection(BaseSurrealConnection):
                     or msg.type == aiohttp.WSMsgType.CLOSED
                     or msg.type == aiohttp.WSMsgType.CLOSE
                 ):
+                    # aiohttp hands a protocol error (e.g. "Message size …
+                    # exceeds limit …") in the ERROR message, not in exception().
+                    if isinstance(msg.data, BaseException):
+                        error = msg.data
                     break
+            ended = True
 
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as exc:
+            error = exc
+            ended = True
         finally:
+            if ended and not self._closing:
+                self._fail_pending(self._lost_reason(ws, error))
             if not self._closing and self.auto_reconnect:
                 self._reconnect_task = asyncio.create_task(self._reconnect())
+
+    @staticmethod
+    def _lost_reason(ws: aiohttp.ClientWebSocketResponse, error: BaseException | None) -> str:
+        """Why the socket ended: its exception or the ERROR message's, else its close code."""
+        exception = ws.exception() or error
+        if exception is not None:
+            return str(exception)
+        return f"closed with code {ws.close_code}"
+
+    def _fail_pending(self, reason: str) -> None:
+        """Fail every request still waiting for a reply on the socket that ended."""
+        pending = list(self._pending.values())
+        self._pending.clear()
+        for future in pending:
+            if not future.done():
+                future.set_exception(_ConnectionLost(f"WebSocket connection lost: {reason}"))
 
     async def _handle_message_json(self, data: str) -> None:
         """Handle incoming JSON WebSocket message."""
@@ -296,6 +358,7 @@ class WebSocketConnection(BaseSurrealConnection):
                     self.url,
                     timeout=ClientWSTimeout(ws_close=self.timeout),
                     protocols=[self.protocol],  # Use configured protocol
+                    max_msg_size=self._max_msg_size(),
                 )
                 self._connected = True
                 self._reader_task = asyncio.create_task(self._read_loop())
@@ -408,7 +471,8 @@ class WebSocketConnection(BaseSurrealConnection):
             The RPC response
 
         Raises:
-            ConnectionError: If not connected
+            ConnectionError: If not connected, or if the socket drops while
+                the request waits for its reply
             TimeoutError: If request times out
         """
         if not self._ws or not self._connected:
@@ -435,6 +499,8 @@ class WebSocketConnection(BaseSurrealConnection):
         except builtins.TimeoutError:
             self._pending.pop(request.id, None)
             raise TimeoutError(f"Request timed out after {self.timeout}s")
+        except _ConnectionLost:
+            raise
         except Exception as e:
             self._pending.pop(request.id, None)
             raise ConnectionError(f"Request failed: {e}")
