@@ -1240,6 +1240,7 @@ class TestExecAttaches:
         query, variables = client.query.await_args.args
         assert "big" not in query
         assert not any(name.endswith("_big") for name in variables)
+        assert "_sorm_attached" not in query  # nor the names' own storage key
         assert "other" in query  # a real extra field is still written
 
     async def test_knn_distance_never_reaches_the_model(self) -> None:
@@ -1249,6 +1250,40 @@ class TestExecAttaches:
             (order,) = await qs.exec()
         assert order._knn_distance == 0.5  # type: ignore[attr-defined]
         assert order.__pydantic_extra__ == {}
+
+
+class TestAttachedNamesStorage:
+    """The attached names stay out of equality, copies and dumps (review of #469)."""
+
+    def test_attached_value_does_not_change_equality(self) -> None:
+        loaded = AQUOrder(id="o1", status="open")
+        annotated = AQUOrder(id="o1", status="open")
+        annotated._attach_value("_knn_distance", 0.5)
+        annotated._attach_value("big", [{"sku": "b"}])
+        assert annotated == loaded
+        assert loaded == annotated
+
+    def test_model_copy_does_not_share_the_names(self) -> None:
+        original = AQUOrder(id="o1")
+        original._attach_value("_knn_distance", 0.5)
+        copy = original.model_copy()
+        copy._attach_value("score", 1)
+        assert "score" not in original._attached_names()
+        assert {"_knn_distance", "score"} <= copy._attached_names()
+
+    def test_names_survive_a_validated_assignment_on_extra_allow(self) -> None:
+        order = AQUExtra(id="o1")
+        order._attach_value("big", 1)
+        order.status = "done"  # moves every non-field __dict__ key into the extra fields
+        names = order._attached_names()
+        assert "big" in names
+        assert order.model_dump(exclude=names) == {"id": "o1", "status": "done", "items": []}
+
+    def test_no_attach_no_storage_key(self) -> None:
+        order = AQUOrder(id="o1")
+        assert order._attached_names() == set()
+        order._attach_value("status", "x")  # a model field is never recorded
+        assert order._attached_names() == set()
 
 
 class TestAllWithPathAnnotation:

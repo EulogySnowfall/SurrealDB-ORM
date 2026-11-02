@@ -74,6 +74,11 @@ def _raise_on_statement_error(response: QueryResponse, query: str) -> None:
             raise error
 
 
+# Instance ``__dict__`` key holding the names a query attached to the instance
+# (annotations, ``_knn_distance``, ``Prefetch(to_attr=...)``), which
+# save(), update() and QuerySet.bulk_upsert() never write. See _attached_names().
+_ATTACHED_KEY = "_sorm_attached"
+
 # Global registry of all SurrealDB models for migration introspection
 _MODEL_REGISTRY: list[type["BaseSurrealModel"]] = []
 
@@ -440,10 +445,6 @@ class BaseSurrealModel(BaseModel):
     # This helps distinguish between create (first save) and update (subsequent saves).
     _db_persisted: bool = PrivateAttr(default=False)
 
-    # Names of the values a query attached to this instance (annotations,
-    # ``_knn_distance``, ``Prefetch(to_attr=...)``); never written by save(), update() or bulk_upsert().
-    _attached: set[str] = PrivateAttr(default_factory=set)
-
     def __init_subclass__(cls, **kwargs: Any) -> None:
         """Register subclasses and process computed field defaults."""
         # Process computed fields BEFORE Pydantic processes the class.
@@ -739,11 +740,32 @@ class BaseSurrealModel(BaseModel):
         """
         object.__setattr__(self, name, value)
         if name not in type(self).model_fields:
-            self._attached.add(name)
+            names = frozenset({*self._attached_names(), name}) - {_ATTACHED_KEY}
+            object.__setattr__(self, _ATTACHED_KEY, names)
 
     def _attached_names(self) -> set[str]:
-        """The names attached by :meth:`_attach_value` that are not model fields."""
-        return set(self._attached)
+        """The names attached by :meth:`_attach_value` that are not model fields.
+
+        The names live in the instance ``__dict__`` under ``_sorm_attached``, as
+        a ``frozenset`` that each attach replaces. Not in a Pydantic private
+        attribute: ``BaseModel.__eq__`` compares ``__pydantic_private__``, so an
+        instance with an attached value would no longer equal the same record
+        loaded without it, and ``model_copy()`` would share a mutable set with
+        the original. Pydantic's ``__eq__`` ignores ``__dict__`` keys that are not
+        fields, and a copy gets its own ``__dict__``.
+
+        On a model with ``extra="allow"``, a validated assignment moves every
+        non-field ``__dict__`` key (the attached values and this one) into
+        ``__pydantic_extra__``, so both places are read, and the storage key is
+        part of the result so that no dump writes it.
+        """
+        found: set[str] = set()
+        extra = self.__pydantic_extra__ or {}
+        for source in (self.__dict__, extra):
+            if _ATTACHED_KEY in source:
+                found.add(_ATTACHED_KEY)
+                found.update(source[_ATTACHED_KEY])
+        return found
 
     @classmethod
     def get_foreign_key_targets(cls) -> dict[str, str | None]:
