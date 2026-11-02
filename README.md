@@ -395,7 +395,7 @@ upgrading.
   with `ALTER FIELD`, which sets or drops each modelled clause and leaves the others alone. `AlterField` on a field
   that does not exist now fails the migration instead of creating it: a migration chain replayed onto a fresh
   database needs an `AddField` for each field it alters.
-- **`schema_diff()` / `makemigrations` no longer emit a spurious `AlterField` for a field with permissions.**
+- **`schema_diff()` / `makemigrations` no longer emit a spurious `AlterField` for a field whose permission condition names a field such as `type`, or whose `ASSERT` has a comparison.**
   `parse_define_field()` read a permission condition such as `WHERE type = 'public'` as a `TYPE` clause; it now
   stops at the `PERMISSIONS` clause.
 - **`atomic_set_add()` is set-like** ([#233](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/233)). It
