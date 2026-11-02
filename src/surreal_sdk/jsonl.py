@@ -98,7 +98,10 @@ class ImportReport:
 
     Attributes:
         table: The target table.
-        lines: Non-blank lines read and decoded.
+        lines: Non-blank lines read and decoded. Equal to ``rows`` after a
+            successful import; on a :class:`DataImportError` it also counts
+            the lines of the failed batch (and a line decoded just before it
+            was sent), so it can exceed ``rows``.
         rows: Rows sent in accepted batches (with ``on_conflict="ignore"``,
             skipped duplicates included).
         batches: Accepted ``INSERT`` statements.
@@ -783,13 +786,15 @@ async def _insert_batches(
         DataFormatError: On an invalid line (E3) or a batch mixing edges and
             plain rows when the kind is decided per batch (E7).
         DataImportError: When a batch comes back ``ERR`` (E8) or its request
-            fails (E8b); ``report`` holds the batches accepted before it.
+            fails (E8b); ``report`` holds the batches accepted before it
+            and every line decoded so far.
     """
     ignore = "IGNORE " if on_conflict == "ignore" else ""
     prefix = "OPTION IMPORT; " if raw else ""
     plain_sql = f"{prefix}INSERT {ignore}INTO {table} $_x_rows RETURN NONE;"
     edge_sql = f"{prefix}INSERT RELATION {ignore}INTO {table} $_x_rows RETURN NONE;"
     decided = relation is not None
+    decoded_lines = 0
     accepted_rows = 0
     accepted_batches = 0
     rows: list[dict[str, Any]] = []
@@ -797,7 +802,7 @@ async def _insert_batches(
     size = 0
 
     def report() -> ImportReport:
-        return ImportReport(table=table, lines=accepted_rows, rows=accepted_rows, batches=accepted_batches)
+        return ImportReport(table=table, lines=decoded_lines, rows=accepted_rows, batches=accepted_batches)
 
     async def flush() -> None:
         nonlocal rows, size, accepted_rows, accepted_batches, relation, decided
@@ -845,6 +850,7 @@ async def _insert_batches(
         if not text:
             continue
         record = loads_record(text, _line=number)
+        decoded_lines += 1
         rid = record.get("id")
         if isinstance(rid, RecordId) and rid.table != table:
             # INSERT RELATION refuses an id of another table; plain INSERT

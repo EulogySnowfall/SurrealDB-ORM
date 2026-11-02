@@ -269,7 +269,7 @@ async def test_schemafull_target_rejects_a_bad_batch_and_keeps_the_earlier_ones(
 
         error = info.value
         assert str(error).startswith(f"Batch at lines 5-6 was rejected by {STRICT}: ")
-        assert error.report == ImportReport(table=STRICT, lines=4, rows=4, batches=2)
+        assert error.report == ImportReport(table=STRICT, lines=6, rows=4, batches=2)
         assert error.code is None and len(error.errors) == 1
         assert [r["n"] for r in await _rows(conn, STRICT)] == [1, 2, 3, 4]
 
@@ -411,7 +411,7 @@ async def test_a_line_above_the_http_rpc_limit_is_e8b_with_the_report(source_tab
         error = info.value
         assert str(error).startswith(f"Batch at lines 4-4 could not be sent to {BULK} (ConnectionError: ")
         assert isinstance(error.__cause__, ConnectionError)
-        assert error.report == ImportReport(table=BULK, lines=3, rows=3, batches=1)
+        assert error.report == ImportReport(table=BULK, lines=4, rows=3, batches=1)
         assert len(await _rows(conn, BULK)) == 3
     finally:
         await _reset(conn, BULK)

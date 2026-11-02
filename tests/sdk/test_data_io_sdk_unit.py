@@ -678,7 +678,8 @@ async def test_import_skips_blank_lines_and_counts_them_in_line_numbers() -> Non
         await conn.import_jsonl("t", source, batch_size=2, relation=False)
 
     assert str(info.value) == "Batch at lines 6-7 was rejected by t: boom"
-    assert info.value.report == ImportReport(table="t", lines=2, rows=2, batches=1)
+    # lines counts every decoded non-blank line, the rejected batch's included.
+    assert info.value.report == ImportReport(table="t", lines=4, rows=2, batches=1)
 
 
 async def test_import_invalid_line_names_its_number_e3() -> None:
@@ -737,7 +738,7 @@ async def test_import_e8_carries_the_report_of_the_accepted_batches() -> None:
     assert str(error) == f"Batch at lines 5-6 was rejected by t: {message}"
     assert error.errors == [message]
     assert error.code is None
-    assert error.report == ImportReport(table="t", lines=4, rows=4, batches=2)
+    assert error.report == ImportReport(table="t", lines=6, rows=4, batches=2)
     assert len(conn.calls) == 3  # nothing sent after the rejected batch
 
 
@@ -772,7 +773,7 @@ async def test_import_request_failure_on_batch_three_is_e8b(error: Exception) ->
         f"Batch at lines 5-6 could not be sent to t ({type(error).__name__}: {error}); "
         "the batches before it are written, this one may or may not be"
     )
-    assert wrapped.report == ImportReport(table="t", lines=4, rows=4, batches=2)
+    assert wrapped.report == ImportReport(table="t", lines=6, rows=4, batches=2)
     assert wrapped.__cause__ is error
     assert wrapped.code == getattr(error, "code", None)
     assert wrapped.errors == [str(error)]
@@ -1604,3 +1605,18 @@ async def test_import_missing_path_raises_os_error_before_any_request(
 
     assert requests == []
     assert conn._inflight_rpcs == 0
+
+
+async def test_import_report_lines_include_a_line_decoded_before_a_failed_size_flush() -> None:
+    """The line that triggers a byte-size flush is decoded first, so it is counted."""
+
+    def reject(batch: int) -> Any:
+        return [{"status": "ERR", "result": "boom", "time": ""}] if batch == 1 else None
+
+    conn = FakeConnection(importer(fail=reject))
+    source = [line(1), line(2)]
+    with pytest.raises(DataImportError) as info:
+        await conn.import_jsonl("t", source, max_batch_bytes=len(source[0]) + 1, relation=False)
+
+    assert str(info.value) == "Batch at lines 1-1 was rejected by t: boom"
+    assert info.value.report == ImportReport(table="t", lines=2, rows=0, batches=0)
