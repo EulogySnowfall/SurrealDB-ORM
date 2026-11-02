@@ -18,8 +18,14 @@ LOOKUP_OPERATORS = {
     "containsany": "CONTAINSANY",
 }
 
+# Element filter lookups: the value is a Q evaluated against each element of
+# an array field (``items__any=Q(qty__gt=2)``). Rendered as ``F[WHERE …]``
+# behind a ``type::is_array(F)`` guard in QuerySet._render_condition.
+ELEMENT_LOOKUPS = frozenset({"any", "all", "none"})
+
 # All valid lookup names (for error messages / validation)
 VALID_LOOKUPS = {
+    *ELEMENT_LOOKUPS,
     *LOOKUP_OPERATORS,
     "like",
     "ilike",

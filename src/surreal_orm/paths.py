@@ -31,7 +31,7 @@ from typing import Any, Literal
 
 from surreal_sdk.utils import require_int
 
-from .q import Q, iter_q_leaves, q_has_condition
+from .q import Q, iter_q_leaves, q_has_condition, subquery_in_element_condition_message
 from .subquery import Subquery
 from .utils import validate_field_path, validate_identifier
 
@@ -161,10 +161,7 @@ class FieldPath:
             raise ValueError("FieldPath.where() needs at least one condition.")
         for field_name, lookup_name, value in iter_q_leaves(condition):
             if isinstance(value, Subquery):
-                raise TypeError(
-                    f"A Subquery cannot be used inside an element condition ({f'{field_name}__{lookup_name}'!r}): "
-                    "element conditions are evaluated per array element."
-                )
+                raise TypeError(subquery_in_element_condition_message(field_name, lookup_name))
         self._check_where_after_field()
         return self._then(_WhereStep(condition))
 

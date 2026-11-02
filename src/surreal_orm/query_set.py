@@ -10,7 +10,7 @@ from pydantic_core import ValidationError
 
 from . import BaseSurrealModel, SurrealDBConnectionManager
 from .aggregations import Aggregation
-from .constants import LOOKUP_OPERATORS, like_to_regex
+from .constants import ELEMENT_LOOKUPS, LOOKUP_OPERATORS, like_to_regex
 from .enum import OrderBy
 from .geo import GeoDistance
 from .graph import (
@@ -30,7 +30,7 @@ from .graph import (
     to_graph_record,
 )
 from .prefetch import Prefetch
-from .q import Q
+from .q import Q, check_element_lookup, q_has_condition, subquery_in_element_condition_message
 from .search import SearchHighlight, SearchScore
 from .subquery import Subquery
 from .utils import (
@@ -61,6 +61,22 @@ from surreal_sdk.protocol.cbor import RecordId
 from .model_base import SurrealDbError, _raise_on_statement_error, _to_record_link
 
 logger = logging.getLogger(__name__)
+
+# Element lookups whose rendering is one parenthesized group, so a negation
+# goes in front of it (``NOT (type::is_array(F) AND …)``) rather than around it.
+_GROUPED_ELEMENT_LOOKUPS = frozenset({"any", "all"})
+
+
+def _is_element_group(children: list[Q | tuple[str, str, Any]]) -> bool:
+    """Whether ``children`` render to exactly one ``__any`` / ``__all`` leaf (through non-negated ``Q``s)."""
+    rendered = [child for child in children if not isinstance(child, Q) or q_has_condition(child)]
+    if len(rendered) != 1:
+        return False
+    child = rendered[0]
+    if isinstance(child, Q):
+        return not child.negated and _is_element_group(child.children)
+    return child[1] in _GROUPED_ELEMENT_LOOKUPS
+
 
 T = TypeVar("T", bound="BaseSurrealModel")
 
@@ -203,6 +219,9 @@ class QuerySet(Generic[T]):
             - containsall, containsany
             - startswith, istartswith, endswith, iendswith
             - match, regex, iregex, isnull
+            - any, all, none: element filters on an array field; the value is a ``Q``
+              evaluated against each element (``items__any=Q(qty__gt=2)``), where the
+              key ``this`` is the element itself (``tags__any=Q(this__startswith="x")``)
 
         Args:
             *args (Q): Q objects for complex query expressions (OR, NOT).
@@ -226,7 +245,19 @@ class QuerySet(Generic[T]):
                 Q(name__contains=search) | Q(email__contains=search),
                 role="admin",
             )
+
+            # Element filters: at least one / every / no element matches
+            queryset.filter(items__any=Q(qty__gt=2))
+            queryset.filter(items__all=Q(qty__gte=1))
+            queryset.filter(items__none=Q(sku="discontinued"))
             ```
+
+        Raises:
+            TypeError: If a positional argument is not a ``Q``, an element
+                lookup's value is not a ``Q``, or an element condition holds a
+                ``Subquery`` value.
+            ValueError: If a key is not a valid filter key, or an element
+                lookup's ``Q`` holds no condition.
         """
         for arg in args:
             if isinstance(arg, Q):
@@ -235,6 +266,7 @@ class QuerySet(Generic[T]):
                 raise TypeError(f"filter() positional arguments must be Q objects, got {type(arg).__name__!r}.")
         for key, value in kwargs.items():
             field_name, lookup = self._parse_lookup(key)
+            check_element_lookup(field_name, lookup, value)
             self._filters.append((field_name, lookup, value))
         return self
 
@@ -1730,6 +1762,7 @@ class QuerySet(Generic[T]):
         declared: Collection[str] = frozenset(),
         *,
         prefix: str = "_f",
+        field_sql: str | None = None,
     ) -> str:
         """
         Render a single filter condition to a parameterized SurrealQL expression.
@@ -1755,6 +1788,10 @@ class QuerySet(Generic[T]):
             prefix: Name prefix of the bound variables. A clause compiled
                 beside the ordinary filters (a graph traversal step) binds
                 under its own prefix so the two never share a name.
+            field_sql: Text written for the field instead of ``field_name``,
+                after ``field_name`` has been validated. Only used for the
+                element itself (``this`` → ``$this``) inside an element
+                condition.
 
         Returns:
             str: The rendered SurrealQL condition.
@@ -1763,6 +1800,25 @@ class QuerySet(Generic[T]):
         # The field part is written into the query, so it is checked here as
         # well as when the key is parsed: Q children can be built by hand.
         parse_filter_key(f"{field_name}__{lookup_name}")
+
+        # ── Element lookups (__any / __all / __none) ─────────────────
+        # Checked again here: a Q's children can be set by hand. The
+        # type::is_array() guard is required on 3.2.x, which wraps a
+        # non-array value in a one-element array and filters it; truthiness
+        # (not count()) because count() skips NONE / 0 / false elements.
+        if lookup_name in ELEMENT_LOOKUPS:
+            check_element_lookup(field_name, lookup_name, value)
+            condition = QuerySet._render_element_condition(value, variables, counter, prelude, declared, prefix=prefix)
+            if not condition:
+                raise ValueError(f"Lookup '{lookup_name}' on {field_name!r} needs a non-empty Q() element condition.")
+            array = field_sql if field_sql is not None else field_name
+            if lookup_name == "all":
+                return f"(type::is_array({array}) AND NOT ({array}[WHERE NOT ({condition})]))"
+            matches = f"(type::is_array({array}) AND {array}[WHERE {condition}])"
+            return f"NOT {matches}" if lookup_name == "none" else matches
+
+        if field_sql is not None:
+            field_name = field_sql
 
         # ── Helper: bind a value as $<prefix>N and return the var name ─
         def _bind(val: Any) -> str:
@@ -1916,19 +1972,92 @@ class QuerySet(Generic[T]):
                     self._render_condition(field_name, lookup_name, value, variables, counter, prelude, declared, prefix=prefix)
                 )
 
+        return QuerySet._join_q_parts(q, parts)
+
+    @staticmethod
+    def _join_q_parts(q: Q, parts: list[str]) -> str:
+        """
+        Join the rendered children of ``q`` with its connector, then negate it if ``q`` is negated.
+
+        Several parts are parenthesized. A negated ``q`` is written ``NOT (…)``,
+        except when what it negates is a single ``__any`` / ``__all`` leaf,
+        which already renders as one parenthesized group: ``NOT`` then goes in
+        front of it, so ``~Q(items__any=…)`` renders exactly like
+        ``items__none=…``. Every other text is unchanged.
+
+        Args:
+            q: The ``Q`` whose children were rendered.
+            parts: The non-empty rendered children, in order.
+
+        Returns:
+            str: The expression, or ``""`` when there is no part.
+        """
         if not parts:
             return ""
-
-        connector = f" {q.connector} "
-        result = connector.join(parts)
-
+        result = f" {q.connector} ".join(parts)
         if len(parts) > 1:
             result = f"({result})"
-
         if q.negated:
-            result = f"NOT ({result})"
-
+            result = f"NOT {result}" if _is_element_group(q.children) else f"NOT ({result})"
         return result
+
+    @staticmethod
+    def _render_element_condition(
+        q: Q,
+        variables: dict[str, Any],
+        counter: list[int],
+        prelude: list[str] | None = None,
+        declared: Collection[str] = frozenset(),
+        *,
+        prefix: str = "_f",
+    ) -> str:
+        """
+        Render an element condition: the ``Q`` of ``__any`` / ``__all`` / ``__none`` (and of ``FieldPath.where()``).
+
+        Same algorithm as :meth:`_render_q` (parenthesization, ``NOT (…)``),
+        with keys relative to the element: no foreign-key coercion (elements
+        are not model fields), and the key ``this`` is the element itself
+        (``$this``). Values bind under ``prefix`` with the caller's counter,
+        so they never collide with the surrounding filters.
+
+        Args:
+            q: The element condition.
+            variables: Mutable dict collecting the bound variables.
+            counter: Mutable single-element list ``[int]``, the bind counter.
+            prelude: Passed through to :meth:`_render_condition`.
+            declared: Variable names a ``$name`` value may refer to.
+            prefix: Name prefix of the bound variables.
+
+        Returns:
+            str: The rendered condition, ``""`` when ``q`` holds none.
+
+        Raises:
+            TypeError: If a leaf's value is a ``Subquery`` (evaluated per element, it cannot be hoisted).
+        """
+        parts: list[str] = []
+        for child in q.children:
+            if isinstance(child, Q):
+                rendered = QuerySet._render_element_condition(child, variables, counter, prelude, declared, prefix=prefix)
+                if rendered:
+                    parts.append(rendered)
+            else:
+                field_name, lookup_name, value = child
+                if isinstance(value, Subquery):
+                    raise TypeError(subquery_in_element_condition_message(field_name, lookup_name))
+                parts.append(
+                    QuerySet._render_condition(
+                        field_name,
+                        lookup_name,
+                        value,
+                        variables,
+                        counter,
+                        prelude,
+                        declared,
+                        prefix=prefix,
+                        field_sql="$this" if field_name == "this" else None,
+                    )
+                )
+        return QuerySet._join_q_parts(q, parts)
 
     def _build_where_parts(self, prelude: list[str] | None = None) -> tuple[list[str], dict[str, Any]]:
         """
