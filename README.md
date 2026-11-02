@@ -37,6 +37,16 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.37.3
+
+**Fix release.** `live(diff=True)` starts on SurrealDB 3.x: every live-query builder wrote `DIFF` after the table or
+the `WHERE` clause, a parse error on 3.x, and now emits `LIVE SELECT DIFF FROM t [WHERE ...]`
+([#441](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/441)). DIFF events carry the record id, and
+`LiveModelStream` no longer ends with a `ValidationError` on the first DIFF notification (`event.instance` holds only
+the id; the change is in `event.changed_fields`). Over WebSocket, a parameter the encoder refuses now raises the
+encoder's `TypeError` / `ValueError` instead of `ConnectionError`. SurrealDB pin unchanged (3.3.5). See
+[CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.37.2
 
 **Fix release.** A `.cache()` read is no longer served stale after a write that fires no model signal
