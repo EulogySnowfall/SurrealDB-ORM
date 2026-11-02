@@ -14,6 +14,29 @@ from surreal_sdk.exceptions import (
     ValidationError,
 )
 
+# Messages SurrealDB 3.3.5 (the pinned server) returns, copied verbatim.
+#: A write conflict on a plain statement (concurrent ``UPDATE`` of one record).
+KV_WRITE_CONFLICT = (
+    "There was a problem with the key-value store: Transaction conflict: Write conflict, "
+    "retry the transaction. This transaction can be retried"
+)
+#: The same conflict detected when a ``BEGIN``/``COMMIT`` block commits.
+COMMIT_WRITE_CONFLICT = (
+    "Cannot COMMIT: Transaction conflict: Write conflict, retry the transaction. This transaction can be retried"
+)
+WRITE_CONFLICT = "Transaction conflict: Write conflict, retry the transaction. This transaction can be retried"
+SEQUENCE_RETRY = (
+    "The sequence was redefined or removed while a value was being allocated from it. This transaction can be retried"
+)
+#: A failed ``ASSERT`` whose rejected value contains the word "conflict".
+ASSERT_VALUE_CONFLICT = (
+    "Found ['p', 'conflict-resolved'] for field `tags`, with record `rmfu:1`, but field must conform to: array::len($value) < 2"
+)
+#: A failed ``ASSERT`` on a field named ``conflicts``.
+ASSERT_FIELD_CONFLICTS = "Found 9 for field `conflicts`, with record `rmfu:1`, but field must conform to: $value < 5"
+NOT_EXECUTED = "The query was not executed due to a failed transaction"
+COMMIT_ABORTED = "Cannot COMMIT: the transaction was aborted due to a prior error"
+
 
 class TestSurrealDBError:
     def test_init_message_only(self) -> None:
@@ -147,22 +170,35 @@ class TestTransactionConflictError:
         assert isinstance(err, SurrealDBError)
 
     def test_is_conflict_error_can_be_retried(self) -> None:
-        assert TransactionConflictError.is_conflict_error(Exception("This can be retried"))
-
-    def test_is_conflict_error_failed_transaction(self) -> None:
-        assert TransactionConflictError.is_conflict_error(Exception("failed transaction"))
+        assert TransactionConflictError.is_conflict_error(Exception(WRITE_CONFLICT))
 
     def test_is_conflict_error_conflict(self) -> None:
-        assert TransactionConflictError.is_conflict_error(Exception("Write conflict detected"))
+        """The server's conflict wording, as a plain statement and as a COMMIT report it."""
+        assert TransactionConflictError.is_conflict_error(Exception(KV_WRITE_CONFLICT))
+        assert TransactionConflictError.is_conflict_error(Exception(COMMIT_WRITE_CONFLICT))
 
-    def test_is_conflict_error_document_changed(self) -> None:
-        assert TransactionConflictError.is_conflict_error(Exception("document changed"))
+    def test_is_conflict_error_sequence_retry(self) -> None:
+        """The other retryable error the server words as such."""
+        assert TransactionConflictError.is_conflict_error(Exception(SEQUENCE_RETRY))
 
     def test_is_conflict_error_unrelated(self) -> None:
         assert not TransactionConflictError.is_conflict_error(Exception("connection refused"))
 
     def test_is_conflict_error_case_insensitive(self) -> None:
-        assert TransactionConflictError.is_conflict_error(Exception("FAILED TRANSACTION"))
+        assert TransactionConflictError.is_conflict_error(Exception(WRITE_CONFLICT.upper()))
+
+    def test_assert_with_conflict_in_the_value_is_not_a_conflict(self) -> None:
+        """A failed ASSERT echoes the rejected value; the word 'conflict' in it is data (#263)."""
+        assert not TransactionConflictError.is_conflict_error(Exception(ASSERT_VALUE_CONFLICT))
+
+    def test_assert_on_a_field_named_conflicts_is_not_a_conflict(self) -> None:
+        """A failed ASSERT names the field; a field called 'conflicts' is not a conflict (#263)."""
+        assert not TransactionConflictError.is_conflict_error(Exception(ASSERT_FIELD_CONFLICTS))
+
+    def test_cancellation_cascade_is_not_a_conflict(self) -> None:
+        """The messages for the other statements of a failed transaction say nothing of the cause."""
+        assert not TransactionConflictError.is_conflict_error(Exception(NOT_EXECUTED))
+        assert not TransactionConflictError.is_conflict_error(Exception(COMMIT_ABORTED))
 
     def test_is_conflict_error_empty_message(self) -> None:
         assert not TransactionConflictError.is_conflict_error(Exception(""))

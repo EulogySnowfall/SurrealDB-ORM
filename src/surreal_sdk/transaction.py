@@ -137,7 +137,10 @@ if TYPE_CHECKING:
 
 #: Errors SurrealDB reports for the statements a failed transaction cancelled,
 #: rather than for the statement that failed it.
-_CANCELLED_STATEMENT_ERRORS = ("not executed due to a failed transaction", "Cannot COMMIT")
+# A "Cannot COMMIT" that reports a conflict is the cause, not part of the cascade:
+# SurrealDB 3.3 reports a commit-time conflict on the COMMIT statement itself
+# ("Cannot COMMIT: Transaction conflict: ... This transaction can be retried").
+_CANCELLED_STATEMENT_ERRORS = ("not executed due to a failed transaction", "Cannot COMMIT: the transaction was")
 
 
 def _failed_statement_error(response: "QueryResponse") -> tuple[str, bool] | None:
@@ -429,8 +432,8 @@ class HTTPTransaction(BaseTransaction):
         if failure is not None:
             error, is_cause = failure
             message = f"Transaction commit failed: {error}"
-            # A cancellation message says "failed transaction", which would read as a
-            # retryable conflict; only the failing statement's own error is classified.
+            # Only the failing statement's own error is classified, never a
+            # cancellation message.
             if is_cause and TransactionConflictError.is_conflict_error(Exception(error)):
                 raise TransactionConflictError(message)
             raise TransactionError(message)

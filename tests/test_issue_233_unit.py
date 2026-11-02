@@ -28,8 +28,11 @@ ASSERT_MESSAGE = (
     "Found ['a', 'b', 'c'] for field `tags`, with record `u233_items:a`, but field must conform to: $value.len() < 3"
 )
 
-#: What SurrealDB reports for a write conflict between two transactions.
-CONFLICT_MESSAGE = "Failed to commit transaction due to a read or write conflict. This transaction can be retried"
+#: What SurrealDB 3.3.5 reports for a write conflict on a plain statement.
+CONFLICT_MESSAGE = (
+    "There was a problem with the key-value store: Transaction conflict: Write conflict, "
+    "retry the transaction. This transaction can be retried"
+)
 
 UPDATED = [{"id": "u233_items:a", "tags": ["x", "p1"]}]
 
