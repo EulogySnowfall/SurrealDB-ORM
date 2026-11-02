@@ -127,15 +127,13 @@ async def test_ws_reply_above_max_message_size_fails_at_once_then_reconnects(big
         assert str(excinfo.value).startswith("WebSocket connection lost: ")
         assert str(4 * MiB) in str(excinfo.value)
 
-        # The read loop has started the reconnect; the next query is served by the new socket.
-        deadline = time.monotonic() + 10
-        while True:
-            try:
-                response = await conn.query(f"SELECT count() FROM {BIG_TABLE} GROUP ALL")
-                break
-            except ConnectionError:
-                assert time.monotonic() < deadline, "the connection did not come back"
-                await asyncio.sleep(0.05)
+        # The read loop started the reconnect before failing the request. Wait for it to
+        # finish: until it has re-authenticated and re-selected the database, a request
+        # sent on the new socket has no namespace (a pre-existing window of _reconnect()).
+        reconnect = conn._reconnect_task
+        assert reconnect is not None
+        await asyncio.wait_for(asyncio.shield(reconnect), 10)
+        response = await conn.query(f"SELECT count() FROM {BIG_TABLE} GROUP ALL")
         assert response.first_result.result == [{"count": 6}]
     finally:
         await conn.close()
