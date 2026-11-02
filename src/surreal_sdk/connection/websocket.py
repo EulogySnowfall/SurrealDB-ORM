@@ -470,11 +470,18 @@ class WebSocketConnection(BaseSurrealConnection):
             ConnectionError: If not connected, or if the socket drops while
                 the request waits for its reply
             TimeoutError: If request times out
+            TypeError, ValueError: If the request cannot be encoded (a value
+                the protocol has no form for); nothing is sent then
         """
         if not self._ws or not self._connected:
             raise ConnectionError("Not connected. Call connect() first.")
 
         request.id = self._next_request_id()
+
+        # Encode before registering the reply future and outside the try below:
+        # a value the encoder refuses is the caller's error, raised as is, not
+        # a ConnectionError, and it leaves nothing pending.
+        payload: bytes | str = request.to_cbor() if self.protocol == "cbor" else request.to_json()
 
         # Create future for response
         loop = asyncio.get_running_loop()
@@ -483,10 +490,10 @@ class WebSocketConnection(BaseSurrealConnection):
 
         try:
             # Send request using configured protocol
-            if self.protocol == "cbor":
-                await self._ws.send_bytes(request.to_cbor())
+            if isinstance(payload, bytes):
+                await self._ws.send_bytes(payload)
             else:
-                await self._ws.send_str(request.to_json())
+                await self._ws.send_str(payload)
 
             # Wait for response with timeout
             response = await asyncio.wait_for(future, timeout=self.timeout)
