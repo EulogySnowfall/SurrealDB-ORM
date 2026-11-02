@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.36.1)
+> Context document for Claude AI - Last updated: November 2026 (0.37.0)
 
 ## Project Vision
 
@@ -10,14 +10,49 @@
 
 ---
 
-## Current Version: 0.36.1 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.37.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.5**  | 0.36.x      | Active development              |
+| `main` | **3.3.5**  | 0.37.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.37.0
+
+ML & Data, roadmap v0.37.0 (#440 via #451): `surreal_sdk/jsonl.py` (new),
+`connection/base.py`, `connection/http.py`, `connection/websocket.py`,
+`protocol/cbor.py`, `exceptions.py`, `utils.py`; ORM `query_set.py`,
+`connection_manager.py`, `cli/commands.py`. Pin unchanged (3.3.5); the new
+integration tests pass on 3.3.5 and 3.2.6. `v2`: the two SDK fixes are tracked in #452 and #453; the
+feature is not backported. SurrealML moved to the backlog (#450): not usable
+on the official 3.x images.
+
+- **SDK first, ORM on top.** `conn.iter_records()` / `export_jsonl()` /
+  `import_jsonl()` live on `BaseSurrealConnection`; `QuerySet` adds its
+  compiled `WHERE` (wrapped in parentheses, so `… AND id > $cursor` cannot
+  escape an `OR`) and `limit()`. Dump/restore is `HTTPConnection`
+  `/export` and `/import`, streamed; `SurrealDBConnectionManager.dump_database()`
+  / `restore_database()` resolve the named connection.
+- **Keyset paging is not a range scan.** `WHERE id > $after ORDER BY id
+  LIMIT n` is a forward `TableScan` with a predicate on 3.3.5, so each batch
+  scans from the start (about 6 ms per 1000 rows at the start, about 200 ms
+  at row 300,000). Docs say "use a dump for a large table"; a record-id
+  range read is #454. Measure with `EXPLAIN` before claiming a read is fast.
+- **Every writer of database content to disk uses one opener**,
+  `surreal_sdk.utils._open_owner_only()` (`0o600` for a new file, truncate
+  without widening an existing one): dump, SDK and ORM `export_jsonl()`, both
+  CLI commands. A test checks that the modules share the same object.
+- **CBOR durations:** tag 13 is the string form, tag 14 the compact
+  `[seconds, nanoseconds]` pair. The SDK sent strings as 14, so binding
+  `Duration("1h30m")` failed. Same family as the 0.34.5 `Decimal`/`date`
+  tags: check what the server accepts per tag, not what the spec names.
+- **WebSocket:** aiohttp caps a message at 4 MiB by default, so a larger
+  reply closed the socket and the request timed out. `max_msg_size=0` now
+  (`max_message_size=` sets a cap); when the reader ends on its own, every
+  pending request fails at once with `ConnectionError`.
+- **Open:** the keyset scan cost (#454); SurrealML (#450).
 
 ### What's New in 0.36.1
 

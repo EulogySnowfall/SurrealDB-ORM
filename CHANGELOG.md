@@ -6,6 +6,103 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.37.0] - 2026-11-02
+
+**Minor release — ML & Data (roadmap v0.37.0, #440 via #451).** JSON Lines
+import/export of one table and dump/restore of a whole database, built in the
+SDK first (`surreal_sdk`) with the ORM and the CLI on top. Two SDK defects
+found on the way are fixed: a string `Duration` could not be bound, and the
+WebSocket transport dropped replies above 4 MiB. Read *Behaviour change*
+below if you use `TAG_STRING_DURATION`, call `str()` on a compact `Duration`,
+or catch `TimeoutError` from WebSocket requests. SurrealML inference is not
+shipped: it cannot be used on the official SurrealDB 3.x images, so it moved
+to the backlog (#450). The SurrealDB pin is unchanged (3.3.5; supported
+range 3.2.x – 3.3.x); the new data features are integration-tested on 3.3.5
+and on 3.2.6.
+
+### Added
+
+- **JSON Lines codec, `surreal_sdk.jsonl`** — one decoded record per line,
+  lossless for SurrealDB values: record ids, datetimes, decimals, UUIDs,
+  durations, bytes, tables and NaN/Infinity are written as one-key `$tag`
+  objects. `typed=False` writes plain JSON on export.
+- **SDK batch export/import** — `conn.iter_records()`, `conn.export_jsonl()`
+  and `conn.import_jsonl()`, which returns an `ImportReport`. Reads go in
+  keyset batches on `id` (no whole-table buffering); writes go in atomic
+  `INSERT` batches of at most `batch_size` rows and `max_batch_bytes`
+  (1 MiB) per statement. New exceptions `DataFormatError` and
+  `DataImportError`; `ImportReport.lines` counts the decoded non-blank lines
+  (equal to `rows` on success, larger when an import fails partway).
+- **ORM JSON Lines** — `QuerySet.export_jsonl()` / `iter_jsonl()` honour
+  `filter()`, `Q`, `.variables()` and `limit()`; `QuerySet.import_jsonl()`
+  takes `on_conflict="error"|"ignore"` and `raw=True` (`OPTION IMPORT` for
+  that call). `ImportReport`, `DataFormatError` and `DataImportError` are
+  exported from `surreal_orm` and `surreal_sdk`.
+- **Database dump/restore** through the server's `/export` and `/import`
+  endpoints, streamed chunk by chunk: `HTTPConnection.export_database()` /
+  `export_database_stream()` / `import_database()`, and
+  `SurrealDBConnectionManager.dump_database()` / `restore_database()`.
+- **CLI** — `surreal-orm dump`, `restore`, `export-jsonl` and
+  `import-jsonl`.
+- **Notebook** `examples/17_data_import_export.ipynb`; `docs/sdk.md` and
+  `docs/orm.md` sections.
+
+### Fixed
+
+- **A string `Duration` was sent as CBOR tag 14**, which the server reads
+  only as the compact `[seconds, nanoseconds]` form: binding
+  `Duration("1h30m")` failed the request (HTTP 400) or timed out
+  (WebSocket). It is sent as tag 13 now, and tag 13 is decoded too.
+- **The WebSocket transport accepted replies of at most 4 MiB** (aiohttp's
+  default): a larger reply timed out and dropped the socket. There is no
+  client-side cap by default now; `WebSocketConnection(max_message_size=)`
+  sets one.
+
+### Behaviour change
+
+- `TAG_STRING_DURATION` in `surreal_sdk.protocol.cbor` is 13 (was 14);
+  `TAG_CUSTOM_DURATION = 14` is added. Durations received from the server
+  decode as before.
+- `str()` of a compact `Duration` returns a duration literal (`"5400s"`,
+  `"1s1ns"`, `"0ns"`) instead of raising `TypeError`.
+- WebSocket replies above 4 MiB now arrive. A WebSocket request pending when
+  the socket drops raises `ConnectionError("WebSocket connection lost: …")`
+  at once instead of `TimeoutError` after the timeout.
+- `import_jsonl()` reports a request failure (dropped connection, timeout,
+  HTTP error) as `DataImportError`, with the report of the committed batches
+  and the original error as `__cause__`.
+
+### Notes
+
+- **JSON Lines** needs the CBOR protocol (the default). Geometry, ranges and
+  datetimes outside Python's range are refused (use a dump); nanosecond
+  digits and `NULL` (read back as `NONE`) are not preserved. Import sends no
+  signal, invalidates the model's query cache and runs one atomic statement
+  per batch, so a file is not imported atomically. `raw=True` skips schema
+  checks, `VALUE`, `ASSERT` and events. On export, `order_by()`, `offset()`,
+  `reachable_from()` and the other clauses that do not fit an id-ordered
+  read are refused.
+- **Output files** — `export_jsonl()` / `export-jsonl -o` and the dump
+  create a new file readable by its owner only (`0o600`); an existing file
+  is truncated and keeps its mode. The mode is ignored on Windows.
+- **Large tables** — each keyset batch of `iter_records()` /
+  `export_jsonl()` scans the table from its start, so a whole-table read
+  slows down as the table grows. Use a dump for a full copy of a large
+  table; a record-id range read is tracked in #454.
+- **Dump/restore** — a dump contains user password hashes and access
+  definitions unless `users=False, accesses=False` (`--no-users
+  --no-accesses`). Restore sends no signal and clears the query cache; it is
+  not transactional, needs a system user, replaces existing definitions of
+  the same name, keeps definitions that exist only in the target, and fails
+  on rows that already exist (other tables are restored). With the SDK
+  directly, the database must already exist. Dump/restore is HTTP-only.
+- **Internal** — `require_int()` and `escape_record_id()` now live in
+  `surreal_sdk.utils`; `surreal_orm.utils.require_int`, `escape_record_id`
+  and `format_thing` keep their names and behaviour.
+- **`v2`** — the two SDK fixes are tracked for the LTS line in #452 (string
+  `Duration` tag) and #453 (WebSocket reply size); the feature itself is not
+  backported.
+
 ## [0.36.1] - 2026-11-02
 
 **Fix release.** Three fixes: a pooled SDK connection is returned to the
