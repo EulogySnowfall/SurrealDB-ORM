@@ -539,7 +539,9 @@ if click is not None:
         """
         from ..connection_manager import SurrealDBConnectionManager
 
-        dest: Any = output if output else click.get_binary_stream("stdout")
+        # open_file("-") hands back the binary stdout and never closes it;
+        # Click's binary-stream getter is deprecated in 8.5, gone in 9.0.
+        dest: Any = output if output else click.open_file("-", "wb")
 
         async def run() -> int:
             _configure_connection(ctx)
@@ -576,7 +578,8 @@ if click is not None:
         """
         from ..connection_manager import SurrealDBConnectionManager
 
-        source: Any = click.get_binary_stream("stdin") if path == "-" else path
+        # Binary stdin, never closed (same Click 8.5 deprecation as in dump()).
+        source: Any = click.open_file("-", "rb") if path == "-" else path
 
         async def run() -> None:
             _configure_connection(ctx)
