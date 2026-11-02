@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.37.0)
+> Context document for Claude AI - Last updated: November 2026 (0.37.1)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.37.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.37.1 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,25 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.37.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.37.1
+
+One fix, #456 via #458 (`cli/commands.py` only). Pin unchanged (3.3.5).
+`v2`: not needed, `dump` / `restore` exist only on `main`.
+
+- **`click.get_binary_stream()` is deprecated in Click 8.5, gone in 9.0.**
+  `dump` (no `-o`) and `restore -` use `click.open_file("-", "wb"/"rb")`,
+  which returns the binary standard stream in a `KeepOpenFile` (never
+  closed) and follows the streams `CliRunner` swaps in.
+- **The lock hid it.** `uv.lock` pins Click 8.4.1, where nothing warns, so
+  CI was green while a fresh install (Click 8.5) failed the two CLI tests
+  that turn `DeprecationWarning` into an error. `TestI456BinaryStdStreams`
+  makes `get_binary_stream` warn whatever Click is installed.
+- **Open (review suggestion on #458):** every CLI test mocks
+  `dump_database` / `restore_database`, so no test hands the `KeepOpenFile`
+  wrapper to the real SDK `import_database` / `export_database`.
+- README "What's New in 0.37.0" wording: a string `Duration` can *now* be
+  bound (it never could before).
 
 ### What's New in 0.37.0
 

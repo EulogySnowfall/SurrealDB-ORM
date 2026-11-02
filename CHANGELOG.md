@@ -6,6 +6,27 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.37.1] - 2026-11-02
+
+**Fix release.** One CLI fix, #456 via #458 (`surreal_orm/cli/commands.py`
+only). The SurrealDB pin is unchanged (tested against 3.3.5, supported range
+3.2.x – 3.3.x). `v2` is not affected: the `dump` / `restore` commands do not
+exist there.
+
+### Fixed
+
+- **`surreal-orm dump` (no `-o`) and `surreal-orm restore -` no longer use
+  `click.get_binary_stream()`**, which Click 8.5 deprecates and Click 9.0
+  removes. They open the binary stdout / stdin with `click.open_file("-")`,
+  so they emit no `DeprecationWarning` on Click 8.5 and will keep working on
+  Click 9. Output and input bytes are unchanged; stdout is still flushed and
+  neither standard stream is closed (#456).
+
+### Documentation
+
+- README "What's New in 0.37.0": a string `Duration` can *now* be bound (it
+  never could before 0.37.0; "again" read as a regression fix) (#456).
+
 ## [0.37.0] - 2026-11-02
 
 **Minor release — ML & Data (roadmap v0.37.0, #440 via #451).** JSON Lines
