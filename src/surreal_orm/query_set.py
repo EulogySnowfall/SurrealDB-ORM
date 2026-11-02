@@ -41,6 +41,7 @@ from .utils import (
     parse_filter_key,
     parse_record_id,
     remove_quotes_for_variables,
+    require_int,
     validate_field_path,
     validate_identifier,
 )
@@ -60,36 +61,6 @@ from .model_base import SurrealDbError, _raise_on_statement_error, _to_record_li
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound="BaseSurrealModel")
-
-
-def _require_int(name: str, value: object, *, minimum: int) -> int:
-    """
-    Check that ``value`` is an integer of at least ``minimum`` and return it.
-
-    Pagination and KNN arguments are written into the query text, so only an
-    ``int`` is accepted: a string (even a numeric one), a float or a ``bool``
-    raises ``TypeError``, and a value below ``minimum`` raises ``ValueError``.
-    The result is always a plain ``int``, so an ``int`` subclass with its own
-    ``__format__`` renders as its numeric value.
-
-    Args:
-        name: Argument name, used in the error message.
-        value: The value passed by the caller.
-        minimum: The smallest accepted value.
-
-    Returns:
-        int: ``value`` as a plain ``int``.
-
-    Raises:
-        TypeError: If ``value`` is not an ``int`` or is a ``bool``.
-        ValueError: If ``value`` is below ``minimum``.
-    """
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise TypeError(f"{name} must be an int, got {type(value).__name__}")
-    number = int.__index__(value)
-    if number < minimum:
-        raise ValueError(f"{name} must be >= {minimum}, got {number}")
-    return number
 
 
 class QuerySet(Generic[T]):
@@ -314,7 +285,7 @@ class QuerySet(Generic[T]):
             queryset.limit(10)
             ```
         """
-        self._limit = _require_int("limit", value, minimum=0)
+        self._limit = require_int("limit", value, minimum=0)
         return self
 
     def offset(self, value: int) -> Self:
@@ -339,7 +310,7 @@ class QuerySet(Generic[T]):
             queryset.offset(20)
             ```
         """
-        self._offset = _require_int("offset", value, minimum=0)
+        self._offset = require_int("offset", value, minimum=0)
         return self
 
     def order_by(self, field_name: str, order_type: OrderBy = OrderBy.ASC) -> Self:
@@ -443,7 +414,15 @@ class QuerySet(Generic[T]):
                 snippet=SearchHighlight("<b>", "</b>", 0),
             ).exec()
             ```
+
+        Raises:
+            ValueError: If an alias is not an identifier (letters, digits and
+                underscores, starting with a letter or underscore). Aliases are
+                written into the query as ``... AS <alias>``, so they are checked
+                here, before the queryset changes.
         """
+        for alias in aggregations:
+            validate_identifier(alias, "annotation alias")
         self._annotations = aggregations
         return self
 
@@ -641,8 +620,8 @@ class QuerySet(Generic[T]):
         """
         if not _SAFE_IDENTIFIER_RE.fullmatch(field):
             raise ValueError(f"Invalid field name for similar_to(): {field!r}")
-        knn_limit = _require_int("limit", limit, minimum=1)
-        knn_ef = None if ef is None else _require_int("ef", ef, minimum=0)
+        knn_limit = require_int("limit", limit, minimum=1)
+        knn_ef = None if ef is None else require_int("ef", ef, minimum=0)
         self._knn_field = field
         self._knn_vector = vector
         self._knn_limit = knn_limit
@@ -786,10 +765,10 @@ class QuerySet(Generic[T]):
             raise ValueError(f"Invalid field name for hybrid_search(): {vector_field!r}")
         if not _SAFE_IDENTIFIER_RE.fullmatch(text_field):
             raise ValueError(f"Invalid field name for hybrid_search(): {text_field!r}")
-        vector_limit = _require_int("vector_limit", vector_limit, minimum=1)
-        text_limit = _require_int("text_limit", text_limit, minimum=1)
-        rrf_k = _require_int("rrf_k", rrf_k, minimum=1)
-        ef = _require_int("ef", ef, minimum=0)
+        vector_limit = require_int("vector_limit", vector_limit, minimum=1)
+        text_limit = require_int("text_limit", text_limit, minimum=1)
+        rrf_k = require_int("rrf_k", rrf_k, minimum=1)
+        ef = require_int("ef", ef, minimum=0)
 
         # Build a raw query using LET bindings for each sub-query
         table = self._model_table
@@ -1308,8 +1287,8 @@ class QuerySet(Generic[T]):
 
         high: int | None = None
         if max_depth is not None or require_max:
-            high = _capped("max_depth", _require_int("max_depth", max_depth, minimum=1))
-        low = _capped("min_depth", _require_int("min_depth", min_depth, minimum=1))
+            high = _capped("max_depth", require_int("max_depth", max_depth, minimum=1))
+        low = _capped("min_depth", require_int("min_depth", min_depth, minimum=1))
         if high is not None and low > high:
             raise ValueError(f"min_depth ({low}) must be <= max_depth ({high})")
         return low, high
