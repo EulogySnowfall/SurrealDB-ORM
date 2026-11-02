@@ -590,8 +590,9 @@ await Post.objects().export_jsonl("posts_plain.jsonl", typed=False)
   different ids from one batch to the next, as with any paging over live data.
 - Lines hold the **raw database records** (column names, not Python aliases; extra fields of a SCHEMALESS table
   included), not model instances.
-- `path` destinations are overwritten (UTF-8, the process umask applies); a text stream works too. File writes
-  run in a worker thread. On an error the lines already written stay in the file.
+- `path` destinations are UTF-8; as for a dump, a **new** file is created with mode `0o600` (readable by its owner
+  only) and an existing file is truncated and keeps its mode. A text stream works too. File writes run in a worker
+  thread. On an error the lines already written stay in the file.
 
 **Format.** With `typed=True` (default) values JSON cannot carry are written as one-key objects and read back as
 the same values: `{"$record": ["post", "abc"]}`, `{"$datetime": "2026-01-02T03:04:05.000000Z"}`,

@@ -11,7 +11,10 @@ distinct class, which the JSON Lines codec does not recognise.
 from __future__ import annotations
 
 import io
+import os
 import re
+import stat
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -287,6 +290,33 @@ class TestJsonlLoggingAndExport:
         with _patch_client(client):
             count = await DIOUPost.objects().export_jsonl(path)
         assert count == 1
+        assert path.read_text(encoding="utf-8") == dumps_record(_rows(1)[0]) + "\n"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    async def test_export_creates_a_new_file_owner_only(self, tmp_path: Path) -> None:
+        client = _client(_ok(_rows(1)))
+        path = tmp_path / "posts.jsonl"
+        previous = os.umask(0o022)
+        try:
+            with _patch_client(client):
+                await DIOUPost.objects().export_jsonl(str(path))
+        finally:
+            os.umask(previous)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    async def test_export_truncates_an_owner_only_file_without_widening_its_mode(self, tmp_path: Path) -> None:
+        client = _client(_ok(_rows(1)))
+        path = tmp_path / "posts.jsonl"
+        path.write_text("stale\n" * 50, encoding="utf-8")
+        path.chmod(0o600)
+        previous = os.umask(0o022)
+        try:
+            with _patch_client(client):
+                await DIOUPost.objects().export_jsonl(path)
+        finally:
+            os.umask(previous)
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert path.read_text(encoding="utf-8") == dumps_record(_rows(1)[0]) + "\n"
 
     async def test_connection_is_the_models(self) -> None:

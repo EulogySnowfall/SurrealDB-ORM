@@ -13,6 +13,7 @@ import asyncio
 import gc
 import io
 import json
+import os
 import stat
 import sys
 import weakref
@@ -432,6 +433,58 @@ async def test_export_overwrites_an_existing_file(tmp_path: Path) -> None:
     conn = FakeConnection(table_rows(1))
     assert await conn.export_jsonl("t", str(dest)) == 1
     assert dest.read_text(encoding="utf-8").count("\n") == 1
+
+
+@pytest.fixture
+def umask_022() -> Any:
+    """Run the test under umask ``0o022``, where a plain ``open()`` would create ``0o644``."""
+    previous = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+@pytest.mark.usefixtures("umask_022")
+async def test_export_creates_a_new_file_owner_only(tmp_path: Path) -> None:
+    dest = tmp_path / "new.jsonl"
+
+    assert await FakeConnection(table_rows(2)).export_jsonl("t", str(dest)) == 2
+
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+@pytest.mark.usefixtures("umask_022")
+async def test_export_truncates_an_owner_only_file_without_widening_its_mode(tmp_path: Path) -> None:
+    dest = tmp_path / "existing.jsonl"
+    dest.write_text("an older and much longer export\n" * 10, encoding="utf-8")
+    dest.chmod(0o600)
+
+    assert await FakeConnection(table_rows(1)).export_jsonl("t", dest) == 1
+
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600
+    assert dest.read_text(encoding="utf-8") == dumps_record({"id": RecordId("t", 1), "v": 1}) + "\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+async def test_export_keeps_the_mode_of_an_existing_file(tmp_path: Path) -> None:
+    dest = tmp_path / "shared.jsonl"
+    dest.write_text("old\n", encoding="utf-8")
+    dest.chmod(0o640)
+
+    await FakeConnection(table_rows(1)).export_jsonl("t", dest)
+
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o640
+
+
+def test_dump_and_jsonl_export_share_one_file_opener() -> None:
+    from surreal_sdk import jsonl, utils
+    from surreal_sdk.connection import http
+
+    assert http.open_owner_only is utils.open_owner_only
+    assert jsonl.open_owner_only is utils.open_owner_only
 
 
 async def test_export_to_a_text_stream_is_not_closed(thread_spy: list[str]) -> None:

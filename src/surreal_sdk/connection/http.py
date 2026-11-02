@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from ..exceptions import ConnectionError, DataImportError, QueryError
 from ..protocol.rpc import RPCMethod, RPCRequest, RPCResponse
 from ..types import AuthResponse
-from ..utils import unescape_record_id, validate_table_name
+from ..utils import open_owner_only, unescape_record_id, validate_table_name
 
 logger = logging.getLogger(__name__)
 
@@ -85,22 +85,6 @@ async def _pass_chunks(chunks: AsyncIterable[bytes]) -> AsyncGenerator[bytes, No
     """The caller's chunks as they come (an async generator, so httpx streams it)."""
     async for chunk in chunks:
         yield chunk
-
-
-def _open_dump_file(path: str) -> IO[bytes]:
-    """Open ``path`` for a dump: truncated, binary, created with mode ``0o600`` when new.
-
-    A dump holds ``DEFINE USER … PASSHASH`` and access keys, so a new file is
-    readable by its owner only. An existing file keeps its mode (the caller
-    chose it); on Windows the mode is ignored.
-    """
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
-    fd = os.open(path, flags, 0o600)
-    try:
-        return os.fdopen(fd, "wb")
-    except BaseException:
-        os.close(fd)
-        raise
 
 
 class HTTPConnection(BaseSurrealConnection):
@@ -883,7 +867,7 @@ class HTTPConnection(BaseSurrealConnection):
         async with stream as chunks:
             owned: IO[bytes] | None = None
             if isinstance(dest, (str, os.PathLike)):
-                owned = await asyncio.to_thread(_open_dump_file, os.fspath(dest))
+                owned = await asyncio.to_thread(open_owner_only, os.fspath(dest), "wb")
                 sink: SupportsWriteBytes = owned
             else:
                 sink = dest

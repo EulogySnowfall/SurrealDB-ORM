@@ -6,7 +6,10 @@ Uses Click's CliRunner for testing CLI commands without database connections.
 
 import asyncio
 import dataclasses
+import os
 import shutil
+import stat
+import sys
 import tempfile
 import threading
 import warnings
@@ -16,6 +19,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+
+from surreal_sdk.connection.base import BaseSurrealConnection as _SdkBaseConnection
+from surreal_sdk.protocol.cbor import RecordId
+from surreal_sdk.types import QueryResponse as _SdkQueryResponse
 
 
 def mock_run_async_factory(return_value: Any = None, exception: Exception | None = None):
@@ -1094,6 +1101,31 @@ class TestU14RestoreCommand:
         assert "No such file or directory" in result.stderr
 
 
+class _U14JsonlConnection(_SdkBaseConnection):
+    """A connection whose ``query()`` returns ``rows`` once, so the real ``export_jsonl()`` runs."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        super().__init__("http://fake", "u14", "u14")
+        self.protocol = "cbor"
+        self._replies = [rows]
+
+    async def connect(self) -> "_U14JsonlConnection":
+        return self
+
+    async def close(self) -> None:
+        return None
+
+    async def _send_rpc(self, request: Any) -> Any:
+        raise AssertionError("export_jsonl() goes through query()")
+
+    def transaction(self) -> Any:
+        raise AssertionError("not used")
+
+    async def query(self, sql: str, vars: dict[str, Any] | None = None) -> _SdkQueryResponse:
+        rows = self._replies.pop(0) if self._replies else []
+        return _SdkQueryResponse.from_rpc_result([{"status": "OK", "result": rows, "time": ""}])
+
+
 @pytest.mark.filterwarnings("error::DeprecationWarning")
 @pytest.mark.usefixtures("i280_restore_default_connection")
 class TestU14ExportJsonlCommand:
@@ -1131,6 +1163,36 @@ class TestU14ExportJsonlCommand:
         client.export_jsonl.assert_awaited_once_with("post", "post.jsonl", batch_size=50, typed=False)
         assert result.stdout == ""
         assert result.stderr == "Exported 42 records to post.jsonl\n"
+
+    def test_help_states_the_file_mode(self, runner: "CliRunner", cli_command) -> None:
+        result = runner.invoke(cli_command, ["export-jsonl", "--help"])
+
+        assert result.exit_code == 0, result.output
+        text = " ".join(result.output.split())
+        assert "readable by its owner only" in text
+        assert "0o600" in text
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_output_file_is_owner_only(self, runner: "CliRunner", cli_command, tmp_path: Path, existing: bool) -> None:
+        """The real SDK ``export_jsonl()`` opens ``-o``: new → 0o600, an owner-only file stays 0o600 and is truncated."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        path = tmp_path / "post.jsonl"
+        if existing:
+            path.write_text("stale\n" * 50, encoding="utf-8")
+            path.chmod(0o600)
+        client = _U14JsonlConnection([{"id": RecordId("post", 1)}])
+        previous = os.umask(0o022)
+        try:
+            with patch.object(SurrealDBConnectionManager, "get_client", new=AsyncMock(return_value=client)):
+                result = runner.invoke(cli_command, [*_U14_GROUP, "export-jsonl", "post", "-o", str(path)])
+        finally:
+            os.umask(previous)
+
+        assert result.exit_code == 0, result.output
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert path.read_text(encoding="utf-8") == '{"id":{"$record":["post",1]}}\n'
 
     def test_a_failure_prints_the_message_and_exits_1(self, runner: "CliRunner", cli_command) -> None:
         from src.surreal_orm.connection_manager import SurrealDBConnectionManager

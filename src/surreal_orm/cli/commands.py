@@ -596,7 +596,11 @@ if click is not None:
 
     @cli.command(name="export-jsonl")  # type: ignore[untyped-decorator]
     @click.argument("table")  # type: ignore[untyped-decorator]
-    @click.option("--output", "-o", help="JSON Lines file path (default: write to stdout)")  # type: ignore[untyped-decorator]
+    @click.option(  # type: ignore[untyped-decorator]
+        "--output",
+        "-o",
+        help="JSON Lines file path (default: write to stdout). A new file is created readable by its owner only (0o600).",
+    )
     @click.option("--batch-size", default=1000, show_default=True, type=int, help="Rows read per query")  # type: ignore[untyped-decorator]
     @click.option(  # type: ignore[untyped-decorator]
         "--plain",
@@ -605,7 +609,12 @@ if click is not None:
     )
     @click.pass_context  # type: ignore[untyped-decorator]
     def export_jsonl(ctx: click.Context, table: str, output: str | None, batch_size: int, plain: bool) -> None:
-        """Export TABLE as JSON Lines, one record per line, in id order."""
+        """Export TABLE as JSON Lines, one record per line, in id order.
+
+        The rows are written as stored (a USER table's password hashes
+        included). A new -o file is created readable by its owner only
+        (0o600); an existing file is truncated and keeps its mode.
+        """
         from ..connection_manager import SurrealDBConnectionManager
 
         dest: Any = output if output else sys.stdout

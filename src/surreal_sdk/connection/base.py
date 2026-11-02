@@ -422,10 +422,15 @@ class BaseSurrealConnection(ABC):
         close included) run in a worker thread, once per batch. On an error
         the lines already written stay in ``dest``; nothing is retried.
 
+        An export holds the table's data as stored (a password hash of a
+        ``USER`` table, tokens, …), so, as for a dump, a **new** file is
+        created with mode ``0o600`` (readable by its owner only); an existing
+        file is truncated and keeps its mode. On Windows the mode is ignored.
+
         Args:
             table: The table to export (an identifier).
-            dest: A path (created or overwritten, UTF-8) or a text stream,
-                which is written to and left open.
+            dest: A path (created ``0o600`` or truncated, UTF-8) or a text
+                stream, which is written to and left open.
             batch_size: Rows per statement (``>= 1``).
             where: See :meth:`iter_records`.
             vars: See :meth:`iter_records`.

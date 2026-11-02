@@ -3355,9 +3355,14 @@ class QuerySet(Generic[T]):
         included) run in a worker thread, once per batch. On an error the
         lines already written stay in ``dest``; nothing is retried.
 
+        An export holds the table's data as stored, so, as for
+        :meth:`SurrealDBConnectionManager.dump_database`, a **new** file is
+        created with mode ``0o600`` (readable by its owner only); an existing
+        file is truncated and keeps its mode. On Windows the mode is ignored.
+
         Args:
-            dest: A path (created or overwritten, UTF-8) or a text stream,
-                which is written to and left open.
+            dest: A path (created ``0o600`` or truncated, UTF-8) or a text
+                stream, which is written to and left open.
             batch_size: Rows per statement (``>= 1``).
             typed: See :meth:`iter_jsonl`.
 

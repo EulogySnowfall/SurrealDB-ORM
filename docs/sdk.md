@@ -480,7 +480,7 @@ async with SurrealDB.http("http://localhost:8000", "ns", "db") as conn:
     # Filter with a raw SurrealQL condition; every value goes in vars (bound)
     n = await conn.export_jsonl(
         "person",
-        "adults.jsonl",                 # a path (overwritten, UTF-8) or a text stream
+        "adults.jsonl",                 # a path (new file: mode 0o600, UTF-8) or a text stream
         where="age >= $min_age",
         vars={"min_age": 18},
         limit=10_000,
@@ -493,6 +493,8 @@ async with SurrealDB.http("http://localhost:8000", "ns", "db") as conn:
   the export may or may not be included.
 - `where` is written as `({where})` in the statement: it is SurrealQL, never user input. Put values in `vars`.
   Variable names starting with `_x_` are reserved.
+- A **new** file is created with mode `0o600` (readable by its owner only), as for a dump: an export holds the
+  table's data as stored. An existing file is truncated and keeps its mode.
 - File writes (the open and the close included) run in a worker thread, once per batch. On an error, the lines
   already written stay in the file; nothing is retried.
 

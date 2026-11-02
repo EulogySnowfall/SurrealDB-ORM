@@ -5,8 +5,10 @@ Lives in the SDK because both layers need it and the dependency only runs one
 way: ``surreal_orm`` imports from ``surreal_sdk``, never the reverse.
 """
 
+import os
 import re
 from collections.abc import Mapping
+from typing import IO, Any, Literal, overload
 from uuid import UUID
 
 from .protocol.cbor import RecordId
@@ -16,6 +18,7 @@ __all__ = [
     "find_param_references",
     "format_record_id",
     "needs_id_escaping",
+    "open_owner_only",
     "require_int",
     "substitute_params",
     "unescape_record_id",
@@ -32,6 +35,48 @@ _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 #: ``re.ASCII`` matches SurrealDB's own identifier lexer, which is ASCII — an
 #: accented name is not a reference the server would bind either.
 _PARAM_REFERENCE = re.compile(r"\$(\w+)", re.ASCII)
+
+
+@overload
+def open_owner_only(path: str, mode: Literal["wb"]) -> IO[bytes]: ...
+
+
+@overload
+def open_owner_only(path: str, mode: Literal["w"]) -> IO[str]: ...
+
+
+def open_owner_only(path: str, mode: Literal["wb", "w"]) -> IO[Any]:
+    """
+    Open ``path`` for writing database data: truncated, created with mode ``0o600`` when new.
+
+    A dump or a table export holds the database's data (password hashes,
+    access keys, tokens), so a new file is readable by its owner only, whatever
+    the umask. An existing file is truncated and keeps its mode (the caller
+    chose it). On Windows the mode is ignored.
+
+    Every SDK path that writes database data to a file goes through here:
+    ``HTTPConnection.export_database()`` (``mode="wb"``) and the JSON Lines
+    export (``mode="w"``: UTF-8, ``\\n`` line ends on every platform).
+
+    Args:
+        path: The file to create or truncate.
+        mode: ``"wb"`` for a binary stream, ``"w"`` for UTF-8 text.
+
+    Returns:
+        IO[bytes] | IO[str]: The open file; the caller closes it.
+
+    Raises:
+        OSError: If the file cannot be opened.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        if mode == "wb":
+            return os.fdopen(fd, "wb")
+        return os.fdopen(fd, "w", encoding="utf-8", newline="")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def require_int(name: str, value: object, *, minimum: int) -> int:

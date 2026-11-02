@@ -52,7 +52,7 @@ from uuid import UUID
 
 from .exceptions import DataFormatError, DataImportError, QueryError, SurrealDBError, TableNotFoundError
 from .protocol.cbor import Duration, RecordId, Table, _warn_naive_datetime
-from .utils import format_record_id, require_int, validate_table_name
+from .utils import format_record_id, open_owner_only, require_int, validate_table_name
 
 if TYPE_CHECKING:
     from .connection.base import BaseSurrealConnection
@@ -448,7 +448,8 @@ class SupportsWriteText(Protocol):
 
 
 #: Where :meth:`~surreal_sdk.connection.base.BaseSurrealConnection.export_jsonl`
-#: writes: a path (overwritten, UTF-8) or a text stream (left open).
+#: writes: a path (UTF-8; a new file is created readable by its owner only) or
+#: a text stream (left open).
 type JsonlDestination = str | os.PathLike[str] | SupportsWriteText
 
 #: Called once per statement sent, after its reply: ``(sql, variables, duration_ms)``.
@@ -596,17 +597,13 @@ async def _open_sink(dest: JsonlDestination) -> _Sink:
     """
     Open ``dest`` for writing JSON Lines.
 
-    A path is opened (truncated, UTF-8, ``\n`` line ends on every platform) in a
-    worker thread and closed by :meth:`_Sink.close`; a text stream is written as
-    is and never closed.
+    A path is opened by :func:`~surreal_sdk.utils.open_owner_only`, like a
+    dump (truncated, UTF-8, ``\n`` line ends on every platform, a new file
+    created with mode ``0o600``), in a worker thread, and closed by
+    :meth:`_Sink.close`; a text stream is written as is and never closed.
     """
     if isinstance(dest, (str, os.PathLike)):
-        path = os.fspath(dest)
-
-        def open_file() -> IO[str]:
-            return open(path, "w", encoding="utf-8", newline="")
-
-        file = await asyncio.to_thread(open_file)
+        file = await asyncio.to_thread(open_owner_only, os.fspath(dest), "w")
         return _Sink(file, file)
     return _Sink(dest, None)
 
