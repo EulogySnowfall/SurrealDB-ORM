@@ -9,8 +9,9 @@ This package provides:
 - CLI tools for schema management
 """
 
-# Re-export LiveAction and TableNotFoundError from SDK for convenience
-from surreal_sdk.exceptions import TableNotFoundError
+# Re-export LiveAction, TableNotFoundError and the data I/O names from SDK for convenience
+from surreal_sdk.exceptions import DataFormatError, DataImportError, TableNotFoundError
+from surreal_sdk.jsonl import ImportReport
 from surreal_sdk.streaming.live_select import LiveAction
 
 from .aggregations import Aggregation, Avg, Count, Max, Min, Sum
@@ -164,6 +165,10 @@ __all__ = [
     "ModelChangeEvent",
     "ChangeModelStream",
     "LiveAction",
+    # Data import/export (JSON Lines)
+    "ImportReport",
+    "DataFormatError",
+    "DataImportError",
     # Graph
     "GraphDirection",
     "MAX_GRAPH_DEPTH",

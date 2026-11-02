@@ -15,6 +15,7 @@ A Django-style ORM for SurrealDB with async support and Pydantic validation.
 - [Transactions](#transactions)
 - [Aggregations](#aggregations)
 - [Bulk Operations](#bulk-operations)
+- [Data Import/Export](#data-importexport)
 - [Relations & Graph Traversal](#relations--graph-traversal)
 - [Live Models (Real-time)](#live-models-real-time)
 - [Change Feed Integration](#change-feed-integration)
@@ -551,6 +552,90 @@ deleted = await Order.objects().filter(
     created_at__lt="2024-01-01"
 ).bulk_delete(atomic=True)
 ```
+
+---
+
+## Data Import/Export
+
+Export a model's rows to [JSON Lines](https://jsonlines.org/) (one JSON object per line) and import such a file
+into a model's table. These methods use the model's connection (`using()` and `connection=` apply) and need the
+**CBOR** protocol (the default): under JSON, record ids, datetimes and decimals arrive as strings and would not
+round-trip.
+
+### Export to JSON Lines
+
+```python
+from datetime import UTC, datetime
+
+# Export the published posts of 2026, one JSON object per line
+n = await Post.objects().filter(
+    published=True, created_at__gte=datetime(2026, 1, 1, tzinfo=UTC)
+).export_jsonl("posts.jsonl")
+
+# Stream the lines to any sink (S3 multipart upload, a socket, ...)
+async for line in Post.objects().filter(author=alice).iter_jsonl(batch_size=500):
+    await sink.write(line + "\n")
+
+# Plain JSON for external tools (pandas.read_json(..., lines=True))
+await Post.objects().export_jsonl("posts_plain.jsonl", typed=False)
+```
+
+- `filter()`, `Q` objects, `.variables()` and `Subquery` filters apply as in `exec()`; `limit()` caps the total.
+- Rows are read in **`id` order, by keyset**, `batch_size` rows per statement, so only one batch is in memory.
+  Lower `batch_size` for wide rows. A query that does not fit an id-ordered read is refused with `ValueError`
+  before any request: `order_by()`, `offset()`, `select()`, `values()`, `annotate()`, `fetch()`,
+  `select_related()`, `prefetch_related()`, `cache()`, `similar_to()`, `search()`, `nearby()`, `traverse()`,
+  `reachable_from()`.
+- A `Subquery` filter is re-run with each batch: over a table that changes during the export, it may select
+  different ids from one batch to the next, as with any paging over live data.
+- Lines hold the **raw database records** (column names, not Python aliases; extra fields of a SCHEMALESS table
+  included), not model instances.
+- `path` destinations are overwritten (UTF-8, the process umask applies); a text stream works too. File writes
+  run in a worker thread. On an error the lines already written stay in the file.
+
+**Format.** With `typed=True` (default) values JSON cannot carry are written as one-key objects and read back as
+the same values: `{"$record": ["post", "abc"]}`, `{"$datetime": "2026-01-02T03:04:05.000000Z"}`,
+`{"$decimal": "1.10"}`, `{"$uuid": ...}`, `{"$duration": "1h30m"}`, `{"$bytes": "<base64>"}`, `{"$table": ...}`,
+`{"$float": "NaN"}`. The full table is in the [SDK docs](sdk.md#json-lines-format). `typed=False` writes plain
+strings instead (`"post:abc"`, ISO dates); such a file loads back as plain JSON, its values staying strings.
+
+**Not supported** (use a database dump for a lossless copy): geometry values, ranges and datetimes outside
+Python's range raise `DataFormatError` naming the field and the record; nanosecond digits of datetimes are cut to
+microseconds; `NULL` is read as `None` and written back as `NONE`.
+
+### Import from JSON Lines
+
+```python
+from surreal_orm import DataImportError, ImportReport, SurrealDBConnectionManager
+
+# Load the file into another database (same model, another connection)
+async with SurrealDBConnectionManager.using("staging"):
+    report: ImportReport = await Post.objects().import_jsonl("posts.jsonl", on_conflict="ignore")
+print(report.lines, report.rows, report.batches)
+
+try:
+    await Post.objects().import_jsonl("posts.jsonl")      # on_conflict="error" (default)
+except DataImportError as e:
+    print(e.report.batches, "batches written before the failure:", e.errors)
+```
+
+- Call it on `Model.objects()` without `filter()`, `order_by()` or other read clauses (`ValueError` otherwise):
+  it writes the model's table. A record id of another table is written to the model's table by the server.
+- Lines go in batches of at most `batch_size` rows and `max_batch_bytes` bytes (1 MiB by default). **Each batch is
+  one atomic `INSERT`; the file is not.** A rejected batch (duplicate id with `on_conflict="error"`, schema or
+  `ASSERT` violation) or a failed request raises `DataImportError`: `.report` counts the batches already written,
+  `.errors` holds the server message, and a request failure keeps the original exception as `__cause__` (that
+  batch may or may not have been written).
+- `on_conflict="ignore"` skips records whose id already exists (`INSERT IGNORE`).
+- A model with `table_type=TableType.RELATION` is imported with `INSERT RELATION` (`in` and `out` in each line).
+- **No signal is sent** (`pre_save`/`post_save` do not fire). The model's `QueryCache` entries are invalidated,
+  also when a batch fails. Live queries and change feeds see the new rows as usual.
+- `raw=True` imports under `OPTION IMPORT` for that call: **no type checks, no `VALUE`, `ASSERT` or `DEFAULT`, no
+  events**. Use it only for a file you trust to match the schema, such as an export of the same table; it needs a
+  system user (root, namespace or database).
+- A malformed line raises `DataFormatError` with its line number, before its batch is sent.
+- Each export and import statement shows up in `QueryLogger`; for an import batch, `variables["_x_rows"]` is a
+  summary `{"rows": n, "bytes": b}`, never the rows themselves.
 
 ---
 

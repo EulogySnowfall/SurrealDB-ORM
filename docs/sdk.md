@@ -17,6 +17,11 @@ A custom Python SDK for SurrealDB with HTTP and WebSocket support.
   - [HTTP Transactions](#http-transactions)
   - [WebSocket Transactions](#websocket-transactions)
   - [Transaction Methods](#transaction-methods)
+- [Data Import/Export](#data-importexport)
+  - [JSON Lines Format](#json-lines-format)
+  - [Reading and Exporting a Table](#reading-and-exporting-a-table)
+  - [Importing JSON Lines](#importing-json-lines)
+- [Durations](#durations)
 - [Typed Functions API](#typed-functions-api)
   - [Built-in Functions](#built-in-functions)
   - [Custom Functions](#custom-functions)
@@ -141,6 +146,21 @@ async with conn:
     # ... application runs ...
     await conn.kill(live_id)
 ```
+
+**Message size.** `max_message_size` is the largest message the client accepts, in bytes. The default, `None`,
+sets no client-side cap, like the HTTP transport: a large `SELECT` reply arrives whatever its size (the server
+still limits the size of a *request*). Pass an `int` (at least 1) to cap replies; a reply above it then fails at
+once instead of being read.
+
+```python
+conn = WebSocketConnection("ws://localhost:8000", "ns", "db", max_message_size=16 * 1024 * 1024)
+# or: SurrealDB.ws("ws://localhost:8000", "ns", "db", max_message_size=16 * 1024 * 1024)
+```
+
+**Lost connection.** When the socket drops for any reason other than `close()` (a reply above
+`max_message_size`, a close from the server, a network error), every request still waiting for its reply raises
+`ConnectionError("WebSocket connection lost: <reason>")` at once, before the automatic reconnect starts. A reply
+to those requests can never arrive on the new socket, so they no longer wait for their full `timeout`.
 
 ### Connection Pool
 
@@ -391,6 +411,141 @@ except TransactionError as e:
     print(f"Error code: {e.code}")
     print(f"Rollback succeeded: {e.rollback_succeeded}")
 ```
+
+---
+
+## Data Import/Export
+
+Read a table in batches, export it to [JSON Lines](https://jsonlines.org/) (one JSON object per line) and import
+such a file into a table. The three methods are on every connection (HTTP and WebSocket) and need the **CBOR**
+protocol (the default): under JSON, record ids, datetimes and decimals arrive as strings and would not round-trip,
+so they raise `ValueError` on a `protocol="json"` connection.
+
+The database must exist. A query on an undefined namespace or database fails, and a raw SDK connection does not
+create it (the ORM's connections do, on connect):
+
+```python
+await conn.query("DEFINE DATABASE IF NOT EXISTS app;")
+```
+
+### JSON Lines Format
+
+The codec lives in `surreal_sdk.jsonl` (`encode_value()`, `decode_value()`, `dumps_record()`, `loads_record()`,
+`JSONL_TAGS`). By default (`typed=True`) a value that JSON cannot carry is written as an object with **exactly one
+key**, its tag, and read back as the same Python value:
+
+| Python value | JSON line | Read back as |
+| --- | --- | --- |
+| `None`, `bool`, `str`, `int`, finite `float` | native | same (`None` is sent as `NONE`) |
+| `nan`, `inf`, `-inf` | `{"$float": "NaN"}`, `{"$float": "Infinity"}`, `{"$float": "-Infinity"}` | `float` |
+| `Decimal` | `{"$decimal": "1.10"}` | `Decimal` |
+| `datetime` | `{"$datetime": "2020-01-02T03:04:05.123456Z"}` (UTC, 6 fraction digits; naive read as UTC) | aware UTC `datetime` |
+| `date` | as the UTC-midnight `datetime` | `datetime` |
+| `UUID` | `{"$uuid": "0190f3b2-..."}` | `UUID` |
+| `Duration` | `{"$duration": "1h30m"}`, or `{"$duration": [5400, 1]}` for the compact form | `Duration` |
+| `bytes` | `{"$bytes": "<base64>"}` | `bytes` |
+| `RecordId` | `{"$record": ["person", "alice"]}` (an array or object key as JSON) | `RecordId` |
+| `Table` | `{"$table": "person"}` | `Table` |
+| `dict`, `list` | object, array | `dict`, `list` |
+
+A user object with a single key starting with `$` is wrapped as `{"$object": {...}}`, so it is never read as a
+tag. On import, a `$` key that is not a known tag, a malformed tag payload (an invalid duration, bad base64, ...) or
+a line that is not a JSON object raises `DataFormatError` naming the line number, before that line's batch is
+sent.
+
+`typed=False` (export only) writes plain JSON for external tools such as pandas: `"person:alice"`, ISO strings,
+`"1.10"`, `"NaN"`. Such a file loads back as plain JSON: its values stay strings.
+
+**Not supported** — use a database dump for a lossless copy:
+
+- geometry values, ranges and datetimes outside Python's range (the SDK decodes them as tuples): the export raises
+  `DataFormatError` naming the field and the record;
+- nanosecond digits of a datetime (Python keeps microseconds);
+- `NULL`: it is read as `None` and written back as `NONE`.
+
+### Reading and Exporting a Table
+
+```python
+from surreal_sdk import SurrealDB
+
+async with SurrealDB.http("http://localhost:8000", "ns", "db") as conn:
+    await conn.signin("root", "root")
+
+    # Batches of decoded records (plain dicts), in id order
+    async for batch in conn.iter_records("person", batch_size=500):
+        for record in batch:
+            print(record["id"], record["name"])
+
+    # Filter with a raw SurrealQL condition; every value goes in vars (bound)
+    n = await conn.export_jsonl(
+        "person",
+        "adults.jsonl",                 # a path (overwritten, UTF-8) or a text stream
+        where="age >= $min_age",
+        vars={"min_age": 18},
+        limit=10_000,
+    )
+    print(f"{n} records written")
+```
+
+- The table is read by **keyset on `id`** (`... WHERE id > $_x_after ORDER BY id LIMIT n`), one statement per
+  batch, so only one batch is held in memory. Lower `batch_size` for wide rows. Over live data, rows written during
+  the export may or may not be included.
+- `where` is written as `({where})` in the statement: it is SurrealQL, never user input. Put values in `vars`.
+  Variable names starting with `_x_` are reserved.
+- File writes (the open and the close included) run in a worker thread, once per batch. On an error, the lines
+  already written stay in the file; nothing is retried.
+
+### Importing JSON Lines
+
+```python
+from surreal_sdk import DataImportError, ImportReport
+
+report: ImportReport = await conn.import_jsonl(
+    "person",
+    "adults.jsonl",          # a path, a text stream, or an (async) iterable of lines
+    batch_size=1000,
+    max_batch_bytes=1_048_576,
+    on_conflict="ignore",    # "error" (default) or "ignore" (INSERT IGNORE: existing ids are skipped)
+)
+print(report.lines, report.rows, report.batches)
+```
+
+- Lines are sent in batches of at most `batch_size` rows and `max_batch_bytes` bytes (1 MiB by default, under the
+  server's 4 MiB limit on an RPC request). A single line larger than `max_batch_bytes` is sent alone.
+- Each batch is **one `INSERT` statement, so it is atomic**; the file is not. When a batch fails,
+  `DataImportError` is raised with `.report` (what the batches before it wrote) and `.errors`. A rejected
+  statement (a duplicate id, a schema or `ASSERT` violation) is reported with the server's message; a request that
+  fails (a dropped connection, a timeout, an HTTP error) keeps the original exception as `__cause__`, and whether
+  that batch reached the database is then unknown.
+- Edge tables: `relation=None` (default) reads the table's type once (`TYPE RELATION` → `INSERT RELATION`,
+  `TYPE NORMAL` → `INSERT`); on a `TYPE ANY` or undefined table a batch is a relation insert only when every row
+  has record `in` and `out` fields. Pass `relation=True` or `False` to decide yourself.
+- `raw=True` prefixes each batch with `OPTION IMPORT;`, for that call only: no type checks, no `VALUE`, `ASSERT` or
+  `DEFAULT`, no events. It needs a system user (root, namespace or database), as the server refuses it to a record
+  user.
+- Files and text streams are read in a worker thread, never on the event loop.
+
+---
+
+## Durations
+
+`Duration` (from `surreal_sdk`) holds a SurrealDB duration in one of two forms, and both can be bound to a query:
+
+```python
+from surreal_sdk import Duration
+
+await conn.query("UPDATE session:1 SET ttl = $ttl;", {"ttl": Duration("1h30m")})      # a duration literal
+await conn.query("UPDATE session:1 SET ttl = $ttl;", {"ttl": Duration((5400, 1))})     # (seconds, nanoseconds)
+
+result = await conn.query("RETURN 1h30m;")
+d = result.first_result.result              # Duration((5400,)): the server sends the compact form
+str(d)                                      # "5400s", a literal the server reads back as 1h30m
+```
+
+- A **string** value (`"1h30m"`, `"2d"`) is sent as a duration literal; the server checks it, so an invalid string
+  fails the request.
+- A **tuple** value is the compact form the server sends back: `(seconds,)`, `(seconds, nanoseconds)` or `()` for
+  zero. `str()` gives a literal for it: `"5400s"`, `"5ns"`, `"1s1ns"`, `"0ns"`.
 
 ---
 

@@ -431,3 +431,29 @@ class TestImportJsonl:
     async def test_graph_guard_message_is_unchanged(self) -> None:
         with pytest.raises(ValueError, match=r"^paths_from\(\) runs on a bare QuerySet"):
             DIOUPost.objects().filter(n=1)._reject_read_clauses("paths_from")
+
+
+class TestDataIoExports:
+    """§3.7: the ORM re-exports the SDK's data I/O names (same objects, like ``LiveAction``)."""
+
+    def test_orm_reexports_the_sdk_objects(self) -> None:
+        import surreal_orm
+        import surreal_sdk
+        from src import surreal_orm as src_orm
+
+        for name in ("ImportReport", "DataFormatError", "DataImportError"):
+            assert name in surreal_orm.__all__
+            assert getattr(surreal_orm, name) is getattr(surreal_sdk, name)
+            assert getattr(src_orm, name) is getattr(surreal_sdk, name)
+
+    def test_sdk_exports_the_codec_module(self) -> None:
+        import surreal_sdk
+        from surreal_sdk import jsonl
+
+        assert surreal_sdk.jsonl is jsonl
+        for name in ("ImportReport", "DataFormatError", "DataImportError", "jsonl"):
+            assert name in surreal_sdk.__all__
+        for name in ("JSONL_TAGS", "encode_value", "decode_value", "dumps_record", "loads_record"):
+            assert callable(getattr(jsonl, name)) or name == "JSONL_TAGS"
+        assert surreal_sdk.DataImportError is DataImportError
+        assert surreal_sdk.ImportReport is ImportReport
