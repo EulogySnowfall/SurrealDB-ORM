@@ -576,6 +576,8 @@ class QuerySet(Generic[T]):
 
         if not QueryCache._enabled:
             logger.warning("QueryCache is disabled — .cache() has no effect")
+        # Writes must reach the cache even if configure() was never called.
+        QueryCache._connect_signals()
         self._cache_ttl = ttl if ttl is not None else QueryCache._default_ttl
         return self
 
@@ -2595,6 +2597,19 @@ class QuerySet(Generic[T]):
         # SDK returns QueryResponse, extract all records
         return cast(list[Any], result.all_records)
 
+    def _invalidate_cache(self) -> None:
+        """Drop the ``QueryCache`` entries of this model's table after a write.
+
+        The bulk and upsert paths write without going through a model
+        instance, so no ``post_save`` / ``post_update`` / ``post_delete``
+        signal fires for them; each calls this once its statement has been
+        accepted (after the commit for ``atomic=True``).  A write that raises
+        leaves the cache as it was.
+        """
+        from .cache import QueryCache
+
+        QueryCache.invalidate(self.model)
+
     async def delete_table(self) -> bool:
         """
         Delete the associated table from the SurrealDB database.
@@ -2616,6 +2631,7 @@ class QuerySet(Generic[T]):
         self._reject_graph("delete_table")
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         await client.delete(self._model_table)
+        self._invalidate_cache()
         return True
 
     async def query(self, query: str, variables: dict[str, Any] | None = None) -> Any:
@@ -2776,10 +2792,12 @@ class QuerySet(Generic[T]):
             current_count = await self.count()
             async with await SurrealDBConnectionManager.transaction() as tx:
                 await tx.query(remove_quotes_for_variables(query), self._variables)
+            self._invalidate_cache()
             return current_count
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
+        self._invalidate_cache()
         return len(result.all_records)
 
     async def bulk_delete(self, atomic: bool = False) -> int:
@@ -2814,10 +2832,12 @@ class QuerySet(Generic[T]):
             delete_query = f"DELETE FROM {self._model_table}{where_clause};"
             async with await SurrealDBConnectionManager.transaction() as tx:
                 await tx.query(remove_quotes_for_variables(delete_query), self._variables)
+            self._invalidate_cache()
             return current_count
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
+        self._invalidate_cache()
         return len(result.all_records)
 
     # ==================== Upsert Methods ====================
@@ -2927,6 +2947,7 @@ class QuerySet(Generic[T]):
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), variables)
+        self._invalidate_cache()
 
         records = result.all_records
         if records:
@@ -3053,9 +3074,11 @@ class QuerySet(Generic[T]):
                     parsed = self.model.from_db(cast("dict[str, Any] | list[Any] | None", record))
                     if isinstance(parsed, self.model):
                         results.append(parsed)
+            self._invalidate_cache()
         else:
             client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
             q_result = await client.query(remove_quotes_for_variables(full_query), all_variables)
+            self._invalidate_cache()
             for record in q_result.all_records:
                 parsed = self.model.from_db(cast("dict[str, Any] | list[Any] | None", record))
                 if isinstance(parsed, self.model):
