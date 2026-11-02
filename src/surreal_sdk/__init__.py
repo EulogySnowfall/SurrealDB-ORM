@@ -81,7 +81,7 @@ from .types import (
 )
 from .utils import find_param_references, substitute_params
 
-__version__ = "0.36.1"
+__version__ = "0.37.0"
 __all__ = [
     # Connections
     "BaseSurrealConnection",

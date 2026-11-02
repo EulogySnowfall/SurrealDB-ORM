@@ -203,4 +203,4 @@ __all__ = [
     "retry_on_conflict",
 ]
 
-__version__ = "0.36.1"
+__version__ = "0.37.0"

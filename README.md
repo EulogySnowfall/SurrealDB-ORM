@@ -30,12 +30,57 @@
 
 | Branch | SurrealDB  | ORM Version | Status                          |
 | ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.5**  | 0.36.x      | Active development              |
+| `main` | **3.3.5**  | 0.37.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
 
 Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
 
 ---
+
+## What's New in 0.37.0
+
+**Minor release — ML & Data** ([#440](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/440)). JSON Lines
+import/export of a table and dump/restore of a whole database, in the SDK, the ORM and the CLI. Two SDK fixes: a string
+`Duration` can be bound again, and WebSocket replies above 4 MiB arrive. SurrealML inference is not shipped (it cannot
+be used on the official SurrealDB 3.x images; moved to the backlog,
+[#450](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/450)). SurrealDB pin unchanged (3.3.5). See
+[CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+```python
+# One table as JSON Lines (filters, Q, .variables() and limit() apply)
+written = await Post.objects().filter(published=True).export_jsonl("posts.jsonl")
+report = await Post.objects().import_jsonl("posts.jsonl", on_conflict="ignore")
+print(report.rows, report.batches)
+
+# The whole database, in the server's own dump format (HTTP only)
+await SurrealDBConnectionManager.dump_database("backup.surql", users=False, accesses=False)
+await SurrealDBConnectionManager.restore_database("backup.surql")
+```
+
+```bash
+surreal-orm export-jsonl posts -o posts.jsonl
+surreal-orm import-jsonl posts posts.jsonl
+surreal-orm dump --no-users --no-accesses -o app.surql
+surreal-orm restore app.surql
+```
+
+- **JSON Lines** keeps SurrealDB types through one-key `$tag` objects (record ids, datetimes, decimals, UUIDs,
+  durations, bytes, tables, NaN/Infinity); `typed=False` writes plain JSON. Export reads in keyset batches on `id`;
+  import writes atomic `INSERT` batches (at most `batch_size` rows and 1 MiB per statement) and returns an
+  `ImportReport`. SDK: `conn.iter_records()`, `conn.export_jsonl()`, `conn.import_jsonl()`. Needs CBOR (the default).
+- **Dump/restore** goes through the server's `/export` and `/import` endpoints, streamed:
+  `HTTPConnection.export_database()` / `import_database()` and `SurrealDBConnectionManager.dump_database()` /
+  `restore_database()`. A dump holds user password hashes and access definitions unless you leave them out. New
+  dump and JSON Lines files are created readable by their owner only.
+- **Limits:** geometry, ranges, nanosecond digits and `NULL` do not survive JSON Lines (use a dump); each export batch
+  scans the table from its start, so prefer a dump for a full copy of a large table
+  ([#454](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/454)); neither import nor restore is transactional
+  as a whole, and neither sends signals.
+- **Behaviour change:** `TAG_STRING_DURATION` is 13 (was 14, `TAG_CUSTOM_DURATION = 14` added); `str()` of a compact
+  `Duration` returns a literal such as `"5400s"` instead of raising; a WebSocket request pending when the socket drops
+  raises `ConnectionError` at once instead of `TimeoutError` after the timeout.
+- New: [`examples/17_data_import_export.ipynb`](examples/17_data_import_export.ipynb). The new features are tested on
+  SurrealDB 3.3.5 and 3.2.6.
 
 ## What's New in 0.36.1
 
@@ -1884,7 +1929,8 @@ pip install surrealdb-orm[cli]
 
 | ORM Version           | SurrealDB     | Branch | Status              |
 | --------------------- | ------------- | ------ | ------------------- |
-| **0.35.x**            | 3.2.x – 3.3.x | `main` | Active development  |
+| **0.37.x**            | 3.2.x – 3.3.x | `main` | Active development  |
+| **0.35.x – 0.36.x**   | 3.2.x – 3.3.x | —      | Superseded          |
 | **0.34.x**            | 3.2.x – 3.3.x | —      | Superseded          |
 | **0.32.x – 0.33.x**   | >= 3.2        | —      | Superseded          |
 | **0.30.x – 0.31.x**   | 3.0 – 3.1     | —      | Superseded          |
