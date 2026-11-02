@@ -359,10 +359,15 @@ class BaseSurrealConnection(ABC):
         Read a table in ``id`` order, one batch of decoded records at a time.
 
         Each batch is one statement, paged by keyset on ``id``
-        (``WHERE id > $_x_after ORDER BY id LIMIT n``), so the reads stay fast
-        deep into a large table and work for every kind of record id. Only the
-        batch being yielded is held. Memory and reply size are ``batch_size``
-        times the size of a row: lower ``batch_size`` for wide rows. Use it as
+        (``WHERE id > $_x_after ORDER BY id LIMIT n``), which works for every
+        kind of record id. Only the batch being yielded is held. The server
+        does not seek to the cursor: each batch scans the table from its start
+        (measured on 3.3: about 6 ms per 1000-row batch at the start, about
+        200 ms at row 300,000), so a whole-table read slows down as the table
+        grows. For a full copy of a large table, use a dump
+        (``HTTPConnection.export_database()``). Memory and reply size are
+        ``batch_size`` times the size of a row: lower ``batch_size`` for wide
+        rows. Use it as
         ``async for batch in conn.iter_records("person"): ...``.
 
         The arguments are checked when the method is called, before any query.

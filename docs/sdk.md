@@ -489,7 +489,10 @@ async with SurrealDB.http("http://localhost:8000", "ns", "db") as conn:
 ```
 
 - The table is read by **keyset on `id`** (`... WHERE id > $_x_after ORDER BY id LIMIT n`), one statement per
-  batch, so only one batch is held in memory. Lower `batch_size` for wide rows. Over live data, rows written during
+  batch, so only one batch is held in memory. Lower `batch_size` for wide rows. The server does not seek to the
+  cursor: each batch scans the table from its start, so a whole-table export slows down as the table grows (on
+  3.3, about 6 ms per 1000-row batch at the start, about 200 ms at row 300,000). For a full copy of a large table,
+  use a dump (`export_database()` / `surreal-orm dump`). Over live data, rows written during
   the export may or may not be included.
 - `where` is written as `({where})` in the statement: it is SurrealQL, never user input. Put values in `vars`.
   Variable names starting with `_x_` are reserved.
@@ -519,7 +522,8 @@ print(report.lines, report.rows, report.batches)
   `DataImportError` is raised with `.report` (what the batches before it wrote) and `.errors`. A rejected
   statement (a duplicate id, a schema or `ASSERT` violation) is reported with the server's message; a request that
   fails (a dropped connection, a timeout, an HTTP error) keeps the original exception as `__cause__`, and whether
-  that batch reached the database is then unknown.
+  that batch reached the database is then unknown. `report.lines` counts the non-blank lines decoded: equal to
+  `report.rows` after a successful import, larger when an import fails partway (the failed batch's lines included).
 - Edge tables: `relation=None` (default) reads the table's type once (`TYPE RELATION` → `INSERT RELATION`,
   `TYPE NORMAL` → `INSERT`); on a `TYPE ANY` or undefined table a batch is a relation insert only when every row
   has record `in` and `out` fields. Pass `relation=True` or `False` to decide yourself.

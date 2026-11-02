@@ -3291,7 +3291,9 @@ class QuerySet(Generic[T]):
         Read the QuerySet's rows as JSON Lines, one line per record, in ``id`` order.
 
         The rows are read in batches of ``batch_size``, one statement each,
-        paged by keyset on ``id``, so only one batch is held at a time. The
+        paged by keyset on ``id``, so only one batch is held at a time. Each
+        batch scans the table from its start, so reading a whole large table
+        slows down as it grows; for a full copy, use a dump. The
         filters (``filter()``, ``Q``, ``.variables()``) apply as in
         :meth:`exec`, and ``limit()`` caps the total. Each line is
         :func:`surreal_sdk.jsonl.dumps_record` of the raw database record:
