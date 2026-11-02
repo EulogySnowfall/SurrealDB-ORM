@@ -101,7 +101,7 @@ class WebSocketConnection(BaseSurrealConnection):
         # Validate and set protocol
         if protocol not in ("json", "cbor"):
             raise ValueError(f"Invalid protocol '{protocol}'. Must be 'json' or 'cbor'.")
-        self.protocol = protocol
+        self.protocol = "json" if protocol == "json" else "cbor"
 
         self.auto_reconnect = auto_reconnect
         self.reconnect_interval = reconnect_interval

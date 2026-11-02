@@ -5,8 +5,10 @@ Defines the abstract interface that all connection types must implement.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Self
+from collections.abc import AsyncGenerator, Mapping
+from typing import TYPE_CHECKING, Any, Literal, Self
 
+from .. import jsonl
 from ..protocol.rpc import RPCRequest, RPCResponse
 
 if TYPE_CHECKING:
@@ -28,6 +30,9 @@ class BaseSurrealConnection(ABC):
 
     All connection implementations (HTTP, WebSocket) must inherit from this class.
     """
+
+    #: Serialization protocol, set by each transport's ``__init__``.
+    protocol: Literal["json", "cbor"]
 
     def __init__(
         self,
@@ -337,6 +342,120 @@ class BaseSurrealConnection(ABC):
         """
         result = await self.rpc("query", [sql, vars or {}])
         return QueryResponse.from_rpc_result(result)
+
+    # JSON Lines export
+
+    def iter_records(
+        self,
+        table: str,
+        *,
+        batch_size: int = 1000,
+        where: str | None = None,
+        vars: Mapping[str, Any] | None = None,
+        limit: int | None = None,
+        _on_query: jsonl.QueryHook | None = None,
+    ) -> AsyncGenerator[list[dict[str, Any]], None]:
+        """
+        Read a table in ``id`` order, one batch of decoded records at a time.
+
+        Each batch is one statement, paged by keyset on ``id``
+        (``WHERE id > $_x_after ORDER BY id LIMIT n``), so the reads stay fast
+        deep into a large table and work for every kind of record id. Only the
+        batch being yielded is held. Memory and reply size are ``batch_size``
+        times the size of a row: lower ``batch_size`` for wide rows. Use it as
+        ``async for batch in conn.iter_records("person"): ...``.
+
+        The arguments are checked when the method is called, before any query.
+
+        Args:
+            table: The table to read (an identifier).
+            batch_size: Rows per batch (``>= 1``).
+            where: A raw SurrealQL condition, written as ``({where})``; its
+                values belong in ``vars``. The caller is responsible for it,
+                as with ``live_select(where=)``.
+            vars: Variables bound with every batch; names starting with
+                ``_x_`` are reserved.
+            limit: The most records to read (``>= 0``); ``None`` for all.
+
+        Returns:
+            An async iterator of batches: non-empty lists of plain ``dict``
+            records.
+
+        Raises:
+            ValueError: On a JSON-protocol connection, an invalid table name,
+                a reserved variable name, or a size below its minimum.
+            TypeError: If ``batch_size`` or ``limit`` is not an ``int``.
+            TableNotFoundError: While iterating, if the table does not exist.
+            QueryError: While iterating, if a batch statement fails. A failed
+                request (``QueryError``, ``ConnectionError``,
+                ``TimeoutError``) propagates unchanged.
+        """
+        name, size, cap = jsonl._check_export_args(self, "iter_records", table, batch_size, limit, vars)
+        return jsonl._iter_batches(
+            self,
+            name,
+            batch_size=size,
+            where_sql=None if where is None else f"({where})",
+            vars=dict(vars or {}),
+            limit=cap,
+            method="iter_records",
+            on_query=_on_query,
+        )
+
+    async def export_jsonl(
+        self,
+        table: str,
+        dest: jsonl.JsonlDestination,
+        *,
+        batch_size: int = 1000,
+        where: str | None = None,
+        vars: Mapping[str, Any] | None = None,
+        limit: int | None = None,
+        typed: bool = True,
+        _on_query: jsonl.QueryHook | None = None,
+    ) -> int:
+        """
+        Write a table to JSON Lines, one record per line, in ``id`` order.
+
+        Reads like :meth:`iter_records` and writes each record with
+        :func:`surreal_sdk.jsonl.dumps_record`. File writes (the open and the
+        close included) run in a worker thread, once per batch. On an error
+        the lines already written stay in ``dest``; nothing is retried.
+
+        Args:
+            table: The table to export (an identifier).
+            dest: A path (created or overwritten, UTF-8) or a text stream,
+                which is written to and left open.
+            batch_size: Rows per statement (``>= 1``).
+            where: See :meth:`iter_records`.
+            vars: See :meth:`iter_records`.
+            limit: See :meth:`iter_records`.
+            typed: ``True`` (default) writes the lossless tagged form;
+                ``False`` plain JSON for external tools (it does not load back
+                with the same types).
+
+        Returns:
+            int: The number of records written.
+
+        Raises:
+            DataFormatError: If a value cannot be written losslessly (a
+                geometry, a range, an out-of-range datetime, …).
+            ValueError, TypeError, TableNotFoundError, QueryError: As
+                :meth:`iter_records`; argument errors are raised before
+                ``dest`` is opened.
+        """
+        name, size, cap = jsonl._check_export_args(self, "export_jsonl", table, batch_size, limit, vars)
+        batches = jsonl._iter_batches(
+            self,
+            name,
+            batch_size=size,
+            where_sql=None if where is None else f"({where})",
+            vars=dict(vars or {}),
+            limit=cap,
+            method="export_jsonl",
+            on_query=_on_query,
+        )
+        return await jsonl._export(batches, dest, typed=typed)
 
     async def select(self, thing: str) -> RecordsResponse:
         """

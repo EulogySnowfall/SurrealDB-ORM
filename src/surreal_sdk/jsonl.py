@@ -33,25 +33,34 @@ plain JSON, strings staying strings.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import contextlib
 import json
 import math
+import os
 import re
-from collections.abc import Mapping
+import time
+from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Final
+from typing import IO, TYPE_CHECKING, Any, Final, Protocol
 from uuid import UUID
 
-from .exceptions import DataFormatError
+from .exceptions import DataFormatError, QueryError, TableNotFoundError
 from .protocol.cbor import Duration, RecordId, Table, _warn_naive_datetime
-from .utils import format_record_id
+from .utils import format_record_id, require_int, validate_table_name
+
+if TYPE_CHECKING:
+    from .connection.base import BaseSurrealConnection
 
 __all__ = [
     "JSONL_TAGS",
     "ImportReport",
+    "JsonlDestination",
+    "QueryHook",
     "decode_value",
     "dumps_record",
     "encode_value",
@@ -423,3 +432,202 @@ def _json_type(value: Any) -> str:
     if isinstance(value, list):
         return "array"
     return "object"
+
+
+# ---------------------------------------------------------------------------
+# Batch export
+# ---------------------------------------------------------------------------
+
+
+class SupportsWriteText(Protocol):
+    """A text stream: anything with ``write(str)`` (an open file, ``io.StringIO``, …)."""
+
+    def write(self, text: str, /) -> object: ...
+
+
+#: Where :meth:`~surreal_sdk.connection.base.BaseSurrealConnection.export_jsonl`
+#: writes: a path (overwritten, UTF-8) or a text stream (left open).
+type JsonlDestination = str | os.PathLike[str] | SupportsWriteText
+
+#: Called once per statement sent, after its reply: ``(sql, variables, duration_ms)``.
+type QueryHook = Callable[[str, dict[str, Any], float], None]
+
+_RESERVED_PREFIX: Final = "_x_"
+
+
+def _require_cbor(conn: BaseSurrealConnection, method: str) -> None:
+    """E4: JSON Lines needs CBOR, under which ids, datetimes and decimals keep their types."""
+    if conn.protocol != "cbor":
+        raise ValueError(
+            f"{method}() needs the CBOR protocol: under JSON, record ids, datetimes and decimals "
+            "arrive as strings and would not round-trip"
+        )
+
+
+def _check_reserved_vars(names: Iterable[str]) -> None:
+    """E14: ``$_x_after`` and ``$_x_rows`` are the batch loops' own bindings."""
+    for name in names:
+        if name.startswith(_RESERVED_PREFIX):
+            raise ValueError(f"Variable names starting with '{_RESERVED_PREFIX}' are reserved for data export/import: {name!r}")
+
+
+def _check_export_args(
+    conn: BaseSurrealConnection,
+    method: str,
+    table: object,
+    batch_size: object,
+    limit: object,
+    vars: Mapping[str, Any] | None,
+) -> tuple[str, int, int | None]:
+    """Argument checks of the export methods, in the order of §3.2; no I/O."""
+    _require_cbor(conn, method)
+    name = validate_table_name(table)
+    size = require_int("batch_size", batch_size, minimum=1)
+    cap = None if limit is None else require_int("limit", limit, minimum=0)
+    _check_reserved_vars(vars or {})
+    return name, size, cap
+
+
+def _raise_on_error(response: Any, sql: str) -> None:
+    """Raise for the first ``ERR`` result of a reply (a failing ``LET`` prelude included)."""
+    for result in response.results:
+        if result.is_error:
+            message = str(result.result)
+            if TableNotFoundError.is_table_not_found(message):
+                raise TableNotFoundError(message, query=sql)
+            raise QueryError(message, query=sql)
+
+
+async def _iter_batches(
+    conn: BaseSurrealConnection,
+    table: str,
+    *,
+    batch_size: int,
+    where_sql: str | None,
+    vars: Mapping[str, Any],
+    limit: int | None,
+    method: str,
+    prelude: Sequence[str] = (),
+    on_query: QueryHook | None = None,
+) -> AsyncGenerator[list[dict[str, Any]], None]:
+    """
+    Read ``table`` in ``id`` order, one keyset batch per statement (C1/C2).
+
+    The first statement has no cursor; each next one binds the last record's
+    decoded ``id`` as ``$_x_after``, which pages correctly for every kind of
+    record id. The loop ends on a batch shorter than requested (an empty one
+    included) or once ``limit`` records were read. Only the batch being
+    yielded is referenced here, so at most one batch is held.
+
+    Args:
+        conn: The connection to query.
+        table: A validated table name, written into the text.
+        batch_size: Rows per statement (``>= 1``).
+        where_sql: The condition, already rendered: the SDK's ``({where})``
+            or the ORM's filter parts joined with `` AND ``; ``None`` for none.
+        vars: Variables bound with every statement.
+        limit: The most records to read, ``None`` for all.
+        method: The public method's name, for the protocol error (E4).
+        prelude: ``LET`` statements sent before each ``SELECT`` (C1p/C2p);
+            the records are read from the last result.
+        on_query: Called after each reply with the text, the variables and
+            the duration in milliseconds.
+
+    Yields:
+        list[dict[str, Any]]: The decoded records of one batch, never empty.
+
+    Raises:
+        TableNotFoundError: If the table does not exist.
+        QueryError: If a statement of the batch comes back ``ERR``.
+        SurrealDBError: A failed request propagates unchanged.
+    """
+    _require_cbor(conn, method)
+    head = " ".join(prelude) + " " if prelude else ""
+    condition = f"WHERE {where_sql} " if where_sql is not None else ""
+    after_condition = f"WHERE {where_sql} AND id > $_x_after " if where_sql is not None else "WHERE id > $_x_after "
+    last_id: Any = None
+    written = 0
+    while True:
+        n = batch_size if limit is None else min(batch_size, limit - written)
+        if n <= 0:
+            return
+        if written == 0:
+            sql = f"{head}SELECT * FROM {table} {condition}ORDER BY id LIMIT {n};"
+            variables = dict(vars)
+        else:
+            sql = f"{head}SELECT * FROM {table} {after_condition}ORDER BY id LIMIT {n};"
+            variables = {**vars, "_x_after": last_id}
+        started = time.perf_counter()
+        response = await conn.query(sql, variables)
+        if on_query is not None:
+            on_query(sql, variables, (time.perf_counter() - started) * 1000.0)
+        _raise_on_error(response, sql)
+        records = list(response.results[-1].records) if response.results else []
+        del response
+        if not records:
+            return
+        written += len(records)
+        last_id = records[-1]["id"]
+        yield records
+        if len(records) < n:
+            return
+        del records
+
+
+class _Sink:
+    """Text written off the event loop: every blocking call goes through ``asyncio.to_thread``."""
+
+    def __init__(self, stream: SupportsWriteText, owned: IO[str] | None) -> None:
+        self._stream = stream
+        self._owned = owned
+
+    async def write(self, text: str) -> None:
+        await asyncio.to_thread(self._stream.write, text)
+
+    async def close(self) -> None:
+        """Close the file if this sink opened it; a caller's stream stays open."""
+        if self._owned is not None:
+            await asyncio.to_thread(self._owned.close)
+
+
+async def _open_sink(dest: JsonlDestination) -> _Sink:
+    """
+    Open ``dest`` for writing JSON Lines.
+
+    A path is opened (truncated, UTF-8, ``\n`` line ends on every platform) in a
+    worker thread and closed by :meth:`_Sink.close`; a text stream is written as
+    is and never closed.
+    """
+    if isinstance(dest, (str, os.PathLike)):
+        path = os.fspath(dest)
+
+        def open_file() -> IO[str]:
+            return open(path, "w", encoding="utf-8", newline="")
+
+        file = await asyncio.to_thread(open_file)
+        return _Sink(file, file)
+    return _Sink(dest, None)
+
+
+async def _export(
+    batches: AsyncGenerator[list[dict[str, Any]], None],
+    dest: JsonlDestination,
+    *,
+    typed: bool,
+) -> int:
+    """Write each batch as one block of lines; return the number of records written.
+
+    On an error the lines already written stay in ``dest`` and the file is closed.
+    """
+    sink = await _open_sink(dest)
+    count = 0
+    try:
+        async with contextlib.aclosing(batches):
+            async for batch in batches:
+                text = "".join(dumps_record(record, typed=typed) + "\n" for record in batch)
+                await sink.write(text)
+                count += len(batch)
+                del batch, text
+    finally:
+        await sink.close()
+    return count
