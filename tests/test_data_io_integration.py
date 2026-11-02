@@ -5,6 +5,13 @@ kinds of record id, exported in batches of 2; each line reads back equal to the
 row the server returns. I2: a geometry (decoded as a tuple) is refused, naming
 the field. I12 (``iter_records()`` variant): a 6 MB batch over WebSocket, above
 aiohttp's former 4 MiB reply cap, arrives as one batch.
+
+I1 (import half): the export loads into another table record for record. I3: a
+SCHEMAFULL target rejects a bad batch (E8, earlier batches kept), ``ignore``
+skips existing ids, ``raw`` turns off ``VALUE`` and events. I4: edges
+round-trip as edges, a mixed file is refused (E7), a ``TYPE NORMAL`` table keeps
+``in``/``out`` links as plain fields. I5: batches stay under the byte bound; a
+single line over the HTTP RPC limit fails as E8b with the report.
 """
 
 from __future__ import annotations
@@ -12,6 +19,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import AsyncGenerator, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +28,8 @@ import pytest
 from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.connection.http import HTTPConnection
 from surreal_sdk.connection.websocket import WebSocketConnection
-from surreal_sdk.exceptions import DataFormatError
-from surreal_sdk.jsonl import loads_record
+from surreal_sdk.exceptions import ConnectionError, DataFormatError, DataImportError
+from surreal_sdk.jsonl import ImportReport, dumps_record, loads_record
 from surreal_sdk.protocol.cbor import RecordId
 
 pytestmark = pytest.mark.integration
@@ -160,3 +168,223 @@ async def test_ws_iter_records_receives_a_batch_above_4_mib(source_tables: None)
     assert [len(batch) for batch in batches] == [6]
     assert all(len(row["blob"]) == 1_000_000 for row in batches[0])
     assert elapsed < 5
+
+
+# ---------------------------------------------------------------------------
+# Import (I1 import half, I3, I4, I5)
+# ---------------------------------------------------------------------------
+
+COPY = "dio_values_copy"
+
+
+async def _reset(conn: BaseSurrealConnection, *tables: str) -> None:
+    response = await conn.query(" ".join(f"REMOVE TABLE IF EXISTS {t};" for t in tables))
+    assert response.is_ok, response.raw
+
+
+async def _rows(conn: BaseSurrealConnection, table: str) -> list[dict[str, Any]]:
+    response = await conn.query(f"SELECT * FROM {table} ORDER BY id;")
+    assert response.is_ok, response.raw
+    return response.first_result.records
+
+
+async def _value(conn: BaseSurrealConnection, sql: str) -> Any:
+    response = await conn.query(sql)
+    assert response.is_ok, response.raw
+    return response.results[-1].result
+
+
+def _as_table(record: Mapping[str, Any], table: str) -> dict[str, Any]:
+    """``record`` as it reads back from ``table``: id table rewritten (M21), ``NULL`` gone (``None`` → ``NONE``)."""
+    out = {k: v for k, v in record.items() if v is not None}
+    out["id"] = RecordId(table, record["id"].id)
+    return out
+
+
+async def test_import_round_trips_the_export_record_for_record(conn: BaseSurrealConnection, tmp_path: Path) -> None:
+    dest = tmp_path / "values.jsonl"
+    await _reset(conn, COPY)
+    try:
+        assert await conn.export_jsonl(VALUES, dest, batch_size=2) == 9
+        with dest.open("a", encoding="utf-8") as file:
+            file.write('{"id":{"$record":["x","hand"]},"dur":{"$duration":"1h30m"}}\n')
+
+        report = await conn.import_jsonl(COPY, dest, batch_size=2)
+
+        assert report == ImportReport(table=COPY, lines=10, rows=10, batches=5)
+        source = [_as_table(r, COPY) for r in await _rows(conn, VALUES)]
+        copied = [r for r in await _rows(conn, COPY) if r["id"] != RecordId(COPY, "hand")]
+        assert [_comparable(r) for r in copied] == [_comparable(r) for r in source]
+        assert await _value(conn, f"SELECT VALUE type::of(dur) FROM {COPY};") == ["duration"] * 10
+        assert await _value(conn, f"SELECT VALUE <string>dur FROM {COPY}:hand;") == ["1h30m"]
+    finally:
+        await _reset(conn, COPY)
+
+
+STRICT = "dio_strict"
+STAMPED = "dio_stamped"
+STAMP_LOG = "dio_stamped_log"
+
+
+def _strict_line(i: int, n: Any) -> str:
+    return dumps_record({"id": RecordId(STRICT, i), "n": n})
+
+
+async def test_schemafull_target_rejects_a_bad_batch_and_keeps_the_earlier_ones(conn: BaseSurrealConnection) -> None:
+    await _reset(conn, STRICT)
+    await conn.query(f"DEFINE TABLE {STRICT} SCHEMAFULL; DEFINE FIELD n ON {STRICT} TYPE int;")
+    try:
+        lines = [_strict_line(i, i) for i in range(1, 5)] + [_strict_line(5, "str"), _strict_line(6, 6)]
+
+        with pytest.raises(DataImportError) as info:
+            await conn.import_jsonl(STRICT, lines, batch_size=2)
+
+        error = info.value
+        assert str(error).startswith(f"Batch at lines 5-6 was rejected by {STRICT}: ")
+        assert error.report == ImportReport(table=STRICT, lines=4, rows=4, batches=2)
+        assert error.code is None and len(error.errors) == 1
+        assert [r["n"] for r in await _rows(conn, STRICT)] == [1, 2, 3, 4]
+
+        with pytest.raises(DataImportError, match="already exists"):
+            await conn.import_jsonl(STRICT, [_strict_line(1, 1), _strict_line(7, 7)])
+        assert len(await _rows(conn, STRICT)) == 4  # the batch is atomic
+
+        report = await conn.import_jsonl(STRICT, [_strict_line(1, 100), _strict_line(7, 7)], on_conflict="ignore")
+        assert report == ImportReport(table=STRICT, lines=2, rows=2, batches=1)
+        assert [r["n"] for r in await _rows(conn, STRICT)] == [1, 2, 3, 4, 7]
+    finally:
+        await _reset(conn, STRICT)
+
+
+@pytest.mark.parametrize("raw", [True, False])
+async def test_raw_keeps_value_fields_and_fires_no_event(conn: BaseSurrealConnection, raw: bool) -> None:
+    await _reset(conn, STAMPED, STAMP_LOG)
+    await conn.query(
+        f"DEFINE TABLE {STAMP_LOG}; DEFINE TABLE {STAMPED} SCHEMAFULL; DEFINE FIELD n ON {STAMPED} TYPE int; "
+        f"DEFINE FIELD stamp ON {STAMPED} TYPE datetime VALUE time::now(); "
+        f"DEFINE EVENT logged ON {STAMPED} WHEN $event = 'CREATE' THEN (CREATE {STAMP_LOG} SET rec = $after.id);"
+    )
+    old = datetime(2001, 1, 1, tzinfo=UTC)
+    try:
+        line = dumps_record({"id": RecordId(STAMPED, 1), "n": 1, "stamp": old})
+
+        await conn.import_jsonl(STAMPED, [line], raw=raw)
+
+        stamp = await _value(conn, f"SELECT VALUE <string>stamp FROM {STAMPED}:1;")
+        events = await _value(conn, f"SELECT VALUE rec FROM {STAMP_LOG};")
+        if raw:
+            assert stamp == ["2001-01-01T00:00:00Z"]
+            assert events == []
+        else:
+            assert stamp != ["2001-01-01T00:00:00Z"]
+            assert events == [RecordId(STAMPED, 1)]
+    finally:
+        await _reset(conn, STAMPED, STAMP_LOG)
+
+
+NODE = "dio_node"
+REL = "dio_rel"
+REL_COPY = "dio_rel_copy"
+ANY_EDGES = "dio_any_edges"
+ANY_COPY = "dio_any_copy"
+NORMAL = "dio_normal"
+
+
+@pytest.fixture
+async def graph(conn: BaseSurrealConnection) -> AsyncGenerator[BaseSurrealConnection, None]:
+    tables = (NODE, REL, REL_COPY, ANY_EDGES, ANY_COPY, NORMAL)
+    await _reset(conn, *tables)
+    response = await conn.query(
+        f"CREATE {NODE}:1; CREATE {NODE}:2; CREATE {NODE}:3; "
+        f"DEFINE TABLE {REL} TYPE RELATION IN {NODE} OUT {NODE}; "
+        f"RELATE {NODE}:1->{REL}->{NODE}:2; RELATE {NODE}:1->{REL}->{NODE}:3; "
+        f"DEFINE TABLE {ANY_EDGES} TYPE ANY; RELATE {NODE}:2->{ANY_EDGES}->{NODE}:3;"
+    )
+    assert response.is_ok, response.raw
+    try:
+        yield conn
+    finally:
+        await _reset(conn, *tables)
+
+
+async def test_relation_table_round_trips_as_edges(graph: BaseSurrealConnection, tmp_path: Path) -> None:
+    dest = tmp_path / "rel.jsonl"
+    assert await graph.export_jsonl(REL, dest) == 2
+    await graph.query(f"DEFINE TABLE {REL_COPY} TYPE RELATION IN {NODE} OUT {NODE};")
+
+    report = await graph.import_jsonl(REL_COPY, dest)
+
+    assert report.rows == 2
+    targets = await _value(graph, f"SELECT VALUE ->{REL_COPY}->{NODE} FROM ONLY {NODE}:1;")
+    assert sorted(t.id for t in targets) == [2, 3]
+
+
+async def test_type_any_edges_round_trip_as_edges(graph: BaseSurrealConnection, tmp_path: Path) -> None:
+    dest = tmp_path / "any.jsonl"
+    assert await graph.export_jsonl(ANY_EDGES, dest) == 1
+
+    await graph.import_jsonl(ANY_COPY, dest)
+
+    assert await _value(graph, f"SELECT VALUE ->{ANY_COPY}->{NODE} FROM ONLY {NODE}:2;") == [RecordId(NODE, 3)]
+
+
+async def test_mixed_edges_and_rows_are_refused_e7(graph: BaseSurrealConnection) -> None:
+    await graph.query(f"DEFINE TABLE {ANY_COPY} TYPE ANY;")
+    lines = [
+        dumps_record({"id": RecordId("x", 1), "in": RecordId(NODE, 1), "out": RecordId(NODE, 2)}),
+        dumps_record({"id": RecordId("x", 2), "v": 1}),
+    ]
+    with pytest.raises(DataFormatError, match=r"^Lines 1-2: some rows have record 'in' and 'out' fields"):
+        await graph.import_jsonl(ANY_COPY, lines)
+    assert await _value(graph, f"SELECT VALUE id FROM {ANY_COPY};") == []
+
+
+async def test_type_normal_table_keeps_in_and_out_as_plain_fields(graph: BaseSurrealConnection) -> None:
+    await graph.query(f"DEFINE TABLE {NORMAL} TYPE NORMAL;")
+    lines = [dumps_record({"id": RecordId(NORMAL, i), "in": RecordId(NODE, 1), "out": RecordId(NODE, 2)}) for i in (1, 2)]
+
+    report = await graph.import_jsonl(NORMAL, lines)
+
+    assert report.rows == 2
+    rows = await _rows(graph, NORMAL)
+    assert [(r["in"], r["out"]) for r in rows] == [(RecordId(NODE, 1), RecordId(NODE, 2))] * 2
+
+
+BULK = "dio_bulk"
+
+
+async def test_default_byte_bound_splits_3000_rows_of_1_kb(conn: BaseSurrealConnection) -> None:
+    await _reset(conn, BULK)
+    logged: list[dict[str, Any]] = []
+    lines = (dumps_record({"id": RecordId(BULK, i), "pad": "x" * 1000}) for i in range(3000))
+    try:
+        report = await conn.import_jsonl(BULK, lines, _on_query=lambda sql, vars, ms: logged.append(vars))
+
+        assert report.rows == 3000
+        summaries = [v["_x_rows"] for v in logged if "_x_rows" in v]
+        assert len(summaries) == report.batches >= 3
+        assert all(isinstance(s, dict) and s["bytes"] <= 1_048_576 for s in summaries)
+        assert sum(s["rows"] for s in summaries) == 3000
+        assert await _value(conn, f"SELECT count() FROM {BULK} GROUP ALL;") == [{"count": 3000}]
+    finally:
+        await _reset(conn, BULK)
+
+
+async def test_a_line_above_the_http_rpc_limit_is_e8b_with_the_report(source_tables: None) -> None:
+    conn = await _open("http")
+    await _reset(conn, BULK)
+    try:
+        small = [dumps_record({"id": RecordId(BULK, i), "v": i}) for i in range(3)]
+        big = dumps_record({"id": RecordId(BULK, 99), "blob": "x" * 5_000_000})
+
+        with pytest.raises(DataImportError) as info:
+            await conn.import_jsonl(BULK, [*small, big])
+
+        error = info.value
+        assert str(error).startswith(f"Batch at lines 4-4 could not be sent to {BULK} (ConnectionError: ")
+        assert isinstance(error.__cause__, ConnectionError)
+        assert error.report == ImportReport(table=BULK, lines=3, rows=3, batches=1)
+        assert len(await _rows(conn, BULK)) == 3
+    finally:
+        await _reset(conn, BULK)
+        await conn.close()

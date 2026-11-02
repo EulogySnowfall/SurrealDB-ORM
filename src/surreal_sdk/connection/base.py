@@ -457,6 +457,83 @@ class BaseSurrealConnection(ABC):
         )
         return await jsonl._export(batches, dest, typed=typed)
 
+    # JSON Lines import
+
+    async def import_jsonl(
+        self,
+        table: str,
+        source: jsonl.JsonlSource,
+        *,
+        batch_size: int = 1000,
+        max_batch_bytes: int = 1_048_576,
+        on_conflict: Literal["error", "ignore"] = "error",
+        raw: bool = False,
+        relation: bool | None = None,
+        _on_query: jsonl.QueryHook | None = None,
+    ) -> jsonl.ImportReport:
+        """
+        Load JSON Lines into a table, in bounded batches of one ``INSERT`` each.
+
+        Each non-blank line is read with :func:`surreal_sdk.jsonl.loads_record`
+        and the rows are sent in batches of at most ``batch_size`` rows and
+        ``max_batch_bytes`` bytes of JSON text (a longer single line is sent
+        alone). A batch is one statement, so the server writes it whole or not
+        at all; the batches before a failure stay written. Files and text
+        streams are read in a worker thread. The rows keep their ``id`` key; a
+        record id of another table is moved to ``table``.
+
+        The database must exist: a raw SDK connection does not create it (the
+        ORM's connections do).
+
+        Args:
+            table: The table to write (an identifier).
+            source: A path (a ``str`` is a path; UTF-8), a text stream (read
+                and left open), or an iterable or async iterable of lines.
+            batch_size: Rows per statement (``>= 1``).
+            max_batch_bytes: JSON bytes per statement (``>= 1``); the default
+                1 MiB stays well under the server's 4 MiB HTTP RPC limit.
+            on_conflict: ``"error"`` (default) rejects a batch holding an
+                existing id; ``"ignore"`` skips such rows (``INSERT IGNORE``).
+            raw: ``True`` prefixes each batch with ``OPTION IMPORT;``: no type
+                checks, ``ASSERT``, ``VALUE`` or ``DEFAULT``, and no event. It
+                applies to that statement only and needs a system user.
+            relation: ``True`` writes edges (``INSERT RELATION``), ``False``
+                plain rows. ``None`` (default) reads the table's type once:
+                ``TYPE RELATION`` writes edges, ``TYPE NORMAL`` plain rows;
+                otherwise a batch whose rows all hold record ``in`` and
+                ``out`` fields is written as edges.
+
+        Returns:
+            ImportReport: The lines read, rows written and batches accepted.
+
+        Raises:
+            ValueError: On a JSON-protocol connection, an invalid table name,
+                an ``on_conflict`` other than ``"error"`` / ``"ignore"``, or a
+                size below its minimum; before the source is opened.
+            TypeError: If ``batch_size`` or ``max_batch_bytes`` is not an
+                ``int``.
+            DataFormatError: On an invalid line (its number is in the
+                message), or when ``relation=None`` meets a batch mixing
+                edges and plain rows.
+            DataImportError: When a batch is rejected by the server, or its
+                request fails (HTTP error, lost connection, timeout: the
+                original is ``__cause__``); ``report`` holds the batches
+                accepted before it.
+            OSError, UnicodeDecodeError: Reading the source fails.
+        """
+        name, size, max_bytes = jsonl._check_import_args(self, table, batch_size, max_batch_bytes, on_conflict)
+        return await jsonl._import(
+            self,
+            name,
+            source,
+            batch_size=size,
+            max_batch_bytes=max_bytes,
+            on_conflict=on_conflict,
+            raw=raw,
+            relation=relation,
+            on_query=_on_query,
+        )
+
     async def select(self, thing: str) -> RecordsResponse:
         """
         Select records from a table or specific record.

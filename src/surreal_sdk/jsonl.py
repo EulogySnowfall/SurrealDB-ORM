@@ -37,19 +37,20 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import itertools
 import json
 import math
 import os
 import re
 import time
-from collections.abc import AsyncGenerator, Callable, Iterable, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import IO, TYPE_CHECKING, Any, Final, Protocol
+from typing import IO, TYPE_CHECKING, Any, Final, Literal, Protocol, TextIO
 from uuid import UUID
 
-from .exceptions import DataFormatError, QueryError, TableNotFoundError
+from .exceptions import DataFormatError, DataImportError, QueryError, SurrealDBError, TableNotFoundError
 from .protocol.cbor import Duration, RecordId, Table, _warn_naive_datetime
 from .utils import format_record_id, require_int, validate_table_name
 
@@ -60,6 +61,7 @@ __all__ = [
     "JSONL_TAGS",
     "ImportReport",
     "JsonlDestination",
+    "JsonlSource",
     "QueryHook",
     "decode_value",
     "dumps_record",
@@ -631,3 +633,264 @@ async def _export(
     finally:
         await sink.close()
     return count
+
+
+# ---------------------------------------------------------------------------
+# Batch import
+# ---------------------------------------------------------------------------
+
+#: What :meth:`~surreal_sdk.connection.base.BaseSurrealConnection.import_jsonl`
+#: reads: a path (a ``str`` is a path, UTF-8), a text stream (left open), or an
+#: iterable / async iterable of lines.
+type JsonlSource = str | os.PathLike[str] | TextIO | Iterable[str] | AsyncIterable[str]
+
+#: Lines read per worker-thread call from a file or a text stream.
+_READ_BLOCK: Final = 1000
+
+#: ``(INFO FOR DB).tables[...]`` text of a table definition (M47).
+_TABLE_TYPE_RE: Final = re.compile(r"^DEFINE TABLE (?:OVERWRITE |IF NOT EXISTS )?\S+ TYPE (ANY|NORMAL|RELATION)\b")
+
+_C10: Final = "RETURN (INFO FOR DB).tables[$_x_table];"
+
+
+def _check_import_args(
+    conn: BaseSurrealConnection,
+    table: object,
+    batch_size: object,
+    max_batch_bytes: object,
+    on_conflict: object,
+) -> tuple[str, int, int]:
+    """Argument checks of ``import_jsonl()``, in the order of §3.2; no I/O."""
+    _require_cbor(conn, "import_jsonl")
+    name = validate_table_name(table)
+    size = require_int("batch_size", batch_size, minimum=1)
+    max_bytes = require_int("max_batch_bytes", max_batch_bytes, minimum=1)
+    if on_conflict not in ("error", "ignore"):
+        raise ValueError(f"on_conflict must be 'error' or 'ignore', got {on_conflict!r}")
+    return name, size, max_bytes
+
+
+def _read_block(stream: IO[str] | TextIO) -> list[str]:
+    """Up to :data:`_READ_BLOCK` lines of ``stream`` (run in a worker thread)."""
+    return list(itertools.islice(stream, _READ_BLOCK))
+
+
+async def _iter_source_lines(source: JsonlSource) -> AsyncGenerator[tuple[int, str], None]:
+    """
+    Yield ``(line number, stripped text)`` for every line of ``source``, from 1.
+
+    A path is opened (UTF-8) and a text stream read in a worker thread, in
+    blocks of lines, so the event loop never blocks on the file; the file this
+    function opened is closed, a caller's stream is not. An iterable or an
+    async iterable gives one line per item (a trailing line break stripped).
+    Blank lines are yielded too, so the caller numbers lines as a reader does.
+    """
+    number = 0
+    if isinstance(source, (str, os.PathLike)):
+        path = os.fspath(source)
+
+        def open_file() -> IO[str]:
+            return open(path, encoding="utf-8")
+
+        file = await asyncio.to_thread(open_file)
+        try:
+            while block := await asyncio.to_thread(_read_block, file):
+                for text in block:
+                    number += 1
+                    yield number, text.strip()
+        finally:
+            await asyncio.to_thread(file.close)
+    elif hasattr(source, "read"):
+        stream: TextIO = source  # type: ignore[assignment]
+        while block := await asyncio.to_thread(_read_block, stream):
+            for text in block:
+                number += 1
+                yield number, text.strip()
+    elif isinstance(source, AsyncIterable):
+        async for text in source:
+            number += 1
+            yield number, text.strip()
+    else:
+        for text in source:
+            number += 1
+            yield number, text.strip()
+
+
+def _is_edge(row: Mapping[str, Any]) -> bool:
+    """A row that ``INSERT RELATION`` can write: ``in`` and ``out`` decoded to record ids."""
+    return isinstance(row.get("in"), RecordId) and isinstance(row.get("out"), RecordId)
+
+
+async def _read_table_type(conn: BaseSurrealConnection, table: str, on_query: QueryHook | None) -> bool | None:
+    """
+    C10: ``True`` for a ``TYPE RELATION`` table, ``False`` for ``TYPE NORMAL``.
+
+    ``None`` (decide per batch) for ``TYPE ANY``, a missing table, an
+    unreadable definition, or an ``ERR`` (a record user may not run ``INFO``).
+    """
+    variables = {"_x_table": table}
+    started = time.perf_counter()
+    response = await conn.query(_C10, variables)
+    if on_query is not None:
+        on_query(_C10, variables, (time.perf_counter() - started) * 1000.0)
+    if not response.results or response.results[-1].is_error:
+        return None
+    text = response.results[-1].result
+    match = _TABLE_TYPE_RE.match(text) if isinstance(text, str) else None
+    if match is None or match.group(1) == "ANY":
+        return None
+    return match.group(1) == "RELATION"
+
+
+async def _insert_batches(
+    conn: BaseSurrealConnection,
+    table: str,
+    lines: AsyncIterator[tuple[int, str]],
+    *,
+    batch_size: int,
+    max_batch_bytes: int,
+    on_conflict: Literal["error", "ignore"],
+    raw: bool,
+    relation: bool | None,
+    on_query: QueryHook | None = None,
+) -> ImportReport:
+    """
+    Write decoded lines to ``table``, one ``INSERT`` statement per batch (C3-C7).
+
+    A batch is flushed when it holds ``batch_size`` rows or when the next line
+    would take its encoded size past ``max_batch_bytes``; a line larger than
+    that is sent alone. One statement is atomic on the server (M25): a batch is
+    written whole or not at all, and the report counts only accepted batches.
+    A record id of another table is moved to ``table`` (the export of ``e``
+    loads into ``e_copy``). With ``relation=None`` the table's type is read once, before the first
+    batch (C10).
+
+    Args:
+        conn: The connection to write on.
+        table: A validated table name, written into the text.
+        lines: ``(line number, stripped text)`` pairs; blank texts are skipped.
+        batch_size: Rows per statement (``>= 1``).
+        max_batch_bytes: Encoded bytes per statement (``>= 1``).
+        on_conflict: ``"ignore"`` skips existing ids (``INSERT IGNORE``).
+        raw: Prefix ``OPTION IMPORT;`` (no type check, ``VALUE``, event).
+        relation: ``True`` for ``INSERT RELATION``, ``False`` for plain,
+            ``None`` to decide from the table type or the rows.
+        on_query: Called after each reply with the text, a summary of the
+            variables (``{"_x_rows": {"rows": n, "bytes": b}}``, never the
+            rows) and the duration in milliseconds.
+
+    Returns:
+        ImportReport: What was written.
+
+    Raises:
+        DataFormatError: On an invalid line (E3) or a batch mixing edges and
+            plain rows when the kind is decided per batch (E7).
+        DataImportError: When a batch comes back ``ERR`` (E8) or its request
+            fails (E8b); ``report`` holds the batches accepted before it.
+    """
+    ignore = "IGNORE " if on_conflict == "ignore" else ""
+    prefix = "OPTION IMPORT; " if raw else ""
+    plain_sql = f"{prefix}INSERT {ignore}INTO {table} $_x_rows RETURN NONE;"
+    edge_sql = f"{prefix}INSERT RELATION {ignore}INTO {table} $_x_rows RETURN NONE;"
+    decided = relation is not None
+    accepted_rows = 0
+    accepted_batches = 0
+    rows: list[dict[str, Any]] = []
+    first = last = 0
+    size = 0
+
+    def report() -> ImportReport:
+        return ImportReport(table=table, lines=accepted_rows, rows=accepted_rows, batches=accepted_batches)
+
+    async def flush() -> None:
+        nonlocal rows, size, accepted_rows, accepted_batches, relation, decided
+        if not decided:
+            relation = await _read_table_type(conn, table, on_query)
+            decided = True
+        if relation is None:
+            edges = sum(1 for row in rows if _is_edge(row))
+            if 0 < edges < len(rows):
+                raise DataFormatError(
+                    f"Lines {first}-{last}: some rows have record 'in' and 'out' fields and some do not; "
+                    "pass relation=True or relation=False",
+                    line=first,
+                )
+            sql = edge_sql if edges else plain_sql
+        else:
+            sql = edge_sql if relation else plain_sql
+        started = time.perf_counter()
+        try:
+            response = await conn.query(sql, {"_x_rows": rows})
+        except SurrealDBError as exc:
+            raise DataImportError(
+                f"Batch at lines {first}-{last} could not be sent to {table} ({type(exc).__name__}: {exc}); "
+                "the batches before it are written, this one may or may not be",
+                errors=[str(exc)],
+                code=exc.code,
+                report=report(),
+            ) from exc
+        if on_query is not None:
+            on_query(sql, {"_x_rows": {"rows": len(rows), "bytes": size}}, (time.perf_counter() - started) * 1000.0)
+        for result in response.results:
+            if result.is_error:
+                message = str(result.result)
+                raise DataImportError(
+                    f"Batch at lines {first}-{last} was rejected by {table}: {message}",
+                    errors=[message],
+                    report=report(),
+                )
+        accepted_rows += len(rows)
+        accepted_batches += 1
+        rows = []
+        size = 0
+
+    async for number, text in lines:
+        if not text:
+            continue
+        record = loads_record(text, _line=number)
+        rid = record.get("id")
+        if isinstance(rid, RecordId) and rid.table != table:
+            # INSERT RELATION refuses an id of another table; plain INSERT
+            # rewrites it to the target (M21). Same rule for both.
+            record["id"] = RecordId(table=table, id=rid.id)
+        length = len(text.encode("utf-8"))
+        if rows and size + length > max_batch_bytes:
+            await flush()
+        if not rows:
+            first = number
+        rows.append(record)
+        last = number
+        size += length
+        if len(rows) >= batch_size or size >= max_batch_bytes:
+            await flush()
+    if rows:
+        await flush()
+    return report()
+
+
+async def _import(
+    conn: BaseSurrealConnection,
+    table: str,
+    source: JsonlSource,
+    *,
+    batch_size: int,
+    max_batch_bytes: int,
+    on_conflict: Literal["error", "ignore"],
+    raw: bool,
+    relation: bool | None,
+    on_query: QueryHook | None,
+) -> ImportReport:
+    """Read ``source`` and write it with :func:`_insert_batches`; the source is closed on every exit."""
+    lines = _iter_source_lines(source)
+    async with contextlib.aclosing(lines):
+        return await _insert_batches(
+            conn,
+            table,
+            lines,
+            batch_size=batch_size,
+            max_batch_bytes=max_batch_bytes,
+            on_conflict=on_conflict,
+            raw=raw,
+            relation=relation,
+            on_query=on_query,
+        )

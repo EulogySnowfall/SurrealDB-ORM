@@ -1,4 +1,5 @@
-"""Unit tests for the SDK's JSON Lines batch I/O (``iter_records()``, ``export_jsonl()``), U6.
+"""Unit tests for the SDK's JSON Lines batch I/O: export (``iter_records()``, ``export_jsonl()``, U6) and import
+(``import_jsonl()``, U7).
 
 A fake connection records every ``query()`` call and answers from a script, so
 the statements, the bound cursor and the stop conditions are checked without a
@@ -13,15 +14,22 @@ import gc
 import io
 import json
 import weakref
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Literal, Self
 
 import pytest
 
 from surreal_sdk.connection.base import BaseSurrealConnection
-from surreal_sdk.exceptions import ConnectionError, DataFormatError, QueryError, TableNotFoundError, TimeoutError
-from surreal_sdk.jsonl import _iter_batches, loads_record
+from surreal_sdk.exceptions import (
+    ConnectionError,
+    DataFormatError,
+    DataImportError,
+    QueryError,
+    TableNotFoundError,
+    TimeoutError,
+)
+from surreal_sdk.jsonl import ImportReport, _iter_batches, dumps_record, loads_record
 from surreal_sdk.protocol.cbor import RecordId
 from surreal_sdk.protocol.rpc import RPCRequest, RPCResponse
 from surreal_sdk.types import QueryResponse
@@ -492,3 +500,418 @@ async def test_export_refuses_a_tuple_value_e2() -> None:
     conn = FakeConnection(lambda sql, vars: ok([{"id": RecordId("t", 1), "loc": (1.5, 2.5)}]))
     with pytest.raises(DataFormatError, match=r"^Cannot write loc of t:1 as JSON Lines: a tuple"):
         await conn.export_jsonl("t", io.StringIO())
+
+
+# ---------------------------------------------------------------------------
+# import_jsonl() (U7)
+# ---------------------------------------------------------------------------
+
+C3 = "INSERT INTO t $_x_rows RETURN NONE;"
+C4 = "INSERT IGNORE INTO t $_x_rows RETURN NONE;"
+C5 = "INSERT RELATION INTO t $_x_rows RETURN NONE;"
+C6 = "INSERT RELATION IGNORE INTO t $_x_rows RETURN NONE;"
+C10 = "RETURN (INFO FOR DB).tables[$_x_table];"
+
+
+def line(i: int, **extra: Any) -> str:
+    return dumps_record({"id": RecordId("t", i), "v": i, **extra})
+
+
+def edge(i: int) -> str:
+    return dumps_record({"id": RecordId("t", i), "in": RecordId("p", 1), "out": RecordId("p", 2)})
+
+
+def importer(table_info: Any = None, *, fail: Callable[[int], Any] | None = None) -> Answer:
+    """Answer C10 with ``table_info`` (a list of results, or a text) and each INSERT with ``OK []``.
+
+    ``fail(batch_number)`` (1-based) may raise, or return results to send instead.
+    """
+    batch = 0
+
+    def answer(sql: str, vars: dict[str, Any]) -> Any:
+        nonlocal batch
+        if sql == C10:
+            if isinstance(table_info, list):
+                return table_info
+            return [{"status": "OK", "result": table_info, "time": ""}]
+        batch += 1
+        if fail is not None:
+            scripted = fail(batch)
+            if scripted is not None:
+                return scripted
+        results = [{"status": "OK", "result": [], "time": ""}]
+        if sql.startswith("OPTION IMPORT; "):
+            results.insert(0, {"status": "OK", "result": None, "time": ""})
+        return results
+
+    return answer
+
+
+def inserts(conn: FakeConnection) -> list[tuple[str, dict[str, Any]]]:
+    return [(sql, vars) for sql, vars in conn.calls if sql != C10]
+
+
+async def test_import_batches_by_rows_and_reports_counts() -> None:
+    conn = FakeConnection(importer())
+
+    report = await conn.import_jsonl("t", [line(i) for i in range(1, 6)], batch_size=2, relation=False)
+
+    assert report == ImportReport(table="t", lines=5, rows=5, batches=3)
+    assert [sql for sql, _ in conn.calls] == [C3, C3, C3]
+    sent = [[row["v"] for row in vars["_x_rows"]] for _, vars in conn.calls]
+    assert sent == [[1, 2], [3, 4], [5]]
+    assert conn.calls[0][1]["_x_rows"][0] == {"id": RecordId("t", 1), "v": 1}
+    assert set(conn.calls[0][1]) == {"_x_rows"}
+
+
+async def test_import_batches_by_bytes_and_sends_an_oversized_line_alone() -> None:
+    small = [line(i, pad="x" * 50) for i in range(1, 4)]
+    big = line(4, pad="x" * 500)
+    size = len(small[0].encode("utf-8"))
+    conn = FakeConnection(importer())
+    logged: list[dict[str, Any]] = []
+
+    report = await conn.import_jsonl(
+        "t",
+        [*small, big, line(5, pad="x" * 50)],
+        max_batch_bytes=2 * size + 1,
+        relation=False,
+        _on_query=lambda sql, vars, ms: logged.append(vars),
+    )
+
+    sent = [[row["v"] for row in vars["_x_rows"]] for _, vars in conn.calls]
+    assert sent == [[1, 2], [3], [4], [5]]
+    assert report.batches == 4 and report.rows == 5
+    assert [entry["_x_rows"]["bytes"] for entry in logged][:2] == [2 * size, size]
+    assert logged[2]["_x_rows"] == {"rows": 1, "bytes": len(big.encode("utf-8"))}
+
+
+async def test_import_on_query_gets_a_summary_never_the_rows() -> None:
+    lines = [line(i) for i in range(1, 4)]
+    conn = FakeConnection(importer())
+    logged: list[tuple[str, dict[str, Any]]] = []
+
+    await conn.import_jsonl("t", lines, batch_size=2, relation=False, _on_query=lambda s, v, ms: logged.append((s, v)))
+
+    assert logged == [
+        (C3, {"_x_rows": {"rows": 2, "bytes": len(lines[0]) + len(lines[1])}}),
+        (C3, {"_x_rows": {"rows": 1, "bytes": len(lines[2])}}),
+    ]
+
+
+async def test_import_skips_blank_lines_and_counts_them_in_line_numbers() -> None:
+    def reject(batch: int) -> Any:
+        return [{"status": "ERR", "result": "boom", "time": ""}] if batch == 2 else None
+
+    conn = FakeConnection(importer(fail=reject))
+    source = [line(1), "", "   ", line(2), "\n", line(3), line(4)]
+
+    with pytest.raises(DataImportError) as info:
+        await conn.import_jsonl("t", source, batch_size=2, relation=False)
+
+    assert str(info.value) == "Batch at lines 6-7 was rejected by t: boom"
+    assert info.value.report == ImportReport(table="t", lines=2, rows=2, batches=1)
+
+
+async def test_import_invalid_line_names_its_number_e3() -> None:
+    conn = FakeConnection(importer())
+    with pytest.raises(DataFormatError, match=r"^Line 3: invalid JSON") as info:
+        await conn.import_jsonl("t", [line(1), "", "{nope"], relation=False)
+    assert info.value.line == 3
+
+
+async def test_import_unknown_tag_names_its_line_e3() -> None:
+    conn = FakeConnection(importer())
+    with pytest.raises(DataFormatError, match=r"^Line 2: unknown tag '\$recrod'"):
+        await conn.import_jsonl("t", [line(1), '{"id": {"$recrod": ["t", 2]}}'], relation=False)
+
+
+@pytest.mark.parametrize(
+    ("on_conflict", "relation", "statement"),
+    [("error", False, C3), ("ignore", False, C4), ("error", True, C5), ("ignore", True, C6)],
+)
+async def test_import_statement_selection_c3_to_c6(on_conflict: Any, relation: bool, statement: str) -> None:
+    conn = FakeConnection(importer())
+    await conn.import_jsonl("t", [line(1)], on_conflict=on_conflict, relation=relation)
+    assert [sql for sql, _ in conn.calls] == [statement]
+
+
+@pytest.mark.parametrize(("on_conflict", "relation", "statement"), [("error", False, C3), ("ignore", True, C6)])
+async def test_import_raw_prefixes_option_import_c7(on_conflict: Any, relation: bool, statement: str) -> None:
+    conn = FakeConnection(importer())
+    await conn.import_jsonl("t", [line(1)], on_conflict=on_conflict, relation=relation, raw=True)
+    assert [sql for sql, _ in conn.calls] == ["OPTION IMPORT; " + statement]
+
+
+async def test_import_raw_checks_the_insert_result_the_second_one() -> None:
+    def reject(batch: int) -> Any:
+        return [
+            {"status": "OK", "result": None, "time": ""},
+            {"status": "ERR", "result": "Database record `t:1` already exists", "time": ""},
+        ]
+
+    conn = FakeConnection(importer(fail=reject))
+    with pytest.raises(DataImportError, match=r"^Batch at lines 1-1 was rejected by t: Database record `t:1` already exists$"):
+        await conn.import_jsonl("t", [line(1)], relation=False, raw=True)
+
+
+async def test_import_e8_carries_the_report_of_the_accepted_batches() -> None:
+    message = "Found 'x' for field `v`, with record `t:5`, but expected a int"
+
+    def reject(batch: int) -> Any:
+        return [{"status": "ERR", "result": message, "time": ""}] if batch == 3 else None
+
+    conn = FakeConnection(importer(fail=reject))
+    with pytest.raises(DataImportError) as info:
+        await conn.import_jsonl("t", [line(i) for i in range(1, 8)], batch_size=2, relation=False)
+
+    error = info.value
+    assert str(error) == f"Batch at lines 5-6 was rejected by t: {message}"
+    assert error.errors == [message]
+    assert error.code is None
+    assert error.report == ImportReport(table="t", lines=4, rows=4, batches=2)
+    assert len(conn.calls) == 3  # nothing sent after the rejected batch
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        QueryError("HTTP 400: Parse error", code=400),
+        ConnectionError("Request failed: Connection reset"),
+        TimeoutError("Request timed out after 30.0s"),
+    ],
+    ids=["http-400", "connection", "timeout"],
+)
+async def test_import_request_failure_on_batch_three_is_e8b(error: Exception) -> None:
+    def fail(batch: int) -> Any:
+        if batch == 3:
+            raise error
+        return None
+
+    conn = FakeConnection(importer(fail=fail))
+    logged: list[str] = []
+    with pytest.raises(DataImportError) as info:
+        await conn.import_jsonl(
+            "t",
+            [line(i) for i in range(1, 9)],
+            batch_size=2,
+            relation=False,
+            _on_query=lambda s, v, ms: logged.append(s),
+        )
+
+    wrapped = info.value
+    assert str(wrapped) == (
+        f"Batch at lines 5-6 could not be sent to t ({type(error).__name__}: {error}); "
+        "the batches before it are written, this one may or may not be"
+    )
+    assert wrapped.report == ImportReport(table="t", lines=4, rows=4, batches=2)
+    assert wrapped.__cause__ is error
+    assert wrapped.code == getattr(error, "code", None)
+    assert wrapped.errors == [str(error)]
+    assert len(logged) == 2  # not called for the batch whose request raised
+
+
+async def test_import_cancellation_propagates_unchanged() -> None:
+    cancelled = asyncio.CancelledError()
+
+    def fail(batch: int) -> Any:
+        raise cancelled
+
+    conn = FakeConnection(importer(fail=fail))
+    with pytest.raises(asyncio.CancelledError) as info:
+        await conn.import_jsonl("t", [line(1)], relation=False)
+    assert info.value is cancelled
+
+
+async def test_import_empty_source_sends_nothing() -> None:
+    conn = FakeConnection(importer())
+    report = await conn.import_jsonl("t", ["", "  "])
+    assert report == ImportReport(table="t", lines=0, rows=0, batches=0)
+    assert conn.calls == []
+
+
+# relation=None: C10 once, before the first batch (M47)
+
+
+async def test_relation_auto_reads_the_table_type_once_before_the_first_batch() -> None:
+    conn = FakeConnection(importer("DEFINE TABLE t TYPE RELATION IN p OUT p SCHEMALESS PERMISSIONS NONE"))
+
+    await conn.import_jsonl("t", [edge(i) for i in range(1, 6)], batch_size=2)
+
+    assert [sql for sql, _ in conn.calls] == [C10, C5, C5, C5]
+    assert conn.calls[0][1] == {"_x_table": "t"}
+
+
+async def test_relation_auto_c10_is_passed_to_on_query() -> None:
+    conn = FakeConnection(importer("DEFINE TABLE t TYPE NORMAL SCHEMALESS PERMISSIONS NONE"))
+    logged: list[tuple[str, dict[str, Any]]] = []
+    await conn.import_jsonl("t", [line(1)], _on_query=lambda s, v, ms: logged.append((s, v)))
+    assert logged[0] == (C10, {"_x_table": "t"})
+    assert logged[1][0] == C3
+
+
+async def test_relation_auto_type_relation_uses_c5_for_rows_without_in_out() -> None:
+    conn = FakeConnection(importer("DEFINE TABLE t TYPE RELATION SCHEMALESS PERMISSIONS NONE"))
+    await conn.import_jsonl("t", [line(1), edge(2)], batch_size=1)
+    assert [sql for sql, _ in inserts(conn)] == [C5, C5]
+
+
+async def test_relation_auto_type_normal_inserts_plain_rows_holding_in_and_out() -> None:
+    conn = FakeConnection(importer("DEFINE TABLE OVERWRITE t TYPE NORMAL SCHEMAFULL PERMISSIONS NONE"))
+    report = await conn.import_jsonl("t", [edge(1), line(2), edge(3)], batch_size=10)
+    assert [sql for sql, _ in inserts(conn)] == [C3]
+    assert report.rows == 3
+
+
+@pytest.mark.parametrize(
+    "table_info",
+    [
+        "DEFINE TABLE t TYPE ANY SCHEMALESS PERMISSIONS NONE",
+        None,
+        "something else",
+        [{"status": "ERR", "result": "IAM error: Not enough permissions to perform this action", "time": ""}],
+    ],
+    ids=["type-any", "none", "no-match", "err"],
+)
+async def test_relation_auto_falls_back_to_per_batch_detection(table_info: Any) -> None:
+    conn = FakeConnection(importer(table_info))
+
+    await conn.import_jsonl("t", [edge(1), edge(2), line(3), line(4)], batch_size=2)
+
+    assert [sql for sql, _ in conn.calls] == [C10, C5, C3]
+
+
+async def test_relation_auto_mixed_batch_is_e7() -> None:
+    conn = FakeConnection(importer("DEFINE TABLE t TYPE ANY SCHEMALESS PERMISSIONS NONE"))
+    with pytest.raises(DataFormatError) as info:
+        await conn.import_jsonl("t", [line(1), line(2), edge(3), "", line(4)], batch_size=2)
+    assert str(info.value) == (
+        "Lines 3-5: some rows have record 'in' and 'out' fields and some do not; pass relation=True or relation=False"
+    )
+    assert [sql for sql, _ in conn.calls] == [C10, C3]
+
+
+async def test_relation_auto_needs_record_ids_not_strings() -> None:
+    conn = FakeConnection(importer(None))
+    await conn.import_jsonl("t", ['{"id": 1, "in": "p:1", "out": "p:2"}'])
+    assert [sql for sql, _ in inserts(conn)] == [C3]
+
+
+@pytest.mark.parametrize("relation", [True, False])
+async def test_explicit_relation_sends_no_c10(relation: bool) -> None:
+    conn = FakeConnection(importer())
+    await conn.import_jsonl("t", [line(1), edge(2)], relation=relation)
+    assert [sql for sql, _ in conn.calls] == [C5 if relation else C3]
+
+
+# Argument checks (before any I/O)
+
+
+async def test_import_on_conflict_e6() -> None:
+    conn = FakeConnection(importer())
+    with pytest.raises(ValueError, match=r"^on_conflict must be 'error' or 'ignore', got 'update'$"):
+        await conn.import_jsonl("t", [line(1)], on_conflict="update")  # type: ignore[arg-type]
+    assert conn.calls == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "exc", "text"),
+    [
+        ({"batch_size": 0}, ValueError, "batch_size must be >= 1, got 0"),
+        ({"batch_size": True}, TypeError, "batch_size must be an int, got bool"),
+        ({"max_batch_bytes": 0}, ValueError, "max_batch_bytes must be >= 1, got 0"),
+        ({"max_batch_bytes": 1.5}, TypeError, "max_batch_bytes must be an int, got float"),
+    ],
+)
+async def test_import_int_arguments_e1(kwargs: dict[str, Any], exc: type[Exception], text: str) -> None:
+    conn = FakeConnection(importer())
+    with pytest.raises(exc, match=f"^{text}$"):
+        await conn.import_jsonl("t", [line(1)], **kwargs)
+
+
+@pytest.mark.parametrize("table", ["t y", "t\n", "", 5])
+async def test_import_invalid_table_e5(table: Any) -> None:
+    conn = FakeConnection(importer())
+    with pytest.raises(ValueError, match=r"^Invalid table name: "):
+        await conn.import_jsonl(table, [line(1)])
+
+
+async def test_import_json_protocol_is_refused_e4() -> None:
+    conn = FakeConnection(importer(), protocol="json")
+    with pytest.raises(ValueError, match=r"^import_jsonl\(\) needs the CBOR protocol: "):
+        await conn.import_jsonl("t", [line(1)])
+    assert conn.calls == []
+
+
+async def test_import_argument_errors_do_not_open_the_source(tmp_path: Path) -> None:
+    conn = FakeConnection(importer())
+    with pytest.raises(ValueError):
+        await conn.import_jsonl("t y", tmp_path / "missing.jsonl")
+
+
+# Sources
+
+
+async def test_import_from_a_path_reads_off_the_event_loop(tmp_path: Path, thread_spy: list[str]) -> None:
+    path = tmp_path / "in.jsonl"
+    path.write_text("".join(line(i) + "\n" for i in range(1, 2501)) + "\n", encoding="utf-8")
+    conn = FakeConnection(importer())
+
+    report = await conn.import_jsonl("t", path, relation=False)
+
+    assert report == ImportReport(table="t", lines=2500, rows=2500, batches=3)
+    # open, three blocks of up to 1,000 lines, the empty read that ends the file, close
+    assert len(thread_spy) >= 4
+    assert all(name != "write" for name in thread_spy)
+
+
+async def test_import_from_a_str_path(tmp_path: Path) -> None:
+    path = tmp_path / "in.jsonl"
+    path.write_text(f"﻿{line(1)}\r\n{line(2)}\n", encoding="utf-8")
+    conn = FakeConnection(importer())
+    report = await conn.import_jsonl("t", str(path), relation=False)
+    assert report.rows == 2
+    assert [row["v"] for row in conn.calls[0][1]["_x_rows"]] == [1, 2]
+
+
+async def test_import_from_a_text_stream_reads_off_the_event_loop(thread_spy: list[str]) -> None:
+    stream = io.StringIO("".join(line(i) + "\n" for i in range(1, 4)))
+    conn = FakeConnection(importer())
+    report = await conn.import_jsonl("t", stream, relation=False)
+    assert report.rows == 3
+    assert thread_spy  # read in a worker thread
+    assert not stream.closed
+
+
+async def test_import_from_an_async_generator() -> None:
+    async def produce() -> AsyncIterator[str]:
+        for i in range(1, 4):
+            yield line(i) + "\n"
+
+    conn = FakeConnection(importer())
+    report = await conn.import_jsonl("t", produce(), batch_size=2, relation=False)
+    assert report == ImportReport(table="t", lines=3, rows=3, batches=2)
+
+
+async def test_import_from_a_missing_path_raises_os_error(tmp_path: Path) -> None:
+    conn = FakeConnection(importer())
+    with pytest.raises(FileNotFoundError):
+        await conn.import_jsonl("t", tmp_path / "missing.jsonl", relation=False)
+
+
+@pytest.mark.parametrize("relation", [True, False])
+async def test_import_rewrites_the_id_table_to_the_target(relation: bool) -> None:
+    # INSERT RELATION refuses an id of another table ("Found e:1 for the `id` field, but a
+    # specific record has been specified"); plain INSERT rewrites it on the server (M21).
+    conn = FakeConnection(importer())
+    key = [1, "a"]
+    source = [
+        dumps_record({"id": RecordId("e", key), "in": RecordId("p", 1), "out": RecordId("p", 2)}),
+        dumps_record({"id": RecordId("t", 2), "in": RecordId("p", 1), "out": RecordId("p", 2)}),
+        dumps_record({"id": "plain", "in": RecordId("p", 1), "out": RecordId("p", 2)}),
+    ]
+
+    await conn.import_jsonl("t", source, relation=relation)
+
+    ids = [row["id"] for row in conn.calls[0][1]["_x_rows"]]
+    assert ids == [RecordId("t", key), RecordId("t", 2), "plain"]
