@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import copy
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Collection, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Generic, Literal, Self, TypeVar, cast
 
@@ -47,6 +48,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
+    from surreal_sdk.jsonl import JsonlDestination
     from surreal_sdk.streaming.live_select import ReconnectCallback
 
     from .cache import ConnectionIdentity
@@ -3183,3 +3185,186 @@ class QuerySet(Generic[T]):
             poll_interval=poll_interval,
             batch_size=batch_size,
         )
+
+    # ── JSON Lines export ───────────────────────────────────────────────
+
+    def _reject_export_clauses(self, method: str) -> None:
+        """
+        Refuse an export on a QuerySet carrying a clause it cannot honour.
+
+        An export reads the table in ``id`` order by keyset, so only
+        ``filter()``, ``Q``, ``.variables()`` and ``limit()`` apply. Any other
+        clause would be silently ignored (``traverse()`` is ignored by
+        ``exec()`` too and would export the whole table); the first one found,
+        in a fixed order, is named.
+        """
+        clauses: tuple[tuple[str, object], ...] = (
+            ("order_by", self._order_by),
+            ("offset", self._offset is not None),
+            ("select", self.select_item),
+            ("values", self._group_by_fields),
+            ("annotate", self._annotations),
+            ("fetch", self._fetch_fields),
+            ("select_related", self._select_related),
+            ("prefetch_related", self._prefetch_related),
+            ("cache", self._cache_ttl is not None),
+            ("similar_to", self._knn_field),
+            ("search", self._search_fields),
+            ("nearby", self._geo_field),
+            ("traverse", self._traversal_path),
+            ("reachable_from", self._graph is not None),
+        )
+        for clause, present in clauses:
+            if present:
+                raise ValueError(f"{method}() reads the table in id order and cannot be combined with {clause}()")
+
+    def _compile_export(self, method: str, batch_size: int) -> tuple[int, str | None, dict[str, Any], list[str]]:
+        """
+        Check an export and compile its condition; no I/O.
+
+        Every check runs here: the refused clauses, the batch size, the
+        reserved variable names. The WHERE parts are compiled as ``exec()``
+        compiles them, with a ``LET`` prelude so a ``Subquery`` is hoisted,
+        never rendered inline (#147). The QuerySet itself is not modified.
+
+        Returns:
+            The batch size, the joined WHERE parts (``None`` for none), the
+            variables to bind (``.variables()`` and the filters' ``$_fN``) and
+            the prelude.
+        """
+        from surreal_sdk import jsonl
+
+        self._reject_export_clauses(method)
+        size = require_int("batch_size", batch_size, minimum=1)
+        jsonl._check_reserved_vars(self._variables)
+        prelude: list[str] = []
+        parts, filter_vars = self._build_where_parts(prelude)
+        return size, " AND ".join(parts) or None, {**self._variables, **filter_vars}, prelude
+
+    async def _export_batches(
+        self,
+        method: str,
+        plan: tuple[int, str | None, dict[str, Any], list[str]],
+        client: Any = None,
+    ) -> AsyncGenerator[list[dict[str, Any]], None]:
+        """
+        Read the batches of raw records, each statement logged to ``QueryLogger``.
+
+        The prelude of ``plan`` is sent again with every batch. ``client``
+        ``None`` resolves the model's connection when the first batch is read.
+        """
+        from surreal_sdk import jsonl
+
+        from .debug import _log_query
+
+        batch_size, where_sql, variables, prelude = plan
+        if client is None:
+            client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+        batches = jsonl._iter_batches(
+            client,
+            self._model_table,
+            batch_size=batch_size,
+            where_sql=where_sql,
+            vars=variables,
+            limit=self._limit,
+            method=method,
+            prelude=prelude,
+            on_query=_log_query,
+        )
+        async with contextlib.aclosing(batches):
+            async for batch in batches:
+                yield batch
+
+    def iter_jsonl(self, *, batch_size: int = 1000, typed: bool = True) -> AsyncIterator[str]:
+        """
+        Read the QuerySet's rows as JSON Lines, one line per record, in ``id`` order.
+
+        The rows are read in batches of ``batch_size``, one statement each,
+        paged by keyset on ``id``, so only one batch is held at a time. The
+        filters (``filter()``, ``Q``, ``.variables()``) apply as in
+        :meth:`exec`, and ``limit()`` caps the total. Each line is
+        :func:`surreal_sdk.jsonl.dumps_record` of the raw database record:
+        database column names (never Python aliases), extra SCHEMALESS fields
+        included. Lower ``batch_size`` for wide rows. Use it as
+        ``async for line in qs.iter_jsonl(): ...``.
+
+        A ``Subquery`` filter is sent as a ``LET`` statement before each
+        batch, so over a table that changes during the export it can select
+        different records from one batch to the next.
+
+        Every batch is logged to ``QueryLogger``. The arguments and the
+        QuerySet's clauses are checked when the method is called, before any
+        query.
+
+        Args:
+            batch_size: Rows per statement (``>= 1``).
+            typed: ``True`` (default) writes the lossless tagged form;
+                ``False`` plain JSON for external tools (it does not load back
+                with the same types).
+
+        Returns:
+            An async iterator of lines, without the trailing ``"\\n"``.
+
+        Raises:
+            ValueError: If the QuerySet carries ``order_by()``, ``offset()``,
+                ``select()``, ``values()``, ``annotate()``, ``fetch()``,
+                ``select_related()``, ``prefetch_related()``, ``cache()``,
+                ``similar_to()``, ``search()``, ``nearby()``, ``traverse()``
+                or ``reachable_from()``; if a ``.variables()`` name starts
+                with ``_x_``; if ``batch_size`` is below 1; while iterating,
+                on a JSON-protocol connection.
+            TypeError: If ``batch_size`` is not an ``int``.
+            DataFormatError: While iterating, if a value cannot be written
+                losslessly (a geometry, a range, ...).
+            TableNotFoundError, QueryError: While iterating, if the table does
+                not exist or a statement fails.
+
+        Example::
+
+            async for line in Post.objects().filter(author=alice).iter_jsonl(batch_size=500):
+                await sink.write(line + "\\n")
+        """
+        plan = self._compile_export("iter_jsonl", batch_size)
+        return self._iter_lines(self._export_batches("iter_jsonl", plan), typed)
+
+    @staticmethod
+    async def _iter_lines(batches: AsyncGenerator[list[dict[str, Any]], None], typed: bool) -> AsyncGenerator[str, None]:
+        from surreal_sdk.jsonl import dumps_record
+
+        async with contextlib.aclosing(batches):
+            async for batch in batches:
+                for record in batch:
+                    yield dumps_record(record, typed=typed)
+
+    async def export_jsonl(self, dest: JsonlDestination, *, batch_size: int = 1000, typed: bool = True) -> int:
+        """
+        Write the QuerySet's rows to JSON Lines, one record per line, in ``id`` order.
+
+        Reads like :meth:`iter_jsonl`. File writes (the open and the close
+        included) run in a worker thread, once per batch. On an error the
+        lines already written stay in ``dest``; nothing is retried.
+
+        Args:
+            dest: A path (created or overwritten, UTF-8) or a text stream,
+                which is written to and left open.
+            batch_size: Rows per statement (``>= 1``).
+            typed: See :meth:`iter_jsonl`.
+
+        Returns:
+            int: The number of records written.
+
+        Raises:
+            ValueError, TypeError, DataFormatError, TableNotFoundError,
+                QueryError: As :meth:`iter_jsonl`; the QuerySet and argument
+                checks run before ``dest`` is opened.
+
+        Example::
+
+            n = await Post.objects().filter(published=True).export_jsonl("posts.jsonl")
+        """
+        from surreal_sdk import jsonl
+
+        plan = self._compile_export("export_jsonl", batch_size)
+        client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
+        jsonl._require_cbor(client, "export_jsonl")  # before dest is opened
+        return await jsonl._export(self._export_batches("export_jsonl", plan, client), dest, typed=typed)

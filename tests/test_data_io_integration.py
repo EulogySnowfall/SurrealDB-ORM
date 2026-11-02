@@ -12,6 +12,10 @@ skips existing ids, ``raw`` turns off ``VALUE`` and events. I4: edges
 round-trip as edges, a mixed file is refused (E7), a ``TYPE NORMAL`` table keeps
 ``in``/``out`` links as plain fields. I5: batches stay under the byte bound; a
 single line over the HTTP RPC limit fails as E8b with the report.
+
+I6 (export half): an ORM model with a ``ForeignKey``, a ``Decimal``, a
+``datetime`` and an aliased column; ``filter()`` and ``limit()`` select the
+exported rows, which carry the column name, not the alias.
 """
 
 from __future__ import annotations
@@ -20,11 +24,16 @@ import math
 import time
 from collections.abc import AsyncGenerator, Mapping
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import Field
 
+from src.surreal_orm import SurrealDBConnectionManager
+from src.surreal_orm.fields.relation import ForeignKey
+from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.connection.http import HTTPConnection
 from surreal_sdk.connection.websocket import WebSocketConnection
@@ -388,3 +397,79 @@ async def test_a_line_above_the_http_rpc_limit_is_e8b_with_the_report(source_tab
     finally:
         await _reset(conn, BULK)
         await conn.close()
+
+
+# ---------------------------------------------------------------------------
+# I6 — ORM export (QuerySet.export_jsonl / iter_jsonl)
+# ---------------------------------------------------------------------------
+
+
+class DIOAuthor(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="dio_author")
+
+    id: str | None = None
+    name: str = ""
+
+
+class DIOPost(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="dio_post")
+
+    id: str | None = None
+    title: str = ""
+    published: bool = False
+    price: Decimal = Decimal("0")
+    author: ForeignKey("DIOAuthor") = None  # type: ignore[valid-type]
+    created_at: datetime = Field(alias="created")
+
+
+@pytest.fixture(scope="module")
+async def orm_posts() -> AsyncGenerator[list[DIOPost], None]:
+    """Six ``dio_post`` rows saved through the ORM, four of them published, on ``test_data_io``."""
+    conn = await _open("http")  # creates the database (M45)
+    await conn.close()
+    SurrealDBConnectionManager.set_connection(URL, "root", "root", NS, DB)
+    client = await SurrealDBConnectionManager.get_client()
+    await client.query("REMOVE TABLE IF EXISTS dio_post; REMOVE TABLE IF EXISTS dio_author;")
+    try:
+        alice = DIOAuthor(id="alice", name="Alice")
+        await alice.save()
+        posts = []
+        for i in range(6):
+            post = DIOPost(
+                id=f"p{i}",
+                title=f"Post {i}",
+                published=i not in (1, 4),
+                price=Decimal(f"{i}.10"),
+                author=alice,
+                created_at=datetime(2026, 1, i + 1, 3, 4, 5, 123456, tzinfo=UTC),
+            )
+            await post.save()
+            posts.append(post)
+        yield posts
+    finally:
+        await client.query("REMOVE TABLE IF EXISTS dio_post; REMOVE TABLE IF EXISTS dio_author;")
+        await SurrealDBConnectionManager.close_connection()
+        await SurrealDBConnectionManager.unset_connection()
+
+
+async def test_orm_export_writes_only_the_filtered_rows_by_column_name(orm_posts: list[DIOPost], tmp_path: Path) -> None:
+    path = tmp_path / "posts.jsonl"
+
+    count = await DIOPost.objects().filter(published=True).export_jsonl(path, batch_size=2)
+
+    records = [loads_record(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert count == 4
+    assert [r["id"] for r in records] == [RecordId("dio_post", f"p{i}") for i in (0, 2, 3, 5)]
+    for record in records:
+        i = int(record["id"].id[1:])
+        assert record["published"] is True
+        assert record["author"] == RecordId("dio_author", "alice")
+        assert record["price"] == Decimal(f"{i}.10")
+        assert record["created"] == datetime(2026, 1, i + 1, 3, 4, 5, 123456, tzinfo=UTC)
+        assert "created_at" not in record
+
+
+async def test_orm_iter_jsonl_honours_limit(orm_posts: list[DIOPost]) -> None:
+    lines = [line async for line in DIOPost.objects().limit(3).iter_jsonl(batch_size=2)]
+
+    assert [loads_record(line)["id"] for line in lines] == [RecordId("dio_post", f"p{i}") for i in range(3)]
