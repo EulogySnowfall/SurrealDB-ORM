@@ -12,7 +12,6 @@ and the request waited for its whole timeout. With an explicit
 next query after its reconnect.
 """
 
-import asyncio
 import time
 from collections.abc import AsyncGenerator
 
@@ -127,12 +126,10 @@ async def test_ws_reply_above_max_message_size_fails_at_once_then_reconnects(big
         assert str(excinfo.value).startswith("WebSocket connection lost: ")
         assert str(4 * MiB) in str(excinfo.value)
 
-        # The read loop started the reconnect before failing the request. Wait for it to
-        # finish: until it has re-authenticated and re-selected the database, a request
-        # sent on the new socket has no namespace (a pre-existing window of _reconnect()).
-        reconnect = conn._reconnect_task
-        assert reconnect is not None
-        await asyncio.wait_for(asyncio.shield(reconnect), 10)
+        # The read loop started the reconnect before failing the request. The next query
+        # is issued at once: it waits until the reconnect has re-authenticated and
+        # re-selected the database (#510) instead of reaching a session with no namespace.
+        assert conn._reconnect_task is not None
         response = await conn.query(f"SELECT count() FROM {BIG_TABLE} GROUP ALL")
         assert response.first_result.result == [{"count": 6}]
     finally:
