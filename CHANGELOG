@@ -1766,7 +1766,7 @@ No public API change.
     `bulk_delete(atomic=True)`;
   - a key that is a prefix of `tx_<i>_<an earlier key>` (`t`, `tx`, `tx_`,
     `tx_<i>`, ...; `i` being the statement's position in the transaction,
-    so `tx_1` also counts at positions 10–19), which rewrote the references
+    so `tx_1` also counts from position 10), which rewrote the references
     already renamed for the keys bound before it (`$tx_0_amount` →
     `$tx_0_tx_0_amount`). The SDK builders `tx.create/update/upsert/relate`
     bind each field under its own name, so `save(tx=)` of a new record,
@@ -1791,8 +1791,8 @@ does not read as an object. With two or more fields the commit fails with a
 parse error; with one field `commit()` returns without an error, but the
 server rolls the whole transaction back, its other statements included. That
 covers `update(tx=)`, `merge(tx=)` without a `SurrealFunc`, and `save(tx=)` of
-an already-saved record whose data holds no `SurrealFunc` and no nested
-object/array, on an HTTP connection. WebSocket transactions are not affected.
+a record that is already saved, on an HTTP connection. WebSocket transactions
+are not affected.
 
 ### Verification
 
