@@ -113,23 +113,32 @@ class TestTransactionConflictError:
         assert isinstance(err, TransactionError)
         assert isinstance(err, SurrealDBError)
 
-    def test_is_conflict_error_can_be_retried(self) -> None:
-        assert TransactionConflictError.is_conflict_error(Exception("This can be retried"))
+    def test_is_conflict_error_server_wording(self) -> None:
+        # SurrealDB 2.7.0, a write conflict on a plain statement or at commit.
+        message = (
+            "The query was not executed due to a failed transaction. Failed to commit transaction "
+            "due to a read or write conflict. This transaction can be retried"
+        )
+        assert TransactionConflictError.is_conflict_error(Exception(message))
 
-    def test_is_conflict_error_failed_transaction(self) -> None:
-        assert TransactionConflictError.is_conflict_error(Exception("failed transaction"))
+    def test_is_conflict_error_cancelled_statement_is_not_a_conflict(self) -> None:
+        # Every other statement of a failed transaction, whatever the cause (#446).
+        assert not TransactionConflictError.is_conflict_error(
+            Exception("The query was not executed due to a failed transaction")
+        )
 
-    def test_is_conflict_error_conflict(self) -> None:
-        assert TransactionConflictError.is_conflict_error(Exception("Write conflict detected"))
+    def test_is_conflict_error_bare_conflict_is_not_a_conflict(self) -> None:
+        # A failed ASSERT can echo "conflict" in the value or the field name (#446).
+        assert not TransactionConflictError.is_conflict_error(Exception("Write conflict detected"))
 
-    def test_is_conflict_error_document_changed(self) -> None:
-        assert TransactionConflictError.is_conflict_error(Exception("document changed"))
+    def test_is_conflict_error_document_changed_is_not_a_conflict(self) -> None:
+        assert not TransactionConflictError.is_conflict_error(Exception("document changed"))
 
     def test_is_conflict_error_unrelated(self) -> None:
         assert not TransactionConflictError.is_conflict_error(Exception("connection refused"))
 
     def test_is_conflict_error_case_insensitive(self) -> None:
-        assert TransactionConflictError.is_conflict_error(Exception("FAILED TRANSACTION"))
+        assert TransactionConflictError.is_conflict_error(Exception("THIS TRANSACTION CAN BE RETRIED"))
 
     def test_is_conflict_error_empty_message(self) -> None:
         assert not TransactionConflictError.is_conflict_error(Exception(""))
