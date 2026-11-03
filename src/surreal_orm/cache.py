@@ -18,7 +18,9 @@ Writes made through the ORM drop the written table's entries:
   (``bulk_create()`` goes through ``save()``).
 
 Entries are dropped once the write is accepted (after the commit for
-``atomic=True``); a write the server rejects leaves them in place.  Anything
+``atomic=True``); a write the server rejects leaves them in place.  The
+non-atomic ``bulk_update()`` and ``bulk_delete()`` raise ``QueryError`` in that
+case too; they used to return ``0``.  Anything
 else that writes behind the ORM's back — ``raw_query()``, ``call_function()``,
 a ``DEFINE EVENT``, another process — is not seen: call
 ``QueryCache.invalidate(Model)`` after it.

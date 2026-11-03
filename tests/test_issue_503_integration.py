@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator
 import pytest
 
 from src.surreal_orm import SurrealDBConnectionManager
-from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
+from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict, _raise_on_statement_error
 from surreal_sdk.exceptions import QueryError
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
@@ -43,13 +43,15 @@ async def _connection() -> AsyncGenerator[None, None]:
 
 @pytest.fixture(autouse=True)
 async def _schema() -> None:
+    """Rebuild the table; a rejected statement fails here, not later as an ``_ages()`` mismatch."""
     client = await SurrealDBConnectionManager.get_client()
-    await client.query(
+    query = (
         "REMOVE TABLE IF EXISTS i503_items;"
         " DEFINE TABLE i503_items SCHEMAFULL;"
         " DEFINE FIELD age ON i503_items TYPE int ASSERT $value >= 0;"
         " CREATE i503_items:a SET age = 1; CREATE i503_items:b SET age = 2;"
     )
+    _raise_on_statement_error(await client.query(query), query)
 
 
 async def _ages() -> list[int]:
