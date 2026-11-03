@@ -6,6 +6,50 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.32] - 2026-11-02
+
+**Bug fix release (V2 LTS).** One SDK fix (#405, #475), the `v2` port of the
+0.35.5 fix on `main` (#390, #398): the `HTTPConnection` transient-401 token
+re-mint no longer undoes an auth change made by another task on the same
+connection. Read *Behaviour change*. No public API change; HTTP transport
+only. The SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Fixed
+
+- **The transient-401 re-mint keeps an auth change made while it is pending
+  (#405).** On an `HTTPConnection` shared between tasks, the re-mint
+  installed its token and sign-in arguments unconditionally, so an `authenticate()`, `signup()`, `invalidate()`,
+  `close()` or `signin()` that another task completed during the backoff or
+  the `/signin` round trip was overwritten, and the connection went back to
+  the earlier `signin()` token and arguments. The re-mint now installs its
+  result only if the connection's auth state has not changed since the
+  request was sent.
+- **A request that got a 401 is no longer resent after another task changes
+  the connection's auth state (#405).** It raises the original 401 as
+  `QueryError`. If another task only renewed the token of the same
+  `signin()`, the request is retried with that token, without a new
+  `/signin`.
+
+### Behaviour change
+
+- **On a connection shared between tasks, a request rejected with 401 while
+  another task changes the connection's auth state now raises `QueryError`
+  (code 401)** instead of being resent under the new state. Single-task
+  behaviour is unchanged, including a transient 401 on the `authenticate()`
+  request itself, which still ends with the requested token installed.
+
+### Verification
+
+Against SurrealDB 2.7.0 (#475): 3,405 unit tests on each of Python 3.12, 3.13
+and 3.14 and 775 integration tests pass (4 expected failures, the existing
+strict `xfail`s for integer record ids over WebSocket); `ruff` and `mypy`
+clean. The new `TestReauthDoesNotOverrideConcurrentAuthChange` (8 tests)
+orders the tasks with gated fake responses; 6 of them fail on 0.21.31. The
+touched test file passed three times in a row.
+
+---
+
 ## [0.21.31] - 2026-11-02
 
 **Bug fix release (V2 LTS).** One SDK fix (#258, #442) that closes the four

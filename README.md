@@ -52,6 +52,19 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.32
+
+**Bug fix release (V2 LTS).** One SDK fix (#405), the `v2` port of the 0.35.5 fix on `main`; no public API change,
+HTTP transport only.
+
+- **The transient-401 re-mint keeps another task's auth change.** On an `HTTPConnection` shared between tasks, an
+  `authenticate()`, `signup()`, `invalidate()`, `close()` or `signin()` completed while a re-mint was pending used
+  to be overwritten by the earlier `signin()` token and arguments.
+- **Behaviour change:** a request rejected with 401 while another task changes the connection's auth state now
+  raises `QueryError` (code 401) instead of being resent under the new state; one whose token was only renewed by
+  another task's re-mint is retried with that token. Single-task behaviour is unchanged. See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.31
 
 **Bug fix release (V2 LTS).** One SDK fix (#258) that closes the follow-ups left open by the 0.21.14 reviews; no
