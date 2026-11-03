@@ -395,9 +395,10 @@ class WebSocketConnection(BaseSurrealConnection):
             await self._resubscribe_all()
 
             reader = self._reader_task
-            if reader is not None and reader.done():
+            if not self._session_ready.is_set() or (reader is not None and reader.done()):
                 # The new socket ended while live queries were being re-created. Its
-                # reader saw this reconnect running and left the retry to it.
+                # reader saw this reconnect running and left the retry to it; the
+                # subscriptions not re-created yet are kept for the next attempt.
                 continue
             return
 
@@ -459,12 +460,22 @@ class WebSocketConnection(BaseSurrealConnection):
         return response.result
 
     async def _resubscribe_all(self) -> None:
-        """Re-establish all live subscriptions after reconnect."""
-        old_subscriptions = dict(self._live_subscriptions)
+        """Re-establish all live subscriptions after reconnect.
+
+        Stops as soon as the session is lost again (the new socket ended): the
+        subscriptions not re-created yet, the one in flight included, stay
+        registered under their previous id so the next reconnect attempt
+        re-creates them, and that attempt starts at once instead of after one
+        timeout per remaining subscription.
+        """
+        old_subscriptions = list(self._live_subscriptions.items())
         self._live_subscriptions.clear()
         self._live_callbacks.clear()
 
-        for old_id, params in old_subscriptions.items():
+        for index, (old_id, params) in enumerate(old_subscriptions):
+            if not self._session_ready.is_set():
+                self._keep_for_next_attempt(old_subscriptions[index:])
+                return
             try:
                 new_id = await self._resubscribe_one(params)
 
@@ -475,8 +486,16 @@ class WebSocketConnection(BaseSurrealConnection):
                     task.add_done_callback(self._callback_tasks.discard)
 
             except Exception:
+                if not self._session_ready.is_set():
+                    self._keep_for_next_attempt(old_subscriptions[index:])
+                    return
                 # Failed to resubscribe, skip this one
                 pass
+
+    def _keep_for_next_attempt(self, subscriptions: list[tuple[str, "LiveSubscriptionParams"]]) -> None:
+        """Register *subscriptions* again under their previous id, for the next restore."""
+        for old_id, params in subscriptions:
+            self._live_subscriptions.setdefault(old_id, params)
 
     async def _resubscribe_one(self, params: "LiveSubscriptionParams") -> str:
         """Resubscribe a single live query."""
@@ -566,8 +585,13 @@ class WebSocketConnection(BaseSurrealConnection):
         """Wait until the session is ready, or raise ``ConnectionError``.
 
         Wakes when the reconnect task ends too (gave up, cancelled by
-        ``close()``), so a caller never waits past it.
+        ``close()``), so a caller never waits past it. The reconnect task itself
+        (re-creating live queries) never waits: the session it is restoring was
+        lost again, and only that same task can restore it, so it fails at once
+        and moves on to its next attempt.
         """
+        if self._reconnect_task is not None and asyncio.current_task() is self._reconnect_task:
+            raise ConnectionError("WebSocket connection lost while restoring the session")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.timeout
         while not self._session_ready.is_set():

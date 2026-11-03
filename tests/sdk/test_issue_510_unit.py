@@ -28,6 +28,7 @@ from aiohttp import web
 
 from surreal_sdk.connection.websocket import WebSocketConnection
 from surreal_sdk.exceptions import ConnectionError
+from surreal_sdk.streaming.live_select import LiveSubscriptionParams
 
 pytestmark = pytest.mark.asyncio
 
@@ -51,6 +52,8 @@ class _Server:
     gates: dict[tuple[int, str], asyncio.Event] = field(default_factory=dict)
     #: (socket index, method) -> RPC error message sent instead of a result
     errors: dict[tuple[int, str], str] = field(default_factory=dict)
+    #: (socket index, method): the server closes that socket when such a request arrives
+    drops: set[tuple[int, str]] = field(default_factory=set)
     #: (socket index, method) -> set when that request arrives
     arrived: dict[tuple[int, str], asyncio.Event] = field(default_factory=dict)
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
@@ -67,7 +70,10 @@ class _Server:
         if error is not None:
             body: dict[str, Any] = {"id": req["id"], "error": {"code": -32000, "message": error}}
         elif method == "query":
-            body = {"id": req["id"], "result": [{"status": "OK", "time": "1ms", "result": index}]}
+            sql = req["params"][0] if req.get("params") else ""
+            # A LIVE SELECT answers with a live id unique to this request.
+            result: Any = f"live-{index}-{req['id']}" if str(sql).startswith("LIVE") else index
+            body = {"id": req["id"], "result": [{"status": "OK", "time": "1ms", "result": result}]}
         else:
             body = {"id": req["id"], "result": None}
         if ws.closed:
@@ -88,6 +94,9 @@ class _Server:
             req = json.loads(msg.data)
             sock.received.append(req["method"])
             self.arrival(index, req["method"]).set()
+            if (index, req["method"]) in self.drops:
+                await ws.close()
+                break
             # Reply from a task: a held reply must not stop the socket from reading.
             task = asyncio.create_task(self._reply(ws, sock, index, req))
             self.tasks.add(task)
@@ -298,5 +307,34 @@ class TestResubscribeAfterRestore:
             await asyncio.wait_for(done.wait(), 5)
             assert seen == [["authenticate", "use"]]
             assert server.sockets[1].received == ["authenticate", "use", "query"]
+        finally:
+            await conn.close()
+
+    async def test_socket_lost_during_resubscribe_retries_at_once(self, server: _Server) -> None:
+        # The restore must never wait on itself: with the socket gone again during the
+        # first re-created live query, each remaining one used to wait a full timeout
+        # for a session only this same reconnect task could restore.
+        timeout = 5.0
+        server.drops.add((1, "query"))
+        conn = await _connected(server, timeout=timeout)
+        for i in range(3):
+            conn._register_live_subscription(f"old{i}", LiveSubscriptionParams("t", None, {}, False, None, None))
+        try:
+            started = time.monotonic()
+            await _drop_first_socket(server)
+            await asyncio.wait_for(server.arrival(1, "query").wait(), 5)
+            # The client has seen socket 1 end: the user query cannot go out on it.
+            await asyncio.wait_for(_until(lambda: not conn._session_ready.is_set()), 5)
+
+            response = await asyncio.wait_for(conn.query("RETURN 1"), timeout)
+            assert response.first_result.result == 2
+            await asyncio.wait_for(
+                _until(lambda: len(conn._live_subscriptions) == 3 and server.sockets[2].received.count("query") == 4), 5
+            )
+            assert time.monotonic() - started < timeout / 2, "the next attempt waited for the request timeout"
+
+            # Every subscription is re-created on socket 2, none lost with socket 1.
+            assert all(live_id.startswith("live-2-") for live_id in conn._live_subscriptions)
+            assert server.sockets[2].received[:2] == ["authenticate", "use"]
         finally:
             await conn.close()
