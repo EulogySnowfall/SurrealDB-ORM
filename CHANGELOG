@@ -6,6 +6,55 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.40] - 2026-11-02
+
+**Bug fix release (V2 LTS).** One auth fix, the `v2` port of `main`'s #393
+(#415, #502): `validate_token()` and `authenticate_token()` accept a token
+only when it was issued by the model's own access definition, for the
+namespace and database of the model's connection. Read *Behaviour change*.
+The SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Fixed
+
+- **`validate_token()` and `authenticate_token()` check the token's access,
+  namespace and database.** Once the server has accepted the token and the
+  existing table check has passed, its `AC` claim must equal
+  `get_access_name()` and its `NS` / `DB` claims the namespace and database
+  of the model's connection. Before, only the table was checked, so two
+  models on one table with different `access_name` values each accepted the
+  other's tokens. They now each accept only their own (#415, backport of
+  #393).
+- **The token cache key includes the access name**:
+  `(connection, table, access name, token)`. An entry written for one model
+  is no longer a hit for another model on the same table.
+  `invalidate_token_cache(token)` still removes every entry for that token
+  (#415).
+
+### Behaviour change
+
+- A token issued by another access definition, namespace or database, or a
+  token whose `AC` / `NS` / `DB` claims cannot be read, now returns `None`
+  from `validate_token()` and `authenticate_token()`.
+  `validate_token_local()` is unchanged (no claim check).
+
+### Migration notes
+
+- None needed for tokens issued by SurrealDB for the model's access. Code
+  that validated a token through a different model on the same table must
+  use the model whose `access_name` issued it.
+
+### Verification
+
+Against SurrealDB 2.7.0, at the PR's validated head: 3,756 unit tests on
+each of Python 3.12, 3.13 and 3.14; on the tree merged with `v2`, 3,775 unit
+tests (Python 3.13) and 809 integration tests pass (4 expected failures, the
+existing strict `xfail`s for integer record ids over WebSocket); `ruff` and
+`mypy` clean. The new and changed test files (149 unit, 1 integration) passed
+three times in a row.
+
+---
+
 ## [0.21.39] - 2026-11-02
 
 **Bug fix release (V2 LTS).** One ORM fix, the `v2` port of `main`'s #460:
