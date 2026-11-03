@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.37)
+> Context document for Claude AI - Last updated: November 2026 (0.21.38)
 
 <!-- -->
 
@@ -19,12 +19,24 @@
 
 ---
 
-## Current Version: 0.21.37 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.38 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.38
+
+One fix: #486 via #497 (`search.py`, `aggregations.py`, `geo.py`, `surreal_sdk/exceptions.py`,
+`streaming/change_feed.py`), backport of `main`'s #482. Pin unchanged (2.7.0).
+
+- **Annotation arguments are properties.** Their setters run the constructor's checks (`require_int`,
+  `validate_field_path`, `_plain_coordinate`); the four aggregations share a private `_FieldAggregation` base.
+- **`is_conflict_error()` is anchored at the end of the message** (case-insensitive, trailing period and whitespace
+  tolerated); 2.7.0 ends every retryable message with the sentence and the SDK/ORM wrappers put the server text last.
+- **The change-feed reader uses `transaction._is_cancellation()`** instead of its own "not executed" / "Cannot COMMIT"
+  list, which dropped a 2.7 commit-time conflict as part of the cascade.
 
 ### What's New in 0.21.37
 
