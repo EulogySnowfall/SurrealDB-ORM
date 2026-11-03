@@ -1681,3 +1681,79 @@ class TestIssue331TokenCachePerConnection:
         async with SurrealDBConnectionManager.using("i331_a"):
             assert model.get_connection_name() == "i331_a"
             assert model._token_cache_key("t")[0][3] == "i331_db_a"
+
+    @staticmethod
+    def _http_connection_mock(database: str, record_id: str) -> MagicMock:
+        """Stand-in for ``surreal_sdk.HTTPConnection`` building one ephemeral client.
+
+        The client carries the namespace and database it was built with, so
+        the token's ``NS`` / ``DB`` claims match only that connection.
+        """
+        client = _i331_client(record_id)
+        client.connect = AsyncMock(return_value=client)
+        client.namespace, client.database = "i331_ns", database
+        return MagicMock(return_value=client)
+
+    @staticmethod
+    def _add_default_connection() -> None:
+        """Register a ``default`` config on another database (the fixture restores the registry).
+
+        With it, a client built from ``default`` instead of the routed
+        connection fails the assertions rather than a missing-config check.
+        """
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        SurrealDBConnectionManager.add_connection(
+            "default",
+            url="http://localhost:8000",
+            user="root",
+            password="root",
+            namespace="i331_ns",
+            database="i331_db_default",
+        )
+
+    async def test_auth_client_is_built_from_the_model_connection(self) -> None:
+        """#404 — validate_token() opens its ephemeral client on the model's connection= config."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        class I331RoutedClientUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(
+                table_type=TableType.USER, table_name="i331_routed_client_user", connection="i331_b"
+            )
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        self._add_default_connection()
+        config = SurrealDBConnectionManager.get_config("i331_b")
+        assert config is not None
+        token = _i331_jwt({"ID": "i331_routed_client_user:a", "DB": "i331_db_b", "exp": int(time.time()) + 600})
+        http_connection = self._http_connection_mock("i331_db_b", "i331_routed_client_user:a")
+        # _create_auth_client() imports HTTPConnection from surreal_sdk at call time,
+        # so the class is patched where it is looked up, not in mixins.py.
+        with patch("surreal_sdk.HTTPConnection", http_connection):
+            assert await I331RoutedClientUser.validate_token(token) == "i331_routed_client_user:a"
+
+        http_connection.assert_called_once_with(config.url, config.namespace, config.database, protocol=config.protocol)
+        assert http_connection.call_args.args[1:] == ("i331_ns", "i331_db_b")
+        http_connection.return_value.connect.assert_awaited_once_with()
+        http_connection.return_value.authenticate.assert_awaited_once_with(token)
+
+    async def test_auth_client_follows_using_for_a_default_routed_model(self) -> None:
+        """#404 — inside using("i331_a"), the ephemeral client uses i331_a, not default."""
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        model = self._model()
+        self._add_default_connection()
+        config = SurrealDBConnectionManager.get_config("i331_a")
+        assert config is not None
+        token = _i331_jwt({"ID": "i331_conn_user:a", "DB": "i331_db_a", "exp": int(time.time()) + 600})
+        http_connection = self._http_connection_mock("i331_db_a", "i331_conn_user:a")
+        with patch("surreal_sdk.HTTPConnection", http_connection):
+            async with SurrealDBConnectionManager.using("i331_a"):
+                assert await model.validate_token(token) == "i331_conn_user:a"
+
+        http_connection.assert_called_once_with(config.url, config.namespace, config.database, protocol=config.protocol)
+        assert http_connection.call_args.args[1:] == ("i331_ns", "i331_db_a")
+        http_connection.return_value.connect.assert_awaited_once_with()
+        http_connection.return_value.authenticate.assert_awaited_once_with(token)
