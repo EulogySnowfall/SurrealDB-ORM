@@ -6,6 +6,57 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.39] - 2026-11-02
+
+**Bug fix release (V2 LTS).** One ORM fix, the `v2` port of `main`'s #460:
+every ORM write now drops the written table's `QueryCache` entries, and
+invalidation no longer depends on calling `QueryCache.configure()` (#463,
+#499). Read *Behaviour change*. The SurrealDB pin is unchanged (tested
+against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`QueryCache` entries are dropped by every ORM write**, not just by
+  instance `save()` / `update()` / `merge()` / `delete()`. This includes
+  `atomic_append()`, `atomic_remove()`, `atomic_set_add()`,
+  `QuerySet.bulk_update()`, `bulk_delete()` (plain and `atomic=True`) and
+  `delete_table()`. Before, a `.cache(ttl=N)` read made before one of these
+  writes kept returning the old rows until its TTL expired (#463).
+- **Invalidation no longer depends on calling `QueryCache.configure()`.**
+  `QuerySet.cache()` and `QueryCache.set()` now connect the invalidation
+  handlers, only once. Before, a process that never called `configure()` got
+  no invalidation at all, not even from `save()` (#463).
+
+### Behaviour change
+
+- Cached entries are dropped once a write is accepted (after the commit for
+  `atomic=True`); a write the server rejects leaves them in place.
+  Invalidation now runs without `configure()` and on more write paths; the
+  only cost is extra re-queries.
+
+### Migration notes
+
+- None needed. Writes the ORM cannot see are still not tracked:
+  `raw_query()`, `call_function()`, `DEFINE EVENT` side effects and writes
+  from other processes. After one of these, call
+  `QueryCache.invalidate(Model)` or rely on the TTL.
+
+### Known limitations
+
+- The plain (non-atomic) `bulk_update()` / `bulk_delete()` return `0` when
+  the server rejects the statement, without raising, so a caller cannot tell
+  "nothing matched" from "the write was refused". Unchanged by this release.
+
+### Verification
+
+Against SurrealDB 2.7.0, at the PR's validated head: 3,719 unit tests on
+each of Python 3.12, 3.13 and 3.14; 808 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The new and touched tests (28 unit,
+8 integration) passed three times in a row.
+
+---
+
 ## [0.21.38] - 2026-11-02
 
 **Bug fix release (V2 LTS).** One ORM/SDK fix, the `v2` port of `main`'s
