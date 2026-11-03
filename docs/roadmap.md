@@ -852,8 +852,13 @@ QueryCache.configure(default_ttl=120, max_size=500)
 # Cached queries
 users = await User.objects().filter(role="admin").cache(ttl=30).exec()
 
-# Automatic invalidation on save/update/delete via signals
+# Automatic invalidation on every ORM write (save/update/merge/delete, atomic_*,
+# bulk_update/bulk_delete, delete_table)
 await user.save()  # Clears all cached entries for this table
+
+# raw_query() is not tracked: invalidate by hand
+await User.raw_query("UPDATE users SET active = false")
+QueryCache.invalidate(User)
 
 # Manual invalidation
 QueryCache.invalidate(User)

@@ -93,7 +93,7 @@ class TestBulkUpdateCoercesForeignKeys:
         never called ``bulk_update()``, so deleting the coercion left it green.
         """
         client = AsyncMock()
-        client.query = AsyncMock(return_value=SimpleNamespace(results=[], all_records=[]))
+        client.query = AsyncMock(return_value=SimpleNamespace(results=[], all_records=[], is_ok=True))
 
         with patch(
             "src.surreal_orm.query_set.SurrealDBConnectionManager.get_client",
