@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.43)
+> Context document for Claude AI - Last updated: November 2026 (0.21.44)
 
 <!-- -->
 
@@ -19,12 +19,27 @@
 
 ---
 
-## Current Version: 0.21.43 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.44 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.44
+
+Two fixes, `v2` only: #392 via #529 (`surreal_orm/auth/mixins.py`, `surreal_orm/query_set.py`). Pin unchanged
+(2.7.0). Also test follow-ups #525 (#340) and #527 (#348).
+
+- **A per-statement `ERR` is not a value.** `_read_session_record()` returns `None` when `RETURN $auth` comes back as
+  `ERR` (its result is then the server's error text), so `signin()` / `signup()` raise `SurrealDbError` and
+  `change_password()` stops before its `UPDATE`. Same trap as the 0.32.6-era migration executor on `main`.
+- **`.variables()` and the ORM's own bindings share one dict**, and the ORM writes after the declared ones, so a
+  declared `_f0` was overwritten. `_RESERVED_VARIABLE_RE` (`fullmatch`) rejects every name the ORM binds on `v2`;
+  a new bound name must be added there.
+- **Open (review suggestions on #529):** the callers' message still says `($auth is empty)` for the `ERR` case and
+  drops the server text; `change_password()` turns it into "Invalid current password"; the #349 fixture skips its
+  database cleanup if `close()` raises.
 
 ### What's New in 0.21.43
 
