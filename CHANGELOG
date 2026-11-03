@@ -6,6 +6,49 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.47] - 2026-11-03
+
+**Bug fix release (V2 LTS).** One fix, `v2` only, from the 0.21.36 review
+follow-ups (#494, #538): a result key that matches a field's
+`AliasChoices` or `AliasPath` validation alias fills that field. The
+SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Fixed
+
+- KNN/search annotation keys that match a field's `validation_alias` given
+  as `AliasChoices` (every string choice, including the string first
+  element of a nested `AliasPath`) or as an `AliasPath` with a string first
+  element now populate that field, instead of being stripped from the row
+  and attached to the instance as an extra attribute
+  (`QuerySet._model_names()`, #494).
+
+### Behaviour change
+
+- Only for models that use `AliasChoices` or `AliasPath` as a validation
+  alias: a result key that matches one of those names now fills the model
+  field. Models with plain string aliases behave as before.
+
+### Tests
+
+- The two wall-clock bounds in `tests/sdk/test_issue_453_v2_unit.py` go
+  from 1 s to 5 s, the same bound as the integration test, so a loaded
+  runner cannot fail them (#494).
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, on #538's validated head: 3,897 unit tests on each
+of Python 3.12, 3.13 and 3.14, and 819 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The new and touched tests passed three
+times in a row; 6 of the 8 new tests fail on the pre-fix code.
+
+---
+
 ## [0.21.46] - 2026-11-03
 
 **Bug fix release (V2 LTS).** One fix, `v2` only, from the 0.21.27 review

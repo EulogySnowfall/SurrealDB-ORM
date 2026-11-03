@@ -52,6 +52,15 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.47
+
+**Bug fix release (V2 LTS).** One `v2` fix (#494); pin unchanged (2.7.0).
+
+- **`AliasChoices` / `AliasPath` aliases and annotations.** A KNN/search result key that matches one of the names a
+  field reads through an `AliasChoices` or `AliasPath` validation alias now fills that field, instead of being
+  stripped from the row and attached to the instance as an extra attribute. Plain string aliases behave as before.
+  See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.46
 
 **Bug fix release (V2 LTS).** One `v2` fix (#412); pin unchanged (2.7.0).
