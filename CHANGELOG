@@ -6,6 +6,42 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.45] - 2026-11-03
+
+**Bug fix release (V2 LTS).** One fix, `v2` only, from the 0.21.28 /
+0.21.29 review follow-ups (#438, #533): `HTTPTransaction.insert()` queues
+every record when it is given a generator. Also test follow-ups (#404,
+#532). The SurrealDB pin is unchanged (tested against 2.7.0, supported
+range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`HTTPTransaction.insert()` given a generator or another one-shot
+  iterable of records now queues every record.** Checking the keys of every
+  record before queuing anything used up the iterable, so nothing was
+  queued and no error was raised. A dict or a list renders the same
+  SurrealQL as before (#438).
+
+### Tests
+
+- The #413 integration test also checks a `SearchHighlight` tag pair with a
+  backslash escape and no apostrophe (`<\n>` / `</\t>`) on SurrealDB 2.7.0
+  (#438).
+- Unit tests check that the ephemeral connection opened by the auth calls
+  (`validate_token()` and the other `AuthenticatedUserMixin` methods) is
+  built from the model's `connection=` config, or from the `using()`
+  override, rather than the `"default"` one (#404, #532). No library change.
+
+### Verification
+
+Against SurrealDB 2.7.0, at #533's validated head: 3,837 unit tests on each
+of Python 3.12, 3.13 and 3.14, and 819 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The new and touched tests passed three
+times in a row.
+
+---
+
 ## [0.21.44] - 2026-11-03
 
 **Bug fix release (V2 LTS).** Two fixes, both `v2` only, from the 0.21.25

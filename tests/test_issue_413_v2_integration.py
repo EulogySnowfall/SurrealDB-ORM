@@ -91,6 +91,7 @@ class I413Doc(BaseSurrealModel):
         ("<b>", "\\"),
         ("it's \\", "\\'"),
         (f"a\\'; DEFINE TABLE {OTHER}; --", "\\"),
+        ("<\\n>", "</\\t>"),
     ],
 )
 async def test_highlight_tags_are_returned_as_written(open_tag: str, close_tag: str) -> None:
