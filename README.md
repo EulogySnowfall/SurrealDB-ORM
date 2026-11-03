@@ -52,6 +52,17 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.43
+
+**Bug fix release (V2 LTS).** One `v2` fix (#518, backport of #510); pin unchanged (2.7.0).
+
+- **WebSocket reconnect.** A request issued while the connection is reconnecting no longer reaches the server
+  before it re-authenticated and selected the namespace/database (which came back as `Specify a namespace to use`).
+  A reconnect attempt whose `authenticate` or `use` step fails now moves on to the next attempt.
+- **Behaviour change:** such a request now waits for the restored session, for at most the connection `timeout`, and
+  raises `ConnectionError` if it is not restored in time, if every attempt fails, or on `close()`. See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.42
 
 **Bug fix release (V2 LTS).** Two `v2` fixes (#492, #509); pin unchanged (2.7.0).
