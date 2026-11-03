@@ -1817,8 +1817,8 @@ class BaseSurrealModel(BaseModel):
 
         Uses SurrealDB's ``array::append()`` in an UPDATE statement,
         avoiding read-modify-write conflicts in concurrent environments.
-        A record without the field gets ``[value]``. A list *value* is
-        appended as one nested element.
+        A record without the field, or holding ``NULL``, gets ``[value]``.
+        A list *value* is appended as one nested element.
 
         Args:
             record_id: The record ID (just ID or "table:id" format).
@@ -1910,10 +1910,11 @@ class BaseSurrealModel(BaseModel):
 
         Uses SurrealDB's ``array::add()``, which adds only values the field
         does not already hold, so calling it twice with the same value leaves
-        one copy. A record without the field gets ``[value]``. A list *value*
-        is spread: each of its elements is added if absent. On SurrealDB 2.x a
-        ``set<T>`` field holds an array, so the same call covers it. Ideal for
-        "claim" patterns where each worker marks a record as processed.
+        one copy. A record without the field, or holding ``NULL``, gets
+        ``[value]``. A list *value* is spread: each of its elements is added
+        if absent. On SurrealDB 2.x a ``set<T>`` field holds an array, so the
+        same call covers it. Ideal for "claim" patterns where each worker
+        marks a record as processed.
 
         This method used to run ``SET field += $value``, and ``+=`` on an
         array appends: an untyped or ``array<T>`` field collected duplicates.
