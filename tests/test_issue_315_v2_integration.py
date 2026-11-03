@@ -47,8 +47,16 @@ async def _connections() -> AsyncGenerator[None, None]:
             database=database,
         )
     yield
-    for name in _CONNECTIONS:
-        await SurrealDBConnectionManager.remove_connection(name)
+    try:
+        # Each test's ``_data`` teardown deletes its rows; check nothing is
+        # left behind in either database (#340).
+        for name in _CONNECTIONS:
+            client = await SurrealDBConnectionManager.get_client(name)
+            leftover = await client.query("SELECT id FROM i315_items;")
+            assert leftover.all_records == [], f"{name}: rows left in i315_items"
+    finally:
+        for name in _CONNECTIONS:
+            await SurrealDBConnectionManager.remove_connection(name)
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +68,13 @@ async def _data() -> AsyncGenerator[None, None]:
         await client.query("CREATE i315_items:r1 SET label = $label;", {"label": label})
     QueryCache.clear()
     yield
-    QueryCache.clear()
+    try:
+        # Leave both databases empty for whatever runs next on the server (#340).
+        for name in _CONNECTIONS:
+            client = await SurrealDBConnectionManager.get_client(name)
+            await client.query("DELETE FROM i315_items;")
+    finally:
+        QueryCache.clear()
 
 
 async def test_cache_returns_each_connections_own_rows() -> None:
