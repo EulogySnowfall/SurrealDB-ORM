@@ -127,7 +127,7 @@ class TestQueuedStatement:
         stmt = tx._statements[-1]
         assert f"i322_nodes:{integer}" in stmt.sql
         assert integer not in stmt.vars.values()
-        assert "type::record" not in stmt.sql
+        assert "type::thing" not in stmt.sql
 
     async def test_table_only_reference_is_written_as_before(self, connection: MagicMock) -> None:
         tx = await _open(connection)
