@@ -6,6 +6,125 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.37] - 2026-11-02
+
+**Bug fix release (V2 LTS).** One ORM/SDK fix, the `v2` port of `main`'s
+#461 (0.37.3): `live(diff=True)` events now name their record and no longer
+end the stream on a model with a required field (#466, #495). Read
+*Behaviour change*. The SurrealDB pin is unchanged (tested against 2.7.0,
+supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`live(diff=True)` events now name their record.** In DIFF mode the
+  notification's result is a list of JSON patches with no `id`, so
+  `LiveChange.record_id` and `ModelChangeEvent.record_id` were empty.
+  `LiveChange.from_dict()` now falls back to the notification's `record`
+  field, which SurrealDB 2.7.0 sends; `result["id"]` still wins when the
+  result is a full record (#466).
+- **`QuerySet.live(diff=True)` on a model with a required field no longer
+  ends the stream with a `ValidationError`** at the first notification.
+  The ORM validated the empty DIFF result as a record (#466).
+
+### Behaviour change
+
+- **In DIFF mode, `event.instance` carries only the id**, built the same
+  way as for an empty `DELETE`. The change itself is in
+  `event.changed_fields`. Before, such a stream either raised
+  `ValidationError` (model with a required field) or yielded an instance
+  holding only default values. `diff=False` is unchanged.
+
+### Migration notes
+
+- Code that read other fields from `event.instance` in DIFF mode was only
+  getting default values; fetch the record (for example
+  `Model.objects().get(event.record_id)`) when the full state is needed.
+
+### Verification
+
+Against SurrealDB 2.7.0, at the PR's validated head: 3,645 unit tests on
+each of Python 3.12, 3.13 and 3.14; 798 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The 9 new tests (6 unit, 3
+integration) passed three times in a row; re-checked after syncing with
+`v2` (3,700 unit, 800 integration).
+
+---
+
+## [0.21.36] - 2026-11-02
+
+**Bug fix release (V2 LTS).** One ORM fix and one SDK fix, both `v2` ports
+of `main` fixes: values a query attaches to an instance are never saved
+(#470, #489, backport of #469), and a WebSocket reply above 4 MiB no longer
+times out (#453, #490). Read *Behaviour change*. The SurrealDB pin is
+unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Added
+
+- **`WebSocketConnection(..., max_message_size=0)`**, keyword-only. `0`
+  means no cap on received messages; otherwise an `int >= 0`, checked at
+  construction (`TypeError` for a non-int or a `bool`, `ValueError` when
+  negative) (#453).
+
+### Fixed
+
+- **`save()` and `update()` no longer write values a query attached to an
+  instance.** On a model with `extra="allow"`, `_knn_distance` from
+  `similar_to()`, `SearchScore` / `SearchHighlight` aliases and
+  `prefetch_related()` / `Prefetch(to_attr=)` names were stored as columns
+  when they reached the extra fields, from the row or after a later
+  validated assignment (#470).
+- **Attached query values are tracked outside model data.** Only names
+  that are not model fields are kept, copies (`model_copy()`, `copy`,
+  `deepcopy`) get their own set, and the names survive pickling. Equality
+  with the same record loaded without attached values is unchanged (#470).
+- **A WebSocket reply above 4 MiB no longer times out.** The client called
+  aiohttp's `ws_connect()` without `max_msg_size`, so aiohttp's 4 MiB
+  default capped every reply (six 1 MB rows were enough). The cap is lifted
+  on connect and on reconnect, matching the HTTP transport (#453).
+- **Pending WebSocket requests fail at once when the socket drops.** When
+  the read loop ends for any reason other than `close()` (server close,
+  protocol error, a message above the cap), every pending request fails
+  with `ConnectionError("WebSocket connection lost: <reason>")` before the
+  reconnect starts, instead of waiting for its full timeout (#453).
+
+### Behaviour change
+
+- **`_sorm_attached` is a reserved key.** On an `extra="allow"` model, a
+  value under it is never written by `save()` / `update()` and has no other
+  effect. KNN/search annotation keys no longer appear in
+  `__pydantic_extra__` of query results; they are still readable as
+  attributes.
+- **By default the WebSocket client enforces no limit on received
+  messages**; pass `max_message_size=` to restore a cap. A request in
+  flight when the socket drops raises `surreal_sdk.exceptions.ConnectionError`
+  instead of `surreal_sdk.exceptions.TimeoutError`.
+
+### Migration notes
+
+- Rows already written with attached-value columns keep them; remove them
+  by hand if unwanted.
+- Code that caught `TimeoutError` to detect a dropped WebSocket should also
+  catch `ConnectionError`.
+
+### Known limitations
+
+- A search annotation alias equal to a field's `AliasChoices` /
+  `AliasPath` validation alias is not recognised as that field and is
+  split off the row, so the field is not filled from it (only `str`
+  aliases are checked), same as on `main`.
+
+### Verification
+
+Against SurrealDB 2.7.0, at each PR's validated head: 3,655 (#489) and
+3,636 (#490) unit tests on each of Python 3.12, 3.13 and 3.14; 791 and 793
+integration tests pass (4 expected failures each, the existing strict
+`xfail`s for integer record ids over WebSocket); `ruff` and `mypy` clean.
+The new tests of each PR (37 and 20) passed three times in a row; #490 was
+re-checked after syncing with `v2` (3,657 unit, 797 integration).
+
+---
+
 ## [0.21.35] - 2026-11-02
 
 **Bug fix release (V2 LTS).** Two SDK fixes, both `v2` ports of `main`

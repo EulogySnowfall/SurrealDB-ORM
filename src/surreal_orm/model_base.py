@@ -1,4 +1,5 @@
 import logging
+import weakref
 from datetime import UTC, datetime
 from typing import (
     TYPE_CHECKING,
@@ -71,6 +72,22 @@ def _raise_on_statement_error(response: QueryResponse, query: str) -> None:
                 raise TransactionConflictError(error.message) from error
             raise error
 
+
+# Names a query attached to each instance (search annotations, ``_knn_distance``,
+# prefetched relations), which save() and update() never write. Keyed by
+# ``id(instance)`` (a model instance is not hashable) and dropped by a
+# ``weakref.finalize`` when the instance is collected, so an id is never reused
+# while its entry exists. Kept outside the model data: validated input can
+# neither supply nor change it. See _attached_names().
+_ATTACHED_NAMES: dict[int, frozenset[str]] = {}
+
+# Reserved key: a value under it in validated input names nothing and is never
+# written, so no input can pose as the attached names.
+_ATTACHED_KEY = "_sorm_attached"
+
+# Key of the attached names in an instance's pickle state (see __getstate__).
+# Pickle state is not validated input: Pydantic's own keys all start with "__".
+_PICKLED_NAMES_KEY = "_sorm_attached_names"
 
 # Global registry of all SurrealDB models for migration introspection
 _MODEL_REGISTRY: list[type["BaseSurrealModel"]] = []
@@ -659,6 +676,102 @@ class BaseSurrealModel(BaseModel):
             fields.update(computed.keys())
         return fields
 
+    def _attach_value(self, name: str, value: Any) -> None:
+        """Attach a value computed by a query (a search annotation, a prefetch) to the instance.
+
+        The value is set without validation and the name is remembered, so
+        ``save()`` (and ``QuerySet.bulk_create()``, which saves through it) and
+        ``update()`` never write it: on a model with ``extra="allow"``, the next
+        validated assignment would otherwise move it into the model's extra
+        fields, and the next save would store it as a column. A model field is
+        set but never remembered.
+        """
+        object.__setattr__(self, name, value)
+        if name not in type(self).model_fields:
+            self._set_attached_names(self._attached_names() | {name})
+
+    def _set_attached_names(self, names: frozenset[str]) -> None:
+        """Record ``names`` as this instance's attached names (replacing any previous set)."""
+        key = id(self)
+        if key not in _ATTACHED_NAMES:
+            # The callback only cleans this dict: nothing to do at interpreter exit.
+            weakref.finalize(self, _ATTACHED_NAMES.pop, key, None).atexit = False  # type: ignore[misc]  # writable at runtime; typeshed slots omit it
+        _ATTACHED_NAMES[key] = names
+
+    def _attached_names(self) -> frozenset[str]:
+        """The names attached by :meth:`_attach_value` that are not model fields.
+
+        The names are kept outside the model data, in a module registry keyed by
+        the instance. Not in a Pydantic private attribute: ``BaseModel.__eq__``
+        compares ``__pydantic_private__``, so an instance with an attached value
+        would no longer equal the same record loaded without it. Not in the
+        instance ``__dict__`` either: on a model with ``extra="allow"`` a
+        validated assignment moves every non-field ``__dict__`` key into the
+        extra fields, where validated input can supply the same key. Nothing
+        that :meth:`model_validate`, ``__init__`` or :meth:`from_db` accepts can
+        change this set; copies get their own entry (see :meth:`__copy__`).
+        """
+        names = _ATTACHED_NAMES.get(id(self), frozenset())
+        return names - type(self).model_fields.keys()
+
+    def _write_excluded_names(self) -> set[str]:
+        """Names every write path leaves out of the dump, on top of ``id`` and server fields.
+
+        The attached names, plus the reserved ``_sorm_attached`` key so that an
+        extra value under it is never stored.
+        """
+        return {*self._attached_names(), _ATTACHED_KEY}
+
+    def __copy__(self) -> Self:
+        """Shallow copy (``copy.copy``, ``model_copy()``) carrying the attached names.
+
+        The copy carries the attached values in its own ``__dict__``, so it gets
+        the same names under its own registry entry: an attach on one never
+        changes what the other's writes exclude.
+        """
+        copied = super().__copy__()
+        names = self._attached_names()
+        if names:
+            copied._set_attached_names(names)
+        return copied
+
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
+        """Deep copy (``copy.deepcopy``, ``model_copy(deep=True)``) carrying the attached names."""
+        copied = super().__deepcopy__(memo)
+        names = self._attached_names()
+        if names:
+            copied._set_attached_names(names)
+        return copied
+
+    def __getstate__(self) -> dict[Any, Any]:
+        """Pickle state: Pydantic's, plus the attached names.
+
+        The registry is keyed by ``id(self)``, which does not survive pickling,
+        while the attached values travel in ``__dict__``. Without the names, an
+        unpickled instance on a model with ``extra="allow"`` would write those
+        values as columns once a validated assignment moves them into the extra
+        fields.
+        """
+        state = super().__getstate__()
+        names = self._attached_names()
+        if names:
+            state[_PICKLED_NAMES_KEY] = sorted(names)
+        return state
+
+    def __setstate__(self, state: dict[Any, Any]) -> None:
+        """Restore the Pydantic state and re-register the attached names it carries.
+
+        Only ``str`` names that are not model fields are kept.
+        """
+        state = dict(state)
+        pickled = state.pop(_PICKLED_NAMES_KEY, None)
+        super().__setstate__(state)
+        if isinstance(pickled, list):
+            fields = type(self).model_fields.keys()
+            names = frozenset(name for name in pickled if isinstance(name, str) and name not in fields)
+            if names:
+                self._set_attached_names(names)
+
     @classmethod
     def get_foreign_key_targets(cls) -> dict[str, str | None]:
         """
@@ -1003,11 +1116,12 @@ class BaseSurrealModel(BaseModel):
             tx=tx,
         )
 
-        # Build exclude set: always exclude 'id' and any server-generated fields
+        # Build exclude set: always exclude 'id' and any server-generated fields;
+        # the dump also leaves out the values a query attached (#470)
         exclude_fields = {"id"} | self.get_server_fields()
         id = self.get_id()
         table = self.get_table_name()
-        data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
+        data = self.model_dump(exclude=exclude_fields | self._write_excluded_names(), exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
         # A ForeignKey renders as a "table:id" string, which a record<> column
         # rejects outright — convert at the wire boundary (#169).
@@ -1306,8 +1420,9 @@ class BaseSurrealModel(BaseModel):
         """
         self._check_not_view()
 
-        # Build exclude set: always exclude 'id' and any server-generated fields
-        exclude_fields = {"id"} | self.get_server_fields()
+        # Build exclude set: always exclude 'id', any server-generated fields and
+        # the values a query attached (#470)
+        exclude_fields = {"id"} | self.get_server_fields() | self._write_excluded_names()
         data = self.model_dump(exclude=exclude_fields, exclude_unset=True, by_alias=True)
         data = self._restore_datetime_fields(data)
         # data keeps the original values for signals; only the wire copy is coerced
