@@ -11,6 +11,7 @@ from cbor2 import CBORTag
 
 from src.surreal_sdk.protocol import cbor as cbor_module
 from src.surreal_sdk.protocol.cbor import (
+    TAG_CUSTOM_DURATION,
     TAG_DATETIME,
     TAG_NONE,
     TAG_RECORDID,
@@ -441,7 +442,8 @@ class TestCBORTags:
         assert TAG_STRING_UUID == 9
         assert TAG_STRING_DECIMAL == 10
         assert TAG_DATETIME == 12
-        assert TAG_STRING_DURATION == 14
+        assert TAG_STRING_DURATION == 13
+        assert TAG_CUSTOM_DURATION == 14
 
 
 class TestRPCRequestCBOR:
