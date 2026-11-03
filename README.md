@@ -324,8 +324,8 @@ dev lock); it also shipped three fixes, the `v2` ports of #396, #334 and #367.
 - **Record IDs containing a backtick or a backslash now round-trip (#310).** `merge()` with a `SurrealFunc`,
   the atomic array helpers, `relate()`, `get_related()`, `remove_relation()`, `remove_all_relations()`, graph
   traversals and `delete()` inside an HTTP transaction failed with a parse error on SurrealDB 2.x, or named a
-  different record, for such an ID (including one ending in a backslash). `escape_record_id()` now writes SurrealDB's `` \` `` and `\\`
-  sequences instead of doubling the backtick.
+  different record, for such an ID (including one ending in a backslash). `escape_record_id()` now writes
+  SurrealDB's `` \` `` and `\\` sequences instead of doubling the backtick.
 - **Added:** `surreal_sdk.protocol.cbor.unescape_record_id()`, the inverse of `escape_record_id()`.
 - **Behaviour change:** only IDs containing `` ` `` or `\` produce different SurrealQL. `parse_record_id()` and
   the SDK connections now decode `\\` and `` \` `` inside a backtick-delimited `table:id` string; a doubled
