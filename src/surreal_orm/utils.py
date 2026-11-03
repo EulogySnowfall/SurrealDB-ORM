@@ -145,6 +145,10 @@ def escape_single_quotes(value: str) -> str:
 
     The same rules as :func:`surql_string_literal`, without the surrounding
     quotes.
+
+    .. deprecated:: 0.21
+        Kept for existing importers only; use :func:`surql_string_literal`,
+        the one documented way to render a SurrealQL string literal.
     """
     return surql_string_literal(value)[1:-1]
 
