@@ -127,7 +127,12 @@ async def test_set_add_list_adds_only_missing_elements() -> None:
     [("unset", ["pod-b"]), ("held", ["pod-a", "pod-b"])],
 )
 async def test_set_add_on_a_set_field_keeps_one_copy(set_table: None, record: str, expected: list[str]) -> None:
-    """``option<set<string>>``, unset and holding values: ``array::add`` works on both."""
+    """``option<set<string>>``, unset and holding values: ``array::add`` works on both.
+
+    With the old ``SET field += $value`` this also passed, because the set
+    coercion deduplicates; it guards the new ``array::add()`` query on a set
+    field rather than reproducing the set case of #261.
+    """
     await I261SetItem.atomic_set_add(record, "processed_by", "pod-b")
     records = await I261SetItem.atomic_set_add(record, "processed_by", "pod-b")
 
