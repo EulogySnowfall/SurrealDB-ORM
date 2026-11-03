@@ -690,6 +690,9 @@ against 2.7.0, supported range 2.6.x – 2.7.x).
   coordinate, now raises before any request instead of reaching the server.
 - A non-int `ref` to `SearchHighlight` raises `TypeError` when the object is
   built, where it used to raise `ValueError` at render time.
+- A `bool` `ref` to `SearchScore` or `SearchHighlight` (`ref=True`) raises
+  `TypeError` when the object is built, where `SearchHighlight` used to
+  render it as `1` and `SearchScore` wrote it as passed.
 - `GeoDistance.point` is always a tuple of plain numbers.
 
 ### Migration
