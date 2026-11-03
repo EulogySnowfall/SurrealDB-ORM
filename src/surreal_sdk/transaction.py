@@ -172,9 +172,19 @@ if TYPE_CHECKING:
 
 #: Errors SurrealDB reports for the statements a failed transaction cancelled,
 #: rather than for the statement that failed it. 2.x sends the first for every
-#: cancelled statement; the second is kept for servers that report the aborted
-#: ``COMMIT`` itself.
-_CANCELLED_STATEMENT_ERRORS = ("not executed due to a failed transaction", "Cannot COMMIT")
+#: cancelled statement; the second is the aborted ``COMMIT`` of servers that
+#: report it (2.7 does not). A message carrying the retryable wording is never
+#: part of the cascade: 2.7 reports a commit-time conflict on every statement as
+#: "The query was not executed due to a failed transaction. Failed to commit
+#: transaction due to a read or write conflict. This transaction can be retried".
+_CANCELLED_STATEMENT_ERRORS = ("not executed due to a failed transaction", "Cannot COMMIT: the transaction was")
+
+
+def _is_cancellation(error: str) -> bool:
+    """Whether *error* only says the statement was cancelled by a failed transaction."""
+    if TransactionConflictError.is_conflict_error(Exception(error)):
+        return False
+    return any(marker in error for marker in _CANCELLED_STATEMENT_ERRORS)
 
 
 def _failed_statement_error(response: "QueryResponse") -> tuple[str, bool] | None:
@@ -190,7 +200,7 @@ def _failed_statement_error(response: "QueryResponse") -> tuple[str, bool] | Non
     if not errors:
         return None
     for error in errors:
-        if not any(marker in error for marker in _CANCELLED_STATEMENT_ERRORS):
+        if not _is_cancellation(error):
             return error, True
     return errors[0], False
 
@@ -466,8 +476,8 @@ class HTTPTransaction(BaseTransaction):
         if failure is not None:
             error, is_cause = failure
             message = f"Transaction commit failed: {error}"
-            # A cancellation message says "failed transaction", which would read as a
-            # retryable conflict; only the failing statement's own error is classified.
+            # Only the failing statement's own error is classified; a cancellation
+            # message says nothing about the cause.
             if is_cause and TransactionConflictError.is_conflict_error(Exception(error)):
                 raise TransactionConflictError(message)
             raise TransactionError(message)
