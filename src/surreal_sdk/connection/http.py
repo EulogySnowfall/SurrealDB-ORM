@@ -231,6 +231,11 @@ class HTTPConnection(BaseSurrealConnection):
         """Stop the transient-401 recovery from replaying the last ``signin()``."""
         self._signin_args = None
 
+    def _install_auth(self, token: str | None, signin_args: dict[str, Any] | None = None) -> None:
+        """Install *token* and the ``signin()`` arguments it came from (see the base class)."""
+        self._signin_args = dict(signin_args) if signin_args is not None else None
+        super()._install_auth(token, signin_args)
+
     async def _drain_and_close(self, timeout: float) -> bool:
         """Close this connection once nothing is using it any more.
 

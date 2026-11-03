@@ -124,11 +124,11 @@ class ConnectionPool:
             response = await conn.signin(user, password)
             if generation == self._credentials_generation:
                 break
+        args = dict(conn._signin_args) if isinstance(conn, HTTPConnection) and conn._signin_args else None
         # ``signin()`` keeps the previous token when the server returns none;
         # the token replayed on reconnect must be the pool's.
-        conn._token = response.token
+        conn._install_auth(response.token, args)
         if response.token:
-            args = dict(conn._signin_args) if isinstance(conn, HTTPConnection) and conn._signin_args else None
             self._pool_auth[conn] = (response.token, args, generation)
         else:
             self._pool_auth.pop(conn, None)
@@ -228,9 +228,7 @@ class ConnectionPool:
                                 # one.
                                 self._pool_auth[conn] = (conn._token, args, minted)
                             else:
-                                conn._token = token
-                                conn._authenticated = True
-                                conn._signin_args = dict(args)
+                                conn._install_auth(token, args)
                         else:
                             await self._sign_in_as_pool(conn)
                     elif record is not None:
@@ -243,15 +241,12 @@ class ConnectionPool:
                 elif isinstance(conn, HTTPConnection):
                     # Stateless: no token sent means an unauthenticated
                     # request.
-                    conn._token = None
-                    conn._authenticated = False
-                    conn._signin_args = None
+                    conn._clear_auth()
                 else:
                     try:
                         await conn.rpc(RPCMethod.INVALIDATE)
                     finally:
-                        conn._token = None
-                        conn._authenticated = False
+                        conn._clear_auth()
                 if generation == self._credentials_generation:
                     break
         except Exception:
