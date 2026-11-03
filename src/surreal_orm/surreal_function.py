@@ -82,6 +82,14 @@ def _surreal_func_from_server(expression: str) -> SurrealFunc:
     return func
 
 
+def _is_from_server(value: SurrealFunc) -> bool:
+    """Tell whether *value* was built by ``_surreal_func_from_server()``.
+
+    Code generators use it to import the name its ``repr()`` calls.
+    """
+    return bool(getattr(value, "_from_server", False))
+
+
 class SurrealFunction(StrEnum): ...
 
 

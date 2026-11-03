@@ -11,16 +11,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..surreal_function import SurrealFunc
+from ..surreal_function import SurrealFunc, _is_from_server
 from .migration import generate_migration_name
 
 if TYPE_CHECKING:
     from .operations import Operation
-
-
-def _is_from_server(value: SurrealFunc) -> bool:
-    """Tell whether *value* was built by ``_surreal_func_from_server()``."""
-    return bool(getattr(value, "_from_server", False))
 
 
 class MigrationGenerator:

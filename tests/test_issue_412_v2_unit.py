@@ -20,8 +20,9 @@ import pytest
 
 from src.surreal_orm.migrations.define_parser import parse_define_field
 from src.surreal_orm.migrations.generator import MigrationGenerator
+from src.surreal_orm.migrations.model_generator import ModelCodeGenerator
 from src.surreal_orm.migrations.operations import AddField, AlterField, _render_define_field
-from src.surreal_orm.migrations.state import FieldState
+from src.surreal_orm.migrations.state import FieldState, SchemaState, TableState
 from src.surreal_orm.surreal_function import SurrealFunc, _surreal_func_from_server
 from src.surreal_orm.utils import escape_single_quotes, surql_string_literal
 
@@ -76,6 +77,33 @@ class TestServerDefaultRoundTrip:
         source = MigrationGenerator(tmp_path)._render_migration("0001_x", [server], [])
         assert "from surreal_orm.surreal_function import _surreal_func_from_server" in source
         assert "from surreal_orm import SurrealFunc" not in source
+
+
+class TestInspectdbModelsWithServerDefault:
+    """``inspectdb`` writes ``repr(default)`` into a models module too."""
+
+    @staticmethod
+    def _models_source(default: SurrealFunc) -> str:
+        table = TableState(name="i412_model", fields={"n": FieldState(name="n", field_type="int", default=default)})
+        return ModelCodeGenerator().generate(SchemaState(tables={"i412_model": table}))
+
+    def test_generated_models_with_block_default_execute(self) -> None:
+        parsed = parse_define_field(BLOCK_DEFINITION)
+        source = self._models_source(parsed.default)
+        assert "from surreal_orm.surreal_function import _surreal_func_from_server" in source
+        assert "from surreal_orm import SurrealFunc\n" not in source
+        namespace: dict[str, object] = {}
+        exec(compile(source, "<i412_models>", "exec"), namespace)
+        model = namespace["I412Model"]
+        default = model.model_fields["n"].default  # type: ignore[attr-defined]
+        assert type(default).__name__ == "SurrealFunc"
+        assert default.expression == BLOCK_EXPRESSION
+
+    def test_generated_models_with_plain_default_unchanged(self) -> None:
+        source = self._models_source(SurrealFunc("time::now()"))
+        assert "from surreal_orm import SurrealFunc" in source
+        assert "default=SurrealFunc('time::now()')" in source
+        assert "_surreal_func_from_server" not in source
 
 
 class TestOrdinaryDefaultsUnchanged:
