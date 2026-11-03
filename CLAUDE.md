@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.42)
+> Context document for Claude AI - Last updated: November 2026 (0.21.43)
 
 <!-- -->
 
@@ -19,12 +19,26 @@
 
 ---
 
-## Current Version: 0.21.42 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.43 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.43
+
+One fix, `v2` only: #518 via #524 (`surreal_sdk/connection/websocket.py`), backport of #510/#513. Pin unchanged
+(2.7.0). Also docs/test/CI follow-ups #515, #516, #521, #523.
+
+- **"Socket open" is not "session usable".** A private readiness event is cleared at the start of each reconnect
+  attempt and when the read loop sees the socket end, and set only after `use()` succeeds on a socket whose reader is
+  still running. Public requests wait for it (at most the request timeout, no longer than the reconnect task lives) or
+  fail with `ConnectionError`; the restore requests (`authenticate`, `use`) take an internal path that does not wait.
+- **A failed restore step drops only its own socket.** Before, it called `_cleanup()` from inside the reconnect task,
+  which cancelled that task. The reconnect task never waits on itself while re-creating live queries.
+- **Open (review suggestion on #524):** a request woken by `close()` during a reconnect gets
+  `Not connected. Call connect() first.`, which reads as a usage error.
 
 ### What's New in 0.21.42
 
