@@ -37,6 +37,17 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.38.1
+
+**Fix release.** Follow-ups from the 0.36.1 reviews ([#448](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/448)).
+`ConnectionPool` records every authentication change it makes on a connection, like the connection's own `signin()` /
+`authenticate()` do. `TransactionConflictError.is_conflict_error()` matches `This transaction can be retried` only at
+the end of the message, so `@retry_on_conflict` no longer retries an `ASSERT` failure whose rejected value contains that
+sentence (behaviour change: it is raised as `QueryError`). The change-feed reader reports a conflict on its `COMMIT` as
+the `ChangeFeedError` cause. `SearchScore` / `SearchHighlight` `ref`, the `Sum` / `Avg` / `Min` / `Max` field and the
+`GeoDistance` field and point are validated again when reassigned after construction. SurrealDB pin unchanged (3.3.5).
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.38.0
 
 **Minor release — Advanced Queries** ([#457](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/457)). Filter

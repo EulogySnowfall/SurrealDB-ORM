@@ -6,6 +6,56 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.38.1] - 2026-11-02
+
+**Fix release.** Follow-ups from the 0.36.1 reviews, #448 via #482
+(`surreal_sdk/connection/base.py`, `http.py`, `pool.py`, `exceptions.py`,
+`streaming/change_feed.py`, `transaction.py`; `surreal_orm/search.py`,
+`aggregations.py`, `geo.py`). Read *Behaviour change* below if you rely on
+`@retry_on_conflict` retrying an `ASSERT` failure. The SurrealDB pin is
+unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x). `v2`: the
+pool half is already there; the other three are tracked in #486.
+
+### Fixed
+
+- **`ConnectionPool` now records every authentication change it makes on a
+  connection** (pool sign-in, reset on release) through the connection's own
+  private helpers, `_install_auth()` / `_clear_auth()`, which call
+  `_auth_changed()` like `signin()`, `authenticate()` and `invalidate()` do
+  (#448).
+- **`TransactionConflictError.is_conflict_error()` matches `This transaction
+  can be retried` only at the end of the message** (case-insensitive). Every
+  retryable message ends with that sentence, including `retry_on_conflict`'s
+  own `... persisted after N retries ...: <last error>`; a failed `ASSERT`
+  ends with `must conform to: <expr>`, so one whose rejected value contains
+  the sentence is no longer classified as a retryable conflict (#448).
+- **The change-feed reader shares `HTTPTransaction`'s definition of a failed
+  transaction's cascade messages.** It used to drop every `Cannot COMMIT`
+  error, so a conflict reported on the `COMMIT` of its `BEGIN`/`COMMIT` batch
+  surfaced as "not executed due to a failed transaction"; it is now the
+  `ChangeFeedError` cause (#448).
+- **`SearchScore.ref`, `SearchHighlight.ref`, `Sum` / `Avg` / `Min` /
+  `Max.field` and `GeoDistance.field` / `point` are validated when reassigned
+  after construction**, with the constructor's checks: an invalid value
+  raises `TypeError` / `ValueError` at assignment instead of being rendered
+  by `to_surql()` as given. Reading and assigning valid values work as before
+  (#448).
+
+### Changed
+
+- **Behaviour change:** an `ASSERT` failure whose message contains the
+  retryable sentence inside the rejected value is no longer retried by
+  `@retry_on_conflict`; it is raised as `QueryError`, not
+  `TransactionConflictError` (#448).
+
+### Docs
+
+- The `[0.36.1]` *Behaviour change* entry is corrected: on release, only a
+  WebSocket connection signs in again when its pool token has run out; an
+  HTTP connection gets the stored pool token back locally, and an expired one
+  is replaced by the existing `401` re-mint. Any pooled connection whose pool
+  credentials changed while it was in use signs in again on release (#448).
+
 ## [0.38.0] - 2026-11-02
 
 **Minor release — Advanced Queries (roadmap v0.38.0, #457 via #469).**
@@ -394,9 +444,11 @@ supported range 3.2.x – 3.3.x).
 
 - **On release, a pooled WebSocket connection sends one `authenticate` RPC**
   (or `invalidate` when the pool has no credentials); an HTTP connection is
-  reset locally, with no request. A connection whose pool token has run out,
-  or whose pool credentials changed while it was in use, signs in again on
-  release. Code that relied on a pooled connection keeping a caller-set
+  reset locally, with no request. A WebSocket connection whose pool token has
+  run out, or any pooled connection whose pool credentials changed while it
+  was in use, signs in again on release. (On HTTP the stored pool token is put
+  back locally, and an expired one is replaced by the existing `401`
+  re-mint.) Code that relied on a pooled connection keeping a caller-set
   identity across acquisitions must sign in again after each `acquire()`
   (#391).
 - **An invalid alias, aggregation/geo field or coordinate now raises at
