@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from ..transaction import WebSocketTransaction
 import builtins
 
-from ..exceptions import ConnectionError, LiveQueryError, TimeoutError
+from ..exceptions import ConnectionError, LiveQueryError, QueryError, TimeoutError
 from ..protocol import cbor as cbor_module
 from ..protocol.rpc import RPCRequest, RPCResponse, _live_select_sql
 from ..utils import require_int, unescape_record_id
@@ -118,6 +118,12 @@ class WebSocketConnection(BaseSurrealConnection):
         self._reconnect_task: asyncio.Task[None] | None = None
         self._closing = False
         self._callback_tasks: set[asyncio.Task[Any]] = set()  # Track fire-and-forget callback tasks
+        # Cleared from the moment the socket drops until a reconnect has restored the
+        # session on the new one (authenticate and use() succeeded); a request waits
+        # on it. ``_connected`` stays True through a reconnect. Set initially: before
+        # connect() it is ``_connected`` that refuses requests.
+        self._session_ready = asyncio.Event()
+        self._session_ready.set()
 
     def _max_msg_size(self) -> int:
         """The ``max_msg_size`` given to aiohttp: ``0`` means no cap.
@@ -150,6 +156,7 @@ class WebSocketConnection(BaseSurrealConnection):
                 max_msg_size=self._max_msg_size(),
             )
             self._connected = True
+            self._session_ready.set()
 
             # Start message reader loop
             self._reader_task = asyncio.create_task(self._read_loop())
@@ -175,6 +182,7 @@ class WebSocketConnection(BaseSurrealConnection):
         """Clean up connection resources."""
         self._connected = False
         self._authenticated = False
+        self._session_ready.clear()
 
         # Cancel reader task
         if self._reader_task:
@@ -256,10 +264,20 @@ class WebSocketConnection(BaseSurrealConnection):
             error = exc
             ended = True
         finally:
+            if ended:
+                # Nothing more can be sent on this socket's session.
+                self._session_ready.clear()
             if ended and not self._closing:
                 self._fail_pending(self._lost_reason(ws, error))
-            if not self._closing and self.auto_reconnect:
+            # A reader cancelled by close() or by an abandoned restore did not see
+            # the socket end; and while a reconnect runs, it retries on its own.
+            if ended and not self._closing and self.auto_reconnect and not self._reconnecting():
                 self._reconnect_task = asyncio.create_task(self._reconnect())
+
+    def _reconnecting(self) -> bool:
+        """Whether a reconnect task is running."""
+        task = self._reconnect_task
+        return task is not None and not task.done()
 
     @staticmethod
     def _lost_reason(ws: aiohttp.ClientWebSocketResponse, error: BaseException | None) -> str:
@@ -337,55 +355,137 @@ class WebSocketConnection(BaseSurrealConnection):
                 task.add_done_callback(self._callback_tasks.discard)
 
     async def _reconnect(self) -> None:
-        """Attempt to reconnect after disconnection."""
+        """Reopen the socket and restore the session after a disconnection.
+
+        Requests issued meanwhile wait in :meth:`_send_rpc` until the session is
+        ready again: the socket open, the token re-authenticated and
+        ``use(namespace, database)`` answered. Those restore requests go
+        through :meth:`_restore_rpc`, which does not wait. A failed step
+        abandons that socket and the next attempt starts over; once every
+        attempt failed the connection is closed and waiting requests fail with
+        ``ConnectionError``. Live queries are re-created after the session is
+        ready.
+        """
         attempts = 0
         while attempts < self.max_reconnect_attempts and not self._closing:
+            # Not ready until this attempt restores the session, whatever the
+            # previous attempt left behind.
+            self._session_ready.clear()
             attempts += 1
             delay = min(self.reconnect_interval * (2 ** (attempts - 1)), 30.0)
             jitter = delay * random.uniform(0.5, 1.0)
             await asyncio.sleep(jitter)
+            if self._closing:
+                return
 
             try:
-                # Close old session before creating new one
-                if self._session and not self._session.closed:
-                    try:
-                        await self._session.close()
-                    except Exception:
-                        pass  # Best-effort cleanup of old session before reconnect
-
-                self._session = aiohttp.ClientSession()
-                self._ws = await self._session.ws_connect(
-                    self.url,
-                    timeout=ClientWSTimeout(ws_close=self.timeout),
-                    protocols=[self.protocol],  # Use configured protocol
-                    max_msg_size=self._max_msg_size(),
-                )
-                self._connected = True
-                self._reader_task = asyncio.create_task(self._read_loop())
+                await self._open_socket()
 
                 # Re-authenticate if we had a token
                 if self._token:
-                    await self.rpc("authenticate", [self._token])
+                    await self._restore_rpc("authenticate", [self._token])
 
                 # Set namespace and database
-                await self.use(self.namespace, self.database)
-
-                # Re-establish live queries with auto-resubscribe
-                await self._resubscribe_all()
-
-                return
-
+                await self._restore_rpc("use", [self.namespace, self.database])
             except Exception:
-                await self._cleanup()
+                await self._abandon_socket()
                 continue
 
+            reader = self._reader_task
+            if reader is None or reader.done():
+                # The new socket ended right after answering the restore (its reply
+                # and its close came in one read). Its reader saw this reconnect
+                # running and left the retry to it: never mark a dead socket ready.
+                await self._abandon_socket()
+                continue
+
+            self._session_ready.set()
+
+            # Re-establish live queries with auto-resubscribe
+            await self._resubscribe_all()
+
+            reader = self._reader_task
+            if not self._session_ready.is_set() or (reader is not None and reader.done()):
+                # The new socket ended while live queries were being re-created. Its
+                # reader saw this reconnect running and left the retry to it; the
+                # subscriptions not re-created yet are kept for the next attempt.
+                continue
+            return
+
+        if not self._closing:
+            # Every attempt failed: stop accepting requests and wake those waiting.
+            await self._abandon_socket()
+            self._connected = False
+            self._authenticated = False
+
+    async def _open_socket(self) -> None:
+        """Open a new socket (and HTTP session) and start its read loop."""
+        # Close old session before creating new one
+        if self._session and not self._session.closed:
+            try:
+                await self._session.close()
+            except Exception:
+                pass  # Best-effort cleanup of old session before reconnect
+
+        self._session = aiohttp.ClientSession()
+        self._ws = await self._session.ws_connect(
+            self.url,
+            timeout=ClientWSTimeout(ws_close=self.timeout),
+            protocols=[self.protocol],  # Use configured protocol
+            max_msg_size=self._max_msg_size(),
+        )
+        self._reader_task = asyncio.create_task(self._read_loop())
+
+    async def _abandon_socket(self) -> None:
+        """Drop the socket of a failed restore attempt; the connection stays not ready.
+
+        Unlike :meth:`_cleanup`, it leaves the reconnect task (the caller) and
+        ``_connected`` alone, so the next attempt can run.
+        """
+        reader, self._reader_task = self._reader_task, None
+        if reader is not None and not reader.done():
+            reader.cancel()
+            await asyncio.wait({reader})
+        self._fail_pending("session restore abandoned")
+        ws, self._ws = self._ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:
+                pass  # Best-effort: the socket is being dropped anyway
+        session, self._session = self._session, None
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:
+                pass  # Best-effort: the session is being dropped anyway
+
+    async def _restore_rpc(self, method: str, params: list[Any]) -> Any:
+        """Send one session-restore request on the new socket, without waiting for readiness."""
+        response = await self._send_on_socket(RPCRequest(method=method, params=params))
+        if response.is_error:
+            message = response.error.message if response.error else "Unknown error"
+            code = response.error.code if response.error else None
+            raise QueryError(message=message, code=code)
+        return response.result
+
     async def _resubscribe_all(self) -> None:
-        """Re-establish all live subscriptions after reconnect."""
-        old_subscriptions = dict(self._live_subscriptions)
+        """Re-establish all live subscriptions after reconnect.
+
+        Stops as soon as the session is lost again (the new socket ended): the
+        subscriptions not re-created yet, the one in flight included, stay
+        registered under their previous id so the next reconnect attempt
+        re-creates them, and that attempt starts at once instead of after one
+        timeout per remaining subscription.
+        """
+        old_subscriptions = list(self._live_subscriptions.items())
         self._live_subscriptions.clear()
         self._live_callbacks.clear()
 
-        for old_id, params in old_subscriptions.items():
+        for index, (old_id, params) in enumerate(old_subscriptions):
+            if not self._session_ready.is_set():
+                self._keep_for_next_attempt(old_subscriptions[index:])
+                return
             try:
                 new_id = await self._resubscribe_one(params)
 
@@ -396,8 +496,16 @@ class WebSocketConnection(BaseSurrealConnection):
                     task.add_done_callback(self._callback_tasks.discard)
 
             except Exception:
+                if not self._session_ready.is_set():
+                    self._keep_for_next_attempt(old_subscriptions[index:])
+                    return
                 # Failed to resubscribe, skip this one
                 pass
+
+    def _keep_for_next_attempt(self, subscriptions: list[tuple[str, "LiveSubscriptionParams"]]) -> None:
+        """Register *subscriptions* again under their previous id, for the next restore."""
+        for old_id, params in subscriptions:
+            self._live_subscriptions.setdefault(old_id, params)
 
     async def _resubscribe_one(self, params: "LiveSubscriptionParams") -> str:
         """Resubscribe a single live query."""
@@ -460,6 +568,10 @@ class WebSocketConnection(BaseSurrealConnection):
         """
         Send RPC request via WebSocket.
 
+        While a reconnect restores the session, the request waits until it is
+        ready (authenticated, namespace and database selected) before anything
+        is sent, for at most ``timeout`` seconds.
+
         Args:
             request: The RPC request to send
 
@@ -467,12 +579,48 @@ class WebSocketConnection(BaseSurrealConnection):
             The RPC response
 
         Raises:
-            ConnectionError: If not connected, or if the socket drops while
-                the request waits for its reply
+            ConnectionError: If not connected, if the session is not restored
+                within ``timeout`` (or the reconnect gives up, or ``close()``
+                is called meanwhile), or if the socket drops while the request
+                waits for its reply
             TimeoutError: If request times out
             TypeError, ValueError: If the request cannot be encoded (a value
                 the protocol has no form for); nothing is sent then
         """
+        if not self._session_ready.is_set():
+            await self._wait_for_session()
+        return await self._send_on_socket(request)
+
+    async def _wait_for_session(self) -> None:
+        """Wait until the session is ready, or raise ``ConnectionError``.
+
+        Wakes when the reconnect task ends too (gave up, cancelled by
+        ``close()``), so a caller never waits past it. The reconnect task itself
+        (re-creating live queries) never waits: the session it is restoring was
+        lost again, and only that same task can restore it, so it fails at once
+        and moves on to its next attempt.
+        """
+        if self._reconnect_task is not None and asyncio.current_task() is self._reconnect_task:
+            raise ConnectionError("WebSocket connection lost while restoring the session")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.timeout
+        while not self._session_ready.is_set():
+            if self._closing or not self._connected:
+                raise ConnectionError("Not connected. Call connect() first.")
+            reconnect = self._reconnect_task
+            if reconnect is None or reconnect.done():
+                raise ConnectionError("WebSocket connection lost and not being restored")
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise ConnectionError(f"WebSocket session not restored within {self.timeout}s")
+            ready = asyncio.ensure_future(self._session_ready.wait())
+            try:
+                await asyncio.wait({ready, reconnect}, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                ready.cancel()
+
+    async def _send_on_socket(self, request: RPCRequest) -> RPCResponse:
+        """Send *request* on the current socket and wait for its reply (see :meth:`_send_rpc`)."""
         if not self._ws or not self._connected:
             raise ConnectionError("Not connected. Call connect() first.")
 
