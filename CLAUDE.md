@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.35)
+> Context document for Claude AI - Last updated: November 2026 (0.21.36)
 
 <!-- -->
 
@@ -19,12 +19,27 @@
 
 ---
 
-## Current Version: 0.21.35 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.36 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.36
+
+Two fixes: #470 via #489 (`model_base.py`, `query_set.py`, backport of `main`'s #469) and #453 via #490
+(`connection/websocket.py`, port of `main`'s #451 fix). Pin unchanged (2.7.0).
+
+- **Attached query values live in a module registry keyed by the instance** (`weakref.finalize` cleanup), never in
+  model data: `_attach_value()` records only non-field `str` names, `save()` / `update()` exclude them plus the
+  reserved `_sorm_attached` key. `__copy__` / `__deepcopy__` give a copy its own set, `__getstate__` /
+  `__setstate__` carry it through pickling. `v2` has no `QuerySet.upsert()` / `bulk_upsert()`. Open: a field whose
+  `validation_alias` is `AliasChoices` / `AliasPath` is not protected from a same-named annotation (same on `main`).
+- **`max_message_size=0` goes to aiohttp as `max_msg_size`** in `connect()` and `_reconnect()`; checked locally
+  (no SDK `require_int` on `v2`). When the read loop ends other than by `close()`, pending futures fail with
+  `_ConnectionLost` (an SDK `ConnectionError`, "WebSocket connection lost: <reason>") before `_reconnect()` is
+  scheduled; `close()` keeps its `Connection closed` path.
 
 ### What's New in 0.21.35
 
