@@ -524,13 +524,14 @@ class HTTPTransaction(BaseTransaction):
         from .types import RecordsResponse
 
         _validate_identifier(table, "table")
-        if isinstance(data, dict):
-            data = [data]
+        # Materialise once: both loops below walk the records, and a one-shot
+        # iterable (a generator) would be empty for the second one.
+        records = [data] if isinstance(data, dict) else list(data)
         # Check every record first, so a bad key in a later one queues nothing.
-        for record in data:
+        for record in records:
             _validate_keys(record)
 
-        for i, record in enumerate(data):
+        for i, record in enumerate(records):
             fields = ", ".join(f"{k} = $r{i}_{k}" for k in record)
             sql = f"CREATE {table} SET {fields};"
             vars_with_prefix = {f"r{i}_{k}": v for k, v in record.items()}
