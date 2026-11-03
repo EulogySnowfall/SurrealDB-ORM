@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.44)
+> Context document for Claude AI - Last updated: November 2026 (0.21.45)
 
 <!-- -->
 
@@ -19,12 +19,24 @@
 
 ---
 
-## Current Version: 0.21.44 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.45 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.45
+
+One fix, `v2` only: #438 via #533 (`surreal_sdk/transaction.py`). Pin unchanged (2.7.0). Also test follow-up #532
+(#404).
+
+- **Walking the records twice needs a list.** `HTTPTransaction.insert()` checks every record's keys before queuing
+  anything (#382), so it loops over `data` twice; a generator was empty for the second loop and the transaction
+  queued nothing, silently. The records are materialised once (`[data]` for a dict, `list(data)` otherwise).
+- **Auth routing is now tested below the helper.** The #372 tests patched `_create_auth_client()` itself; #532 patches
+  `surreal_sdk.HTTPConnection` and checks the client is built from the model's `connection=` / `using()` config.
+- **Open (review suggestion on #533):** `main`'s `HTTPTransaction.insert()` still loops over `data` twice.
 
 ### What's New in 0.21.44
 
