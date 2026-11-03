@@ -19,6 +19,14 @@ on:
       - '.github/workflows/**'
       - '.surrealdb-version'
       - 'uv.lock'
+      # Docs paths: `CI Success` is a required status check on v2, but a PR
+      # that only touches docs would otherwise never trigger this workflow, so
+      # the check stays "Expected" and the PR cannot merge. Including docs makes
+      # CI run and report `CI Success` for docs-only PRs too (same as main).
+      - 'README.md'
+      - '**/*.md'
+      - 'docs/**'
+      - 'CHANGELOG'
 
 env:
   SURREALDB_URL: http://localhost:8000
