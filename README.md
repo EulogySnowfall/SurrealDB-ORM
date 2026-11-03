@@ -52,6 +52,20 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.36
+
+**Bug fix release (V2 LTS).** One ORM fix (#470) and one SDK fix (#453), `v2` ports of `main` fixes; pin unchanged
+(2.7.0).
+
+- **Query values are never saved.** On an `extra="allow"` model, `save()` / `update()` no longer write `_knn_distance`,
+  `SearchScore` / `SearchHighlight` aliases or `prefetch_related()` / `Prefetch(to_attr=)` names as columns. Attached
+  values are tracked outside model data; copies and pickling keep them, equality is unchanged.
+- **Large WebSocket replies.** aiohttp's 4 MiB message cap is lifted (new `max_message_size=` keyword, `0` = no cap),
+  and pending requests fail at once with `ConnectionError` when the socket drops instead of timing out.
+- **Behaviour change:** `_sorm_attached` is a reserved key; KNN/search keys no longer appear in `__pydantic_extra__`;
+  a request in flight when the WebSocket drops raises `ConnectionError`, not `TimeoutError`. See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.35
 
 **Bug fix release (V2 LTS).** Two SDK fixes (#452, #446), `v2` ports of `main` fixes; pin unchanged (2.7.0).
