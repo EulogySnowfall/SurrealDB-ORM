@@ -52,6 +52,19 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.33
+
+**Bug fix release (V2 LTS).** One ORM fix (#444), the `v2` port of `main`'s #422. Arguments written into the query
+text by `annotate()`, the aggregations, `GeoDistance` and the search annotations are checked before any request.
+
+- **Aliases are checked.** `annotate()` and `to_surql(alias)` refuse an alias that is not an identifier.
+- **`GeoDistance` points are numbers.** The point must be a `(longitude, latitude)` pair of finite `int`/`float`
+  values (`TypeError` / `ValueError`); the field is checked as a field path.
+- **`SearchScore` / `SearchHighlight` `ref` is an `int` of at least 0**, checked when the object is built.
+- **Behaviour change:** `Sum`/`Avg`/`Min`/`Max` accept a dotted path such as `"address.city"`; a non-int `ref` to
+  `SearchHighlight` raises `TypeError` at construction instead of `ValueError` at render time. Valid input renders the
+  same SurrealQL as before. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.32
 
 **Bug fix release (V2 LTS).** One SDK fix (#405), the `v2` port of the 0.35.5 fix on `main`; no public API change,
