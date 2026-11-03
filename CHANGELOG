@@ -6,6 +6,56 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.38] - 2026-11-02
+
+**Bug fix release (V2 LTS).** One ORM/SDK fix, the `v2` port of `main`'s
+#482 (0.38.1): annotation arguments are checked again when reassigned, the
+retryable-conflict match is anchored at the end of the message, and the
+change-feed reader shares `HTTPTransaction`'s cancellation-cascade
+definition (#486, #497). Read *Behaviour change*. The SurrealDB pin is
+unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **Annotation arguments are checked again when assigned after
+  construction.** `SearchScore.ref`, `SearchHighlight.ref`,
+  `Sum`/`Avg`/`Min`/`Max.field` and `GeoDistance.field`/`point` are written
+  into the query text, not bound. The constructor checked them, but a value
+  assigned later reached the rendered SurrealQL unchecked. They now raise
+  the constructor's `TypeError`/`ValueError` on assignment.
+  `GeoDistance.point` is still an immutable tuple of plain numbers (#486).
+- **`TransactionConflictError.is_conflict_error()` only matches
+  `This transaction can be retried` at the end of the message** (a trailing
+  period or whitespace is tolerated). A failed `ASSERT` whose rejected value
+  contains that sentence is no longer retried by `@retry_on_conflict` or
+  raised as `TransactionConflictError` (#486).
+- **The change-feed reader uses the same cancellation-cascade definition as
+  `HTTPTransaction`.** A conflict reported on the `COMMIT` of its
+  `BEGIN`/`COMMIT` batch is now the `ChangeFeedError` cause instead of
+  "The query was not executed due to a failed transaction" (#486).
+
+### Behaviour change
+
+- Assigning an invalid value to those annotation attributes now raises at
+  assignment instead of being rendered into the query.
+- Retry classification is narrower: the retryable sentence must end the
+  message.
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, at the PR's validated head: 3,671 unit tests on
+each of Python 3.12, 3.13 and 3.14; 795 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The 32 new unit tests passed three
+times in a row; re-checked after syncing with `v2` (3,726 unit, 797
+integration).
+
+---
+
 ## [0.21.37] - 2026-11-02
 
 **Bug fix release (V2 LTS).** One ORM/SDK fix, the `v2` port of `main`'s

@@ -52,6 +52,16 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.38
+
+**Bug fix release (V2 LTS).** One fix (#486), the `v2` port of `main`'s #482; pin unchanged (2.7.0).
+
+- **Annotation arguments.** `SearchScore.ref`, `SearchHighlight.ref`, `Sum`/`Avg`/`Min`/`Max.field` and
+  `GeoDistance.field`/`point` are checked again when reassigned after construction.
+- **Conflict detection.** `is_conflict_error()` matches the retryable sentence only at the end of the message, so a
+  failed `ASSERT` echoing it is no longer retried; the change-feed reader reports a `COMMIT` conflict as the cause.
+- **Behaviour change:** an invalid reassigned value raises at assignment. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.37
 
 **Bug fix release (V2 LTS).** One fix (#466), the `v2` port of `main`'s #461; pin unchanged (2.7.0).
