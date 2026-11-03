@@ -37,8 +37,8 @@ One SDK fix, #405 via #475: the `v2` port of `main`'s 0.35.5 fix (#390, #398). P
   gates installing the re-minted token; an *identity* counter (every auth change except the re-mint itself)
   decides the retry: same identity → retry with the current token, no new `/signin`; changed identity → raise the
   original 401 as `QueryError`, never resend under the new state.
-- **`signin()` fetches (`_fetch_signin()`) and installs in two steps** so the re-mint can discard its result. Unlike
-  `main`, `v2` posts through `self._client` and its `close()` has no drain step.
+- **`signin()` fetches (`_fetch_signin()`) and installs in two steps** so the re-mint can discard its result. Same
+  code as `main`'s #398.
 - **Tests order the steps with gated fake responses** (`TestReauthDoesNotOverrideConcurrentAuthChange`, 8 tests;
   6 fail on 0.21.31).
 
