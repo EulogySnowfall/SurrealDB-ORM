@@ -278,9 +278,12 @@ def test_like_to_regex_patterns() -> None:
 
 
 def test_transaction_conflict_error_detection() -> None:
-    assert TransactionConflictError.is_conflict_error(Exception("Transaction failed: can be retried"))
-    assert TransactionConflictError.is_conflict_error(Exception("failed transaction due to conflict"))
-    assert TransactionConflictError.is_conflict_error(Exception("document changed by another client"))
+    assert TransactionConflictError.is_conflict_error(
+        Exception("Failed to commit transaction due to a read or write conflict. This transaction can be retried")
+    )
+    # Only the server's retryable wording counts (#446).
+    assert not TransactionConflictError.is_conflict_error(Exception("failed transaction due to conflict"))
+    assert not TransactionConflictError.is_conflict_error(Exception("document changed by another client"))
     assert not TransactionConflictError.is_conflict_error(Exception("connection timeout"))
     assert not TransactionConflictError.is_conflict_error(Exception("authentication failed"))
 
