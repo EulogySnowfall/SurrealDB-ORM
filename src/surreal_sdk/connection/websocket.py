@@ -366,9 +366,11 @@ class WebSocketConnection(BaseSurrealConnection):
         ``ConnectionError``. Live queries are re-created after the session is
         ready.
         """
-        self._session_ready.clear()
         attempts = 0
         while attempts < self.max_reconnect_attempts and not self._closing:
+            # Not ready until this attempt restores the session, whatever the
+            # previous attempt left behind.
+            self._session_ready.clear()
             attempts += 1
             delay = min(self.reconnect_interval * (2 ** (attempts - 1)), 30.0)
             jitter = delay * random.uniform(0.5, 1.0)
@@ -386,6 +388,14 @@ class WebSocketConnection(BaseSurrealConnection):
                 # Set namespace and database
                 await self._restore_rpc("use", [self.namespace, self.database])
             except Exception:
+                await self._abandon_socket()
+                continue
+
+            reader = self._reader_task
+            if reader is None or reader.done():
+                # The new socket ended right after answering the restore (its reply
+                # and its close came in one read). Its reader saw this reconnect
+                # running and left the retry to it: never mark a dead socket ready.
                 await self._abandon_socket()
                 continue
 

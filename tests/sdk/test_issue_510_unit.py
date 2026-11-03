@@ -54,6 +54,8 @@ class _Server:
     errors: dict[tuple[int, str], str] = field(default_factory=dict)
     #: (socket index, method): the server closes that socket when such a request arrives
     drops: set[tuple[int, str]] = field(default_factory=set)
+    #: (socket index, method): the server closes that socket right after answering it
+    close_after: set[tuple[int, str]] = field(default_factory=set)
     #: (socket index, method) -> set when that request arrives
     arrived: dict[tuple[int, str], asyncio.Event] = field(default_factory=dict)
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
@@ -80,6 +82,8 @@ class _Server:
             return
         sock.replied.append(method)
         await ws.send_str(json.dumps(body))
+        if (index, method) in self.close_after:
+            await ws.close()
 
     async def handler(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(protocols=["json"], max_msg_size=0)
@@ -336,5 +340,50 @@ class TestResubscribeAfterRestore:
             # Every subscription is re-created on socket 2, none lost with socket 1.
             assert all(live_id.startswith("live-2-") for live_id in conn._live_subscriptions)
             assert server.sockets[2].received[:2] == ["authenticate", "use"]
+        finally:
+            await conn.close()
+
+
+class TestSocketEndsRightAfterTheRestore:
+    async def test_reply_then_close_never_marks_the_dead_socket_ready(self, server: _Server) -> None:
+        # Socket 1 answers use() and closes at once: its reader ends (and, seeing a
+        # reconnect running, leaves the retry to it) before the restore resumes.
+        server.close_after.add((1, "use"))
+        server.gates[(2, "use")] = asyncio.Event()
+        conn = await _connected(server, timeout=10)
+        conn._register_live_subscription("old0", LiveSubscriptionParams("t", None, {}, False, None, None))
+
+        restore_rpc = conn._restore_rpc
+
+        async def restore_after_reader_ended(method: str, params: list[Any]) -> Any:
+            result = await restore_rpc(method, params)
+            if method == "use" and len(server.sockets) == 2:
+                # Make the order deterministic: the reply was read, then the close.
+                reader = conn._reader_task
+                assert reader is not None
+                await asyncio.wait_for(asyncio.wait({reader}), 5)
+            return result
+
+        conn._restore_rpc = restore_after_reader_ended  # type: ignore[method-assign]
+        try:
+            await _drop_first_socket(server)
+            await asyncio.wait_for(server.arrival(2, "use").wait(), 5)
+
+            query = asyncio.create_task(conn.query("RETURN 1"))
+            await _turns()
+            await asyncio.sleep(0.05)
+
+            # use() is still held on socket 2: nothing else may reach it.
+            assert server.sockets[2].received == ["authenticate", "use"]
+            assert not query.done()
+
+            server.gates[(2, "use")].set()
+            response = await asyncio.wait_for(query, 5)
+            assert response.first_result.result == 2
+
+            # The live subscription is re-created on socket 2, not dropped with socket 1.
+            await asyncio.wait_for(_until(lambda: len(conn._live_subscriptions) == 1), 5)
+            assert all(live_id.startswith("live-2-") for live_id in conn._live_subscriptions)
+            assert "query" not in server.sockets[1].received
         finally:
             await conn.close()
