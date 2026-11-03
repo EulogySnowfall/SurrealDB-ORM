@@ -383,11 +383,14 @@ def _cbor_tag_decoder(decoder: Any, tag: Any) -> Any:
         # come back as datetimes rather than as a list of two ints. The seconds
         # are floored: 1969-12-31T23:59:59.5Z arrives as [-1, 500000000].
         #
-        # Both branches fall back to the raw value rather than raising: cbor2
-        # re-raises an error from this hook as CBORDecodeError for the whole
-        # response, and SurrealDB's datetime range is wider than Python's
-        # years 1-9999, so one unrepresentable value would lose every other
-        # value in the same response.
+        # Both branches fall back to the raw value rather than raising: an
+        # exception from this hook propagates out of cbor2.loads() and fails
+        # the whole response. With cbor2 5.x (the pin on this branch) it
+        # escapes unwrapped, as the original exception (a ValueError here),
+        # so catching CBORDecodeError would not stop it; cbor2 6.x would wrap
+        # it in CBORDecodeError instead. SurrealDB's datetime range is wider
+        # than Python's years 1-9999, so one unrepresentable value would lose
+        # every other value in the same response.
         if isinstance(tag.value, str):
             try:
                 return datetime.fromisoformat(tag.value.replace("Z", "+00:00"))
