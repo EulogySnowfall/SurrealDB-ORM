@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 import logging
 
-from .model_base import SurrealDbError, _to_record_link
+from .model_base import SurrealDbError, _raise_on_statement_error, _to_record_link
 
 logger = logging.getLogger(__name__)
 
@@ -1981,6 +1981,11 @@ class QuerySet(Generic[T]):
         Returns:
             int: The number of records updated.
 
+        Raises:
+            TransactionConflictError: The server reported a retryable conflict.
+            QueryError: The server rejected the statement (a failed ``ASSERT``,
+                an event that throws, ...); nothing was written.
+
         Example:
             ```python
             # Update all matching records
@@ -2024,11 +2029,13 @@ class QuerySet(Generic[T]):
             return current_count
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        query = remove_quotes_for_variables(query)
+        result = await client.query(query, self._variables)
         # A statement the server rejected rides back inside a successful RPC
-        # and wrote nothing: only an accepted one invalidates.
-        if result.is_ok:
-            self._invalidate_cache()
+        # with no records; reading only the records would report it as 0.
+        # Raise before invalidating: a rejected statement wrote nothing.
+        _raise_on_statement_error(result, query)
+        self._invalidate_cache()
         return len(result.all_records)
 
     async def bulk_delete(self, atomic: bool = False) -> int:
@@ -2040,6 +2047,11 @@ class QuerySet(Generic[T]):
 
         Returns:
             int: The number of records deleted.
+
+        Raises:
+            TransactionConflictError: The server reported a retryable conflict.
+            QueryError: The server rejected the statement (a failed ``ASSERT``,
+                an event that throws, ...); nothing was written.
 
         Example:
             ```python
@@ -2066,11 +2078,13 @@ class QuerySet(Generic[T]):
             return current_count
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
-        result = await client.query(remove_quotes_for_variables(query), self._variables)
+        query = remove_quotes_for_variables(query)
+        result = await client.query(query, self._variables)
         # A statement the server rejected rides back inside a successful RPC
-        # and wrote nothing: only an accepted one invalidates.
-        if result.is_ok:
-            self._invalidate_cache()
+        # with no records; reading only the records would report it as 0.
+        # Raise before invalidating: a rejected statement wrote nothing.
+        _raise_on_statement_error(result, query)
+        self._invalidate_cache()
         return len(result.all_records)
 
     # ==================== Real-time Methods ====================
