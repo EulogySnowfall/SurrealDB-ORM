@@ -6,6 +6,72 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.42] - 2026-11-03
+
+**Bug fix release (V2 LTS).** Two fixes, both `v2` only: a compact
+`Duration` compares equal whatever sequence built it (#492, #511), and
+`parse_define_field()` no longer takes a `PERMISSIONS` keyword inside a
+regex literal as the field's clause (#509, #512). Read *Behaviour change*.
+The SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Fixed
+
+- **A compact `Duration` compares equal whatever sequence built it.**
+  `Duration((5400, 1)) == Duration([5400, 1])` was `False` although both
+  encode to the same CBOR tag 14 payload and render the same `str()`; the
+  same held for `(5400,)` / `[5400]` and `()` / `[]`. They now compare
+  equal, and equal to the same duration read from the server (#492).
+- **`parse_define_field()` no longer takes a `PERMISSIONS FULL|NONE|FOR`
+  inside a regex literal as the field's `PERMISSIONS` clause.**
+  `DEFINE FIELD a ON t TYPE string ASSERT $value = / PERMISSIONS FULL/`
+  now gives `assertion == "$value = / PERMISSIONS FULL/"` and no
+  permissions; 0.21.41 cut the assertion to `$value = /` and read the rest
+  as the field's permissions. Server-reported forms, including a pattern after a
+  keyword in a permission's `WHERE` (`WHERE / x/`), parse as before (#509).
+
+### Behaviour change
+
+- `Duration.__post_init__` stores a non-string `value` as a new `list` (a
+  tuple becomes a list, a list is copied). A string value is unchanged;
+  `str()` and the CBOR tag 13/14 encoding are unchanged.
+- `parse_define_field()`: only hand-written `DEFINE FIELD` statements whose
+  regex contains `PERMISSIONS` read differently. The emitted DDL and the
+  behaviour of migrations, `schema_diff()` and `inspectdb` do not change.
+
+### Migration notes
+
+- None.
+
+### Known limitations
+
+- A `PERMISSIONS` start inside a regex literal that itself contains a
+  spaced slash is still taken as the clause:
+  `ASSERT $value = /x PERMISSIONS FULL / y/` gives `assertion == "$value = /x"`
+  (same as 0.21.41; hand-written statements only).
+
+### Tests
+
+- The commit-conflict integration test (#446) forces the overlap with a
+  held transaction and an `asyncio.Event` instead of relying on scheduling.
+- The setup of the #503 integration tests checks each statement's status,
+  so a rejected setup statement fails there.
+
+### Documentation
+
+- The `QueryCache` docstring says the non-atomic `bulk_update()` /
+  `bulk_delete()` raise `QueryError` on a rejected write.
+
+### Verification
+
+Against SurrealDB 2.7.0, at each PR's validated head: 3,804 (#511) and
+3,797 (#512) unit tests on each of Python 3.12, 3.13 and 3.14; 813
+integration tests pass for each PR (4 expected failures, the existing
+strict `xfail`s for integer record ids over WebSocket); `ruff` and `mypy`
+clean. The new and changed tests passed three times in a row.
+
+---
+
 ## [0.21.41] - 2026-11-03
 
 **Bug fix release (V2 LTS).** Two fixes, both `v2` only: the non-atomic

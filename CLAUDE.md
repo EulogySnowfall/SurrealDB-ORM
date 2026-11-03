@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.41)
+> Context document for Claude AI - Last updated: November 2026 (0.21.42)
 
 <!-- -->
 
@@ -19,12 +19,25 @@
 
 ---
 
-## Current Version: 0.21.41 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.42 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.42
+
+Two fixes, `v2` only: #492 via #511 (`surreal_sdk/protocol/cbor.py`) and #509 via #512
+(`migrations/define_parser.py`, plus a `cache.py` docstring). Pin unchanged (2.7.0).
+
+- **`Duration.__post_init__` stores any non-string `value` as a new `list`**, so the dataclass `__eq__` no longer
+  depends on the container type (a decoded server value holds a list). Encoding and `str()` are unchanged.
+- **A pattern's closing `/` needs its start.** `_scan_field_body()` reads a `/` as a division only in the form the
+  server writes one (` / ` with an operand after it); any other `/` closes a pattern matched against an earlier
+  ` / `, or the text is unbalanced. A `PERMISSIONS` candidate inside a regex literal is then skipped by the fallback.
+- **Open (review suggestion on #512):** a candidate inside a pattern that itself contains a spaced slash
+  (`/x PERMISSIONS FULL / y/`) still passes the fallback; hand-written statements only, same as 0.21.41.
 
 ### What's New in 0.21.41
 
@@ -58,7 +71,7 @@ One fix: #463 via #499 (`cache.py`, `model_base.py`, `query_set.py`), backport o
   the plain paths, where a rejected statement rides back inside a successful RPC).
 - **`set()` and `QuerySet.cache()` call `_connect_signals()`** (idempotent through `_signals_connected`); before,
   only `configure()` connected the handlers, so a process that skipped it had no invalidation at all.
-- **Open (review suggestion on #499):** the plain bulk paths still return `0` on a rejected statement without raising.
+- **Open (review suggestion on #499):** the plain bulk paths still return `0` on a rejected statement without raising (fixed in 0.21.41, #505).
 
 ### What's New in 0.21.38
 
