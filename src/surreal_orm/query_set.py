@@ -5,6 +5,7 @@ from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
 
+from pydantic import AliasChoices, AliasPath
 from pydantic_core import ValidationError
 
 from . import BaseSurrealModel, SurrealDBConnectionManager
@@ -948,13 +949,22 @@ class QuerySet(Generic[T]):
         return result.all_records
 
     def _model_names(self) -> set[str]:
-        """``id``, the model's field names and their aliases: names a row annotation must not take."""
+        """``id``, the model's field names and their aliases: names a row annotation must not take.
+
+        A validation alias can be an ``AliasChoices`` (each ``str`` choice is a
+        key the field reads) or an ``AliasPath`` (its first element, when it is
+        a ``str``, is the key the field reads); an ``AliasPath`` can also be one
+        of the choices.
+        """
         names = {"id"}
         for name, info in self.model.model_fields.items():
             names.add(name)
             for alias in (info.alias, info.validation_alias, info.serialization_alias):
-                if isinstance(alias, str):
-                    names.add(alias)
+                choices = alias.choices if isinstance(alias, AliasChoices) else [alias]
+                for choice in choices:
+                    key = choice.path[0] if isinstance(choice, AliasPath) and choice.path else choice
+                    if isinstance(key, str):
+                        names.add(key)
         return names
 
     async def _execute_prefetch(
