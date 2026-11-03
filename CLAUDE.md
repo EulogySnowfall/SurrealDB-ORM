@@ -531,7 +531,8 @@ whole bound keys (#247, #249). No public API change.
   parse error with two or more fields; with one, `commit()` returns cleanly while
   the server rolls the whole transaction back (statement `ERR` is unchecked). So
   `update(tx=)`, `merge(tx=)` without a `SurrealFunc` and `save(tx=)` of a saved
-  record fail over HTTP, before and after this release. `main` has the same
+  record whose data holds no `SurrealFunc` and no nested object/array fail over
+  HTTP, before and after this release. `main` has the same
   builder.
 
 ### What's New in 0.21.12
