@@ -957,6 +957,8 @@ class TestBug4AuthenticateAndValidateToken:
         mock_auth_result = MagicMock(first_result=mock_first_qr)
         mock_ephemeral.query = AsyncMock(return_value=mock_auth_result)
         mock_ephemeral.close = AsyncMock()
+        mock_ephemeral.namespace, mock_ephemeral.database = _I372_NS, _I372_DB
+        token = _i372_jwt({"ID": "TestUser:1", "AC": "testuser_auth"})
 
         mock_root = AsyncMock()
         mock_user_result = MagicMock(
@@ -972,12 +974,12 @@ class TestBug4AuthenticateAndValidateToken:
                 new=MagicMock(get_client=AsyncMock(return_value=mock_root)),
             ),
         ):
-            result = await TestUser.authenticate_token("valid_token")
+            result = await TestUser.authenticate_token(token)
             assert result is not None
             user, record_id = result
             assert isinstance(user, TestUser)
             assert record_id == "TestUser:1"
-            mock_ephemeral.authenticate.assert_called_once_with("valid_token")
+            mock_ephemeral.authenticate.assert_called_once_with(token)
             mock_ephemeral.close.assert_called_once()
 
     @pytest.mark.asyncio
@@ -996,9 +998,11 @@ class TestBug4AuthenticateAndValidateToken:
         mock_auth_result = MagicMock(first_result=mock_first_qr)
         mock_ephemeral.query = AsyncMock(return_value=mock_auth_result)
         mock_ephemeral.close = AsyncMock()
+        mock_ephemeral.namespace, mock_ephemeral.database = _I372_NS, _I372_DB
+        token = _i372_jwt({"ID": "TestUser:abc", "AC": "testuser_auth"})
 
         with patch.object(TestUser, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)):
-            record_id = await TestUser.validate_token("valid_token")
+            record_id = await TestUser.validate_token(token)
             assert record_id == "TestUser:abc"
             mock_ephemeral.close.assert_called_once()
 
@@ -1185,6 +1189,9 @@ class TestIssue353SessionRecordLookup:
         session_record = RecordId(table="U353User", id="000000")
         mock_ephemeral = self._ephemeral(session_record)
         mock_ephemeral.authenticate = AsyncMock(return_value=MagicMock(success=True))
+        mock_ephemeral.namespace, mock_ephemeral.database = _I372_NS, _I372_DB
+        # A token of the model's own access (#415).
+        token = _i372_jwt({"ID": "U353User:000000", "AC": model.get_access_name()})
         mock_root = AsyncMock()
         mock_root.query = AsyncMock(
             return_value=MagicMock(is_empty=False, first={"id": "U353User:000000", "email": "x", "password": "$argon2id$hash"})
@@ -1194,7 +1201,7 @@ class TestIssue353SessionRecordLookup:
             patch.object(model, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)),
             patch("src.surreal_orm.connection_manager.SurrealDBConnectionManager", new=self._manager(mock_root)),
         ):
-            result = await model.authenticate_token("tok")
+            result = await model.authenticate_token(token)
 
         assert result is not None
         _, record_id = result
@@ -1267,15 +1274,29 @@ class TestIssue353SessionRecordLookup:
         mock_root.query.assert_not_awaited()
 
 
+_I372_NS = "i372_ns"
+_I372_DB = "i372_db"
+
+
 def _i372_jwt(claims: dict[str, object]) -> str:
-    """Build an unsigned JWT-shaped token carrying ``claims``."""
+    """Build an unsigned JWT-shaped token carrying ``claims``.
+
+    Like a token SurrealDB issues, it names its namespace and database
+    (``_I372_NS`` / ``_I372_DB``, those of ``_i372_client``) and its access:
+    by default the default access of the ``ID`` claim's table (#415).
+    """
     import base64
     import json
 
     def part(data: dict[str, object]) -> str:
         return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
 
-    return f"{part({'alg': 'HS512'})}.{part(claims)}.c2ln"
+    full: dict[str, object] = {"NS": _I372_NS, "DB": _I372_DB}
+    record = claims.get("ID")
+    if isinstance(record, str) and ":" in record:
+        full["AC"] = f"{record.split(':', 1)[0].lower()}_auth"
+    full.update(claims)
+    return f"{part({'alg': 'HS512'})}.{part(full)}.c2ln"
 
 
 def _i372_client(auth: object, *, success: bool = True) -> AsyncMock:
@@ -1284,6 +1305,7 @@ def _i372_client(auth: object, *, success: bool = True) -> AsyncMock:
     client.authenticate = AsyncMock(return_value=AuthResponse(token="tok", success=success, raw={}))
     client.query = AsyncMock(return_value=MagicMock(first_result=MagicMock(result=auth)))
     client.close = AsyncMock()
+    client.namespace, client.database = _I372_NS, _I372_DB
     return client
 
 
@@ -1357,7 +1379,7 @@ class TestIssue372TokenCacheExpiryAndTable:
 
         ((key, entry),) = AuthenticatedUserMixin._token_cache.items()
         assert key == member._token_cache_key(token)
-        assert key[1:] == ("i372_member", token)
+        assert key[1:] == ("i372_member", "i372_member_auth", token)
         deadline = entry[1]
         assert deadline - time.monotonic() <= 31
 
@@ -1387,7 +1409,7 @@ class TestIssue372TokenCacheExpiryAndTable:
         from src.surreal_sdk.protocol.cbor import RecordId
 
         member, _ = self._models()
-        token = _i372_jwt({"ID": "x", "exp": int(time.time()) + 600})
+        token = _i372_jwt({"ID": "i372_member:a", "exp": int(time.time()) + 600})
         auth = RecordId(table="i372_member", id="a")
         with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i372_client(auth))):
             assert await member.validate_token(token) == "i372_member:a"
@@ -1406,13 +1428,17 @@ class TestIssue372TokenCacheExpiryAndTable:
 
     @pytest.mark.parametrize(
         "claims",
-        [None, {"ID": "i372_member:a"}, {"ID": "i372_member:a", "exp": "soon"}, {"ID": "i372_member:a", "exp": True}],
-        ids=["opaque", "no-exp", "string-exp", "bool-exp"],
+        [{"ID": "i372_member:a"}, {"ID": "i372_member:a", "exp": "soon"}, {"ID": "i372_member:a", "exp": True}],
+        ids=["no-exp", "string-exp", "bool-exp"],
     )
-    async def test_unreadable_exp_is_validated_but_not_cached(self, claims: dict[str, object] | None) -> None:
-        """Without a readable exp the token is validated by the server every time."""
+    async def test_unreadable_exp_is_validated_but_not_cached(self, claims: dict[str, object]) -> None:
+        """Without a readable exp the token is validated by the server every time.
+
+        An opaque token is no longer accepted at all (its access cannot be
+        read, #415): see ``tests/test_issue_415_v2_unit.py``.
+        """
         member, _ = self._models()
-        token = "opaque-token" if claims is None else _i372_jwt(claims)
+        token = _i372_jwt(claims)
         client = _i372_client("i372_member:a")
         with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=client)):
             assert await member.validate_token(token) == "i372_member:a"
@@ -1466,8 +1492,13 @@ class TestIssue372TokenCacheExpiryAndTable:
             await member.validate_token(token)
         with patch.object(member, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_member:b"))):
             await member.validate_token(other)
-        with patch.object(staff, "_create_auth_client", new=AsyncMock(return_value=_i372_client("i372_staff:a"))):
-            await staff.validate_token(token)
+        # A token is accepted by one model only (#415): the staff entry for the
+        # same token is planted, as a cache written before that check would be.
+        AuthenticatedUserMixin._token_cache[staff._token_cache_key(token)] = (
+            "i372_staff:a",
+            time.monotonic() + 300,
+            time.time() + 300,
+        )
         assert len(AuthenticatedUserMixin._token_cache) == 3
 
         staff.invalidate_token_cache(token)
