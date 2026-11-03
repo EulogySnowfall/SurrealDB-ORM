@@ -18,6 +18,7 @@ from surreal_sdk.protocol.cbor import RecordId
 from surreal_sdk.types import QueryResponse
 
 from . import signals as model_signals
+from .cache import QueryCache
 from .connection_manager import SurrealDBConnectionManager
 from .debug import _elapsed_ms, _log_query, _start_timer
 from .surreal_function import SurrealFunc
@@ -1735,6 +1736,7 @@ class BaseSurrealModel(BaseModel):
         result = await client.query(query, {"value": value})
         _log_query(query, {"value": value}, _elapsed_ms(start))
         _raise_on_statement_error(result, query)
+        QueryCache.invalidate(cls)
         return list(result.all_records) if result.all_records else []
 
     @classmethod
@@ -1779,6 +1781,7 @@ class BaseSurrealModel(BaseModel):
         result = await client.query(query, {"value": value})
         _log_query(query, {"value": value}, _elapsed_ms(start))
         _raise_on_statement_error(result, query)
+        QueryCache.invalidate(cls)
         return list(result.all_records) if result.all_records else []
 
     @classmethod
@@ -1831,6 +1834,7 @@ class BaseSurrealModel(BaseModel):
         result = await client.query(query, {"value": value})
         _log_query(query, {"value": value}, _elapsed_ms(start))
         _raise_on_statement_error(result, query)
+        QueryCache.invalidate(cls)
         return list(result.all_records) if result.all_records else []
 
     # ==================== Graph Relation Methods ====================
