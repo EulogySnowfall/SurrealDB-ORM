@@ -919,6 +919,16 @@ class QuerySet(Generic[T]):
 
         return result.all_records
 
+    def _model_names(self) -> set[str]:
+        """``id``, the model's field names and their aliases: names a row annotation must not take."""
+        names = {"id"}
+        for name, info in self.model.model_fields.items():
+            names.add(name)
+            for alias in (info.alias, info.validation_alias, info.serialization_alias):
+                if isinstance(alias, str):
+                    names.add(alias)
+        return names
+
     async def _execute_prefetch(
         self,
         instances: list[Any],
@@ -961,7 +971,10 @@ class QuerySet(Generic[T]):
 
             if not source_ids:
                 for inst in instances:
-                    object.__setattr__(inst, to_attr, [])
+                    if isinstance(inst, BaseSurrealModel):
+                        inst._attach_value(to_attr, [])
+                    else:
+                        object.__setattr__(inst, to_attr, [])
                 continue
 
             # Build batch query for this relation (treated as edge table).
@@ -1005,7 +1018,7 @@ class QuerySet(Generic[T]):
                     sid = inst.get_id()
                     thing = format_thing(self._model_table, sid) if sid else ""
                     related = grouped.get(thing, [])
-                    object.__setattr__(inst, to_attr, related)
+                    inst._attach_value(to_attr, related)
 
     def _coerce_filter_value(
         self,
@@ -1459,17 +1472,26 @@ class QuerySet(Generic[T]):
             if isinstance(annotation, (SearchScore, SearchHighlight)):
                 extra_keys.add(alias)
 
+        # The model is built from each record without these keys: on a model
+        # with ``extra="allow"``, Pydantic would keep them as extra fields and
+        # the next save() would write them as columns (#470). A key that is also
+        # a model name (``id``, a field or its alias) stays: it is that field.
+        to_model: Any = results
         if extra_keys and isinstance(results, list):
+            strip = extra_keys - self._model_names()
+            to_model = []
             for record in results:
                 if isinstance(record, dict):
                     extras = {k: record.get(k) for k in extra_keys if k in record}
                     extra_fields_per_record.append(extras)
+                    to_model.append({k: v for k, v in record.items() if k not in strip})
                 else:
                     extra_fields_per_record.append({})
+                    to_model.append(record)
 
         try:
             # surrealdb SDK 1.0.8 returns records directly, not wrapped in {"result": ...}
-            parsed = self.model.from_db(cast(dict[str, Any] | list[Any] | None, results))
+            parsed = self.model.from_db(cast(dict[str, Any] | list[Any] | None, to_model))
         except ValidationError as e:
             logger.info(f"Pydantic invalid format for the class, returning dict value: {e}")
             parsed = results
@@ -1479,7 +1501,7 @@ class QuerySet(Generic[T]):
             for i, inst in enumerate(parsed):
                 if i < len(extra_fields_per_record) and isinstance(inst, BaseSurrealModel):
                     for k, v in extra_fields_per_record[i].items():
-                        object.__setattr__(inst, k, v)
+                        inst._attach_value(k, v)
 
         # ── Prefetch related ─────────────────────────────────────────────
         if self._prefetch_related and isinstance(parsed, list):
