@@ -6,6 +6,55 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.34] - 2026-11-02
+
+**Bug fix release (V2 LTS).** One SDK fix (#445, #477), the `v2` port of
+`main`'s #391 (#418, 0.36.1): a pooled connection is returned to the pool's
+own authentication state when it is released, so a state set by one caller
+never reaches the next caller of the same connection. Read *Behaviour
+change*. No public API change. The SurrealDB pin is unchanged (tested
+against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`ConnectionPool` returns a connection to the pool's own authentication
+  state when it is released** (HTTP and WebSocket). A connection whose state
+  the caller changed (`authenticate()`, `signup()`, `signin()`,
+  `invalidate()`) used to reach the next caller unchanged. With pool
+  credentials it gets the pool's token back; without them it is left
+  unauthenticated. A connection whose reset fails or is cancelled is closed
+  instead of being reused (#445).
+- **`set_credentials()` no longer keeps an idle connection that cannot sign
+  in with the new credentials** (it is closed). A token minted for replaced
+  credentials, including by a sign-in still pending when they changed, is
+  never put back on a connection. A release cancelled while it waits for the
+  pool no longer loses a pool slot (#445).
+
+### Behaviour change
+
+- **A release can send one or two extra RPCs.** HTTP restores the pool's
+  token locally and signs in again only when there is none for the current
+  credentials. WebSocket sends `invalidate` then `authenticate` (`signin` if
+  the server refuses the token), because SurrealDB 2.x keeps a record
+  session's `$auth` and `$session` through a later `authenticate` or
+  `signin` on the same socket.
+- **A request of the previous holder that is rejected with 401 after the
+  release raises `QueryError`** instead of being retried, and a token
+  re-minted for it (the transient-401 recovery of `HTTPConnection`) is not
+  installed on the pooled connection. Code that relied on a pooled
+  connection keeping a caller-set identity across acquisitions must sign in
+  again after each `acquire()`.
+
+### Verification
+
+Against SurrealDB 2.7.0 (#477): 3,453 unit tests on each of Python 3.12, 3.13
+and 3.14 and 779 integration tests pass (4 expected failures, the existing
+strict `xfail`s for integer record ids over WebSocket); `ruff` and `mypy`
+clean. The new `tests/sdk/test_pool_auth_reset.py` (48 unit and 4
+integration tests) passed three times in a row.
+
+---
+
 ## [0.21.33] - 2026-11-02
 
 **Bug fix release (V2 LTS).** One ORM fix (#444, #478), the `v2` port of
