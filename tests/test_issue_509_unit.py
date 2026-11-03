@@ -8,7 +8,8 @@ leaves the quote open and is skipped, but a start inside a regex literal only
 sees the closing ``/`` once cut out, reads it as a division and looks balanced,
 so the pattern was split in two. SurrealDB writes a division as `` / `` with
 an operand after it; any other ``/`` read as one in a remainder is a pattern
-end without its start, and rejects the candidate.
+end without its start, and rejects the candidate, unless an earlier `` / ``
+in the remainder can be that start (``WHERE / x/``).
 """
 
 import pytest
@@ -85,3 +86,18 @@ class TestI509RegexLiteral:
 
         assert result.assertion == "/ it's/ = $value"
         assert result.permissions == {"select": "NONE"}
+
+    def test_a_pattern_after_a_keyword_in_the_clause_keeps_the_clause(self) -> None:
+        """Verbatim ``INFO FOR TABLE`` output of SurrealDB 2.7.0.
+
+        ``WHERE / x/`` reads as a division followed by the pattern's closing
+        ``/``; that ``/`` is paired with the division, not taken as the end of
+        a pattern opened before the candidate clause.
+        """
+        result = parse_define_field(
+            "DEFINE FIELD k ON r509p TYPE string ASSERT / it's/ = $value "
+            "PERMISSIONS FOR select WHERE / x/ = name, FOR create, update FULL"
+        )
+
+        assert result.assertion == "/ it's/ = $value"
+        assert result.permissions == {"select": "/ x/ = name"}

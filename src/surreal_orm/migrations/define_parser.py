@@ -258,14 +258,17 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
     only nest inside a type, where the keyword cannot appear, while
     ``ASSERT $value > 0`` would never close.
 
+    A ``/`` read as a division must be written as SurrealDB writes one,
+    `` / `` with an operand after it. Any other is the closing ``/`` of a
+    pattern, and leaves the text unbalanced unless an earlier `` / `` read
+    as a division can be its start: a pattern starting with a space after a
+    keyword (``WHERE / x/``) is read that way, and the server reports it so.
+    Without such a start, the pattern opened before *text* starts.
+
     Args:
         text: The text to scan
         find_clause: Stop at the first PERMISSIONS clause start found outside
             any quote, pattern or bracket
-
-    A ``/`` read as a division must be written as SurrealDB writes one,
-    `` / `` with an operand after it. Any other is the closing ``/`` of a
-    pattern opened before *text* starts, and leaves the text unbalanced.
 
     Returns:
         ``(index, balanced)``: the index of that clause start (-1 when none
@@ -277,6 +280,7 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
     quote: str | None = None
     escaped = False
     stray = False
+    divisions = 0
     previous = ""
     i = 0
     while i < len(text):
@@ -298,8 +302,13 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
             previous = "/"
             i = end
             continue
-        if ch == "/" and not (i > 0 and text[i - 1].isspace() and text[i + 1 :].strip()):
-            stray = True
+        if ch == "/":
+            if i > 0 and text[i - 1].isspace() and text[i + 1 :].strip():
+                divisions += 1
+            elif divisions:
+                divisions -= 1
+            else:
+                stray = True
         if ch in "'\"`":
             quote = ch
         elif ch in "([{":
