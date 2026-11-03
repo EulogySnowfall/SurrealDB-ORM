@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.34)
+> Context document for Claude AI - Last updated: November 2026 (0.21.35)
 
 <!-- -->
 
@@ -19,12 +19,30 @@
 
 ---
 
-## Current Version: 0.21.34 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.35 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.35
+
+Two SDK fixes: #452 via #484 (`protocol/cbor.py`, `v2` port of `main`'s #452 fix) and #446 via #485
+(`exceptions.py`, `transaction.py`, port of `main`'s #443). Pin unchanged (2.7.0).
+
+- **SurrealDB reads two duration tags**: 13 carries a string, 14 the compact `[seconds, nanoseconds]` array (the only
+  form the server sends). `v2` sent every `Duration` under 14, which 2.x cannot parse for a string. A string goes
+  out as 13 and a list/tuple as 14; both decode to `Duration` (cbor2 5.x `tag_hook(decoder, tag)`, list value).
+  `TAG_STRING_DURATION` is 13 now, `TAG_CUSTOM_DURATION = 14` is new. `__str__` renders the list form as
+  `<s>s<ns>ns` (`0ns` for zero). `Duration` is a plain dataclass: a tuple and a list value compare unequal.
+- **`is_conflict_error()` matches only "this transaction can be retried"** (case-insensitive). 2.7.0 ends every
+  retryable error with that sentence, plain statement or `BEGIN`/`COMMIT`; an `ASSERT` failure echoes the value and
+  field name, so the old "conflict" / "failed transaction" / "document changed" substrings misfired.
+- **`HTTPTransaction.commit()`**: on 2.7 a commit-time conflict appears on every statement after the cancellation
+  sentence; `_is_cancellation()` no longer files a message carrying the retryable wording under the cascade, so it
+  becomes the cause (`TransactionConflictError`). The "Cannot COMMIT" marker is narrowed to the aborted form, as on
+  `main`.
 
 ### What's New in 0.21.34
 
