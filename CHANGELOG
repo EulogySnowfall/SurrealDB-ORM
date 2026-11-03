@@ -9,7 +9,7 @@ and adheres to [SemVer](https://semver.org/) versioning.
 ## [0.21.37] - 2026-11-02
 
 **Bug fix release (V2 LTS).** One ORM/SDK fix, the `v2` port of `main`'s
-#461 (0.37.1): `live(diff=True)` events now name their record and no longer
+#461 (0.37.3): `live(diff=True)` events now name their record and no longer
 end the stream on a model with a required field (#466, #495). Read
 *Behaviour change*. The SurrealDB pin is unchanged (tested against 2.7.0,
 supported range 2.6.x – 2.7.x).
