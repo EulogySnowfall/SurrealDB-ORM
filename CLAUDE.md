@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.38.0)
+> Context document for Claude AI - Last updated: November 2026 (0.38.1)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.38.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.38.1 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,37 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.38.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.38.1
+
+One fix PR, #448 via #482 (`connection/base.py`, `http.py`, `pool.py`,
+`exceptions.py`, `streaming/change_feed.py`, `transaction.py`; ORM
+`search.py`, `aggregations.py`, `geo.py`): the four follow-ups from the
+0.36.1 reviews. Pin unchanged (3.3.5). `v2`: the pool half was already
+there; the rest is tracked in #486.
+
+- **The connection owns its auth-state writes.** `_install_auth(token,
+  signin_args)` and `_clear_auth()` call `_auth_changed()`;
+  `ConnectionPool._sign_in_as_pool()` and every branch of `_reset_auth()` go
+  through them instead of assigning `_token` / `_authenticated` /
+  `_signin_args` directly, so the generation and identity counters (#390)
+  see every pool auth change.
+- **The retry matcher is end-anchored**
+  (`this transaction can be retried\.?\s*\Z`, case-insensitive). Every
+  producer in `src/` puts the server text last; an `ASSERT` failure ends
+  with `must conform to: <expr>`. Behaviour change: such a failure carrying
+  the sentence in its value is `QueryError`, not retried.
+- **One cascade definition.** `_is_cancelled_statement_error()` in
+  `transaction.py` is shared by `HTTPTransaction` and the change-feed
+  reader, which used to drop every `Cannot COMMIT` error and so lost a
+  commit-time conflict.
+- **Annotation attributes are properties** whose setters run the
+  constructor's checks (`SearchScore` / `SearchHighlight.ref`,
+  `GeoDistance.field` / `point`; `Sum` / `Avg` / `Min` / `Max` share a
+  private `_FieldAggregation` base). Equality, hashing and `repr` unchanged.
+- **Docs:** the `[0.36.1]` behaviour-change bullet now says only a
+  WebSocket connection re-signs on an expired pool token; HTTP restores
+  locally and relies on the `401` re-mint.
 
 ### What's New in 0.38.0
 
