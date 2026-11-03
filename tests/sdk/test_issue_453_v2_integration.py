@@ -6,7 +6,6 @@ whole timeout. With an explicit ``max_message_size`` the request fails at once,
 and the connection serves the next query after its reconnect.
 """
 
-import asyncio
 import time
 from collections.abc import AsyncGenerator
 
@@ -80,15 +79,11 @@ async def test_ws_reply_above_max_message_size_fails_at_once_then_reconnects(big
         assert str(excinfo.value).startswith("WebSocket connection lost: ")
         assert str(4 * MiB) in str(excinfo.value)
 
-        # The read loop has started the reconnect; the next query is served by the new socket.
-        deadline = time.monotonic() + 10
-        while True:
-            try:
-                response = await conn.query(f"SELECT count() FROM {TABLE} GROUP ALL")
-                break
-            except ConnectionError:
-                assert time.monotonic() < deadline, "the connection did not come back"
-                await asyncio.sleep(0.05)
+        # The read loop started the reconnect before failing the request. The next query
+        # is issued at once: it waits until the reconnect has re-authenticated and
+        # re-selected the database (#518) instead of reaching a session with no namespace.
+        assert conn._reconnect_task is not None
+        response = await conn.query(f"SELECT count() FROM {TABLE} GROUP ALL")
         assert response.first_result.result == [{"count": 6}]
     finally:
         await conn.close()
