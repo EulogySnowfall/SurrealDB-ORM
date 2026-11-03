@@ -6,6 +6,61 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.33] - 2026-11-02
+
+**Bug fix release (V2 LTS).** One ORM fix (#444, #478), the `v2` port of
+`main`'s #422: annotation aliases, aggregation and `GeoDistance` fields,
+`GeoDistance` points and the `SearchScore`/`SearchHighlight` match reference
+are written into the query text rather than bound, and most of them were not
+checked. A value that was not an identifier or a number gave a parse error or
+a different query instead of a clear exception; it is now refused before any
+request. Read *Behaviour change*. The SurrealDB pin is unchanged (tested
+against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`annotate()` checks each alias with `validate_identifier()`** before the
+  queryset changes, for every annotation kind (`Count`/`Sum`/`Avg`/`Min`/
+  `Max`, `Subquery`, `SearchScore`, `SearchHighlight`, `GeoDistance`), and
+  `to_surql(alias)` on `Count`, `Sum`, `Avg`, `Min`, `Max`, `SearchScore`,
+  `SearchHighlight` and `GeoDistance` checks it too. Both used to write the
+  alias as given (#444).
+- **`GeoDistance` checks its field as a field path, and its point.** The point
+  must be a `(longitude, latitude)` pair of finite `int`/`float` values, not
+  `bool` (`TypeError` / `ValueError`), and is rendered from plain numbers. It
+  used to be formatted with `str()` (#444).
+- **The `ref` of `SearchScore` and `SearchHighlight` must be an `int` of at
+  least 0 that is not a `bool`**, checked when the object is built.
+  `SearchScore` used to write it as passed. The int check of query arguments
+  is now shared as `surreal_orm.utils.require_int`. This closes point 1 of
+  #438 (#444).
+
+### Behaviour change
+
+- `Sum`/`Avg`/`Min`/`Max` now accept a dotted field path such as
+  `"address.city"`; they used to accept a plain identifier only.
+- A non-identifier alias, or a non-numeric or non-finite `GeoDistance`
+  coordinate, now raises before any request instead of reaching the server.
+- A non-int `ref` to `SearchHighlight` raises `TypeError` when the object is
+  built, where it used to raise `ValueError` at render time.
+- `GeoDistance.point` is always a tuple of plain numbers.
+
+### Migration
+
+- None for valid input, which renders the same SurrealQL as before. Callers
+  that passed numeric strings or `Decimal` coordinates to `GeoDistance` must
+  pass `int`/`float`.
+
+### Verification
+
+Against SurrealDB 2.7.0 (#478): 3,538 unit tests on each of Python 3.12, 3.13
+and 3.14 and 781 integration tests pass (4 expected failures, the existing
+strict `xfail`s for integer record ids over WebSocket); `ruff` and `mypy`
+clean. The touched test files (166 unit and 8 integration tests in all)
+passed three times in a row.
+
+---
+
 ## [0.21.32] - 2026-11-02
 
 **Bug fix release (V2 LTS).** One SDK fix (#405, #475), the `v2` port of the

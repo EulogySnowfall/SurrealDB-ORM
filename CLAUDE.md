@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.32)
+> Context document for Claude AI - Last updated: November 2026 (0.21.33)
 
 <!-- -->
 
@@ -19,12 +19,26 @@
 
 ---
 
-## Current Version: 0.21.32 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.33 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.33
+
+One ORM fix, #444 via #478: the `v2` port of `main`'s #422. Pin unchanged (2.7.0). Closes point 1 of #438.
+
+- **`annotate()` runs `validate_identifier()` on every alias** before assigning `_annotations`, and
+  `to_surql(alias)` on `Count`/`Sum`/`Avg`/`Min`/`Max`/`SearchScore`/`SearchHighlight`/`GeoDistance` checks it too,
+  so both the GROUP BY path and the search/geo SELECT path only see checked aliases.
+- **Fields go through `validate_field_path()`** (`fullmatch`, `\Z`): `Sum`/`Avg`/`Min`/`Max` and `GeoDistance`.
+  The aggregations used `validate_identifier()` before, so a dotted path is now accepted.
+- **`GeoDistance` point**: length-2 tuple/list of `int`/`float` (not `bool`), converted to plain numbers, finite
+  (an `int` too large for a float is refused), stored as a tuple, rendered from those numbers.
+- **`require_int` moved to `surreal_orm.utils`** (was `query_set._require_int`) and checks `SearchScore` /
+  `SearchHighlight` `ref` (minimum 0) at construction.
 
 ### What's New in 0.21.32
 
