@@ -16,7 +16,7 @@ Example:
 
 from abc import ABC, abstractmethod
 
-from .utils import validate_identifier
+from .utils import validate_field_path, validate_identifier
 
 
 class Aggregation(ABC):
@@ -32,6 +32,9 @@ class Aggregation(ABC):
 
         Returns:
             str: SurrealQL expression for the aggregation.
+
+        Raises:
+            ValueError: If ``alias`` is not an identifier.
         """
         ...
 
@@ -53,6 +56,7 @@ class Count(Aggregation):
     """
 
     def to_surql(self, alias: str) -> str:
+        validate_identifier(alias, "annotation alias")
         return f"count() AS {alias}"
 
     @property
@@ -67,17 +71,18 @@ class Sum(Aggregation):
     Calculates the sum of a numeric field.
 
     Args:
-        field: The field name to sum.
+        field: The field name, or a dotted path into a nested object, to sum.
 
     Example:
         Sum("amount")  # Sums the "amount" field
     """
 
     def __init__(self, field: str):
-        validate_identifier(field, "aggregation field")
+        validate_field_path(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
+        validate_identifier(alias, "annotation alias")
         return f"math::sum({self.field}) AS {alias}"
 
     @property
@@ -92,17 +97,18 @@ class Avg(Aggregation):
     Calculates the average of a numeric field.
 
     Args:
-        field: The field name to average.
+        field: The field name, or a dotted path into a nested object, to average.
 
     Example:
         Avg("age")  # Averages the "age" field
     """
 
     def __init__(self, field: str):
-        validate_identifier(field, "aggregation field")
+        validate_field_path(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
+        validate_identifier(alias, "annotation alias")
         return f"math::mean({self.field}) AS {alias}"
 
     @property
@@ -117,17 +123,18 @@ class Min(Aggregation):
     Finds the minimum value of a field.
 
     Args:
-        field: The field name to find minimum of.
+        field: The field name, or a dotted path into a nested object, to find minimum of.
 
     Example:
         Min("price")  # Finds minimum "price"
     """
 
     def __init__(self, field: str):
-        validate_identifier(field, "aggregation field")
+        validate_field_path(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
+        validate_identifier(alias, "annotation alias")
         return f"math::min({self.field}) AS {alias}"
 
     @property
@@ -142,17 +149,18 @@ class Max(Aggregation):
     Finds the maximum value of a field.
 
     Args:
-        field: The field name to find maximum of.
+        field: The field name, or a dotted path into a nested object, to find maximum of.
 
     Example:
         Max("price")  # Finds maximum "price"
     """
 
     def __init__(self, field: str):
-        validate_identifier(field, "aggregation field")
+        validate_field_path(field, "aggregation field")
         self.field = field
 
     def to_surql(self, alias: str) -> str:
+        validate_identifier(alias, "annotation alias")
         return f"math::max({self.field}) AS {alias}"
 
     @property
