@@ -551,6 +551,8 @@ class QuerySet(Generic[T]):
 
         if not QueryCache._enabled:
             logger.warning("QueryCache is disabled — .cache() has no effect")
+        # Writes must reach the cache even if configure() was never called.
+        QueryCache._connect_signals()
         self._cache_ttl = ttl if ttl is not None else QueryCache._default_ttl
         return self
 
@@ -1834,6 +1836,19 @@ class QuerySet(Generic[T]):
         # SDK returns QueryResponse, extract all records
         return cast(list[Any], result.all_records)
 
+    def _invalidate_cache(self) -> None:
+        """Drop the ``QueryCache`` entries of this model's table after a write.
+
+        The bulk paths and ``delete_table()`` write without going through a
+        model instance, so no ``post_save`` / ``post_update`` /
+        ``post_delete`` signal fires for them; each calls this once its write
+        has been accepted (after the commit for ``atomic=True``).  A write that
+        raises, or a statement the server rejects, leaves the cache as it was.
+        """
+        from .cache import QueryCache
+
+        QueryCache.invalidate(self.model)
+
     async def delete_table(self) -> bool:
         """
         Delete the associated table from the SurrealDB database.
@@ -1854,6 +1869,7 @@ class QuerySet(Generic[T]):
         """
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         await client.delete(self._model_table)
+        self._invalidate_cache()
         return True
 
     async def query(self, query: str, variables: dict[str, Any] | None = None) -> Any:
@@ -2004,10 +2020,15 @@ class QuerySet(Generic[T]):
             current_count = await self.count()
             async with await SurrealDBConnectionManager.transaction() as tx:
                 await tx.query(remove_quotes_for_variables(query), self._variables)
+            self._invalidate_cache()
             return current_count
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
+        # A statement the server rejected rides back inside a successful RPC
+        # and wrote nothing: only an accepted one invalidates.
+        if result.is_ok:
+            self._invalidate_cache()
         return len(result.all_records)
 
     async def bulk_delete(self, atomic: bool = False) -> int:
@@ -2041,10 +2062,15 @@ class QuerySet(Generic[T]):
             delete_query = f"DELETE FROM {self._model_table}{where_clause};"
             async with await SurrealDBConnectionManager.transaction() as tx:
                 await tx.query(remove_quotes_for_variables(delete_query), self._variables)
+            self._invalidate_cache()
             return current_count
 
         client = await SurrealDBConnectionManager.get_client(self.model.get_connection_name())
         result = await client.query(remove_quotes_for_variables(query), self._variables)
+        # A statement the server rejected rides back inside a successful RPC
+        # and wrote nothing: only an accepted one invalidates.
+        if result.is_ok:
+            self._invalidate_cache()
         return len(result.all_records)
 
     # ==================== Real-time Methods ====================

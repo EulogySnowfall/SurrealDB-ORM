@@ -7,8 +7,21 @@ the connection the query runs on (name, URL, namespace and database of its
 ``ConnectionConfig`` — never the credentials).  Two named connections pointing
 at different databases therefore never share entries.
 
-Cache entries are automatically invalidated when models are saved, updated, or
-deleted via the ``post_save``, ``post_update``, and ``post_delete`` signals.
+Writes made through the ORM drop the written table's entries:
+
+- ``save()``, ``update()``, ``merge()`` and ``delete()`` on an instance, through
+  the ``post_save``, ``post_update`` and ``post_delete`` signals (connected the
+  first time ``configure()``, ``QuerySet.cache()`` or ``set()`` runs, so no
+  ``configure()`` call is needed);
+- ``atomic_append()``, ``atomic_remove()`` and ``atomic_set_add()``;
+- ``QuerySet.bulk_update()``, ``bulk_delete()`` and ``delete_table()``
+  (``bulk_create()`` goes through ``save()``).
+
+Entries are dropped once the write is accepted (after the commit for
+``atomic=True``); a write the server rejects leaves them in place.  Anything
+else that writes behind the ORM's back — ``raw_query()``, ``call_function()``,
+a ``DEFINE EVENT``, another process — is not seen: call
+``QueryCache.invalidate(Model)`` after it.
 Reads are scoped by connection, but invalidation fails safe: a write drops the
 written table's entries cached from *every* connection.  The location of a
 cached entry is the raw URL/namespace/database of its connection, so one
@@ -98,8 +111,9 @@ class QueryCache:
         """
         Configure global cache settings.
 
-        Connecting to signals is done lazily on first call.  Calling
-        ``configure()`` again updates settings without clearing the cache.
+        Also connects the invalidation handlers to the model signals, as
+        ``set()`` and ``QuerySet.cache()`` do; calling ``configure()`` is not
+        required for invalidation.  Calling ``configure()`` again updates settings without clearing the cache.
 
         Args:
             default_ttl: Default time-to-live in seconds for cache entries.
@@ -184,6 +198,9 @@ class QueryCache:
                 write through that database invalidates it.  Should be the
                 identity passed to ``make_key``.
         """
+        # The invalidation handlers must be in place before anything is cached,
+        # whether or not configure() was ever called.
+        cls._connect_signals()
         if not cls._enabled:
             return
 
@@ -294,7 +311,11 @@ class QueryCache:
 
     @classmethod
     def _connect_signals(cls) -> None:
-        """Lazily connect to ORM signals for auto-invalidation."""
+        """Connect the auto-invalidation handlers to the ORM signals, once.
+
+        Idempotent through ``_signals_connected``: called by ``configure()``,
+        ``set()`` and ``QuerySet.cache()``.
+        """
         if cls._signals_connected:
             return
 

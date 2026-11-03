@@ -15,6 +15,7 @@ A Django-style ORM for SurrealDB with async support and Pydantic validation.
 - [Transactions](#transactions)
 - [Aggregations](#aggregations)
 - [Bulk Operations](#bulk-operations)
+- [Query Cache](#query-cache)
 - [Relations & Graph Traversal](#relations--graph-traversal)
 - [Live Models (Real-time)](#live-models-real-time)
 - [Change Feed Integration](#change-feed-integration)
@@ -550,6 +551,35 @@ deleted = await User.objects().filter(status="deleted").bulk_delete()
 deleted = await Order.objects().filter(
     created_at__lt="2024-01-01"
 ).bulk_delete(atomic=True)
+```
+
+---
+
+## Query Cache
+
+`.cache(ttl=N)` stores the result of a read for `N` seconds; the same query on the same connection then returns
+the stored rows without a request. `QueryCache.configure()` sets the defaults and is optional.
+
+```python
+from surreal_orm import QueryCache
+
+QueryCache.configure(default_ttl=120, max_size=500)  # optional
+admins = await User.objects().filter(role="admin").cache(ttl=30).exec()
+```
+
+A successful write through the ORM drops every cached entry of the written table, on every connection:
+
+- `save()`, `update()`, `merge()` and `delete()` on an instance (and `bulk_create()`, which calls `save()`);
+- `atomic_append()`, `atomic_remove()` and `atomic_set_add()`;
+- `bulk_update()`, `bulk_delete()` and `delete_table()` (with `atomic=True`, after the commit).
+
+A write the server rejects leaves the entries in place. Writes the ORM does not see are not tracked: after
+`raw_query()`, `call_function()`, a `DEFINE EVENT` or a write from another process, call
+`QueryCache.invalidate(Model)` yourself, or rely on the TTL.
+
+```python
+await User.raw_query("UPDATE users SET role = 'admin' WHERE email = $email", variables={"email": email})
+QueryCache.invalidate(User)
 ```
 
 ---
