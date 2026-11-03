@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.36)
+> Context document for Claude AI - Last updated: November 2026 (0.21.37)
 
 <!-- -->
 
@@ -19,12 +19,21 @@
 
 ---
 
-## Current Version: 0.21.36 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.37 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.37
+
+One fix: #466 via #495 (`streaming/live_select.py`, `live.py`, `query_set.py` docstring), backport of `main`'s #461.
+Pin unchanged (2.7.0).
+
+- **DIFF notifications carry patches, not the record.** `LiveChange.from_dict()` falls back to the notification's
+  `record` field when the result has no `id` (2.7.0 sends it); `LiveModelStream._to_event()` builds an id-only
+  instance for every DIFF event (same path as an empty `DELETE`) instead of validating `{}`. `diff=False` unchanged.
 
 ### What's New in 0.21.36
 

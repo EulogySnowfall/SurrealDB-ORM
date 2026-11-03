@@ -6,6 +6,51 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.37] - 2026-11-02
+
+**Bug fix release (V2 LTS).** One ORM/SDK fix, the `v2` port of `main`'s
+#461 (0.37.3): `live(diff=True)` events now name their record and no longer
+end the stream on a model with a required field (#466, #495). Read
+*Behaviour change*. The SurrealDB pin is unchanged (tested against 2.7.0,
+supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`live(diff=True)` events now name their record.** In DIFF mode the
+  notification's result is a list of JSON patches with no `id`, so
+  `LiveChange.record_id` and `ModelChangeEvent.record_id` were empty.
+  `LiveChange.from_dict()` now falls back to the notification's `record`
+  field, which SurrealDB 2.7.0 sends; `result["id"]` still wins when the
+  result is a full record (#466).
+- **`QuerySet.live(diff=True)` on a model with a required field no longer
+  ends the stream with a `ValidationError`** at the first notification.
+  The ORM validated the empty DIFF result as a record (#466).
+
+### Behaviour change
+
+- **In DIFF mode, `event.instance` carries only the id**, built the same
+  way as for an empty `DELETE`. The change itself is in
+  `event.changed_fields`. Before, such a stream either raised
+  `ValidationError` (model with a required field) or yielded an instance
+  holding only default values. `diff=False` is unchanged.
+
+### Migration notes
+
+- Code that read other fields from `event.instance` in DIFF mode was only
+  getting default values; fetch the record (for example
+  `Model.objects().get(event.record_id)`) when the full state is needed.
+
+### Verification
+
+Against SurrealDB 2.7.0, at the PR's validated head: 3,645 unit tests on
+each of Python 3.12, 3.13 and 3.14; 798 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The 9 new tests (6 unit, 3
+integration) passed three times in a row; re-checked after syncing with
+`v2` (3,700 unit, 800 integration).
+
+---
+
 ## [0.21.36] - 2026-11-02
 
 **Bug fix release (V2 LTS).** One ORM fix and one SDK fix, both `v2` ports
