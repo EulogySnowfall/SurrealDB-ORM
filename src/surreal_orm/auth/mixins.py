@@ -323,12 +323,17 @@ class AuthenticatedUserMixin:
         escaping, and ``type::thing("t:000000")`` would read the key as the
         number ``0``.
 
+        A statement that comes back as ``ERR`` yields ``None`` too: its result
+        is the server's error text, never a record ID, so the callers raise
+        ``SurrealDbError`` ("could not be read") instead of looking it up.
+
         Returns:
-            The record ID, or ``None`` when the session has no ``$auth`` record.
+            The record ID, or ``None`` when the session has no ``$auth`` record
+            or ``RETURN $auth`` failed.
         """
         auth_result = await client.query("RETURN $auth")
         first_qr = auth_result.first_result
-        if first_qr is None:
+        if first_qr is None or not first_qr.is_ok:
             return None
         return first_qr.result
 
