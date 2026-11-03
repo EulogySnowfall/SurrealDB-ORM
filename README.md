@@ -52,6 +52,18 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.44
+
+**Bug fix release (V2 LTS).** Two `v2` fixes (#392); pin unchanged (2.7.0).
+
+- **Auth.** `signin()`, `signup()` and `change_password()` raise `SurrealDbError` when the server fails to return the
+  session record (`RETURN $auth`). Before, `signin()` / `signup()` raised `DoesNotExist` naming the server's error
+  text, and `change_password()` sent its `UPDATE` with that text as the record ID.
+- **Behaviour change:** `QuerySet.variables()` rejects the names the ORM binds itself (`_f<n>`, `_s<n>`, `_bu<n>`,
+  `_sv_<field>`, `_knn_vec`, `_geo_max`, `_hybrid_vec`, `_hybrid_text`, `_pfp`) with `ValueError`; before, a declared
+  `_f0` was silently replaced by the ORM's filter value. Other underscore names are unchanged. See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.43
 
 **Bug fix release (V2 LTS).** One `v2` fix (#518, backport of #510); pin unchanged (2.7.0).

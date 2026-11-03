@@ -6,6 +6,70 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.44] - 2026-11-03
+
+**Bug fix release (V2 LTS).** Two fixes, both `v2` only, from the 0.21.25
+review follow-ups (#392, #529): the auth helpers raise a clear error when the
+server fails to return the session record, and `QuerySet.variables()` rejects
+the names the ORM binds itself. Read *Behaviour change*. Also test
+follow-ups (#340, #348). The SurrealDB pin is unchanged (tested against
+2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`signin()`, `signup()` and `change_password()` raise `SurrealDbError`
+  when `RETURN $auth` fails on the server.** Before, `signin()` / `signup()`
+  looked the server's error text up as a record ID and raised `DoesNotExist`
+  naming that text, and `change_password()` sent its `UPDATE` with that text
+  as the record ID. `signin()` / `signup()` now raise "the session record
+  could not be read"; `change_password()` raises "Invalid current password",
+  as it does for any failed sign-in, and sends no `UPDATE` (#392).
+- **`QuerySet.variables()` rejects the names the ORM binds itself**
+  (`_f<n>`, `_s<n>`, `_bu<n>`, `_sv_<field>`, `_knn_vec`, `_geo_max`,
+  `_hybrid_vec`, `_hybrid_text`, `_pfp`) with `ValueError` listing them.
+  Before, a declared `_f0` was silently replaced by the ORM's filter value
+  (#392).
+
+### Behaviour change
+
+- `.variables(_f0=...)` and the other reserved names above raise
+  `ValueError`. Other names starting with an underscore (`_foo`) are
+  unchanged.
+
+### Migration notes
+
+- Rename any variable declared with `.variables()` that matches a reserved
+  name, and update the matching `$name` references in your filters.
+
+### Documentation
+
+- The README "What's New in 0.21.25" note now says that `signin()` /
+  `signup()` no longer fall back to the identifier lookup, and that
+  `change_password()` raises unless exactly the signed-in record was
+  updated (#392).
+
+### Tests
+
+- The #349 integration test checks the 2.x reason of the `invalidate()`
+  failure (`not enough permissions`, code `-32000`) and removes its database
+  afterwards (#392).
+- The #315 integration test module deletes its rows from both test
+  databases after each test and checks that none are left (#340, #525).
+- The i64 inline-ID unit test checks against `type::thing()` (its previous
+  assertion could never fail on `v2`), and an integration test runs
+  `get_changes()` and a default-start `stream()` on SurrealDB 2.7.0 while
+  another table is being written to (#348, #527).
+
+### Verification
+
+Against SurrealDB 2.7.0, at #529's validated head: 3,868 unit tests on each
+of Python 3.12, 3.13 and 3.14, and 816 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The new and touched tests passed three
+times in a row.
+
+---
+
 ## [0.21.43] - 2026-11-03
 
 **Bug fix release (V2 LTS).** One fix: a WebSocket request issued during a
