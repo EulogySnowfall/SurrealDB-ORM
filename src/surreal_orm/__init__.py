@@ -175,19 +175,18 @@ __version__ = "0.21.40"
 # ---------------------------------------------------------------------------
 # Deprecation notice (V2 LTS branch)
 # ---------------------------------------------------------------------------
-# The V2 LTS branch is deprecated in favor of SurrealDB-ORM-lite, which
-# continues to support SurrealDB 2.x on top of the now-matured official
-# SurrealDB Python SDK (v2). This branch remains under security/bug-fix
-# maintenance until SurrealDB-ORM-lite reaches v0.40.0 (beta), after which it
-# will be retired.
+# The V2 LTS line (0.21.x, SurrealDB 2.x) is deprecated in favor of
+# SurrealDB-ORM-lite, which supports SurrealDB 2.x on top of the official
+# SurrealDB Python SDK (v2). It is no longer maintained once SurrealDB-ORM
+# 0.39.0 is released: no further security or bug fixes after that release.
 #
 #   https://github.com/EulogySnowfall/SurrealDB-ORM-lite
 warnings.warn(
-    "SurrealDB-ORM v2 (0.21.x, SurrealDB 2.x LTS) is deprecated in favor of "
+    "SurrealDB-ORM v2 (0.21.x, SurrealDB 2.x) is deprecated and no longer "
+    "maintained once SurrealDB-ORM 0.39.0 is released: no further security or "
+    "bug fixes after that release. SurrealDB 2.x users should move to "
     "SurrealDB-ORM-lite (https://github.com/EulogySnowfall/SurrealDB-ORM-lite), "
-    "which supports SurrealDB 2.x via the official SurrealDB Python SDK v2. "
-    "This branch will only receive security and bug fixes until SurrealDB-ORM-lite "
-    "reaches v0.40.0 (beta), after which it will be retired.",
+    "which supports SurrealDB 2.x via the official SurrealDB Python SDK v2.",
     DeprecationWarning,
     stacklevel=2,
 )
