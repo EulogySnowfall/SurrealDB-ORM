@@ -52,6 +52,14 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.45
+
+**Bug fix release (V2 LTS).** One `v2` fix (#438); pin unchanged (2.7.0).
+
+- **`HTTPTransaction.insert()` and generators.** Given a generator or another one-shot iterable of records, it now
+  queues every record. Before, checking the keys used up the iterable, so nothing was queued and no error was raised.
+  Dicts and lists render as before. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.44
 
 **Bug fix release (V2 LTS).** Two `v2` fixes (#392); pin unchanged (2.7.0).
