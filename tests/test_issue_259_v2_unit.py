@@ -234,12 +234,49 @@ class TestRegexLiteralsAheadOfThePermissions:
         assert result.value == "math::floor($value / 2)"
         assert result.permissions == {"select": "NONE"}
 
-    def test_a_balanced_body_without_a_clause_has_none(self) -> None:
-        """Hand-written: the keyword never follows whitespace, so there is no clause to fall back to."""
-        result = parse_define_field("DEFINE FIELD note ON t TYPE string DEFAULT 'PERMISSIONS FOR all'")
+    @pytest.mark.parametrize(
+        ("statement", "default"),
+        [
+            pytest.param(
+                "DEFINE FIELD note ON t TYPE string DEFAULT 'PERMISSIONS FOR all'",
+                "PERMISSIONS FOR all",
+                id="keyword-never-after-whitespace",
+            ),
+            pytest.param(
+                # The keyword follows whitespace inside the string: the only
+                # candidate start leaves ``FULL'`` behind, an unclosed quote,
+                # so it is not a clause (#287).
+                "DEFINE FIELD note ON t TYPE string DEFAULT 'x PERMISSIONS FULL'",
+                "x PERMISSIONS FULL",
+                id="keyword-inside-a-string-literal",
+            ),
+            pytest.param(
+                'DEFINE FIELD note ON t TYPE string DEFAULT "a PERMISSIONS FOR select NONE, b PERMISSIONS NONE"',
+                "a PERMISSIONS FOR select NONE, b PERMISSIONS NONE",
+                id="two-candidates-inside-a-double-quoted-string",
+            ),
+        ],
+    )
+    def test_a_balanced_body_without_a_clause_has_none(self, statement: str, default: str) -> None:
+        """Hand-written: no candidate start leaves a balanced remainder, so there is no clause."""
+        result = parse_define_field(statement)
 
-        assert result.default == "PERMISSIONS FOR all"
+        assert result.default == default
         assert result.permissions == {}
+
+    def test_the_fallback_skips_a_candidate_inside_a_string(self) -> None:
+        """Hand-written: the scan ends inside the pattern's apostrophe, so the clause is found from the end.
+
+        The last start is inside the condition's string literal and leaves
+        its quote open; the real clause is the one before it.
+        """
+        result = parse_define_field(
+            "DEFINE FIELD k1 ON r287 TYPE string ASSERT / it's/ = $value "
+            'PERMISSIONS FOR select WHERE name != "x PERMISSIONS FULL", FOR create, update FULL'
+        )
+
+        assert result.assertion == "/ it's/ = $value"
+        assert result.permissions == {"select": 'name != "x PERMISSIONS FULL"'}
 
 
 class TestEffectiveFieldPermissions:

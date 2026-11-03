@@ -248,14 +248,8 @@ def _regex_literal_end(text: str, start: int) -> int:
     return -1
 
 
-def _split_field_permissions(body: str) -> tuple[str, str]:
-    """Split a DEFINE FIELD body at its PERMISSIONS clause.
-
-    SurrealDB always reports a field's PERMISSIONS clause last, and its
-    ``WHERE`` conditions name fields unescaped — ``FOR select WHERE type =
-    'public'``. Scanned with the other clauses, ``type`` there was read as a
-    TYPE clause, and the ``>`` of a preceding ``ASSERT $value > 0`` hid the
-    PERMISSIONS keyword so the whole clause ended up in the assertion (#259).
+def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
+    """Scan a DEFINE FIELD body (or part of one) token by token.
 
     Quotes (``'``, ``"`` and backticks, with backslash escapes), regex
     literals, parentheses, brackets and braces are respected. A pattern is
@@ -264,24 +258,23 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     only nest inside a type, where the keyword cannot appear, while
     ``ASSERT $value > 0`` would never close.
 
-    When the scan finds no clause, it is taken from the last place one can
-    start: the server reports a PERMISSIONS clause for every field, and always
-    last. A body where the keyword never follows whitespace has none.
-
     Args:
-        body: The statement body after ``DEFINE FIELD name ON table``
+        text: The text to scan
+        find_clause: Stop at the first PERMISSIONS clause start found outside
+            any quote, pattern or bracket
 
     Returns:
-        ``(definition, permissions)``: the body before the clause, and the
-        clause after its ``PERMISSIONS`` keyword (empty when there is none)
+        ``(index, balanced)``: the index of that clause start (-1 when none
+        was found or none was looked for), and whether the text ends with no
+        quote, pattern or bracket left open
     """
     depth = 0
     quote: str | None = None
     escaped = False
     previous = ""
     i = 0
-    while i < len(body):
-        ch = body[i]
+    while i < len(text):
+        ch = text[i]
         if quote:
             if escaped:
                 escaped = False
@@ -292,10 +285,10 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
                 previous = ch
             i += 1
             continue
-        if ch == "/" and _opens_regex_literal(body, i, previous):
-            end = _regex_literal_end(body, i)
+        if ch == "/" and _opens_regex_literal(text, i, previous):
+            end = _regex_literal_end(text, i)
             if end == -1:
-                break
+                return -1, False
             previous = "/"
             i = end
             continue
@@ -305,16 +298,49 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
             depth += 1
         elif ch in ")]}":
             depth -= 1
-        elif depth == 0 and ch in "Pp" and _FIELD_PERMISSIONS_START.match(body, i):
-            return body[:i], body[i + len("PERMISSIONS") :].strip()
+        elif find_clause and depth == 0 and ch in "Pp" and _FIELD_PERMISSIONS_START.match(text, i):
+            return i, True
         if not ch.isspace():
             previous = ch
         i += 1
+    return -1, quote is None and depth == 0
+
+
+def _split_field_permissions(body: str) -> tuple[str, str]:
+    """Split a DEFINE FIELD body at its PERMISSIONS clause.
+
+    SurrealDB always reports a field's PERMISSIONS clause last, and its
+    ``WHERE`` conditions name fields unescaped — ``FOR select WHERE type =
+    'public'``. Scanned with the other clauses, ``type`` there was read as a
+    TYPE clause, and the ``>`` of a preceding ``ASSERT $value > 0`` hid the
+    PERMISSIONS keyword so the whole clause ended up in the assertion (#259).
+    The scan (:func:`_scan_field_body`) skips quotes, regex literals and
+    brackets.
+
+    When the scan finds no clause, the candidate starts are tried from the
+    last one backwards: the server reports a PERMISSIONS clause for every
+    field, and always last. A start is kept only when what follows its
+    keyword ends balanced under the same scan; one inside a string literal
+    (``DEFAULT 'x PERMISSIONS FULL'``) leaves the quote open and is skipped
+    (#287). A body with no start left has no clause.
+
+    Args:
+        body: The statement body after ``DEFINE FIELD name ON table``
+
+    Returns:
+        ``(definition, permissions)``: the body before the clause, and the
+        clause after its ``PERMISSIONS`` keyword (empty when there is none)
+    """
+    index, _ = _scan_field_body(body, find_clause=True)
+    if index != -1:
+        return body[:index], body[index + len("PERMISSIONS") :].strip()
 
     starts = [m.start() for m in _FIELD_PERMISSIONS_START.finditer(body)]
-    if not starts:
-        return body, ""
-    return body[: starts[-1]], body[starts[-1] + len("PERMISSIONS") :].strip()
+    for start in reversed(starts):
+        remainder = body[start + len("PERMISSIONS") :]
+        if _scan_field_body(remainder, find_clause=False)[1]:
+            return body[:start], remainder.strip()
+    return body, ""
 
 
 def parse_define_field(statement: str) -> FieldState:
