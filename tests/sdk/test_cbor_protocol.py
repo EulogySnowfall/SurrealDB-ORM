@@ -415,10 +415,13 @@ class TestCompactDatetimeDecoding:
         assert _cbor_tag_decoder(None, CBORTag(TAG_DATETIME, "not-a-datetime")) == "not-a-datetime"
 
     def test_one_undecodable_datetime_does_not_fail_the_whole_response(self) -> None:
-        """An exception in the tag hook surfaces as ``CBORDecodeError`` for the entire payload.
+        """An exception from the tag hook propagates out of ``cbor2.loads()`` and fails the whole response.
 
-        The fallback keeps it local to the one value, and every other datetime
-        in the same response still decodes.
+        With cbor2 5.x (the pin on this branch) it escapes unwrapped, as the
+        original exception, not as ``CBORDecodeError``; cbor2 6.x would wrap it
+        in ``CBORDecodeError`` instead. The fallback keeps the failure local to
+        the one value, and every other datetime in the same response still
+        decodes.
         """
         payload = {
             "ok": _compact(),
