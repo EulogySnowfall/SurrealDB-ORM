@@ -52,6 +52,18 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.42
+
+**Bug fix release (V2 LTS).** Two `v2` fixes (#492, #509); pin unchanged (2.7.0).
+
+- **`Duration` equality.** A compact `Duration` compares equal whatever sequence built it:
+  `Duration((5400, 1)) == Duration([5400, 1])`, and equal to the same duration read from the server.
+- **`parse_define_field()` and regex literals.** A `PERMISSIONS FULL|NONE|FOR` inside a regex literal
+  (`ASSERT $value = / PERMISSIONS FULL/`) is no longer taken as the field's clause; the assertion reads back whole.
+  `INFO FOR TABLE` output is unaffected.
+- **Behaviour change:** `Duration` stores a non-string `value` as a new `list` (a tuple becomes a list). See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.41
 
 **Bug fix release (V2 LTS).** Two `v2` fixes (#503, #287); pin unchanged (2.7.0).
