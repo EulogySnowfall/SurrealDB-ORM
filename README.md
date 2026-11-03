@@ -52,6 +52,18 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.40
+
+**Bug fix release (V2 LTS).** One fix (#415), the `v2` port of `main`'s #393; pin unchanged (2.7.0).
+
+- **Token checks.** `validate_token()` and `authenticate_token()` accept a token only when its `AC` claim is the
+  model's `get_access_name()` and its `NS` / `DB` claims match the model's connection, on top of the table check.
+  Two models on one table with different `access_name` values now each accept only their own tokens.
+- **Token cache** keyed by `(connection, table, access name, token)`; `invalidate_token_cache(token)` still drops
+  every entry for the token.
+- **Behaviour change:** a token from another access, namespace or database, or with unreadable claims, returns
+  `None`. `validate_token_local()` is unchanged. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.39
 
 **Bug fix release (V2 LTS).** One fix (#463), the `v2` port of `main`'s #460; pin unchanged (2.7.0).

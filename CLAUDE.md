@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.39)
+> Context document for Claude AI - Last updated: November 2026 (0.21.40)
 
 <!-- -->
 
@@ -19,12 +19,22 @@
 
 ---
 
-## Current Version: 0.21.39 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.40 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.40
+
+One fix: #415 via #502 (`auth/mixins.py`, `docs/auth.md`), backport of `main`'s #393 (#408). Pin unchanged (2.7.0).
+
+- **Token claims are compared after the server accepts the token.** `_is_own_token()` checks `AC` against
+  `get_access_name()` and `NS` / `DB` against the model's connection, in `validate_token()` and
+  `authenticate_token()`, after the table check; unreadable or missing claims return `None`.
+- **Cache key is `(connection, table, access name, token)`**; `invalidate_token_cache()` reads the token as
+  `key[-1]`. A rejected token is never cached. `validate_token_local()` still does no claim check.
 
 ### What's New in 0.21.39
 
