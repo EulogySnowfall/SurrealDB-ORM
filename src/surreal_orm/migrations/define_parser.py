@@ -263,14 +263,20 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
         find_clause: Stop at the first PERMISSIONS clause start found outside
             any quote, pattern or bracket
 
+    A ``/`` read as a division must be written as SurrealDB writes one,
+    `` / `` with an operand after it. Any other is the closing ``/`` of a
+    pattern opened before *text* starts, and leaves the text unbalanced.
+
     Returns:
         ``(index, balanced)``: the index of that clause start (-1 when none
         was found or none was looked for), and whether the text ends with no
-        quote, pattern or bracket left open
+        quote, pattern or bracket left open and no pattern end without its
+        start
     """
     depth = 0
     quote: str | None = None
     escaped = False
+    stray = False
     previous = ""
     i = 0
     while i < len(text):
@@ -292,6 +298,8 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
             previous = "/"
             i = end
             continue
+        if ch == "/" and not (i > 0 and text[i - 1].isspace() and text[i + 1 :].strip()):
+            stray = True
         if ch in "'\"`":
             quote = ch
         elif ch in "([{":
@@ -303,7 +311,7 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
         if not ch.isspace():
             previous = ch
         i += 1
-    return -1, quote is None and depth == 0
+    return -1, quote is None and depth == 0 and not stray
 
 
 def _split_field_permissions(body: str) -> tuple[str, str]:
@@ -322,7 +330,14 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     field, and always last. A start is kept only when what follows its
     keyword ends balanced under the same scan; one inside a string literal
     (``DEFAULT 'x PERMISSIONS FULL'``) leaves the quote open and is skipped
-    (#287). A body with no start left has no clause.
+    (#287), and one inside a regex literal (``ASSERT $value = / PERMISSIONS
+    FULL/``) leaves the pattern's closing ``/`` without its start (#509).
+    A body with no start left has no clause.
+
+    The scan ending balanced is not enough to rule the candidates out: a
+    pattern starting with a space after a keyword (``ASSERT / +/``) is read
+    as a division, and the next ``/`` can then open a pattern that hides the
+    real clause.
 
     Args:
         body: The statement body after ``DEFINE FIELD name ON table``
