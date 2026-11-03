@@ -18,7 +18,9 @@ Reproduced against a live SurrealDB 2.7.0 before the fix:
   3) SCHEMALESS table -> stored the string, not a link
 """
 
+from types import SimpleNamespace
 from typing import Any, Optional
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from pydantic import Field
@@ -193,6 +195,44 @@ class TestFilterCoercion:
     def test_string_lookups_are_left_alone(self, model: type[BaseSurrealModel], lookup: str) -> None:
         """They match on the raw value, not the record."""
         assert model.objects()._coerce_filter_value("author", lookup, "alice") == "alice"
+
+
+@pytest.mark.parametrize("model", OPTIONAL_MODELS, ids=["pipe", "Optional"])
+class TestBulkUpdateCoercion:
+    """``bulk_update()`` binds its SET values through the same foreign-key map.
+
+    Asserted on what ``bulk_update()`` actually sends to the client, so a
+    regression in the map lookup for an optional field cannot hide behind a
+    helper-level test.
+    """
+
+    @staticmethod
+    async def _bound(model: type[BaseSurrealModel], data: dict[str, Any]) -> Any:
+        client = AsyncMock()
+        client.query = AsyncMock(return_value=SimpleNamespace(results=[], all_records=[], is_ok=True))
+
+        with patch(
+            "src.surreal_orm.query_set.SurrealDBConnectionManager.get_client",
+            new_callable=AsyncMock,
+            return_value=client,
+        ):
+            await model.objects().filter(title="t").bulk_update(data)
+
+        _query, variables = client.query.await_args.args[:2]
+        return variables["_bu0"]
+
+    async def test_field_name(self, model: type[BaseSurrealModel]) -> None:
+        bound = await self._bound(model, {"author": "alice"})
+
+        assert isinstance(bound, RecordId), f"bound a bare {type(bound).__name__}"
+        assert bound == _alice()
+
+    async def test_aliased_column(self, model: type[BaseSurrealModel]) -> None:
+        """The real column name, the alias, is coerced too."""
+        bound = await self._bound(model, {"editor_id": "alice"})
+
+        assert isinstance(bound, RecordId), f"bound a bare {type(bound).__name__}"
+        assert bound == _alice()
 
 
 def test_to_record_link_none_is_unchanged() -> None:

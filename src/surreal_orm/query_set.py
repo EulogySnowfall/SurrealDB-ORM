@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
@@ -42,6 +43,17 @@ from .model_base import SurrealDbError, _raise_on_statement_error, _to_record_li
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound="BaseSurrealModel")
+
+# Names the ORM binds itself when it compiles a query: filter values ($_fN),
+# full-text terms ($_sN), bulk_update() values ($_buN), save() values
+# ($_sv_<field>), the KNN vector, the nearby() distance, the hybrid_search()
+# inputs and the prefetch fingerprint folded into a cache key. They share one
+# dict with the names passed to .variables() and are written after them, so a
+# declared one would silently carry the ORM's value instead.
+_RESERVED_VARIABLE_RE = re.compile(
+    r"_(?:f[0-9]+|s[0-9]+|bu[0-9]+|sv_[A-Za-z0-9_]*|knn_vec|geo_max|hybrid_vec|hybrid_text|pfp)",
+    re.ASCII,
+)
 
 
 class QuerySet(Generic[T]):
@@ -152,17 +164,31 @@ class QuerySet(Generic[T]):
         declared here. Any other value, including ``$name`` for a name that is not
         declared, is bound as a parameter and compared as data.
 
+        The names the ORM binds itself are reserved: ``_f<n>``, ``_s<n>``,
+        ``_bu<n>``, ``_sv_<field>``, ``_knn_vec``, ``_geo_max``, ``_hybrid_vec``,
+        ``_hybrid_text`` and ``_pfp``. Other names starting with ``_`` (``_foo``)
+        are accepted.
+
         Args:
             **kwargs (Any): Arbitrary keyword arguments representing variable names and their corresponding values.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
 
+        Raises:
+            ValueError: If a name is reserved by the ORM.
+
         Example:
             ```python
             queryset.filter(status='$status').variables(status='active')
             ```
         """
+        reserved = sorted(name for name in kwargs if _RESERVED_VARIABLE_RE.fullmatch(name))
+        if reserved:
+            raise ValueError(
+                f"Variable name(s) {', '.join(reserved)} are reserved for the ORM's own query parameters; "
+                "use another name in .variables()."
+            )
         self._variables = {key: value for key, value in kwargs.items()}
         self._declared_variables = frozenset(kwargs)
         return self

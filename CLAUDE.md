@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.40)
+> Context document for Claude AI - Last updated: November 2026 (0.21.45)
 
 <!-- -->
 
@@ -20,12 +20,78 @@
 
 ---
 
-## Current Version: 0.21.40 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.45 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.45
+
+One fix, `v2` only: #438 via #533 (`surreal_sdk/transaction.py`). Pin unchanged (2.7.0). Also test follow-up #532
+(#404).
+
+- **Walking the records twice needs a list.** `HTTPTransaction.insert()` checks every record's keys before queuing
+  anything (#382), so it loops over `data` twice; a generator was empty for the second loop and the transaction
+  queued nothing, silently. The records are materialised once (`[data]` for a dict, `list(data)` otherwise).
+- **Auth routing is now tested below the helper.** The #372 tests patched `_create_auth_client()` itself; #532 patches
+  `surreal_sdk.HTTPConnection` and checks the client is built from the model's `connection=` / `using()` config.
+- **Open (review suggestion on #533):** `main`'s `HTTPTransaction.insert()` still loops over `data` twice.
+
+### What's New in 0.21.44
+
+Two fixes, `v2` only: #392 via #529 (`surreal_orm/auth/mixins.py`, `surreal_orm/query_set.py`). Pin unchanged
+(2.7.0). Also test follow-ups #525 (#340) and #527 (#348).
+
+- **A per-statement `ERR` is not a value.** `_read_session_record()` returns `None` when `RETURN $auth` comes back as
+  `ERR` (its result is then the server's error text), so `signin()` / `signup()` raise `SurrealDbError` and
+  `change_password()` stops before its `UPDATE`. Same trap as the 0.32.6-era migration executor on `main`.
+- **`.variables()` and the ORM's own bindings share one dict**, and the ORM writes after the declared ones, so a
+  declared `_f0` was overwritten. `_RESERVED_VARIABLE_RE` (`fullmatch`) rejects every name the ORM binds on `v2`;
+  a new bound name must be added there.
+- **Open (review suggestions on #529):** the callers' message still says `($auth is empty)` for the `ERR` case and
+  drops the server text; `change_password()` turns it into "Invalid current password"; the #349 fixture skips its
+  database cleanup if `close()` raises.
+
+### What's New in 0.21.43
+
+One fix, `v2` only: #518 via #524 (`surreal_sdk/connection/websocket.py`), backport of #510/#513. Pin unchanged
+(2.7.0). Also docs/test/CI follow-ups #515, #516, #521, #523.
+
+- **"Socket open" is not "session usable".** A private readiness event is cleared at the start of each reconnect
+  attempt and when the read loop sees the socket end, and set only after `use()` succeeds on a socket whose reader is
+  still running. Public requests wait for it (at most the request timeout, no longer than the reconnect task lives) or
+  fail with `ConnectionError`; the restore requests (`authenticate`, `use`) take an internal path that does not wait.
+- **A failed restore step drops only its own socket.** Before, it called `_cleanup()` from inside the reconnect task,
+  which cancelled that task. The reconnect task never waits on itself while re-creating live queries.
+- **Open (review suggestion on #524):** a request woken by `close()` during a reconnect gets
+  `Not connected. Call connect() first.`, which reads as a usage error.
+
+### What's New in 0.21.42
+
+Two fixes, `v2` only: #492 via #511 (`surreal_sdk/protocol/cbor.py`) and #509 via #512
+(`migrations/define_parser.py`, plus a `cache.py` docstring). Pin unchanged (2.7.0).
+
+- **`Duration.__post_init__` stores any non-string `value` as a new `list`**, so the dataclass `__eq__` no longer
+  depends on the container type (a decoded server value holds a list). Encoding and `str()` are unchanged.
+- **A pattern's closing `/` needs its start.** `_scan_field_body()` reads a `/` as a division only in the form the
+  server writes one (` / ` with an operand after it); any other `/` closes a pattern matched against an earlier
+  ` / `, or the text is unbalanced. A `PERMISSIONS` candidate inside a regex literal is then skipped by the fallback.
+- **Open (review suggestion on #512):** a candidate inside a pattern that itself contains a spaced slash
+  (`/x PERMISSIONS FULL / y/`) still passes the fallback; hand-written statements only, same as 0.21.41.
+
+### What's New in 0.21.41
+
+Two fixes, `v2` only: #503 via #505 (`query_set.py`) and #287 via #506 (`migrations/define_parser.py`). Pin
+unchanged (2.7.0).
+
+- **Plain `bulk_update()` / `bulk_delete()` call `_raise_on_statement_error()`** right after the query, before
+  invalidating the cache, like the `atomic_*` helpers: a rejected statement raises `QueryError` (or
+  `TransactionConflictError`) instead of returning `0`. The `is_ok` guard from #499 is gone, the call raises first.
+- **The `PERMISSIONS` fallback checks its candidates.** When `_split_field_permissions()` finds no top-level clause,
+  candidate starts are tried from the last backwards and one is kept only when its remainder ends balanced; the
+  quote/regex/bracket tracking lives in `_scan_field_body()`, shared by both passes.
 
 ### What's New in 0.21.40
 
@@ -47,7 +113,7 @@ One fix: #463 via #499 (`cache.py`, `model_base.py`, `query_set.py`), backport o
   the plain paths, where a rejected statement rides back inside a successful RPC).
 - **`set()` and `QuerySet.cache()` call `_connect_signals()`** (idempotent through `_signals_connected`); before,
   only `configure()` connected the handlers, so a process that skipped it had no invalidation at all.
-- **Open (review suggestion on #499):** the plain bulk paths still return `0` on a rejected statement without raising.
+- **Open (review suggestion on #499):** the plain bulk paths still return `0` on a rejected statement without raising (fixed in 0.21.41, #505).
 
 ### What's New in 0.21.38
 
@@ -520,8 +586,8 @@ whole bound keys (#247, #249). No public API change.
   parse error with two or more fields; with one, `commit()` returns cleanly while
   the server rolls the whole transaction back (statement `ERR` is unchecked). So
   `update(tx=)`, `merge(tx=)` without a `SurrealFunc` and `save(tx=)` of a saved
-  record fail over HTTP, before and after this release. `main` has the same
-  builder.
+  record whose data holds no `SurrealFunc` and no nested object/array fail over
+  HTTP, before and after this release. `main` has the same builder.
 
 ### What's New in 0.21.12
 

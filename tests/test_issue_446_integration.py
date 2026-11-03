@@ -24,6 +24,10 @@ from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, S
 
 SURREALDB_DATABASE = "test_issue_446_v2"
 ITEMS = "i446_items"
+#: How long the holding transaction sleeps after its write, before its COMMIT.
+HOLD = "3s"
+#: How long each other transaction waits after the holder's request is sent, before its write.
+LEAD = "1s"
 
 pytestmark = pytest.mark.integration
 
@@ -96,33 +100,55 @@ async def test_retry_on_conflict_runs_the_assert_once() -> None:
 
 
 async def test_conflicting_commit_raises_transaction_conflict_error() -> None:
-    """Concurrent transactions on one record: every failed commit is a ``TransactionConflictError``."""
-    conns = []
+    """Overlapping transactions on one record: every failed commit is a ``TransactionConflictError``.
+
+    ``HTTPTransaction`` sends its statements only at commit, as one
+    ``BEGIN``/``COMMIT`` request, so the overlap is built into the requests
+    rather than left to scheduling. The holder writes the record, then sleeps
+    for ``HOLD`` before its ``COMMIT``. The others start only once the
+    holder's request is on its way (``asyncio.Event``), wait ``LEAD`` inside
+    their own transaction so the holder's ``BEGIN`` and write are already in
+    place, then write the same record and commit while the holder still
+    sleeps. The holder's commit then meets a record committed after it began.
+    """
+    conns: list[HTTPConnection] = []
     for _ in range(4):
         conn = HTTPConnection(SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE)
         await conn.connect()
         await conn.signin(SURREALDB_USER, SURREALDB_PASS)
         conns.append(conn)
+    holder, *others = conns
+
+    holder_sent = asyncio.Event()
+    holder_query = holder.query
+
+    async def query_and_signal(sql: str, vars: dict[str, Any] | None = None) -> Any:
+        holder_sent.set()
+        return await holder_query(sql, vars)
+
+    holder.query = query_and_signal  # type: ignore[method-assign]
+
+    async def hold() -> None:
+        async with holder.transaction() as tx:
+            await tx.query(f"UPDATE {ITEMS}:a SET n += 1;")
+            await tx.query(f"SLEEP {HOLD};")
 
     async def bump(conn: HTTPConnection) -> None:
+        await holder_sent.wait()
         async with conn.transaction() as tx:
+            await tx.query(f"SLEEP {LEAD};")
             await tx.query(f"UPDATE {ITEMS}:a SET n += 1;")
-            await tx.query("SLEEP 300ms;")
 
-    failures: list[BaseException] = []
     try:
-        # The overlapping commits conflict on the first round in practice; a few
-        # rounds keep the test independent of scheduling.
-        for _ in range(5):
-            results = await asyncio.gather(*(bump(conn) for conn in conns), return_exceptions=True)
-            failures.extend(r for r in results if isinstance(r, BaseException))
-            if failures:
-                break
+        results = await asyncio.gather(hold(), *(bump(conn) for conn in others), return_exceptions=True)
     finally:
         for conn in conns:
             await conn.close()
 
-    assert failures, "no concurrent commit conflicted"
+    # The holder's commit is the one the overlap guarantees to conflict; the
+    # others may also conflict with each other.
+    assert isinstance(results[0], TransactionConflictError), repr(results[0])
+    failures = [r for r in results if isinstance(r, BaseException)]
     for failure in failures:
         assert isinstance(failure, TransactionConflictError), repr(failure)
         assert isinstance(failure, TransactionError)
