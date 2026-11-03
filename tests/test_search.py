@@ -103,8 +103,9 @@ class TestSearchHighlight:
         assert sql == "search::highlight('<b>', '</b>', 1) AS snippet"
 
     def test_ref_that_is_not_a_number_is_rejected(self) -> None:
-        with pytest.raises(ValueError):
-            SearchHighlight("<b>", "</b>", "0) AS a, (1").to_surql("snippet")  # type: ignore[arg-type]
+        # Checked at construction since #444 (TypeError), no longer by int() at render.
+        with pytest.raises(TypeError):
+            SearchHighlight("<b>", "</b>", "0) AS a, (1")  # type: ignore[arg-type]
 
 
 class TestSearchMethod:
