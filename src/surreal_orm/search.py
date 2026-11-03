@@ -47,8 +47,18 @@ class SearchScore:
     """
 
     def __init__(self, ref: int = 0) -> None:
-        # Written into the query text by to_surql(), not bound.
-        self.ref = require_int("ref", ref, minimum=0)
+        self.ref = ref
+
+    @property
+    def ref(self) -> int:
+        """The match reference index."""
+        return self._ref
+
+    @ref.setter
+    def ref(self, value: int) -> None:
+        # Written into the query text by to_surql(), not bound, so it is
+        # checked at construction and again whenever it is assigned.
+        self._ref = require_int("ref", value, minimum=0)
 
     def to_surql(self, alias: str) -> str:
         """Render as ``search::score(N) AS alias``.
@@ -99,8 +109,18 @@ class SearchHighlight:
     def __init__(self, open_tag: str = "<b>", close_tag: str = "</b>", ref: int = 0) -> None:
         self.open_tag = open_tag
         self.close_tag = close_tag
-        # Written into the query text by to_surql(), not bound.
-        self.ref = require_int("ref", ref, minimum=0)
+        self.ref = ref
+
+    @property
+    def ref(self) -> int:
+        """The match reference index."""
+        return self._ref
+
+    @ref.setter
+    def ref(self, value: int) -> None:
+        # Written into the query text by to_surql(), not bound, so it is
+        # checked at construction and again whenever it is assigned.
+        self._ref = require_int("ref", value, minimum=0)
 
     def to_surql(self, alias: str) -> str:
         """Render as ``search::highlight('open', 'close', N) AS alias``.
@@ -109,7 +129,7 @@ class SearchHighlight:
         :func:`~surreal_orm.utils.surql_string_literal`, which escapes the
         backslash as well as the apostrophe, so each tag reaches
         ``search::highlight()`` as written. ``ref`` was checked and
-        converted to a plain ``int`` at construction.
+        converted to a plain ``int`` when it was assigned.
 
         Raises:
             ValueError: If ``alias`` is not an identifier.

@@ -35,6 +35,7 @@ from typing import Any
 
 from ..connection.http import HTTPConnection
 from ..exceptions import ChangeFeedError
+from ..transaction import _is_cancellation
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 _VERSIONSTAMP_RE = re.compile(r"[0-9]+")
@@ -100,8 +101,10 @@ def _statement_error(response: Any) -> str | None:
     errors = [str(result.result) for result in response.results if not result.is_ok]
     if not errors:
         return None
-    # In a failed transaction every statement reports "not executed"; the cause is elsewhere.
-    causes = [error for error in errors if "not executed" not in error and "Cannot COMMIT" not in error]
+    # In a failed transaction the other statements only report that they were
+    # cancelled; the cause is elsewhere. Same definition as HTTPTransaction, so a
+    # conflict reported on the COMMIT of the reader's batch keeps its cause.
+    causes = [error for error in errors if not _is_cancellation(error)]
     return (causes or errors)[0]
 
 
