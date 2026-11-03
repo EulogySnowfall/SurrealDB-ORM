@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.40)
+> Context document for Claude AI - Last updated: November 2026 (0.21.41)
 
 <!-- -->
 
@@ -19,12 +19,24 @@
 
 ---
 
-## Current Version: 0.21.40 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.41 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.41
+
+Two fixes, `v2` only: #503 via #505 (`query_set.py`) and #287 via #506 (`migrations/define_parser.py`). Pin
+unchanged (2.7.0).
+
+- **Plain `bulk_update()` / `bulk_delete()` call `_raise_on_statement_error()`** right after the query, before
+  invalidating the cache, like the `atomic_*` helpers: a rejected statement raises `QueryError` (or
+  `TransactionConflictError`) instead of returning `0`. The `is_ok` guard from #499 is gone, the call raises first.
+- **The `PERMISSIONS` fallback checks its candidates.** When `_split_field_permissions()` finds no top-level clause,
+  candidate starts are tried from the last backwards and one is kept only when its remainder ends balanced; the
+  quote/regex/bracket tracking lives in `_scan_field_body()`, shared by both passes.
 
 ### What's New in 0.21.40
 

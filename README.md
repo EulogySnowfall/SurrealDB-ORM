@@ -52,6 +52,19 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.41
+
+**Bug fix release (V2 LTS).** Two `v2` fixes (#503, #287); pin unchanged (2.7.0).
+
+- **Refused bulk writes raise.** The non-atomic `QuerySet.bulk_update()` and `bulk_delete()` returned `0` when
+  SurrealDB rejected the statement, the same as a filter that matched nothing. They now raise `QueryError`, or
+  `TransactionConflictError` for a retryable conflict, so `@retry_on_conflict` can retry. `atomic=True` is unchanged.
+- **`parse_define_field()` and string literals.** On a statement with no real `PERMISSIONS` clause, a
+  `PERMISSIONS FULL|NONE|FOR` inside a string literal is no longer taken as the clause:
+  `DEFAULT 'x PERMISSIONS FULL'` reads back whole. `INFO FOR TABLE` output is unaffected.
+- **Behaviour change:** code that relied on `0` for a refused non-atomic bulk write now gets an exception. See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.40
 
 **Bug fix release (V2 LTS).** One fix (#415), the `v2` port of `main`'s #393; pin unchanged (2.7.0).

@@ -6,6 +6,68 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.41] - 2026-11-03
+
+**Bug fix release (V2 LTS).** Two fixes, both `v2` only: the non-atomic
+`QuerySet.bulk_update()` / `bulk_delete()` raise when the server rejects the
+statement (#503, #505), and `parse_define_field()` no longer takes a
+`PERMISSIONS` keyword inside a string literal as the field's clause (#287,
+#506). Read *Behaviour change*. The SurrealDB pin is unchanged (tested
+against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **Non-atomic `QuerySet.bulk_update()` and `bulk_delete()` raise when
+  SurrealDB rejects the statement.** A rejected statement comes back as
+  `status: ERR` inside a successful RPC with no records, so both methods
+  used to return `0`, the same as a filter that matched nothing. They now
+  raise `QueryError`, or `TransactionConflictError` when the server reports
+  a retryable conflict, so `@retry_on_conflict` can retry. The query cache
+  is not invalidated for a rejected write. The `atomic=True` paths are
+  unchanged (#503).
+- **`parse_define_field()` no longer takes a `PERMISSIONS FULL|NONE|FOR`
+  inside a string literal as the field's `PERMISSIONS` clause** when the
+  statement has no real clause.
+  `DEFINE FIELD note ON t TYPE string DEFAULT 'x PERMISSIONS FULL'` now
+  gives `default == "x PERMISSIONS FULL"` and no permissions; 0.21.17 and
+  later read `'x` (#287).
+
+### Behaviour change
+
+- Code that relied on `0` for a non-atomic `bulk_update()` / `bulk_delete()`
+  the server refused (a failed `ASSERT`, an event that throws, a write
+  conflict) now gets an exception. A successful call still returns the
+  number of affected records, and a filter that matches nothing still
+  returns `0`.
+- When `parse_define_field()` finds no top-level clause, its fallback only
+  keeps a candidate start whose remainder ends balanced (quotes, regex
+  literals, brackets); with none left, the field has no clause.
+  `INFO FOR TABLE` output, which always ends a field definition with a real
+  clause, is unaffected: migrations, `schema_diff()` and `inspectdb` read
+  from the database and see no change.
+
+### Migration notes
+
+- Wrap non-atomic `bulk_update()` / `bulk_delete()` calls in
+  `try/except QueryError` where a refused write is expected, or decorate
+  them with `@retry_on_conflict` to retry conflicts.
+
+### Documentation
+
+- The 0.21.39 entry below no longer lists the `bulk_update()` /
+  `bulk_delete()` known limitation, and the 0.21.17 entry no longer lists
+  the `PERMISSIONS` fallback inside a string literal.
+
+### Verification
+
+Against SurrealDB 2.7.0, at each PR's validated head: 3,785 (#505) and
+3,778 (#506) unit tests on each of Python 3.12, 3.13 and 3.14; 813 (#505)
+and 809 (#506) integration tests pass (4 expected failures, the existing
+strict `xfail`s for integer record ids over WebSocket); `ruff` and `mypy`
+clean. The new and changed tests passed three times in a row.
+
+---
+
 ## [0.21.40] - 2026-11-02
 
 **Bug fix release (V2 LTS).** One auth fix, the `v2` port of `main`'s #393
@@ -89,12 +151,6 @@ against 2.7.0, supported range 2.6.x – 2.7.x).
   `raw_query()`, `call_function()`, `DEFINE EVENT` side effects and writes
   from other processes. After one of these, call
   `QueryCache.invalidate(Model)` or rely on the TTL.
-
-### Known limitations
-
-- The plain (non-atomic) `bulk_update()` / `bulk_delete()` return `0` when
-  the server rejects the statement, without raising, so a caller cannot tell
-  "nothing matched" from "the write was refused". Unchanged by this release.
 
 ### Verification
 
@@ -1430,14 +1486,6 @@ SurrealDB pin is unchanged (tested against 2.7.0, supported range
 - Hand-written `AlterField` operations and migration files already on disk
   carry no `permissions` / `previous_permissions`, so applying or rolling
   them back still resets the field's permissions to `FULL` (see *Upgrading*).
-- `parse_define_field()` is scoped to `INFO FOR TABLE` output, which always
-  ends a field definition with a `PERMISSIONS` clause (checked on SurrealDB
-  2.6.5 and 2.7.0). Given a hand-written statement with no clause whose
-  string literal contains `PERMISSIONS FULL`, `NONE` or `FOR`, such as
-  `DEFINE FIELD note ON t TYPE string DEFAULT 'x PERMISSIONS FULL'`, it now
-  cuts the body inside that literal (`default` reads `'x`) where it used to
-  return the whole literal. Migrations, `schema_diff()` and `inspectdb` read
-  definitions from the database and are not affected.
 - A `<` or `>` comparison in a `DEFINE FIELD` expression still hides the
   clauses after it, for example `ASSERT $value > 0 COMMENT 'x'` reads the
   comment into the assertion (#273, open; `main` has the same defect). The
