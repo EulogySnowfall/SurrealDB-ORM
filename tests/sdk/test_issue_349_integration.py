@@ -3,7 +3,7 @@
 Against the pinned 2.x server: a connection signed in with ``signin()`` and then
 switched to a short-lived record token with ``authenticate()`` must fail once that
 token expires, rather than signing in again with the earlier credentials. Also
-covers ``HTTPConnection.invalidate()``.
+covers ``HTTPConnection.invalidate()``. The fixture removes its database afterwards.
 """
 
 import asyncio
@@ -43,6 +43,19 @@ async def root_conn() -> AsyncGenerator[HTTPConnection, None]:
         yield conn
     finally:
         await conn.close()
+        await _remove_database()
+
+
+async def _remove_database() -> None:
+    """Drop the test database through a fresh root connection (``conn`` may be signed out)."""
+    cleanup = HTTPConnection(SURREALDB_URL, NS, DB)
+    try:
+        await cleanup.connect()
+        await cleanup.signin(SURREALDB_USER, SURREALDB_PASS)
+        response = await cleanup.query(f"REMOVE DATABASE IF EXISTS {DB};")
+        assert response.is_ok, response.raw
+    finally:
+        await cleanup.close()
 
 
 async def _record_token() -> str:
@@ -85,5 +98,7 @@ async def test_invalidate_leaves_the_connection_unauthenticated(root_conn: HTTPC
     assert root_conn.token is None
     assert not root_conn.is_authenticated
     assert root_conn._signin_args is None
-    with pytest.raises(QueryError):
+    # 2.x reports the missing authentication as a permission error (not a 401).
+    with pytest.raises(QueryError, match="(?i)not enough permissions") as excinfo:
         await root_conn.query("INFO FOR ROOT")
+    assert excinfo.value.code == -32000
