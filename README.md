@@ -52,6 +52,18 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.44
+
+**Bug fix release (V2 LTS).** Two `v2` fixes (#392); pin unchanged (2.7.0).
+
+- **Auth.** `signin()`, `signup()` and `change_password()` raise `SurrealDbError` when the server fails to return the
+  session record (`RETURN $auth`). Before, `signin()` / `signup()` raised `DoesNotExist` naming the server's error
+  text, and `change_password()` sent its `UPDATE` with that text as the record ID.
+- **Behaviour change:** `QuerySet.variables()` rejects the names the ORM binds itself (`_f<n>`, `_s<n>`, `_bu<n>`,
+  `_sv_<field>`, `_knn_vec`, `_geo_max`, `_hybrid_vec`, `_hybrid_text`, `_pfp`) with `ValueError`; before, a declared
+  `_f0` was silently replaced by the ORM's filter value. Other underscore names are unchanged. See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.43
 
 **Bug fix release (V2 LTS).** One `v2` fix (#518, backport of #510); pin unchanged (2.7.0).
@@ -296,7 +308,10 @@ dev lock); it also shipped three fixes, the `v2` ports of #396, #334 and #367.
   `Prefetch` queryset are now sent with the query.
 - **`signin()`, `signup()` and `change_password()` act on the session's own record (#353).** With duplicate
   identifier values, `signin()` / `signup()` could return a different record from the token's, and
-  `change_password()` updated every matching record. `authenticate_token()` now finds keys that look like numbers.
+  `change_password()` updated every matching record. `signin()` / `signup()` no longer fall back to a lookup by
+  identifier: they raise `SurrealDbError` when the session record cannot be read and `DoesNotExist` when it no longer
+  exists, and `change_password()` raises `SurrealDbError` unless exactly the signed-in record was updated.
+  `authenticate_token()` now finds keys that look like numbers.
 - **Behaviour change:** see the CHANGELOG — an undeclared `$name` filter value is compared as text, and a rejected
   `authenticate()` / `signup()` token raises instead of signing in again.
 
