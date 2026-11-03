@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.31)
+> Context document for Claude AI - Last updated: November 2026 (0.21.32)
 
 <!-- -->
 
@@ -19,12 +19,28 @@
 
 ---
 
-## Current Version: 0.21.31 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.32 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
-| `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.36.x   | Active development              |
+| `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.32
+
+One SDK fix, #405 via #475: the `v2` port of `main`'s 0.35.5 fix (#390, #398). Pin unchanged (2.7.0).
+
+- **The 401 re-mint installed its result unconditionally.** On an `HTTPConnection` shared between tasks, an
+  `authenticate()`/`signup()`/`invalidate()`/`close()`/`signin()` completed during the backoff or the `/signin`
+  round trip was overwritten by the earlier `signin()` token and arguments.
+- **Two private counters on `BaseSurrealConnection`.** An auth *generation* (every token install/drop, `close()`)
+  gates installing the re-minted token; an *identity* counter (every auth change except the re-mint itself)
+  decides the retry: same identity → retry with the current token, no new `/signin`; changed identity → raise the
+  original 401 as `QueryError`, never resend under the new state.
+- **`signin()` fetches (`_fetch_signin()`) and installs in two steps** so the re-mint can discard its result. Unlike
+  `main`, `v2` posts through `self._client` and its `close()` has no drain step.
+- **Tests order the steps with gated fake responses** (`TestReauthDoesNotOverrideConcurrentAuthChange`, 8 tests;
+  6 fail on 0.21.31).
 
 ### What's New in 0.21.31
 
