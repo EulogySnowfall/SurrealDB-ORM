@@ -83,16 +83,35 @@ class GeoDistance:
     """
 
     def __init__(self, field: str, point: tuple[float, float]) -> None:
-        # Both are written into the query text by to_surql(), not bound.
-        validate_field_path(field, "GeoDistance field")
-        if not isinstance(point, (tuple, list)) or len(point) != 2:
-            raise TypeError(_POINT_TYPE_MESSAGE.format(point=point))
+        # Both are written into the query text by to_surql(), not bound, so
+        # both are checked here and again whenever they are assigned.
         self.field = field
+        self.point = point
+
+    @property
+    def field(self) -> str:
+        """The geometry field: an identifier or a dotted path."""
+        return self._field
+
+    @field.setter
+    def field(self, value: str) -> None:
+        validate_field_path(value, "GeoDistance field")
+        self._field = value
+
+    @property
+    def point(self) -> tuple[int | float, int | float]:
+        """The reference point, ``(longitude, latitude)``."""
+        return self._point
+
+    @point.setter
+    def point(self, value: tuple[float, float]) -> None:
+        if not isinstance(value, (tuple, list)) or len(value) != 2:
+            raise TypeError(_POINT_TYPE_MESSAGE.format(point=value))
         # An immutable copy of plain numbers: to_surql() renders exactly what
         # was checked here, whatever the caller's object does afterwards.
-        self.point: tuple[int | float, int | float] = (
-            _plain_coordinate(point[0], point),
-            _plain_coordinate(point[1], point),
+        self._point: tuple[int | float, int | float] = (
+            _plain_coordinate(value[0], value),
+            _plain_coordinate(value[1], value),
         )
 
     def to_surql(self, alias: str) -> str:
