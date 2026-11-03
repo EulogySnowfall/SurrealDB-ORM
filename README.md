@@ -52,6 +52,15 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.37
+
+**Bug fix release (V2 LTS).** One fix (#466), the `v2` port of `main`'s #461; pin unchanged (2.7.0).
+
+- **DIFF live events.** `live(diff=True)` events now carry their `record_id` (read from the notification's `record`
+  field), and a model with a required field no longer ends the stream with a `ValidationError`.
+- **Behaviour change:** in DIFF mode `event.instance` carries only the id; the change is in `event.changed_fields`.
+  See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.36
 
 **Bug fix release (V2 LTS).** One ORM fix (#470) and one SDK fix (#453), `v2` ports of `main` fixes; pin unchanged
