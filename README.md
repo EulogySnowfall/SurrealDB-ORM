@@ -52,6 +52,20 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.35
+
+**Bug fix release (V2 LTS).** Two SDK fixes (#452, #446), `v2` ports of `main` fixes; pin unchanged (2.7.0).
+
+- **A string `Duration` reaches the server.** `Duration("1h30m")` is sent as CBOR tag 13; it used to go out as tag 14,
+  which SurrealDB 2.x rejects (HTTP 400, or no reply until the timeout over WebSocket). `str()` of a duration read
+  from the server renders a SurrealQL literal (`5400s1ns`) instead of raising `TypeError`.
+- **Only the server's retryable wording is a conflict.** `TransactionConflictError.is_conflict_error()` matches "This
+  transaction can be retried"; a failed `ASSERT` whose value or field name contains "conflict" raises `QueryError`
+  from the atomic array helpers and is no longer retried by `@retry_on_conflict`. `HTTPTransaction.commit()` raises
+  `TransactionConflictError` for a commit-time conflict instead of a plain `TransactionError`.
+- **Behaviour change:** `TAG_STRING_DURATION` is now 13 (new `TAG_CUSTOM_DURATION = 14`); errors that only contain
+  "conflict", "failed transaction" or "document changed" are no longer retryable. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.34
 
 **Bug fix release (V2 LTS).** One SDK fix (#445), the `v2` port of `main`'s #391 (0.36.1); no public API change, pin

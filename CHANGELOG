@@ -6,6 +6,74 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.35] - 2026-11-02
+
+**Bug fix release (V2 LTS).** Two SDK fixes, both `v2` ports of `main`
+fixes: a string `Duration` is sent under the CBOR tag SurrealDB 2.x reads
+(#452, #484), and only the server's retryable wording counts as a
+transaction conflict (#446, #485, port of #443). Read *Behaviour change*.
+The SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Fixed
+
+- **A string `Duration` is sent as CBOR tag 13 instead of tag 14.**
+  SurrealDB 2.x cannot read a string under tag 14: over HTTP the whole
+  request failed with 400, and over WebSocket no reply came until the
+  timeout. A `Duration` holding a list or tuple is sent as tag 14 (the
+  compact `[seconds, nanoseconds]` form), and both tags are decoded to
+  `Duration` (#452).
+- **`str()` of a `Duration` read from the server** (compact form, a list on
+  `v2`) renders a SurrealQL literal the server reads back as the same
+  duration (`5400s1ns`, `0ns` for zero) instead of raising `TypeError`
+  (#452).
+- **`TransactionConflictError.is_conflict_error()` matches only the
+  server's retryable sentence** ("This transaction can be retried",
+  case-insensitive). A failed `ASSERT` echoes the rejected value and names
+  the field, so a value such as `'conflict-resolved'` or a field named
+  `conflicts` used to turn a validation failure into a retryable conflict:
+  `atomic_append()` / `atomic_remove()` / `atomic_set_add()` raised
+  `TransactionConflictError` and `@retry_on_conflict` retried it. They now
+  raise `QueryError`, and nothing is retried (#446).
+- **`HTTPTransaction.commit()` raises `TransactionConflictError` for a
+  commit-time conflict.** SurrealDB 2.7 reports it on every statement of the
+  block, after the cancellation sentence, and it used to be raised as a
+  plain `TransactionError` (#446).
+
+### Behaviour change
+
+- **`surreal_sdk.protocol.cbor.TAG_STRING_DURATION` is now 13** (it was 14,
+  which is the compact-form tag under the wrong name). New constant
+  `TAG_CUSTOM_DURATION = 14`. A `Duration` read from the server still holds
+  a list on `v2`.
+- **Errors that only contain "conflict", "failed transaction" or "document
+  changed" are no longer retryable conflicts**; the cancellation message
+  "The query was not executed due to a failed transaction" on its own is not
+  a conflict either.
+
+### Migration notes
+
+- Code that compared against `TAG_STRING_DURATION` to mean the compact form
+  should use `TAG_CUSTOM_DURATION`.
+- Code that caught `TransactionConflictError` for an `ASSERT` failure
+  should catch `QueryError`.
+
+### Known limitations
+
+- `Duration` compares its value as is, so `Duration((5400, 1))` is not equal
+  to `Duration([5400, 1])` read from the server, although both encode and
+  render the same.
+
+### Verification
+
+Against SurrealDB 2.7.0, at each PR's head: 3,570 (#484) and 3,568 (#485)
+unit tests on each of Python 3.12, 3.13 and 3.14; 787 and 785 integration
+tests pass (4 expected failures each, the existing strict `xfail`s for
+integer record ids over WebSocket); `ruff` and `mypy` clean. The new and
+touched tests of each PR passed three times in a row.
+
+---
+
 ## [0.21.34] - 2026-11-02
 
 **Bug fix release (V2 LTS).** One SDK fix (#445, #477), the `v2` port of
