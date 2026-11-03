@@ -52,6 +52,16 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.39
+
+**Bug fix release (V2 LTS).** One fix (#463), the `v2` port of `main`'s #460; pin unchanged (2.7.0).
+
+- **Query cache invalidation.** Every ORM write drops the table's `QueryCache` entries: the atomic array helpers,
+  `QuerySet.bulk_update()` / `bulk_delete()` (plain and `atomic=True`) and `delete_table()` included.
+- **No `configure()` needed.** `QuerySet.cache()` and `QueryCache.set()` connect the invalidation handlers themselves.
+- **Behaviour change:** a rejected write leaves the cache in place; more write paths invalidate. See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.38
 
 **Bug fix release (V2 LTS).** One fix (#486), the `v2` port of `main`'s #482; pin unchanged (2.7.0).

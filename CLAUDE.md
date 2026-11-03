@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.38)
+> Context document for Claude AI - Last updated: November 2026 (0.21.39)
 
 <!-- -->
 
@@ -19,12 +19,24 @@
 
 ---
 
-## Current Version: 0.21.38 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.39 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.39
+
+One fix: #463 via #499 (`cache.py`, `model_base.py`, `query_set.py`), backport of `main`'s #460. Pin unchanged (2.7.0).
+
+- **Every ORM write invalidates.** The `atomic_*` helpers call `QueryCache.invalidate(cls)` after
+  `_raise_on_statement_error()`; `bulk_update()` / `bulk_delete()` / `delete_table()` go through the private
+  `QuerySet._invalidate_cache()` once the write is accepted (after the commit for `atomic=True`, only on `is_ok` on
+  the plain paths, where a rejected statement rides back inside a successful RPC).
+- **`set()` and `QuerySet.cache()` call `_connect_signals()`** (idempotent through `_signals_connected`); before,
+  only `configure()` connected the handlers, so a process that skipped it had no invalidation at all.
+- **Open (review suggestion on #499):** the plain bulk paths still return `0` on a rejected statement without raising.
 
 ### What's New in 0.21.38
 
