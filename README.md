@@ -52,6 +52,21 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.34
+
+**Bug fix release (V2 LTS).** One SDK fix (#445), the `v2` port of `main`'s #391 (0.36.1); no public API change, pin
+unchanged (2.7.0).
+
+- **A pooled connection is reset when it is released.** `ConnectionPool` puts the pool's own token back (or leaves the
+  connection unauthenticated when the pool has no credentials), so an `authenticate()`, `signup()`, `signin()` or
+  `invalidate()` made by one caller no longer reaches the next caller of the same connection. A connection whose reset
+  fails is closed instead of being reused.
+- **`set_credentials()`** closes an idle connection that cannot sign in with the new credentials, and a token minted
+  for replaced credentials is never put back.
+- **Behaviour change:** a release can send one or two extra RPCs (WebSocket: `invalidate` then `authenticate`; HTTP:
+  a `signin` only when the pool has no token for the current credentials), and a request of the previous holder
+  rejected with 401 after the release raises `QueryError` instead of being retried. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.33
 
 **Bug fix release (V2 LTS).** One ORM fix (#444), the `v2` port of `main`'s #422. Arguments written into the query
