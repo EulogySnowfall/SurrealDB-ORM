@@ -139,9 +139,12 @@ class TestRejectedWriteKeepsTheCache:
 
     @pytest.mark.parametrize("write", ["bulk_update", "bulk_delete"])
     async def test_rejected_plain_bulk_statement(self, write: str) -> None:
-        """The plain bulk paths return a count; a rejected statement wrote nothing."""
+        """A rejected statement wrote nothing: the plain bulk paths raise (#503) before invalidating."""
         _fill()
-        with patch.object(SurrealDBConnectionManager, "get_client", AsyncMock(return_value=_client(_err()))):
+        with (
+            patch.object(SurrealDBConnectionManager, "get_client", AsyncMock(return_value=_client(_err()))),
+            pytest.raises(QueryError),
+        ):
             await _WRITES[write]()
         _assert_untouched()
 
