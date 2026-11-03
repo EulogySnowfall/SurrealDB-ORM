@@ -2069,7 +2069,9 @@ class QuerySet(Generic[T]):
         Args:
             auto_resubscribe: Automatically resubscribe after WebSocket
                 reconnect. Defaults to True.
-            diff: If True, receive only changed fields (DIFF mode).
+            diff: If True, receive only changed fields (DIFF mode). Each
+                event's ``instance`` then carries only the id;
+                ``changed_fields`` lists the patched fields.
             on_reconnect: Optional async callback ``(old_id, new_id)``
                 invoked when the subscription is re-established after
                 a reconnect.

@@ -124,6 +124,10 @@ class LiveChange:
         # Extract record ID from result
         if isinstance(result, dict) and "id" in result:
             record_id = str(result["id"])
+        elif data.get("record") is not None:
+            # DIFF mode: the result is a list of patches with no id; SurrealDB
+            # names the record in the notification itself.
+            record_id = str(data["record"])
 
         # Parse changed fields if present (DIFF mode)
         changed_fields: list[str] = []
