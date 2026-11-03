@@ -37,6 +37,16 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.38.2
+
+**Fix release.** WebSocket reconnect ([#510](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/510)).
+After a reconnect, `WebSocketConnection` sends no request before the session is restored (`authenticate`, then `use`);
+a request issued meanwhile could reach the server first and get a statement error such as `Specify a namespace to use`.
+A failed restore step moves on to the next attempt instead of cancelling the reconnect, and live subscriptions survive
+a socket that drops again during the restore. Behaviour change: a request issued during a reconnect now waits for the
+restored session (at most `timeout` seconds) or fails with `ConnectionError`. SurrealDB pin unchanged (3.3.5). See
+[CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.38.1
 
 **Fix release.** Follow-ups from the 0.36.1 reviews ([#448](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/448)).

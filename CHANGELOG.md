@@ -6,6 +6,41 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.38.2] - 2026-11-03
+
+**Fix release.** WebSocket reconnect, #510 via #513
+(`surreal_sdk/connection/websocket.py` only). Read *Behaviour change* below
+if you issue requests on a `WebSocketConnection` while it may be
+reconnecting. The SurrealDB pin is unchanged (tested against 3.3.5,
+supported range 3.2.x – 3.3.x). `v2`: same defect, backport tracked in #518.
+
+### Fixed
+
+- **After a WebSocket reconnect, `WebSocketConnection` sends no request
+  before the session is restored** (`authenticate`, then `use`). A request
+  issued during a reconnect used to reach the server first and could get a
+  statement error such as `Specify a namespace to use`. This also holds when
+  the new socket closes right after answering the restore; live
+  subscriptions are then re-created on the next socket instead of being
+  dropped (#510).
+- **A failed `authenticate` or `use` during a WebSocket reconnect now moves
+  on to the next attempt.** Before, the reconnect task cancelled itself and
+  could start a second one. Once every attempt fails, the connection is
+  marked closed and waiting requests fail with `ConnectionError` (#510).
+- **If the socket drops again while live queries are being re-created**, the
+  next reconnect attempt starts at once and keeps every subscription,
+  instead of waiting one request timeout per remaining subscription (#510).
+
+### Changed
+
+- **Behaviour change:** a request issued while a WebSocket reconnect is in
+  progress, including during its backoff, now waits until the session is
+  restored (at most `timeout` seconds), or fails with `ConnectionError` if
+  the reconnect gives up, `close()` is called or that time runs out. Before,
+  it failed at once with `Request failed: Cannot write to closing
+  transport`, or went out on the half-restored session. `is_connected` is
+  unchanged (still `True` during a reconnect) (#510).
+
 ## [0.38.1] - 2026-11-02
 
 **Fix release.** Follow-ups from the 0.36.1 reviews, #448 via #482

@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.38.1)
+> Context document for Claude AI - Last updated: November 2026 (0.38.2)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.38.1 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.38.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,33 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.38.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.38.2
+
+One fix PR, #510 via #513 (`surreal_sdk/connection/websocket.py` only). Pin
+unchanged (3.3.5). `v2`: same defect in `_reconnect()`, backport tracked in
+#518.
+
+- **"Socket open" is not "session ready".** `_reconnect()` set
+  `_connected = True` and started the reader before `authenticate` / `use`,
+  so a request from another task went out on a session with no namespace
+  (statement error, not `ConnectionError`). A private `_session_ready` event
+  is cleared at the start of each attempt and when the reader sees the
+  socket end, set only after `use()` succeeds on a socket whose reader still
+  runs; public requests wait on it (`_wait_for_session()`, bounded by the
+  request timeout and the reconnect task's life). The restore itself goes
+  through `_restore_rpc()`, which does not wait.
+- **A failed attempt drops only its socket** (`_abandon_socket()`). It used
+  to call `_cleanup()`, which cancelled the reconnect task it ran in (no real
+  retry, and the reader's `finally` could start a second reconnect). After
+  the last attempt the connection is closed and waiters get
+  `ConnectionError`; `close()` wakes them too.
+- **The reconnect task never waits on itself** in `_resubscribe_all()`: if
+  the socket drops there, the wait raises at once and the subscriptions not
+  yet re-created keep their previous id for the next attempt.
+- **Behaviour change:** a request during a reconnect (backoff included)
+  waits up to `timeout` instead of failing at once with `Cannot write to
+  closing transport`. `is_connected` still reads `True` meanwhile.
 
 ### What's New in 0.38.1
 
