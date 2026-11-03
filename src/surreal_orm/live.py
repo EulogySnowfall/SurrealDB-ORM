@@ -43,7 +43,8 @@ class ModelChangeEvent(Generic[T]):
 
     Attributes:
         action: The type of change (CREATE, UPDATE, DELETE).
-        instance: The model instance after the change (for DELETE, may only have id).
+        instance: The model instance after the change (for DELETE, and for every
+            event of a DIFF-mode live query, it carries only the id).
         record_id: The affected record ID (e.g., "users:abc123").
         changed_fields: List of changed field names (only in DIFF mode for live queries).
         raw: The raw result dict from the database.
@@ -116,8 +117,12 @@ class LiveModelStream(Generic[T]):
         parsed_id = self._parse_id(change.record_id)
 
         instance: T
-        if change.action == LiveAction.DELETE and not change.result:
-            # DELETE may return an empty result; build a minimal instance with just the id
+        if self._diff or (change.action == LiveAction.DELETE and not change.result):
+            # DELETE may return an empty result, and a DIFF notification carries
+            # JSON patches instead of the record (``change.result`` is ``{}``).
+            # Validating ``{}`` would fail on any required field, so build a
+            # minimal instance with just the id; ``changed_fields`` says what
+            # changed.
             try:
                 instance = self._model.model_validate({"id": parsed_id})
             except Exception:
