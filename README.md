@@ -296,7 +296,10 @@ dev lock); it also shipped three fixes, the `v2` ports of #396, #334 and #367.
   `Prefetch` queryset are now sent with the query.
 - **`signin()`, `signup()` and `change_password()` act on the session's own record (#353).** With duplicate
   identifier values, `signin()` / `signup()` could return a different record from the token's, and
-  `change_password()` updated every matching record. `authenticate_token()` now finds keys that look like numbers.
+  `change_password()` updated every matching record. `signin()` / `signup()` no longer fall back to a lookup by
+  identifier: they raise `SurrealDbError` when the session record cannot be read and `DoesNotExist` when it no longer
+  exists, and `change_password()` raises `SurrealDbError` unless exactly the signed-in record was updated.
+  `authenticate_token()` now finds keys that look like numbers.
 - **Behaviour change:** see the CHANGELOG — an undeclared `$name` filter value is compared as text, and a rejected
   `authenticate()` / `signup()` token raises instead of signing in again.
 
