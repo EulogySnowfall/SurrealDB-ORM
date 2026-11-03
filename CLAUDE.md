@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.33)
+> Context document for Claude AI - Last updated: November 2026 (0.21.34)
 
 <!-- -->
 
@@ -19,12 +19,27 @@
 
 ---
 
-## Current Version: 0.21.33 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.34 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.34
+
+One SDK fix, #445 via #477: the `v2` port of `main`'s #391 (#418, 0.36.1). Pin unchanged (2.7.0).
+
+- **`ConnectionPool` resets a connection's auth on release.** It keeps, per connection, the token minted for its
+  credentials with the `set_credentials()` generation it was minted for, and reuses it only while that generation is
+  current. HTTP restores it locally (`_install_auth()`, with the signin arguments the 401 re-mint replays); WebSocket
+  sends `invalidate` then `authenticate` (`signin` if refused): on 2.x a record session's `$auth`/`$session` survive a
+  later `authenticate`/`signin` on the socket, only `invalidate` clears them. No credentials: HTTP drops the token,
+  WebSocket sends `invalidate`. A failed or cancelled reset closes the connection.
+- **Every auth write of the pool calls `conn._auth_changed()`**, so the #390 counters (0.21.32) move and a re-mint of
+  the previous holder that finishes after the release is discarded; its request raises the 401.
+- **Release bookkeeping is synchronous** and the semaphore permit is released in its own `finally`: a cancelled
+  release used to lose a slot.
 
 ### What's New in 0.21.33
 
