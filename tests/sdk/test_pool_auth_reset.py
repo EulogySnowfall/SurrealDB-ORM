@@ -20,6 +20,7 @@ import json
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
+from unittest.mock import AsyncMock
 
 import anyio
 import httpx
@@ -593,6 +594,169 @@ async def test_connection_released_after_pool_close_is_closed(kind: str) -> None
     assert not conn.is_connected
     assert pool.available == 0
     assert pool.in_use == 0
+
+
+# ---------------------------------------------------------------------------
+# The reset is recorded in the connection's auth bookkeeping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("credentials", [True, False])
+async def test_release_reset_moves_the_auth_counters(kind: str, credentials: bool) -> None:
+    """Every state the reset installs counts as an auth change of the connection.
+
+    ``HTTPConnection._send_rpc`` decides from ``_auth_generation`` /
+    ``_auth_identity`` whether a pending re-mint may install its token and
+    whether a rejected request may be resent; the pool's writes must move them.
+    """
+    servers: list[_FakeServer] = []
+    async with _pool(kind, servers) as pool:
+        if credentials:
+            await pool.set_credentials(POOL_USER, POOL_PASS)
+        async with pool.acquire() as conn:
+            await conn.authenticate(CALLER_TOKEN)
+            generation, identity = conn._auth_generation, conn._auth_identity
+        assert conn._auth_generation > generation
+        assert conn._auth_identity > identity
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
+async def test_first_pool_signin_moves_the_auth_counters(kind: str) -> None:
+    """The token the pool installs after its own sign-in is recorded as well."""
+    servers: list[_FakeServer] = []
+    async with _pool(kind, servers) as pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        conn = pool._create_connection()
+        await conn.connect()
+        signin = conn.signin
+
+        async def counted_signin(*args: Any, **kwargs: Any) -> Any:
+            response = await signin(*args, **kwargs)
+            counted_signin.generation = conn._auth_generation  # type: ignore[attr-defined]
+            return response
+
+        conn.signin = counted_signin  # type: ignore[method-assign]
+        await pool._sign_in_as_pool(conn)
+        assert conn._auth_generation > counted_signin.generation  # type: ignore[attr-defined]
+        assert conn.token is not None and conn.token.startswith(f"token-for-{POOL_USER}")
+        await conn.close()
+
+
+class _GatedRPCServer:
+    """``httpx`` handler for a real ``HTTPConnection``: ``/signin`` and JSON ``/rpc``.
+
+    A token in ``rejected`` gets a ``401``. ``hold`` (``"signin"`` or
+    ``"rejection"``) makes the next matching reply set ``held`` and wait for
+    ``release``; the rejection is decided before the hold, from the token the
+    request was sent with.
+    """
+
+    def __init__(self) -> None:
+        self.signins = 0
+        self.rejected: set[str] = set()
+        self.queries: list[tuple[str, str | None]] = []
+        self.hold: str | None = None
+        self.held = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def _wait_if_held(self, kind: str) -> None:
+        if self.hold == kind:
+            self.hold = None
+            self.held.set()
+            await self.release.wait()
+
+    async def __call__(self, request: httpx.Request) -> httpx.Response:
+        auth = request.headers.get("Authorization")
+        if request.url.path == "/signin":
+            await self._wait_if_held("signin")
+            self.signins += 1
+            user = json.loads(request.content).get("user")
+            return httpx.Response(200, json={"token": f"token-for-{user}-{self.signins}"})
+        body = json.loads(request.content)
+        if body["method"] == "query":
+            self.queries.append((body["params"][0], auth))
+        if auth is not None and auth.removeprefix("Bearer ") in self.rejected:
+            await self._wait_if_held("rejection")
+            return httpx.Response(401, text="token rejected")
+        return httpx.Response(200, json={"id": body["id"], "result": [{"status": "OK", "result": None, "time": "1ms"}]})
+
+
+def _gated_pool(server: _GatedRPCServer) -> ConnectionPool:
+    """A pool of real ``HTTPConnection`` objects (JSON protocol) talking to *server*."""
+    pool = ConnectionPool(URL, NS, DB, size=1, connection_type="http")
+
+    def create() -> BaseSurrealConnection:
+        conn = HTTPConnection(URL, NS, DB, protocol="json")
+
+        async def connect() -> HTTPConnection:
+            conn._client = httpx.AsyncClient(base_url=URL, transport=httpx.MockTransport(server))
+            conn._connected = True
+            return conn
+
+        conn.connect = connect  # type: ignore[method-assign]
+        return conn
+
+    pool._create_connection = create  # type: ignore[method-assign]
+    return pool
+
+
+@pytest.mark.asyncio
+async def test_re_mint_finishing_after_release_keeps_the_pool_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A borrower's 401 re-mint still pending at release neither reinstalls its token nor resends its request."""
+    monkeypatch.setattr("src.surreal_sdk.connection.http.asyncio.sleep", AsyncMock())
+    server = _GatedRPCServer()
+    async with _gated_pool(server) as pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        async with pool.acquire() as conn:
+            assert isinstance(conn, HTTPConnection)
+            pool_token = conn.token
+            await conn.signin("i445_borrower", "pw")
+            assert conn.token is not None
+            server.rejected.add(conn.token)  # transient 401 -> re-mint with the borrower's arguments
+            server.hold = "signin"
+            pending = asyncio.create_task(conn.query("SELECT * FROM i445_borrower_only"))
+            await asyncio.wait_for(server.held.wait(), timeout=5)
+        # Released (and reset) while the borrower's re-mint is pending.
+        server.release.set()
+        with pytest.raises(QueryError, match="401"):
+            await asyncio.wait_for(pending, timeout=5)
+
+        assert conn.token == pool_token
+        assert conn._signin_args is not None and conn._signin_args["user"] == POOL_USER
+        sent = [auth for query, auth in server.queries if query == "SELECT * FROM i445_borrower_only"]
+        assert len(sent) == 1  # never resent, under any token
+        async with pool.acquire() as again:
+            assert again is conn
+            assert again.token == pool_token
+            assert again._signin_args is not None and again._signin_args["user"] == POOL_USER
+
+
+@pytest.mark.asyncio
+async def test_request_rejected_after_release_is_not_resent_as_the_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A borrower's request whose 401 arrives after the release is raised, not replayed with the pool's token."""
+    monkeypatch.setattr("src.surreal_sdk.connection.http.asyncio.sleep", AsyncMock())
+    server = _GatedRPCServer()
+    async with _gated_pool(server) as pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        async with pool.acquire() as conn:
+            assert isinstance(conn, HTTPConnection)
+            pool_token = conn.token
+            await conn.authenticate(CALLER_TOKEN)
+            server.rejected.add(CALLER_TOKEN)
+            server.hold = "rejection"
+            pending = asyncio.create_task(conn.query("SELECT * FROM i445_borrower_only"))
+            await asyncio.wait_for(server.held.wait(), timeout=5)
+        server.release.set()
+        with pytest.raises(QueryError, match="401"):
+            await asyncio.wait_for(pending, timeout=5)
+
+        sent = [auth for query, auth in server.queries if query == "SELECT * FROM i445_borrower_only"]
+        assert sent == [f"Bearer {CALLER_TOKEN}"]
+        assert conn.token == pool_token
+        assert server.signins == 1  # only the pool's sign-in
 
 
 # ---------------------------------------------------------------------------

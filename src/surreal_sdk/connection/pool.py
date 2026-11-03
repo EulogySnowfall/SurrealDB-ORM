@@ -127,6 +127,7 @@ class ConnectionPool:
         # ``signin()`` keeps the previous token when the server returns none;
         # the token replayed on reconnect must be the pool's.
         conn._token = response.token
+        conn._auth_changed()
         if response.token:
             args = dict(conn._signin_args) if isinstance(conn, HTTPConnection) and conn._signin_args else None
             self._pool_auth[conn] = (response.token, args, generation)
@@ -229,9 +230,7 @@ class ConnectionPool:
                                 # one.
                                 self._pool_auth[conn] = (conn._token, args, minted)
                             else:
-                                conn._token = token
-                                conn._authenticated = True
-                                conn._signin_args = dict(args)
+                                self._install_auth(conn, token, dict(args))
                         else:
                             await self._sign_in_as_pool(conn)
                     else:
@@ -250,9 +249,7 @@ class ConnectionPool:
                 elif isinstance(conn, HTTPConnection):
                     # Stateless: no token sent means an unauthenticated
                     # request.
-                    conn._token = None
-                    conn._authenticated = False
-                    conn._signin_args = None
+                    self._install_auth(conn, None, None)
                 else:
                     await self._invalidate_session(conn)
                 if generation == self._credentials_generation:
@@ -275,6 +272,23 @@ class ConnectionPool:
         finally:
             conn._token = None
             conn._authenticated = False
+            conn._auth_changed()
+
+    @staticmethod
+    def _install_auth(conn: HTTPConnection, token: str | None, signin_args: dict[str, Any] | None) -> None:
+        """
+        Put *token* (``None``: no authentication) and *signin_args* on *conn*.
+
+        Recorded as an auth change of the connection (``_auth_changed()``), as
+        ``signin()`` and ``authenticate()`` do: a transient-401 re-mint the
+        previous caller left pending then discards its token instead of
+        installing it, and a request of that caller rejected after the reset is
+        raised instead of being resent under the pool's identity.
+        """
+        conn._token = token
+        conn._authenticated = token is not None
+        conn._signin_args = signin_args
+        conn._auth_changed()
 
     def _discard(self, conn: BaseSurrealConnection) -> None:
         """Forget *conn*: it is no longer in use and will not be reused."""
