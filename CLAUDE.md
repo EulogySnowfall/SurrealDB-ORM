@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.46)
+> Context document for Claude AI - Last updated: November 2026 (0.21.47)
 
 <!-- -->
 
@@ -19,12 +19,23 @@
 
 ---
 
-## Current Version: 0.21.46 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.47 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                          |
 | ------ | ---------------- | --------------- | -------- | ------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+
+### What's New in 0.21.47
+
+One fix, `v2` only: #494 via #538 (`surreal_orm/query_set.py`). Pin unchanged (2.7.0).
+
+- **A validation alias is not always a string.** `QuerySet._model_names()` decides which result keys are model
+  fields (kept) and which are annotations (stripped and set as attributes). It read only `str` validation aliases, so
+  a field reading `AliasChoices(...)` or `AliasPath(...)` lost a matching KNN/search key to an extra attribute. It now
+  collects every `str` choice of an `AliasChoices` and the `str` first element of an `AliasPath`, nested included.
+- **The #453 "fails at once" unit bounds are 5 s** (were 1 s), the integration test's bound.
+- **Open:** `main`'s `query_set.py` has the same `_model_names()`; a forward-port is the maintainer's call.
 
 ### What's New in 0.21.46
 
