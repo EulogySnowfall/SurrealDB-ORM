@@ -17,6 +17,9 @@ from typing import Any
 
 import pytest
 
+from src.surreal_orm.aggregations import Avg, Max, Min, Sum
+from src.surreal_orm.geo import GeoDistance
+from src.surreal_orm.search import SearchHighlight, SearchScore
 from src.surreal_orm.utils import retry_on_conflict
 from surreal_sdk.exceptions import ChangeFeedError, QueryError, TransactionConflictError
 from surreal_sdk.streaming.change_feed import ChangeFeedStream
@@ -95,3 +98,49 @@ class TestChangeFeedReportsACommitConflict:
 
         assert COMMIT_WRITE_CONFLICT in str(excinfo.value)
         assert NOT_EXECUTED not in str(excinfo.value)
+
+
+BAD_FIELD = "amount) AS x, (SELECT * FROM secrets"
+
+
+def _assign_then_render(annotation: Any, attribute: str, value: Any) -> None:
+    """Assign *value* and render; one of the two must raise."""
+    with pytest.raises((TypeError, ValueError)):
+        setattr(annotation, attribute, value)
+        annotation.to_surql("alias")
+
+
+class TestReassignedAnnotationArgumentsAreChecked:
+    @pytest.mark.parametrize("ref", ["0) AS x, (1", -1, True, 1.5])
+    def test_search_score_ref(self, ref: Any) -> None:
+        _assign_then_render(SearchScore(0), "ref", ref)
+
+    @pytest.mark.parametrize("ref", ["0) AS x, (1", -1, True, 1.5])
+    def test_search_highlight_ref(self, ref: Any) -> None:
+        _assign_then_render(SearchHighlight("<b>", "</b>", 0), "ref", ref)
+
+    @pytest.mark.parametrize("cls", [Sum, Avg, Min, Max])
+    def test_aggregation_field(self, cls: type[Sum]) -> None:
+        _assign_then_render(cls("amount"), "field", BAD_FIELD)
+
+    def test_geo_distance_field(self) -> None:
+        _assign_then_render(GeoDistance("location", (-73.98, 40.74)), "field", BAD_FIELD)
+
+    def test_geo_distance_point(self) -> None:
+        _assign_then_render(GeoDistance("location", (-73.98, 40.74)), "point", ("0", "0) AS x, (1"))
+
+    def test_valid_reassignment_renders(self) -> None:
+        score = SearchScore(0)
+        score.ref = 2
+        assert score.to_surql("s") == "search::score(2) AS s"
+        highlight = SearchHighlight("<b>", "</b>", 0)
+        highlight.ref = 1
+        assert highlight.to_surql("h") == "search::highlight('<b>', '</b>', 1) AS h"
+        total = Sum("amount")
+        total.field = "order.total"
+        assert total.to_surql("t") == "math::sum(order.total) AS t"
+        distance = GeoDistance("location", (1, 2))
+        distance.field = "shop.location"
+        distance.point = (3.5, 4)
+        assert distance.to_surql("d") == "geo::distance(shop.location, (3.5, 4)) AS d"
+        assert distance == GeoDistance("shop.location", (3.5, 4))
