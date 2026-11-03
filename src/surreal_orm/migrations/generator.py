@@ -18,6 +18,11 @@ if TYPE_CHECKING:
     from .operations import Operation
 
 
+def _is_from_server(value: SurrealFunc) -> bool:
+    """Tell whether *value* was built by ``_surreal_func_from_server()``."""
+    return bool(getattr(value, "_from_server", False))
+
+
 class MigrationGenerator:
     """
     Generates Python migration files from operations.
@@ -139,8 +144,13 @@ class MigrationGenerator:
         imports = sorted(op_types)
 
         # A server-side DEFAULT is a SurrealFunc; its repr needs the import.
-        if any(isinstance(value, SurrealFunc) for op in operations for value in vars(op).values()):
+        # One read back from the server repr()s as the helper that built it
+        # (the constructor may refuse it), so that helper is imported instead.
+        funcs = [value for op in operations for value in vars(op).values() if isinstance(value, SurrealFunc)]
+        if any(not _is_from_server(value) for value in funcs):
             lines.append("from surreal_orm import SurrealFunc")
+        if any(_is_from_server(value) for value in funcs):
+            lines.append("from surreal_orm.surreal_function import _surreal_func_from_server")
         lines.append("from surreal_orm.migrations import Migration")
         lines.append("from surreal_orm.migrations.operations import (")
         for op_type in imports:
