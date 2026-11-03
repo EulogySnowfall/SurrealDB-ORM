@@ -6,6 +6,181 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.45] - 2026-11-03
+
+**Bug fix release (V2 LTS).** One fix, `v2` only, from the 0.21.28 /
+0.21.29 review follow-ups (#438, #533): `HTTPTransaction.insert()` queues
+every record when it is given a generator. Also test follow-ups (#404,
+#532). The SurrealDB pin is unchanged (tested against 2.7.0, supported
+range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`HTTPTransaction.insert()` given a generator or another one-shot
+  iterable of records now queues every record.** Checking the keys of every
+  record before queuing anything used up the iterable, so nothing was
+  queued and no error was raised. A dict or a list renders the same
+  SurrealQL as before (#438).
+
+### Tests
+
+- The #413 integration test also checks a `SearchHighlight` tag pair with a
+  backslash escape and no apostrophe (`<\n>` / `</\t>`) on SurrealDB 2.7.0
+  (#438).
+- Unit tests check that the ephemeral connection opened by the auth calls
+  (`validate_token()` and the other `AuthenticatedUserMixin` methods) is
+  built from the model's `connection=` config, or from the `using()`
+  override, rather than the `"default"` one (#404, #532). No library change.
+
+### Verification
+
+Against SurrealDB 2.7.0, at #533's validated head: 3,837 unit tests on each
+of Python 3.12, 3.13 and 3.14, and 819 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The new and touched tests passed three
+times in a row.
+
+---
+
+## [0.21.44] - 2026-11-03
+
+**Bug fix release (V2 LTS).** Two fixes, both `v2` only, from the 0.21.25
+review follow-ups (#392, #529): the auth helpers raise a clear error when the
+server fails to return the session record, and `QuerySet.variables()` rejects
+the names the ORM binds itself. Read *Behaviour change*. Also test
+follow-ups (#340, #348). The SurrealDB pin is unchanged (tested against
+2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`signin()`, `signup()` and `change_password()` raise `SurrealDbError`
+  when `RETURN $auth` fails on the server.** Before, `signin()` / `signup()`
+  looked the server's error text up as a record ID and raised `DoesNotExist`
+  naming that text, and `change_password()` sent its `UPDATE` with that text
+  as the record ID. `signin()` / `signup()` now raise "the session record
+  could not be read"; `change_password()` raises "Invalid current password",
+  as it does for any failed sign-in, and sends no `UPDATE` (#392).
+- **`QuerySet.variables()` rejects the names the ORM binds itself**
+  (`_f<n>`, `_s<n>`, `_bu<n>`, `_sv_<field>`, `_knn_vec`, `_geo_max`,
+  `_hybrid_vec`, `_hybrid_text`, `_pfp`) with `ValueError` listing them.
+  Before, a declared `_f0` was silently replaced by the ORM's filter value
+  (#392).
+
+### Behaviour change
+
+- `.variables(_f0=...)` and the other reserved names above raise
+  `ValueError`. Other names starting with an underscore (`_foo`) are
+  unchanged.
+
+### Migration notes
+
+- Rename any variable declared with `.variables()` that matches a reserved
+  name, and update the matching `$name` references in your filters.
+
+### Documentation
+
+- The README "What's New in 0.21.25" note now says that `signin()` /
+  `signup()` no longer fall back to the identifier lookup, and that
+  `change_password()` raises unless exactly the signed-in record was
+  updated (#392).
+
+### Tests
+
+- The #349 integration test checks the 2.x reason of the `invalidate()`
+  failure (`not enough permissions`, code `-32000`) and removes its database
+  afterwards (#392).
+- The #315 integration test module deletes its rows from both test
+  databases after each test and checks that none are left (#340, #525).
+- The i64 inline-ID unit test checks against `type::thing()` (its previous
+  assertion could never fail on `v2`), and an integration test runs
+  `get_changes()` and a default-start `stream()` on SurrealDB 2.7.0 while
+  another table is being written to (#348, #527).
+
+### Verification
+
+Against SurrealDB 2.7.0, at #529's validated head: 3,868 unit tests on each
+of Python 3.12, 3.13 and 3.14, and 816 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The new and touched tests passed three
+times in a row.
+
+---
+
+## [0.21.43] - 2026-11-03
+
+**Bug fix release (V2 LTS).** One fix: a WebSocket request issued during a
+reconnect waits until the session is restored instead of reaching the
+server before it re-authenticated and selected the namespace/database
+(#518, #524; backport of #510/#513). Read *Behaviour change*. Also
+documentation corrections to earlier entries (#252, #265, #326) and new
+tests (#314, #326). The SurrealDB pin is unchanged (tested against 2.7.0,
+supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **WebSocket connections no longer send a request on a half-restored
+  session after a reconnect.** A request issued while the connection was
+  reconnecting could reach the server before it re-authenticated and
+  selected the namespace/database, and came back with a statement error
+  such as `Specify a namespace to use` instead of its result (#518).
+- **A reconnect attempt whose `authenticate` or `use` step fails now moves
+  on to the next attempt.** Before, it cancelled the reconnect task, so no
+  further attempt ran.
+
+### Behaviour change
+
+- A request issued while a WebSocket reconnect is in progress now waits
+  until the session is restored, for at most the connection `timeout`. It
+  raises `ConnectionError` if the session is not restored in time, if every
+  reconnect attempt fails, or if `close()` is called. Before, it was sent at
+  once on the new socket. Once every attempt has failed, the connection is
+  marked closed (`is_connected` is False).
+
+### Migration notes
+
+- None. Code that retried on `ConnectionError` around a reconnect keeps
+  working; it no longer needs to wait for the reconnect task or check for
+  namespace errors.
+
+### Documentation
+
+- Corrected earlier entries of this file: [0.21.22] (`delete()` wrote the
+  record ID into the query text only inside an HTTP transaction, #326),
+  [0.21.15] Verification wording (#265), and [0.21.13] (the `tx_1` positions
+  and the #251 known limitation, which covers only `save(tx=)` of an
+  already-saved record whose data holds no `SurrealFunc` and no nested
+  object/array, #252). The README carries the #326 and #252 corrections,
+  `CLAUDE.md` the #252 one.
+- The CBOR tag-hook comment and test docstring say that, with cbor2 5.x
+  (the `v2` pin), an exception from the tag hook propagates out of
+  `cbor2.loads()` unwrapped; it is wrapped in `CBORDecodeError` only with
+  6.x (#265).
+
+### Tests
+
+- `bulk_update()` is covered for an optional `ForeignKey`
+  (`ForeignKey("X") | None` and `Optional[ForeignKey("X")]`), by field name
+  and by alias (#314).
+- An integration test drives a `RelationQuerySet` from a record whose ID
+  contains both a backtick and a backslash (#326).
+- The #453 reconnect integration test no longer retries its next query
+  after the reconnect: the query itself waits for the restored session.
+
+### CI
+
+- Docs-only pull requests on `v2` now run CI (path filter aligned with
+  `main`, #252).
+
+### Verification
+
+Against SurrealDB 2.7.0, at #524's validated head: 3,824 unit tests on each
+of Python 3.12, 3.13 and 3.14, and 813 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The new and touched tests passed three
+times in a row.
+
+---
+
 ## [0.21.42] - 2026-11-03
 
 **Bug fix release (V2 LTS).** Two fixes, both `v2` only: a compact
@@ -1257,11 +1432,12 @@ unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
   Every ORM path that writes the ID into the query text — `merge()` with a
   `SurrealFunc`, `atomic_append()` / `atomic_remove()` / `atomic_set_add()`,
   `relate()`, `get_related()`, `remove_relation()`, `remove_all_relations()`,
-  graph traversals and `delete()` — used to fail with a parse error on
-  SurrealDB 2.x, or name a different record. This includes an ID ending in a
-  backslash. `escape_record_id()` now writes SurrealDB's `` \` `` and `\\`
-  escape sequences instead of doubling the backtick (checked on 2.7.0: both
-  read back as the original character, and a doubled backtick does not parse).
+  graph traversals and `delete()` inside an HTTP transaction — used to fail
+  with a parse error on SurrealDB 2.x, or name a different record. This
+  includes an ID ending in a backslash. `escape_record_id()` now writes
+  SurrealDB's `` \` `` and `\\` escape sequences instead of doubling the
+  backtick (checked on 2.7.0: both read back as the original character, and
+  a doubled backtick does not parse).
 - `RelationQuerySet` builds its start node with `format_thing()`, like every
   other caller.
 
@@ -1709,9 +1885,9 @@ wherever results are serialised to JSON. No schema or dependency change;
 
 Against a live SurrealDB 2.7.0 (#254): 1,935 unit tests on each of Python
 3.12, 3.13 and 3.14, and 526 integration tests, pass; `ruff` and `mypy`
-clean. The tests in the two files #254 touched (70 unit, 16 of them new, and
-7 new integration tests) passed three times in a row; 14 of the 23 new tests
-fail on the code before the fix, including all 7 integration tests.
+clean. The tests in the two test files #254 touched (70 unit, 16 of them
+new, and 7 new integration tests) passed three times in a row; 14 of the 23
+new tests fail on the code before the fix, including all 7 integration tests.
 
 ### Changed
 
@@ -1832,9 +2008,9 @@ No public API change.
     `bulk_delete(atomic=True)`;
   - a key that is a prefix of `tx_<i>_<an earlier key>` (`t`, `tx`, `tx_`,
     `tx_<i>`, ...; `i` being the statement's position in the transaction,
-    so `tx_1` also counts from position 10), which rewrote the references
-    already renamed for the keys bound before it (`$tx_0_amount` →
-    `$tx_0_tx_0_amount`). The SDK builders `tx.create/update/upsert/relate`
+    so `tx_1` also counts at positions 10–19, 100–199, ...), which rewrote
+    the references already renamed for the keys bound before it
+    (`$tx_0_amount` → `$tx_0_tx_0_amount`). The SDK builders `tx.create/update/upsert/relate`
     bind each field under its own name, so `save(tx=)` of a new record,
     `relate(tx=)` (edge data) and `bulk_create(atomic=True)` of a model with
     such a field lost the fields bound before it.
@@ -1857,8 +2033,8 @@ does not read as an object. With two or more fields the commit fails with a
 parse error; with one field `commit()` returns without an error, but the
 server rolls the whole transaction back, its other statements included. That
 covers `update(tx=)`, `merge(tx=)` without a `SurrealFunc`, and `save(tx=)` of
-a record that is already saved, on an HTTP connection. WebSocket transactions
-are not affected.
+an already-saved record whose data holds no `SurrealFunc` and no nested
+object/array, on an HTTP connection. WebSocket transactions are not affected.
 
 ### Verification
 

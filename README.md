@@ -52,6 +52,37 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.45
+
+**Bug fix release (V2 LTS).** One `v2` fix (#438); pin unchanged (2.7.0).
+
+- **`HTTPTransaction.insert()` and generators.** Given a generator or another one-shot iterable of records, it now
+  queues every record. Before, checking the keys used up the iterable, so nothing was queued and no error was raised.
+  Dicts and lists render as before. See the [CHANGELOG](CHANGELOG).
+
+## What's New in 0.21.44
+
+**Bug fix release (V2 LTS).** Two `v2` fixes (#392); pin unchanged (2.7.0).
+
+- **Auth.** `signin()`, `signup()` and `change_password()` raise `SurrealDbError` when the server fails to return the
+  session record (`RETURN $auth`). Before, `signin()` / `signup()` raised `DoesNotExist` naming the server's error
+  text, and `change_password()` sent its `UPDATE` with that text as the record ID.
+- **Behaviour change:** `QuerySet.variables()` rejects the names the ORM binds itself (`_f<n>`, `_s<n>`, `_bu<n>`,
+  `_sv_<field>`, `_knn_vec`, `_geo_max`, `_hybrid_vec`, `_hybrid_text`, `_pfp`) with `ValueError`; before, a declared
+  `_f0` was silently replaced by the ORM's filter value. Other underscore names are unchanged. See the
+  [CHANGELOG](CHANGELOG).
+
+## What's New in 0.21.43
+
+**Bug fix release (V2 LTS).** One `v2` fix (#518, backport of #510); pin unchanged (2.7.0).
+
+- **WebSocket reconnect.** A request issued while the connection is reconnecting no longer reaches the server
+  before it re-authenticated and selected the namespace/database (which came back as `Specify a namespace to use`).
+  A reconnect attempt whose `authenticate` or `use` step fails now moves on to the next attempt.
+- **Behaviour change:** such a request now waits for the restored session, for at most the connection `timeout`, and
+  raises `ConnectionError` if it is not restored in time, if every attempt fails, or on `close()`. See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.42
 
 **Bug fix release (V2 LTS).** Two `v2` fixes (#492, #509); pin unchanged (2.7.0).
@@ -285,7 +316,10 @@ dev lock); it also shipped three fixes, the `v2` ports of #396, #334 and #367.
   `Prefetch` queryset are now sent with the query.
 - **`signin()`, `signup()` and `change_password()` act on the session's own record (#353).** With duplicate
   identifier values, `signin()` / `signup()` could return a different record from the token's, and
-  `change_password()` updated every matching record. `authenticate_token()` now finds keys that look like numbers.
+  `change_password()` updated every matching record. `signin()` / `signup()` no longer fall back to a lookup by
+  identifier: they raise `SurrealDbError` when the session record cannot be read and `DoesNotExist` when it no longer
+  exists, and `change_password()` raises `SurrealDbError` unless exactly the signed-in record was updated.
+  `authenticate_token()` now finds keys that look like numbers.
 - **Behaviour change:** see the CHANGELOG — an undeclared `$name` filter value is compared as text, and a rejected
   `authenticate()` / `signup()` token raises instead of signing in again.
 
@@ -323,9 +357,9 @@ dev lock); it also shipped three fixes, the `v2` ports of #396, #334 and #367.
 
 - **Record IDs containing a backtick or a backslash now round-trip (#310).** `merge()` with a `SurrealFunc`,
   the atomic array helpers, `relate()`, `get_related()`, `remove_relation()`, `remove_all_relations()`, graph
-  traversals and `delete()` failed with a parse error on SurrealDB 2.x, or named a different record, for such an
-  ID (including one ending in a backslash). `escape_record_id()` now writes SurrealDB's `` \` `` and `\\`
-  sequences instead of doubling the backtick.
+  traversals and `delete()` inside an HTTP transaction failed with a parse error on SurrealDB 2.x, or named a
+  different record, for such an ID (including one ending in a backslash). `escape_record_id()` now writes
+  SurrealDB's `` \` `` and `\\` sequences instead of doubling the backtick.
 - **Added:** `surreal_sdk.protocol.cbor.unescape_record_id()`, the inverse of `escape_record_id()`.
 - **Behaviour change:** only IDs containing `` ` `` or `\` produce different SurrealQL. `parse_record_id()` and
   the SDK connections now decode `\\` and `` \` `` inside a backtick-delimited `table:id` string; a doubled
@@ -487,8 +521,8 @@ behaviour change.
   `MERGE { k = $k, ... }` body is not an object to SurrealDB 2.x, so with two or more fields the
   commit fails with a parse error, and with one field `commit()` returns without an error while the
   server rolls the whole transaction back. That covers `update(tx=)`, `merge(tx=)` without a
-  `SurrealFunc`, and `save(tx=)` of an already-saved record, on an HTTP connection (WebSocket
-  transactions are not affected).
+  `SurrealFunc`, and `save(tx=)` of an already-saved record whose data holds no `SurrealFunc` and
+  no nested object/array, on an HTTP connection (WebSocket transactions are not affected).
 
 ## What's New in 0.21.12
 

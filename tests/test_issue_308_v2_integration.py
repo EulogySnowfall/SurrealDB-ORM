@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -268,3 +269,74 @@ class TestSdkStreams:
             await stream.aclose()  # type: ignore[attr-defined]
         assert sorted(got[:2]) == [("i308_items", "i308_items:a"), ("i308_other", "i308_other:a")]
         assert got[2] == ("i308_other", "i308_other:b")
+
+
+@asynccontextmanager
+async def _busy_other_table() -> AsyncIterator[list[int]]:
+    """Keep writing to ``i308_other`` in the background while the block runs.
+
+    Yields a one-item list holding the number of writes so far. The writer is
+    running (at least a few writes in) when the block starts; it is cancelled
+    and awaited on the way out, and a writer that died early fails the test.
+    """
+    written = [0]
+
+    async def writer() -> None:
+        client = await _client()
+        while True:
+            response = await client.query(f"CREATE i308_other:w{written[0]} SET i = {written[0]};")
+            assert response.is_ok, response.raw
+            written[0] += 1
+
+    task = asyncio.create_task(writer())
+    try:
+
+        async def warmed_up() -> None:
+            while written[0] < 5:
+                assert not task.done(), task
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(warmed_up(), START_TIMEOUT)
+        yield written
+        assert not task.done(), "the background writer stopped before the reads ended"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+class TestBusyFeed:
+    """Reads end while another table of the database keeps being written to.
+
+    A read stops on the first window the server did not cut with its ``LIMIT``.
+    Only an empty window stopping it would never end here: the writer adds an
+    entry to the database feed between any two polls.
+    """
+
+    async def test_get_changes_since_zero_returns_while_another_table_is_written(self) -> None:
+        await _write("CREATE i308_items:one SET name = 'one';")
+        async with _busy_other_table() as written:
+            feed = ChangeFeedStream(await _client(), "i308_items")
+            # A limit no read reaches, so only the end of the feed stops it.
+            entries = await asyncio.wait_for(feed.get_changes(since=0, limit=1_000_000), START_TIMEOUT)
+            during = written[0]
+        assert during > 5
+        assert _updated_ids(entries)[-1] == "i308_items:one"
+        assert all(not record.startswith("i308_other:") for record in _updated_ids(entries))
+
+    async def test_default_start_stream_delivers_its_first_change_while_another_table_is_written(self) -> None:
+        await _write("CREATE i308_items:old SET name = 'old';")
+        async with _busy_other_table() as written:
+            feed = ChangeFeedStream(await _client(), "i308_items", poll_interval=0.05)
+            stream = feed.stream()
+            first = asyncio.ensure_future(asyncio.wait_for(anext(stream), START_TIMEOUT))
+            try:
+                await _wait_started(lambda: feed.cursor)
+                await _write("CREATE i308_items:new SET name = 'new';")
+                entry = await first
+            finally:
+                first.cancel()
+                await asyncio.gather(first, return_exceptions=True)
+                await stream.aclose()  # type: ignore[attr-defined]
+            during = written[0]
+        assert during > 5
+        assert _updated_ids([entry]) == ["i308_items:new"]

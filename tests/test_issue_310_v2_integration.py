@@ -24,6 +24,8 @@ from typing import Any
 import pytest
 
 from src.surreal_orm import BaseSurrealModel, SurrealConfigDict, SurrealDBConnectionManager, SurrealFunc
+from src.surreal_orm.fields.relation import RelationInfo
+from src.surreal_orm.relations import RelationManager, RelationQuerySet
 from src.surreal_orm.utils import format_thing
 from surreal_sdk.protocol.cbor import RecordId
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
@@ -182,3 +184,40 @@ async def test_record_ids_with_special_characters_round_trip(rid: str) -> None:
     assert await _target_ids() == []
 
     assert await _snapshot() == before
+
+
+#: IDs with both a backtick and a backslash.
+BACKTICK_BACKSLASH_IDS = [rid for rid in SPECIAL_IDS if "`" in rid and "\\" in rid]
+
+
+def _names(rows: list[Any]) -> list[str]:
+    """The ``name`` of each traversal result (dicts: ``to_model`` is a table, not a model class)."""
+    return [row["name"] for row in rows]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("rid", BACKTICK_BACKSLASH_IDS)
+async def test_relation_queryset_starts_from_the_record(rid: str) -> None:
+    """A ``RelationQuerySet`` from a record with such an ID traverses from that record only.
+
+    Its start node is written into the query text by ``format_thing()``. The
+    peer links to the bystander too, so a start node read as the wrong record
+    (or as the table) would bring back more than the peer.
+    """
+    await I310Node(id=rid, name="target").save()
+    loaded = await I310Node.objects().get(rid)
+    peer = await I310Node.objects().get("peer")
+    await loaded.relate(LINKS, peer)
+    await peer.relate(LINKS, loaded)
+
+    outgoing = RelationManager(loaded, RelationInfo(to_model=NODES, relation_type="relation", edge_table=LINKS), "links")
+    incoming = RelationManager(
+        loaded, RelationInfo(to_model=NODES, relation_type="relation", edge_table=LINKS, reverse=True), "linked_from"
+    )
+
+    for manager in (outgoing, incoming):
+        assert _names(await manager.all()) == ["peer"]
+        qs = manager.filter(name__startswith="p")
+        assert isinstance(qs, RelationQuerySet)
+        assert _names(await qs.all()) == ["peer"]
+        assert _names(await manager.filter(name="bystander").all()) == []
