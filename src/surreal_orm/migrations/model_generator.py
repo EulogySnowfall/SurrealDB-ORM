@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 
-from ..surreal_function import SurrealFunc
+from ..surreal_function import SurrealFunc, _is_from_server
 from .state import FieldState, SchemaState, TableState
 
 # SurrealDB type → Python type annotation
@@ -223,7 +223,13 @@ class ModelCodeGenerator:
 
         if field.default is not None:
             if isinstance(field.default, SurrealFunc):
-                extra_imports.add("from surreal_orm import SurrealFunc")
+                # A default read back from the server repr()s as the helper
+                # that built it (the constructor may refuse it), so the
+                # generated module imports that helper instead.
+                if _is_from_server(field.default):
+                    extra_imports.add("from surreal_orm.surreal_function import _surreal_func_from_server")
+                else:
+                    extra_imports.add("from surreal_orm import SurrealFunc")
             default_repr = self._format_default(field.default)
             field_kwargs.append(f"default={default_repr}")
 

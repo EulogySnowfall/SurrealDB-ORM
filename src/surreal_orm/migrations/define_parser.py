@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..surreal_function import SurrealFunc
+from ..surreal_function import SurrealFunc, _surreal_func_from_server
 from .operations import _effective_field_permissions
 from .state import EventState, FieldState, IndexState
 
@@ -506,9 +506,9 @@ def _default_expression(raw: str) -> SurrealFunc:
     try:
         return SurrealFunc(raw)
     except ValueError:
-        expression = SurrealFunc.__new__(SurrealFunc)
-        expression.expression = raw
-        return expression
+        # Written back as ``_surreal_func_from_server(...)``, so a migration
+        # file generated from it does not run the refused check on import.
+        return _surreal_func_from_server(raw)
 
 
 def parse_define_table(statement: str) -> dict[str, Any]:
