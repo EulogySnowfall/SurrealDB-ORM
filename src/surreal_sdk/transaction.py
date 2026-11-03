@@ -136,7 +136,14 @@ if TYPE_CHECKING:
 # A "Cannot COMMIT" that reports a conflict is the cause, not part of the cascade:
 # SurrealDB 3.3 reports a commit-time conflict on the COMMIT statement itself
 # ("Cannot COMMIT: Transaction conflict: ... This transaction can be retried").
+# Shared with the change-feed reader (``streaming/change_feed.py``), which reads
+# its BEGIN/COMMIT batch the same way.
 _CANCELLED_STATEMENT_ERRORS = ("not executed due to a failed transaction", "Cannot COMMIT: the transaction was")
+
+
+def _is_cancelled_statement_error(error: str) -> bool:
+    """Whether *error* is a failed transaction's report for a statement it cancelled."""
+    return any(marker in error for marker in _CANCELLED_STATEMENT_ERRORS)
 
 
 def _failed_statement_error(response: "QueryResponse") -> tuple[str, bool] | None:
@@ -153,7 +160,7 @@ def _failed_statement_error(response: "QueryResponse") -> tuple[str, bool] | Non
     if not errors:
         return None
     for error in errors:
-        if not any(marker in error for marker in _CANCELLED_STATEMENT_ERRORS):
+        if not _is_cancelled_statement_error(error):
             return error, True
     return errors[0], False
 

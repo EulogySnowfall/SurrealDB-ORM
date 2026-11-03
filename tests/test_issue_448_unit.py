@@ -13,10 +13,14 @@ The server messages are copied from SurrealDB 3.3.5, the pinned server.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from src.surreal_orm.utils import retry_on_conflict
-from surreal_sdk.exceptions import QueryError, TransactionConflictError
+from surreal_sdk.exceptions import ChangeFeedError, QueryError, TransactionConflictError
+from surreal_sdk.streaming.change_feed import ChangeFeedStream
+from surreal_sdk.types import QueryResponse
 
 RETRYABLE = "This transaction can be retried"
 KV_WRITE_CONFLICT = (
@@ -62,3 +66,32 @@ class TestConflictSentenceAtTheEnd:
             await work()
         assert not isinstance(excinfo.value, TransactionConflictError)
         assert calls == 1
+
+
+NOT_EXECUTED = "The query was not executed due to a failed transaction"
+
+
+class _CommitConflictConnection:
+    """Answers every query with a transaction failed by a conflict reported on its COMMIT."""
+
+    async def query(self, sql: str, vars: dict[str, Any] | None = None) -> QueryResponse:
+        return QueryResponse.from_rpc_result(
+            [
+                {"status": "OK", "result": None},
+                {"status": "ERR", "result": NOT_EXECUTED},
+                {"status": "ERR", "result": NOT_EXECUTED},
+                {"status": "ERR", "result": COMMIT_WRITE_CONFLICT},
+            ]
+        )
+
+
+class TestChangeFeedReportsACommitConflict:
+    @pytest.mark.asyncio
+    async def test_commit_conflict_is_the_reported_cause(self) -> None:
+        feed = ChangeFeedStream(_CommitConflictConnection(), "i448_orders")  # type: ignore[arg-type]
+
+        with pytest.raises(ChangeFeedError) as excinfo:
+            await feed.get_changes(since=0)
+
+        assert COMMIT_WRITE_CONFLICT in str(excinfo.value)
+        assert NOT_EXECUTED not in str(excinfo.value)

@@ -33,6 +33,7 @@ from typing import Any
 from ..connection.http import HTTPConnection
 from ..exceptions import ChangeFeedError
 from ..protocol.cbor import RecordId, _warn_naive_datetime
+from ..transaction import _is_cancelled_statement_error
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 _VERSIONSTAMP_RE = re.compile(r"[0-9]+")
@@ -169,8 +170,10 @@ def _statement_error(response: Any) -> str | None:
     errors = [str(result.result) for result in response.results if not result.is_ok]
     if not errors:
         return None
-    # In a failed transaction every statement reports "not executed"; the cause is elsewhere.
-    causes = [error for error in errors if "not executed" not in error and "Cannot COMMIT" not in error]
+    # In a failed transaction the other statements report "not executed" and the
+    # COMMIT "the transaction was aborted"; the cause is elsewhere. A conflict
+    # detected at commit time is reported on the COMMIT itself and is the cause.
+    causes = [error for error in errors if not _is_cancelled_statement_error(error)]
     return (causes or errors)[0]
 
 
