@@ -49,7 +49,16 @@ class SearchScore:
     """
 
     def __init__(self, ref: int = 0) -> None:
-        self.ref = require_int("ref", ref, minimum=0)
+        self.ref = ref
+
+    @property
+    def ref(self) -> int:
+        """Match reference index; checked again whenever it is assigned."""
+        return self._ref
+
+    @ref.setter
+    def ref(self, value: int) -> None:
+        self._ref = require_int("ref", value, minimum=0)
 
     def to_surql(self, alias: str) -> str:
         """Render as ``search::score(N) AS alias``."""
@@ -98,7 +107,16 @@ class SearchHighlight:
     def __init__(self, open_tag: str = "<b>", close_tag: str = "</b>", ref: int = 0) -> None:
         self.open_tag = open_tag
         self.close_tag = close_tag
-        self.ref = require_int("ref", ref, minimum=0)
+        self.ref = ref
+
+    @property
+    def ref(self) -> int:
+        """Match reference index; checked again whenever it is assigned."""
+        return self._ref
+
+    @ref.setter
+    def ref(self, value: int) -> None:
+        self._ref = require_int("ref", value, minimum=0)
 
     def to_surql(self, alias: str) -> str:
         """Render as ``search::highlight('open', 'close', N) AS alias``.

@@ -17,6 +17,7 @@ import json
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
+from unittest.mock import AsyncMock
 
 import anyio
 import httpx
@@ -569,6 +570,125 @@ async def test_connection_released_after_pool_close_is_closed(kind: str) -> None
     assert not conn.is_connected
     assert pool.available == 0
     assert pool.in_use == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #448: every auth-state change the pool makes is recorded on the
+# connection (``_auth_changed()``)
+# ---------------------------------------------------------------------------
+
+
+def _auth_state(conn: BaseSurrealConnection) -> tuple[Any, ...]:
+    return (conn._token, conn._authenticated, getattr(conn, "_signin_args", None))
+
+
+def _record_auth_changes(pool: ConnectionPool) -> list[tuple[BaseSurrealConnection, tuple[Any, ...]]]:
+    """Record, for every ``_auth_changed()`` call on the pool's connections, the state it recorded."""
+    changes: list[tuple[BaseSurrealConnection, tuple[Any, ...]]] = []
+    create = pool._create_connection
+
+    def recording_create() -> BaseSurrealConnection:
+        conn = create()
+        original = conn._auth_changed
+
+        def recording(*, same_identity: bool = False) -> None:
+            original(same_identity=same_identity)
+            changes.append((conn, _auth_state(conn)))
+
+        conn._auth_changed = recording  # type: ignore[method-assign]
+        return conn
+
+    pool._create_connection = recording_create  # type: ignore[method-assign]
+    return changes
+
+
+def _assert_state_recorded(changes: list[tuple[BaseSurrealConnection, tuple[Any, ...]]], conn: Any) -> None:
+    """The connection's current auth state is the one its last ``_auth_changed()`` recorded."""
+    recorded = [state for owner, state in changes if owner is conn]
+    assert recorded, "the pool changed the auth state without _auth_changed()"
+    assert recorded[-1] == _auth_state(conn), "the pool rewrote the auth state after its last _auth_changed()"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
+async def test_i448_pool_signin_records_the_auth_change(kind: str) -> None:
+    servers: list[_FakeServer] = []
+    async with _pool(kind, servers) as pool:
+        changes = _record_auth_changes(pool)
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        async with pool.acquire() as conn:
+            assert conn._auth_generation > 0
+            assert conn._auth_identity > 0
+            _assert_state_recorded(changes, conn)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("credentials", [True, False])
+async def test_i448_release_records_the_auth_change(kind: str, credentials: bool) -> None:
+    servers: list[_FakeServer] = []
+    async with _pool(kind, servers) as pool:
+        changes = _record_auth_changes(pool)
+        if credentials:
+            await pool.set_credentials(POOL_USER, POOL_PASS)
+        async with pool.acquire() as conn:
+            if credentials or kind == "websocket":
+                await conn.authenticate(CALLER_TOKEN)
+            else:
+                # Without pool credentials an HTTP connection is reset locally;
+                # give it an identity to drop.
+                await conn.signin("i448_caller", "pw")
+            generation, identity = conn._auth_generation, conn._auth_identity
+        assert conn._auth_generation > generation
+        assert conn._auth_identity > identity
+        _assert_state_recorded(changes, conn)
+
+
+@pytest.mark.asyncio
+async def test_i448_http_reset_is_final_for_requests_sent_before_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After a release, the connection holds the pool's token whatever earlier requests do."""
+    from tests.sdk.test_http_connection import _GatedFakeHTTPClient
+
+    fake = _GatedFakeHTTPClient()
+    monkeypatch.setattr("src.surreal_sdk.connection.http.asyncio.sleep", AsyncMock())
+    pool = ConnectionPool(URL, NS, DB, size=1, connection_type="http")
+    original = pool._create_connection
+
+    def create() -> BaseSurrealConnection:
+        conn = original()
+        assert isinstance(conn, HTTPConnection)
+        conn.protocol = "json"
+
+        async def connect() -> HTTPConnection:
+            conn._client = fake  # type: ignore[assignment]
+            conn._connected = True
+            return conn
+
+        conn.connect = connect  # type: ignore[method-assign]
+        return conn
+
+    pool._create_connection = create  # type: ignore[method-assign]
+    async with pool:
+        await pool.set_credentials(POOL_USER, POOL_PASS)
+        async with pool.acquire() as conn:
+            pool_token = conn.token
+            await conn.signin("i448_caller", "pw")
+            caller_token = conn.token
+            fake.rejected_tokens.add(caller_token)
+            fake.hold_next_signin()
+            pending = asyncio.create_task(conn.query("SELECT * FROM i448_caller_only"))
+            await asyncio.wait_for(fake.held.wait(), timeout=5)
+            fake.rejected_tokens.discard(caller_token)
+        # Released: the pool's token is back.
+        assert conn.token == pool_token
+        fake.release.set()
+        with pytest.raises(QueryError, match="401"):
+            await asyncio.wait_for(pending, timeout=5)
+
+        assert conn.token == pool_token
+        assert conn._signin_args is not None and conn._signin_args["user"] == POOL_USER
+        caller_queries = [auth for path, method, auth in fake.calls if path == "/rpc" and method == "query"]
+        assert caller_queries == [f"Bearer {caller_token}"]  # sent once, never again
 
 
 # ---------------------------------------------------------------------------

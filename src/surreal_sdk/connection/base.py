@@ -128,6 +128,27 @@ class BaseSurrealConnection(ABC):
         if not same_identity:
             self._auth_identity += 1
 
+    def _install_auth(self, token: str | None, signin_args: dict[str, Any] | None = None) -> None:
+        """Install *token* as the connection's authentication, set from outside ``signin()``.
+
+        Used by ``ConnectionPool`` to put its own identity back. Records the
+        change with ``_auth_changed()``, so anything started under the
+        previous auth state (such as the HTTP transient-401 re-mint) neither
+        overwrites it nor replays a rejected request under it. *signin_args*
+        are the ``signin()`` arguments *token* came from; only
+        ``HTTPConnection`` retains them.
+        """
+        self._token = token
+        self._authenticated = True
+        self._auth_changed()
+
+    def _clear_auth(self) -> None:
+        """Drop the connection's authentication locally, recorded with ``_auth_changed()``."""
+        self._token = None
+        self._authenticated = False
+        self._forget_signin_credentials()
+        self._auth_changed()
+
     # Context manager support
 
     async def __aenter__(self) -> Self:

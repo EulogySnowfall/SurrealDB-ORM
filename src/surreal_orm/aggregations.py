@@ -50,6 +50,26 @@ class Aggregation(ABC):
         ...
 
 
+class _FieldAggregation(Aggregation):
+    """An aggregation over one field, written into the query text.
+
+    ``field`` is checked at construction and again whenever it is assigned.
+    """
+
+    def __init__(self, field: str):
+        self.field = field
+
+    @property
+    def field(self) -> str:
+        """The aggregated field: an identifier or a dotted path."""
+        return self._field
+
+    @field.setter
+    def field(self, value: str) -> None:
+        validate_field_path(value, "aggregation field")
+        self._field = value
+
+
 class Count(Aggregation):
     """
     Count aggregation.
@@ -69,7 +89,7 @@ class Count(Aggregation):
         return "count"
 
 
-class Sum(Aggregation):
+class Sum(_FieldAggregation):
     """
     Sum aggregation.
 
@@ -82,10 +102,6 @@ class Sum(Aggregation):
         Sum("amount")  # Sums the "amount" field
     """
 
-    def __init__(self, field: str):
-        validate_field_path(field, "aggregation field")
-        self.field = field
-
     def to_surql(self, alias: str) -> str:
         validate_identifier(alias, "annotation alias")
         return f"math::sum({self.field}) AS {alias}"
@@ -95,7 +111,7 @@ class Sum(Aggregation):
         return "math::sum"
 
 
-class Avg(Aggregation):
+class Avg(_FieldAggregation):
     """
     Average aggregation.
 
@@ -108,10 +124,6 @@ class Avg(Aggregation):
         Avg("age")  # Averages the "age" field
     """
 
-    def __init__(self, field: str):
-        validate_field_path(field, "aggregation field")
-        self.field = field
-
     def to_surql(self, alias: str) -> str:
         validate_identifier(alias, "annotation alias")
         return f"math::mean({self.field}) AS {alias}"
@@ -121,7 +133,7 @@ class Avg(Aggregation):
         return "math::mean"
 
 
-class Min(Aggregation):
+class Min(_FieldAggregation):
     """
     Minimum aggregation.
 
@@ -134,10 +146,6 @@ class Min(Aggregation):
         Min("price")  # Finds minimum "price"
     """
 
-    def __init__(self, field: str):
-        validate_field_path(field, "aggregation field")
-        self.field = field
-
     def to_surql(self, alias: str) -> str:
         validate_identifier(alias, "annotation alias")
         return f"math::min({self.field}) AS {alias}"
@@ -147,7 +155,7 @@ class Min(Aggregation):
         return "math::min"
 
 
-class Max(Aggregation):
+class Max(_FieldAggregation):
     """
     Maximum aggregation.
 
@@ -159,10 +167,6 @@ class Max(Aggregation):
     Example:
         Max("price")  # Finds maximum "price"
     """
-
-    def __init__(self, field: str):
-        validate_field_path(field, "aggregation field")
-        self.field = field
 
     def to_surql(self, alias: str) -> str:
         validate_identifier(alias, "annotation alias")
