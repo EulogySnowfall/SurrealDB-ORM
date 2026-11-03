@@ -200,10 +200,18 @@ class Duration:
     ``value`` is either a duration string (``"1h30m"``), sent as CBOR tag 13,
     or the compact form SurrealDB itself sends, a sequence of seconds and
     nanoseconds (``[5400]``, ``[5400, 1]``, ``[]`` for zero), sent as tag 14.
-    A duration read from the server holds a list.
+
+    A compact value is stored as a new ``list``, whatever sequence it was built
+    from: that is the form a duration read from the server holds, so
+    ``Duration((5400, 1)) == Duration([5400, 1])``. A string is kept as is.
     """
 
     value: str | list[int] | tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        """Store a compact value as a list, so equality does not depend on the container."""
+        if not isinstance(self.value, str):
+            self.value = list(self.value)
 
     def __str__(self) -> str:
         """Return a SurrealQL duration literal (``"1h30m"``, ``"5400s1ns"``, ``"0ns"``)."""
