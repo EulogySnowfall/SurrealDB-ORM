@@ -15,6 +15,7 @@ in the remainder can be that start (``WHERE / x/``).
 import pytest
 
 from src.surreal_orm.migrations.define_parser import parse_define_field
+from src.surreal_orm.surreal_function import SurrealFunc
 
 
 class TestI509RegexLiteral:
@@ -149,6 +150,25 @@ class TestI517SpacedSlashInPattern:
 
         assert result.assertion == "($value ~ / a\\/ b/)"
         assert result.permissions == {"select": "NONE"}
+
+    def test_an_unspaced_division_in_an_assertion_keeps_its_clause(self) -> None:
+        """``$value/2`` has an operand on the left of its ``/``: a division, not a pattern opener."""
+        result = parse_define_field("DEFINE FIELD a ON t TYPE int ASSERT $value/2 > 1 PERMISSIONS FOR select NONE")
+
+        assert result.assertion == "$value/2 > 1"
+        assert result.permissions == {"select": "NONE"}
+
+    def test_an_unspaced_division_in_a_value_keeps_its_clause(self) -> None:
+        result = parse_define_field("DEFINE FIELD a ON t TYPE int VALUE $value/2 PERMISSIONS FOR select WHERE $auth.x = 1")
+
+        assert result.value == "$value/2"
+        assert result.permissions == {"select": "$auth.x = 1"}
+
+    def test_an_unspaced_division_in_a_default_keeps_its_clause(self) -> None:
+        result = parse_define_field("DEFINE FIELD a ON t TYPE float DEFAULT 1/2 PERMISSIONS FULL")
+
+        assert result.default == SurrealFunc("1/2")
+        assert result.permissions == {}
 
     @pytest.mark.xfail(
         strict=True,
