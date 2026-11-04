@@ -245,10 +245,10 @@ range 2.6.x – 2.7.x).
 - The #413 integration test also checks a `SearchHighlight` tag pair with a
   backslash escape and no apostrophe (`<\n>` / `</\t>`) on SurrealDB 2.7.0
   (#438).
-- Unit tests check that the ephemeral connection opened by the auth calls
-  (`validate_token()` and the other `AuthenticatedUserMixin` methods) is
-  built from the model's `connection=` config, or from the `using()`
-  override, rather than the `"default"` one (#404, #532). No library change.
+- Unit tests check that the ephemeral connection opened by `validate_token()`
+  (through `_create_auth_client()`, shared by the other auth calls) is built
+  from the model's `connection=` config, or from the `using()` override,
+  rather than the `"default"` one (#404, #532). No library change.
 
 ### Verification
 

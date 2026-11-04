@@ -85,7 +85,8 @@ One fix, `v2` only: #438 via #533 (`surreal_sdk/transaction.py`). Pin unchanged 
   queued nothing, silently. The records are materialised once (`[data]` for a dict, `list(data)` otherwise).
 - **Auth routing is now tested below the helper.** The #372 tests patched `_create_auth_client()` itself; #532 patches
   `surreal_sdk.HTTPConnection` and checks the client is built from the model's `connection=` / `using()` config.
-- **Open (review suggestion on #533):** `main`'s `HTTPTransaction.insert()` still loops over `data` twice.
+- **Open (review suggestion on #533):** `main`'s `HTTPTransaction.insert()` still loops over `data` twice,
+  tracked in #535.
 
 ### What's New in 0.21.44
 
