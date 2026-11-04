@@ -72,6 +72,10 @@ class SurrealDBConnectionManager:
     # matches ``HTTPConnection``'s default request timeout.
     _reconnect_drain_timeout: float = 30.0
 
+    # Closes of half-built clients that outlived a second cancellation; kept
+    # referenced until they finish (the event loop holds tasks only weakly).
+    _background_closes: set[asyncio.Future[None]] = set()
+
     # --- legacy class-level getters (kept in sync for backward compat) -----
     # These mirror the "default" config so that code like
     # ``SurrealDBConnectionManager.get_url()`` keeps working.
@@ -440,16 +444,27 @@ class SurrealDBConnectionManager:
 
         The new client is built and signed in first, then swapped in under the
         connection lock, so concurrent callers of ``get_client()`` always get a
-        connected client. Requests already running on the previous client, and
-        transactions already open on it (from ``transaction()``, which send
-        their statements at commit), are allowed to finish: it is closed once
-        none is left, or after ``_reconnect_drain_timeout`` seconds (30 by
-        default), whichever comes first, and this call returns after that
-        close. Transactions opened by the task calling ``reconnect()`` are not
-        waited for (they cannot end while it waits): the previous client is
-        then closed when the last of them commits or rolls back. The default
-        WebSocket client, if any, is closed as before and recreated on the next
-        ``get_ws_client()``.
+        connected client. RPC requests already running on the previous client
+        (``query()``, ``select()``, ``create()`` and the other RPC methods;
+        not ``sql()``, ``health()``, ``status()`` or the ``rest_*()`` calls,
+        which are not counted), and transactions already open on it (from
+        ``transaction()``, which send their statements at commit), are allowed
+        to finish: it is closed once none is left, or after
+        ``_reconnect_drain_timeout`` seconds (30 by default), whichever comes
+        first, and this call returns after that close. Transactions opened by
+        the task calling ``reconnect()`` are not waited for (they cannot end
+        while it waits): the previous client is then closed when the last of
+        them commits or rolls back. The default WebSocket client, if any, is
+        closed as before and recreated on the next ``get_ws_client()``.
+
+        Call ``reconnect()`` from the task that opened a transaction, not from
+        a task that the transaction awaits (``asyncio.gather()``, a
+        ``TaskGroup``): that task is not the transaction's own, so the drain
+        waits for the transaction while the transaction waits for the drain,
+        until the timeout closes the previous client and the commit fails.
+
+        A ``QuerySet.changes()`` stream (a ``ChangeModelStream`` built without
+        ``connection=``) moves to the new client and resumes from its cursor.
 
         Code that keeps a client from ``get_client()`` across an ``await``
         and uses it after a ``reconnect()`` gets ``Not connected`` once that
@@ -463,9 +478,10 @@ class SurrealDBConnectionManager:
         timing out) does not close the previous client under the requests and
         transactions still using it. Cancelled before the swap, it leaves the
         current clients in place. Cancelled after it, the new client stays
-        installed and the previous one is closed by the last request or
+        installed and the previous one is closed by the last RPC request or
         transaction to finish on it (at once if none is left); the
-        cancellation then propagates as usual.
+        cancellation then propagates as usual. A client still being built when
+        the call is cancelled is closed before the cancellation propagates.
 
         Token renewal does not need this method: SurrealDB answers a request
         made with an expired token with HTTP 401, and the HTTP client signs in
@@ -983,6 +999,10 @@ class SurrealDBConnectionManager:
         :raises ValueError: If *name* is not configured.
         :raises SurrealDbConnectionError: If the client cannot connect or
             authenticate. The partly built client is closed first.
+        :raises asyncio.CancelledError: If the call is cancelled (for example
+            ``asyncio.wait_for(reconnect(), 5)`` expiring during sign-in). The
+            partly built client is closed first, and the cancellation is
+            re-raised unchanged.
         """
         config = cls._configs.get(name)
         if config is None:
@@ -1012,6 +1032,12 @@ class SurrealDBConnectionManager:
                 )
 
             return _client
+        except asyncio.CancelledError:
+            # Not an Exception: without this, the client would keep its open
+            # httpx client with nothing referring to it.
+            if _client is not None:
+                await cls._close_cancelled_build(_client)
+            raise
         except SurrealDBError as e:
             logger.warning("Can't get connection '%s': %s", name, e)
             if _client is not None:
@@ -1028,6 +1054,22 @@ class SurrealDBConnectionManager:
                 except Exception:
                     pass  # Best-effort cleanup; original error is re-raised below
             raise SurrealDbConnectionError("Can't connect to the database.")
+
+    @classmethod
+    async def _close_cancelled_build(cls, client: HTTPConnection) -> None:
+        """Close a client whose build was cancelled, without raising.
+
+        The close runs shielded, so a second cancellation while it runs does
+        not interrupt it: it finishes in the background instead. A failure is
+        logged. The caller re-raises its own cancellation afterwards.
+        """
+        close = asyncio.ensure_future(client._close_quietly())
+        cls._background_closes.add(close)
+        close.add_done_callback(cls._background_closes.discard)
+        try:
+            await asyncio.shield(close)
+        except asyncio.CancelledError:
+            pass  # cancelled again: the close goes on, the first cancellation is re-raised
 
     @classmethod
     def _register_client(cls, name: str, client: HTTPConnection) -> None:
