@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from src.surreal_orm import BaseSurrealModel, SurrealConfigDict, SurrealDBConnectionManager
+from src.surreal_sdk.streaming.change_feed import ChangeFeedStream
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 SURREALDB_DATABASE = "test_issue_270"
@@ -49,6 +50,11 @@ async def setup_connection() -> AsyncGenerator[None, Any]:
     await SurrealDBConnectionManager.unset_connection()
 
 
+async def _now() -> int:
+    """The versionstamp after the last entry already in the feed: a start before the first write."""
+    return await ChangeFeedStream(await SurrealDBConnectionManager.get_client(), "i270_events")._resolve_now()
+
+
 async def _next(stream: Any) -> Any:
     return await asyncio.wait_for(anext(stream), 10)
 
@@ -56,12 +62,9 @@ async def _next(stream: Any) -> Any:
 @pytest.mark.integration
 async def test_changes_stream_survives_reconnect() -> None:
     """Changes written before, around and after reconnect() each arrive once, in order."""
-    stream = I270Event.objects().changes(poll_interval=0.05)
-    first = asyncio.ensure_future(_next(stream))
-    # Let the stream resolve "now" before the first write, so it is delivered.
-    await asyncio.sleep(0.3)
+    stream = I270Event.objects().changes(since=await _now(), poll_interval=0.05)
     await I270Event(id="before", n=1).save()
-    received = [await first]
+    received = [await _next(stream)]
     previous = await SurrealDBConnectionManager.get_client()
 
     # Written before the swap but read only after it: the cursor carries it over.
