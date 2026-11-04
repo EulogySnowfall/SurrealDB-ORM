@@ -281,10 +281,11 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool, int]:
         ends with no quote, pattern or bracket left open and no pattern end
         without its start, and the index of the ``/`` opening a pattern that
         never closes (-1 when there is none, or when any earlier ``/`` was
-        read as a division or a stray closer: that ``/`` can belong to a
-        misread pattern, as in ``ASSERT ($value CONTAINS / a+/)`` or
-        ``/ a\\/ b/``, which makes the later ``/`` its end rather than an
-        opener)
+        seen at all, whether read as a division, as a stray closer or as
+        part of a consumed pattern: that ``/`` can belong to a misread
+        pattern, as in ``ASSERT ($value CONTAINS / a+/)``, ``/ a\\/ b/`` or
+        ``($value/2 + / a+/)``, which makes the later ``/`` its end rather
+        than an opener)
     """
     depth = 0
     quote: str | None = None
@@ -310,6 +311,7 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool, int]:
             end = _regex_literal_end(text, i)
             if end == -1:
                 return -1, False, (i if not seen_slash else -1)
+            seen_slash = True
             previous = "/"
             i = end
             continue
@@ -384,12 +386,15 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     opener is trusted only where an operand is expected (after an operator,
     an opening bracket or ``ASSERT``/``VALUE``/``DEFAULT``): with an operand
     on its left, as in ``$value/2`` or ``1/2``, it is a division written
-    without spaces. It is also trusted only when no earlier ``/`` was read as a division or
-    a stray closer, since any such ``/`` can belong to a misread pattern: in
-    the server's ``ASSERT ($value CONTAINS / a+/) PERMISSIONS FOR ...`` the
-    ``/`` after ``a+`` closes ``/ a+/`` and opens nothing, and in
-    ``/ a\\/ b/`` the escaped slash brings the division count back to zero
-    before the closing ``/``. A pattern opening with a space is not trusted
+    without spaces. It is also trusted only when it is the first ``/`` of the
+    text before the start, whether an earlier one was read as a division, as
+    a stray closer or as part of a consumed pattern, since any such ``/`` can
+    belong to a misread pattern: in the server's ``ASSERT ($value CONTAINS /
+    a+/) PERMISSIONS FOR ...`` the ``/`` after ``a+`` closes ``/ a+/`` and
+    opens nothing, in ``/ a\\/ b/`` the escaped slash brings the division
+    count back to zero before the closing ``/``, and in ``($value/2 + /
+    a+/)`` the unspaced division is consumed as a pattern up to the ``/``
+    before ``a+``. A pattern opening with a space is not trusted
     either, because the scan can misread one (``ASSERT / +/``, below), so
     ``= / x PERMISSIONS FULL / y/`` remains a known limit. A body with no
     start left has no clause.

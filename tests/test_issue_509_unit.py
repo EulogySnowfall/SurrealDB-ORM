@@ -170,6 +170,21 @@ class TestI517SpacedSlashInPattern:
         assert result.default == SurrealFunc("1/2")
         assert result.permissions == {}
 
+    def test_an_unspaced_division_before_a_space_opened_pattern_keeps_its_clause(self) -> None:
+        """The ``/`` closing ``/ a+/`` is not an opener: an earlier ``/`` was consumed as a pattern."""
+        result = parse_define_field(
+            "DEFINE FIELD a ON t TYPE string ASSERT $value = ($value/2 + / a+/) PERMISSIONS FOR select NONE"
+        )
+
+        assert result.assertion == "$value = ($value/2 + / a+/)"
+        assert result.permissions == {"select": "NONE"}
+
+    def test_an_unspaced_division_before_a_space_opened_pattern_in_a_default_keeps_its_clause(self) -> None:
+        result = parse_define_field("DEFINE FIELD a ON t TYPE any DEFAULT (1/2 AND / a+/) PERMISSIONS FOR select NONE")
+
+        assert result.default == SurrealFunc("(1/2 AND / a+/)")
+        assert result.permissions == {"select": "NONE"}
+
     @pytest.mark.xfail(
         strict=True,
         reason="Known limit: a pattern opening with a space is not trusted before a candidate start (ASSERT / +/)",
