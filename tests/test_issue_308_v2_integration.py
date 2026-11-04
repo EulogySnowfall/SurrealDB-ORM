@@ -279,6 +279,33 @@ def _is_retryable_conflict(raw: Any) -> bool:
     return "can be retried" in str(raw).lower()
 
 
+async def _write_other_table(
+    client: Any,
+    written: list[int],
+    *,
+    max_conflicts: int = _MAX_WRITE_CONFLICTS,
+    backoff: float = 0.01,
+) -> None:
+    """Create ``i308_other:w<n>`` records one after another until cancelled.
+
+    ``written[0]`` counts the successful writes only. A write rejected with the
+    server's retryable-conflict sentence is retried with the same id after
+    ``backoff`` seconds; the ``max_conflicts``-th conflict in a row fails with
+    the raw response, as does any other error.
+    """
+    conflicts = 0
+    while True:
+        response = await client.query(f"CREATE i308_other:w{written[0]} SET i = {written[0]};")
+        if not response.is_ok and _is_retryable_conflict(response.raw):
+            conflicts += 1
+            assert conflicts < max_conflicts, response.raw
+            await asyncio.sleep(backoff)
+            continue
+        assert response.is_ok, response.raw
+        conflicts = 0
+        written[0] += 1
+
+
 @asynccontextmanager
 async def _busy_other_table() -> AsyncIterator[list[int]]:
     """Keep writing to ``i308_other`` in the background while the block runs.
@@ -296,18 +323,7 @@ async def _busy_other_table() -> AsyncIterator[list[int]]:
     written = [0]
 
     async def writer() -> None:
-        client = await _client()
-        conflicts = 0
-        while True:
-            response = await client.query(f"CREATE i308_other:w{written[0]} SET i = {written[0]};")
-            if not response.is_ok and _is_retryable_conflict(response.raw):
-                conflicts += 1
-                assert conflicts < _MAX_WRITE_CONFLICTS, response.raw
-                await asyncio.sleep(0.01)
-                continue
-            assert response.is_ok, response.raw
-            conflicts = 0
-            written[0] += 1
+        await _write_other_table(await _client(), written)
 
     task = asyncio.create_task(writer())
     try:
@@ -361,3 +377,57 @@ class TestBusyFeed:
             during = written[0]
         assert during > 5
         assert _updated_ids([entry]) == ["i308_items:new"]
+
+
+class _FakeResponse:
+    """The two attributes of a ``QueryResponse`` the writer reads."""
+
+    def __init__(self, raw: Any, *, ok: bool) -> None:
+        self.raw = raw
+        self.is_ok = ok
+
+
+class _FakeClient:
+    """Replays canned responses and records every query it receives."""
+
+    def __init__(self, responses: list[_FakeResponse]) -> None:
+        self.responses = list(responses)
+        self.queries: list[str] = []
+
+    async def query(self, sql: str) -> _FakeResponse:
+        self.queries.append(sql)
+        return self.responses.pop(0)
+
+
+_OK = _FakeResponse([{"status": "OK", "result": []}], ok=True)
+_CONFLICT = _FakeResponse(
+    [{"status": "ERR", "result": "Transaction conflict: Resource busy. This transaction can be retried"}], ok=False
+)
+_OTHER_ERROR = _FakeResponse([{"status": "ERR", "result": "Database record `i308_other:w1` already exists"}], ok=False)
+
+
+class TestBusyFeedWriter:
+    """The background writer of ``_busy_other_table()``, against a fake client."""
+
+    async def test_retries_a_retryable_conflict_with_the_same_id_and_fails_on_another_error(self) -> None:
+        client = _FakeClient([_CONFLICT, _CONFLICT, _OK, _OTHER_ERROR])
+        written = [0]
+        with pytest.raises(AssertionError, match="already exists"):
+            await _write_other_table(client, written, backoff=0)
+        assert written == [1]
+        assert client.queries == [
+            "CREATE i308_other:w0 SET i = 0;",
+            "CREATE i308_other:w0 SET i = 0;",
+            "CREATE i308_other:w0 SET i = 0;",
+            "CREATE i308_other:w1 SET i = 1;",
+        ]
+
+    async def test_fails_when_conflicts_in_a_row_reach_the_cap(self) -> None:
+        client = _FakeClient([_CONFLICT, _OK, _CONFLICT, _CONFLICT, _CONFLICT])
+        written = [0]
+        with pytest.raises(AssertionError, match="can be retried"):
+            await _write_other_table(client, written, max_conflicts=3, backoff=0)
+        assert written == [1]
+        # The success resets the count: the cap is three conflicts in a row.
+        assert len(client.queries) == 5
+        assert client.responses == []
