@@ -271,6 +271,14 @@ class TestSdkStreams:
         assert got[2] == ("i308_other", "i308_other:b")
 
 
+_MAX_WRITE_CONFLICTS = 50
+
+
+def _is_retryable_conflict(raw: Any) -> bool:
+    """Whether a rejected write carries the server's retryable-conflict sentence."""
+    return "can be retried" in str(raw).lower()
+
+
 @asynccontextmanager
 async def _busy_other_table() -> AsyncIterator[list[int]]:
     """Keep writing to ``i308_other`` in the background while the block runs.
@@ -278,14 +286,27 @@ async def _busy_other_table() -> AsyncIterator[list[int]]:
     Yields a one-item list holding the number of writes so far. The writer is
     running (at least a few writes in) when the block starts; it is cancelled
     and awaited on the way out, and a writer that died early fails the test.
+
+    On 2.7.0, concurrent writes to different ``CHANGEFEED`` tables of one
+    database now and then end in a conflict the server reports as retryable
+    ("This transaction can be retried"). The writer retries those, as a client
+    should, up to ``_MAX_WRITE_CONFLICTS`` in a row; any other error, or a
+    conflict that persists, still stops it and fails the test.
     """
     written = [0]
 
     async def writer() -> None:
         client = await _client()
+        conflicts = 0
         while True:
             response = await client.query(f"CREATE i308_other:w{written[0]} SET i = {written[0]};")
+            if not response.is_ok and _is_retryable_conflict(response.raw):
+                conflicts += 1
+                assert conflicts < _MAX_WRITE_CONFLICTS, response.raw
+                await asyncio.sleep(0.01)
+                continue
             assert response.is_ok, response.raw
+            conflicts = 0
             written[0] += 1
 
     task = asyncio.create_task(writer())
