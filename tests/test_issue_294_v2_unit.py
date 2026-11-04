@@ -207,7 +207,8 @@ class TestBulkUpdateCoercion:
     """
 
     @staticmethod
-    async def _bound(model: type[BaseSurrealModel], data: dict[str, Any]) -> Any:
+    async def _bound(model: type[BaseSurrealModel], data: dict[str, Any]) -> tuple[str, Any]:
+        """Return the statement ``bulk_update()`` sent and the value bound as ``$_bu0``."""
         client = AsyncMock()
         client.query = AsyncMock(return_value=SimpleNamespace(results=[], all_records=[], is_ok=True))
 
@@ -218,21 +219,22 @@ class TestBulkUpdateCoercion:
         ):
             await model.objects().filter(title="t").bulk_update(data)
 
-        _query, variables = client.query.await_args.args[:2]
-        return variables["_bu0"]
+        query, variables = client.query.await_args.args[:2]
+        return query, variables["_bu0"]
 
     async def test_field_name(self, model: type[BaseSurrealModel]) -> None:
-        bound = await self._bound(model, {"author": "alice"})
+        _query, bound = await self._bound(model, {"author": "alice"})
 
         assert isinstance(bound, RecordId), f"bound a bare {type(bound).__name__}"
         assert bound == _alice()
 
     async def test_aliased_column(self, model: type[BaseSurrealModel]) -> None:
-        """The real column name, the alias, is coerced too."""
-        bound = await self._bound(model, {"editor_id": "alice"})
+        """The real column name, the alias, is coerced too, and is the column written."""
+        query, bound = await self._bound(model, {"editor_id": "alice"})
 
         assert isinstance(bound, RecordId), f"bound a bare {type(bound).__name__}"
         assert bound == _alice()
+        assert "SET editor_id = $_bu0" in query, query
 
 
 def test_to_record_link_none_is_unchanged() -> None:
