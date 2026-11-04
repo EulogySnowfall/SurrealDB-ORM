@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.49)
+> Context document for Claude AI - Last updated: November 2026 (0.21.50)
 
 <!-- -->
 
@@ -20,12 +20,24 @@
 
 ---
 
-## Current Version: 0.21.49 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.50 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.50
+
+One fix, `v2` only: #534 via #552 (`surreal_orm/auth/mixins.py`), the 0.21.44 review follow-ups. Pin unchanged
+(2.7.0). Also the #537 and #550 documentation corrections.
+
+- **Keep the server's text.** `_read_session_record()` raises a private `_SessionRecordError` (a `SurrealDbError`)
+  carrying the statement's error when `RETURN $auth` is `ERR`, and returns `None` only for an empty `$auth`.
+  `signin()` / `signup()` re-raise it as "… succeeded but the session record could not be read: <server text>";
+  `change_password()` lets it through instead of turning it into "Invalid current password".
+- **Fixture cleanup goes in a nested `finally`** (#349 fixture), and the #308 busy-writer helper calls
+  `task.result()` before asserting the writer still runs, so a writer failure shows its own exception.
 
 ### What's New in 0.21.49
 
@@ -38,7 +50,7 @@ One fix, `v2` only: #528 via #548 (`surreal_sdk/connection/websocket.py`), the 0
   `connect()` and after `close()` the old text stays. Type and control flow unchanged.
 - **Open (review suggestion on #548):** a gave-up reconnect leaves its finished task in `_reconnect_task` until
   `_cleanup()`; a later `connect()` failing with a non-`aiohttp.ClientError` (`asyncio.TimeoutError`, `OSError`) skips
-  `_cleanup()`, so requests then report "reconnect gave up" for a failed `connect()`.
+  `_cleanup()`, so requests then report "reconnect gave up" for a failed `connect()`, tracked in #550.
 
 ### What's New in 0.21.48
 
@@ -85,7 +97,8 @@ One fix, `v2` only: #438 via #533 (`surreal_sdk/transaction.py`). Pin unchanged 
   queued nothing, silently. The records are materialised once (`[data]` for a dict, `list(data)` otherwise).
 - **Auth routing is now tested below the helper.** The #372 tests patched `_create_auth_client()` itself; #532 patches
   `surreal_sdk.HTTPConnection` and checks the client is built from the model's `connection=` / `using()` config.
-- **Open (review suggestion on #533):** `main`'s `HTTPTransaction.insert()` still loops over `data` twice.
+- **Open (review suggestion on #533):** `main`'s `HTTPTransaction.insert()` still loops over `data` twice,
+  tracked in #535.
 
 ### What's New in 0.21.44
 
@@ -100,7 +113,7 @@ Two fixes, `v2` only: #392 via #529 (`surreal_orm/auth/mixins.py`, `surreal_orm/
   a new bound name must be added there.
 - **Open (review suggestions on #529):** the callers' message still says `($auth is empty)` for the `ERR` case and
   drops the server text; `change_password()` turns it into "Invalid current password"; the #349 fixture skips its
-  database cleanup if `close()` raises.
+  database cleanup if `close()` raises (all fixed in 0.21.50, #534).
 
 ### What's New in 0.21.43
 

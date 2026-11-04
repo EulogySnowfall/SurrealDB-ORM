@@ -6,6 +6,66 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.50] - 2026-11-04
+
+**Bug fix release (V2 LTS).** One `v2` fix from the 0.21.44 review
+follow-ups (#534, #552): when the session record cannot be read after a
+successful sign-in or sign-up, the auth calls report the server's error.
+Also test follow-ups and documentation corrections. The SurrealDB pin is
+unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **A failed `RETURN $auth` reports the server's error.** When `RETURN $auth`
+  fails on the authenticated session, `signup()` and `signin()` now raise
+  `SurrealDbError` with the server's error text (`Signup succeeded but the
+  session record could not be read: …`, resp. `Signin succeeded but …`),
+  instead of saying the session record was empty (`($auth is empty)`).
+  `change_password()` no longer reports `Invalid current password` when the
+  old password was accepted but the session record could not be read (#534).
+
+### Behaviour change
+
+- Only the error on that failure path changes, and `change_password()` now
+  raises the session-read error there instead of `Invalid current password`.
+  The exception type is still `SurrealDbError`; an empty `$auth` or a wrong
+  password give the same messages as before. Same SurrealQL, same default
+  behaviour.
+
+### Documentation
+
+- The [0.21.45] Tests entry says what the #532 unit tests drive:
+  `validate_token()`, through `_create_auth_client()`, which the other auth
+  calls share. The root `CLAUDE.md` open item on `main`'s
+  `HTTPTransaction.insert()` now points to #535 (#537).
+- The [0.21.49] Verification paragraph gives the figures for the released
+  tree as well as #548's validated head (#550).
+
+### Tests
+
+- The #349 integration fixture always removes its database, even when
+  `close()` raises, and the #308 busy-writer helper raises the writer's own
+  error before its "stopped" check (#534).
+- `tests/test_issue_534_unit.py` covers the new messages and the unchanged
+  ones; `tests/test_issue_392_unit.py` expects `SurrealDbError` from the
+  session read on `ERR` (#534).
+
+### Migration notes
+
+- None. Code that matches the old `($auth is empty)` text, or catches
+  `Invalid current password` on this path, should match the new text or
+  catch `SurrealDbError` by type.
+
+### Verification
+
+Against SurrealDB 2.7.0, on #552's validated head (the released tree):
+3,910 unit tests on each of Python 3.12, 3.13 and 3.14, and 819 integration
+tests pass (4 expected failures, the existing strict `xfail`s for integer
+record ids over WebSocket); `ruff` and `mypy` clean. The new and touched
+tests passed three times in a row.
+
+---
+
 ## [0.21.49] - 2026-11-03
 
 **Bug fix release (V2 LTS).** One `v2` fix from the 0.21.43 review
@@ -71,7 +131,9 @@ Against SurrealDB 2.7.0, on #548's validated head: 3,899 unit tests on each
 of Python 3.12, 3.13 and 3.14, and 819 integration tests pass (4 expected
 failures, the existing strict `xfail`s for integer record ids over
 WebSocket); `ruff` and `mypy` clean. The new and touched tests passed three
-times in a row.
+times in a row. The released tree also carries #507's four tests and #546's
+change to `tests/test_issue_486_unit.py`: after merging them, the unit suite
+passed 3,903 tests and the touched unit tests (93) passed.
 
 ---
 
@@ -245,10 +307,10 @@ range 2.6.x – 2.7.x).
 - The #413 integration test also checks a `SearchHighlight` tag pair with a
   backslash escape and no apostrophe (`<\n>` / `</\t>`) on SurrealDB 2.7.0
   (#438).
-- Unit tests check that the ephemeral connection opened by the auth calls
-  (`validate_token()` and the other `AuthenticatedUserMixin` methods) is
-  built from the model's `connection=` config, or from the `using()`
-  override, rather than the `"default"` one (#404, #532). No library change.
+- Unit tests check that the ephemeral connection opened by `validate_token()`
+  (through `_create_auth_client()`, shared by the other auth calls) is built
+  from the model's `connection=` config, or from the `using()` override,
+  rather than the `"default"` one (#404, #532). No library change.
 
 ### Verification
 
