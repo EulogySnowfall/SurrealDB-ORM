@@ -73,9 +73,58 @@ async def _client() -> HTTPConnection:
     return client
 
 
-async def _write(sql: str) -> None:
-    response = await (await _client()).query(sql)
-    assert response.is_ok, response.raw
+#: Retryable conflicts in a row before a write gives up and fails the test.
+_MAX_WRITE_CONFLICTS = 50
+
+
+def _is_retryable_conflict(raw: Any) -> bool:
+    """Whether a rejected write carries the server's retryable-conflict sentence."""
+    return "can be retried" in str(raw).lower()
+
+
+def _applied_any(raw: Any) -> bool:
+    """Whether a statement of the response succeeded, so re-sending the query would run it twice."""
+    items = raw if isinstance(raw, list) else [raw]
+    return any(isinstance(item, dict) and item.get("status") == "OK" for item in items)
+
+
+async def _query_retrying(
+    client: Any,
+    sql: str,
+    *,
+    max_conflicts: int = _MAX_WRITE_CONFLICTS,
+    backoff: float = 0.01,
+) -> None:
+    """Run ``sql`` and fail with the raw response unless it succeeds.
+
+    On 2.7.0, concurrent writes to different ``CHANGEFEED`` tables of one
+    database now and then end in a conflict the server reports as retryable
+    ("This transaction can be retried"). Such a reply is re-sent after
+    ``backoff`` seconds, as a client should, unless a statement of the query
+    was applied (re-sending would run it twice). The ``max_conflicts``-th
+    conflict in a row fails, as does any other error.
+    """
+    conflicts = 0
+    while True:
+        response = await client.query(sql)
+        if not response.is_ok and _is_retryable_conflict(response.raw) and not _applied_any(response.raw):
+            conflicts += 1
+            assert conflicts < max_conflicts, response.raw
+            await asyncio.sleep(backoff)
+            continue
+        assert response.is_ok, response.raw
+        return
+
+
+async def _write(
+    sql: str,
+    *,
+    client: Any = None,
+    max_conflicts: int = _MAX_WRITE_CONFLICTS,
+    backoff: float = 0.01,
+) -> None:
+    """Run a write of the test, retrying a retryable conflict (see ``_query_retrying()``)."""
+    await _query_retrying(client if client is not None else await _client(), sql, max_conflicts=max_conflicts, backoff=backoff)
 
 
 @pytest.fixture(autouse=True)
@@ -271,14 +320,6 @@ class TestSdkStreams:
         assert got[2] == ("i308_other", "i308_other:b")
 
 
-_MAX_WRITE_CONFLICTS = 50
-
-
-def _is_retryable_conflict(raw: Any) -> bool:
-    """Whether a rejected write carries the server's retryable-conflict sentence."""
-    return "can be retried" in str(raw).lower()
-
-
 async def _write_other_table(
     client: Any,
     written: list[int],
@@ -289,58 +330,54 @@ async def _write_other_table(
     """Create ``i308_other:w<n>`` records one after another until cancelled.
 
     ``written[0]`` counts the successful writes only. A write rejected with the
-    server's retryable-conflict sentence is retried with the same id after
-    ``backoff`` seconds; the ``max_conflicts``-th conflict in a row fails with
-    the raw response, as does any other error.
+    server's retryable-conflict sentence is retried with the same id (see
+    ``_query_retrying()``); a persistent conflict or any other error fails with
+    the raw response.
     """
-    conflicts = 0
     while True:
-        response = await client.query(f"CREATE i308_other:w{written[0]} SET i = {written[0]};")
-        if not response.is_ok and _is_retryable_conflict(response.raw):
-            conflicts += 1
-            assert conflicts < max_conflicts, response.raw
-            await asyncio.sleep(backoff)
-            continue
-        assert response.is_ok, response.raw
-        conflicts = 0
+        await _query_retrying(
+            client, f"CREATE i308_other:w{written[0]} SET i = {written[0]};", max_conflicts=max_conflicts, backoff=backoff
+        )
         written[0] += 1
 
 
+#: Writes the background writer makes before the block starts.
+_WARM_UP_WRITES = 5
+
+
 @asynccontextmanager
-async def _busy_other_table() -> AsyncIterator[list[int]]:
+async def _busy_other_table(*, client: Any = None, progress_timeout: float = EVENT_TIMEOUT) -> AsyncIterator[list[int]]:
     """Keep writing to ``i308_other`` in the background while the block runs.
 
-    Yields a one-item list holding the number of writes so far. The writer is
-    running (at least a few writes in) when the block starts; it is cancelled
-    and awaited on the way out, and a writer that died early fails the test.
-
-    On 2.7.0, concurrent writes to different ``CHANGEFEED`` tables of one
-    database now and then end in a conflict the server reports as retryable
-    ("This transaction can be retried"). The writer retries those, as a client
-    should, up to ``_MAX_WRITE_CONFLICTS`` in a row; any other error, or a
-    conflict that persists, still stops it and fails the test.
+    Yields a one-item list holding the number of successful writes so far. The
+    writer is running (``_WARM_UP_WRITES`` writes in) when the block starts.
+    After the block, at least one more write must land within
+    ``progress_timeout`` seconds: the feed kept moving while the block read it,
+    however long the read took. The writer is then cancelled and awaited; a
+    writer that died fails the test with its own error.
     """
     written = [0]
+    writer_client = client if client is not None else await _client()
+    task = asyncio.create_task(_write_other_table(writer_client, written))
 
-    async def writer() -> None:
-        await _write_other_table(await _client(), written)
+    async def reached(target: int) -> None:
+        while written[0] < target:
+            if task.done():
+                # Raise the writer's own error rather than a bare "stopped".
+                task.result()
+            assert not task.done(), task
+            await asyncio.sleep(0.01)
 
-    task = asyncio.create_task(writer())
     try:
-
-        async def warmed_up() -> None:
-            while written[0] < 5:
-                if task.done():
-                    # Raise the writer's own error rather than a bare "stopped".
-                    task.result()
-                assert not task.done(), task
-                await asyncio.sleep(0.01)
-
-        await asyncio.wait_for(warmed_up(), START_TIMEOUT)
+        await asyncio.wait_for(reached(_WARM_UP_WRITES), START_TIMEOUT)
+        start = written[0]
         yield written
-        if task.done():
-            task.result()
-        assert not task.done(), "the background writer stopped before the reads ended"
+        try:
+            await asyncio.wait_for(reached(start + 1), progress_timeout)
+        except TimeoutError:
+            raise AssertionError(
+                f"no write landed on i308_other within {progress_timeout}s of the block (stuck at {written[0]})"
+            ) from None
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -356,18 +393,16 @@ class TestBusyFeed:
 
     async def test_get_changes_since_zero_returns_while_another_table_is_written(self) -> None:
         await _write("CREATE i308_items:one SET name = 'one';")
-        async with _busy_other_table() as written:
+        async with _busy_other_table():
             feed = ChangeFeedStream(await _client(), "i308_items")
             # A limit no read reaches, so only the end of the feed stops it.
             entries = await asyncio.wait_for(feed.get_changes(since=0, limit=1_000_000), START_TIMEOUT)
-            during = written[0]
-        assert during > 5
         assert _updated_ids(entries)[-1] == "i308_items:one"
         assert all(not record.startswith("i308_other:") for record in _updated_ids(entries))
 
     async def test_default_start_stream_delivers_its_first_change_while_another_table_is_written(self) -> None:
         await _write("CREATE i308_items:old SET name = 'old';")
-        async with _busy_other_table() as written:
+        async with _busy_other_table():
             feed = ChangeFeedStream(await _client(), "i308_items", poll_interval=0.05)
             stream = feed.stream()
             first = asyncio.ensure_future(asyncio.wait_for(anext(stream), START_TIMEOUT))
@@ -379,8 +414,6 @@ class TestBusyFeed:
                 first.cancel()
                 await asyncio.gather(first, return_exceptions=True)
                 await stream.aclose()  # type: ignore[attr-defined]
-            during = written[0]
-        assert during > 5
         assert _updated_ids([entry]) == ["i308_items:new"]
 
 
@@ -436,3 +469,77 @@ class TestBusyFeedWriter:
         # The success resets the count: the cap is three conflicts in a row.
         assert len(client.queries) == 5
         assert client.responses == []
+
+
+_PARTIAL_CONFLICT = _FakeResponse(
+    [
+        {"status": "OK", "result": [{"id": "i308_items:a"}]},
+        {"status": "ERR", "result": "Transaction conflict: Resource busy. This transaction can be retried"},
+    ],
+    ok=False,
+)
+
+
+class TestWriteRetry:
+    """``_write()``, the tests' own writes, against a fake client."""
+
+    async def test_retries_a_retryable_conflict_then_succeeds(self) -> None:
+        client = _FakeClient([_CONFLICT, _CONFLICT, _OK])
+        await _write("CREATE i308_items:new SET name = 'new';", client=client, backoff=0)
+        assert client.queries == ["CREATE i308_items:new SET name = 'new';"] * 3
+        assert client.responses == []
+
+    async def test_fails_on_another_error_without_retrying(self) -> None:
+        client = _FakeClient([_OTHER_ERROR, _OK])
+        with pytest.raises(AssertionError, match="already exists"):
+            await _write("CREATE i308_items:new;", client=client, backoff=0)
+        assert len(client.queries) == 1
+
+    async def test_fails_when_conflicts_in_a_row_reach_the_cap(self) -> None:
+        client = _FakeClient([_CONFLICT, _CONFLICT, _CONFLICT, _OK])
+        with pytest.raises(AssertionError, match="can be retried"):
+            await _write("CREATE i308_items:new;", client=client, max_conflicts=3, backoff=0)
+        assert len(client.queries) == 3
+
+    async def test_does_not_replay_a_query_whose_earlier_statement_was_applied(self) -> None:
+        """Re-sending would run the applied ``CREATE`` again, so the conflict fails at once."""
+        client = _FakeClient([_PARTIAL_CONFLICT, _OK])
+        with pytest.raises(AssertionError, match="can be retried"):
+            await _write("CREATE i308_items:a; CREATE i308_items:b;", client=client, backoff=0)
+        assert len(client.queries) == 1
+
+
+class _AlwaysOkClient:
+    """Answers every query with success after ``delay`` seconds; hangs for good once ``stall_after`` is reached."""
+
+    def __init__(self, *, delay: float = 0.001, stall_after: int | None = None) -> None:
+        self.delay = delay
+        self.stall_after = stall_after
+        self.count = 0
+
+    async def query(self, sql: str) -> _FakeResponse:
+        if self.stall_after is not None and self.count >= self.stall_after:
+            await asyncio.Event().wait()
+        self.count += 1
+        await asyncio.sleep(self.delay)
+        return _OK
+
+
+class TestBusyOtherTableProgress:
+    """The progress check of ``_busy_other_table()`` does not depend on how long the block takes."""
+
+    async def test_a_block_shorter_than_one_write_still_passes(self) -> None:
+        async with _busy_other_table(client=_AlwaysOkClient(delay=0.05)) as written:
+            start = written[0]
+        assert written[0] > start
+
+    async def test_no_write_after_the_yield_fails_within_the_bound(self) -> None:
+        with pytest.raises(AssertionError, match="no write landed"):
+            async with _busy_other_table(client=_AlwaysOkClient(stall_after=5), progress_timeout=0.2):
+                pass
+
+    async def test_a_writer_that_died_fails_with_its_own_error(self) -> None:
+        client = _FakeClient([_OK] * 5 + [_OTHER_ERROR])
+        with pytest.raises(AssertionError, match="already exists"):
+            async with _busy_other_table(client=client, progress_timeout=1.0):
+                await asyncio.sleep(0.05)
