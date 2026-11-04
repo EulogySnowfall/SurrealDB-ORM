@@ -47,6 +47,19 @@ _REGEX_AFTER = frozenset("=([{,:!<>+-|&?")
 # open a pattern (``ASSERT /x/``), while ``$value/2`` divides.
 _FIELD_EXPRESSION_KEYWORD_END = re.compile(r"(?:^|(?<=\s))(?:ASSERT|VALUE|DEFAULT)\Z", re.IGNORECASE)
 
+# A word operator, or a keyword that a value follows, at the end of the text
+# before a ``/``: an operand is expected there too, so the ``/`` can only open
+# a pattern (``$value CONTAINS /x/``). SurrealDB 2.7.0 accepts a pattern after
+# each of these. The word must start the text or follow whitespace, so a name
+# that ends in one (``$value.in``, ``x_in``) stays an operand on the left.
+_WORD_OPERATOR_END = re.compile(
+    r"(?:^|(?<=\s))(?:"
+    r"CONTAINS(?:NOT|ALL|ANY|NONE)?|(?:NOT|ALL|ANY|NONE)?INSIDE|OUTSIDE|INTERSECTS"
+    r"|(?:NOT\s+)?IN|IS(?:\s+NOT)?|AND|OR|THEN|ELSE|RETURN"
+    r")\Z",
+    re.IGNORECASE,
+)
+
 # The four actions a table PERMISSIONS clause can govern, in the order
 # SurrealDB reports them.
 _PERMISSION_ACTIONS = ("select", "create", "update", "delete")
@@ -340,12 +353,19 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool, int]:
 def _operand_expected_at(text: str, i: int) -> bool:
     """Whether the ``/`` at *i* sits where an operand is expected.
 
-    It does after an operator or an opening bracket (:data:`_REGEX_AFTER`),
-    at the start of *text*, and after a clause keyword that takes an
-    expression (:data:`_FIELD_EXPRESSION_KEYWORD_END`) followed by whitespace.
-    Anything else — a name, a number, a closing bracket or quote — is an
-    operand on its left, so the ``/`` can be a division written without
-    spaces (``$value/2``, ``1/2``), which SurrealDB accepts.
+    It does after a symbol operator or an opening bracket
+    (:data:`_REGEX_AFTER`), at the start of *text*, and, followed by
+    whitespace, after a clause keyword that takes an expression
+    (:data:`_FIELD_EXPRESSION_KEYWORD_END`) or a word operator such as
+    ``CONTAINS``, ``IN``, ``NOT IN``, ``INSIDE``, ``AND``, ``OR``, ``THEN``
+    or ``RETURN`` (:data:`_WORD_OPERATOR_END`). Anything else — a name, a
+    number, a closing bracket or quote — is an operand on its left, so the
+    ``/`` can be a division written without spaces (``$value/2``, ``1/2``),
+    which SurrealDB accepts. A word written with no whitespace before the
+    ``/`` (``$value CONTAINS/2``), or one that only ends a longer name
+    (``$value.in``, ``x_in``), is read as such an operand. A field written
+    bare with an operator's name (``in`` on a relation table) before an
+    unspaced ``/`` is read as the operator.
 
     Args:
         text: The text being scanned
@@ -358,7 +378,9 @@ def _operand_expected_at(text: str, i: int) -> bool:
     stripped = before.rstrip()
     if not stripped or stripped[-1] in _REGEX_AFTER:
         return True
-    return len(stripped) < len(before) and _FIELD_EXPRESSION_KEYWORD_END.search(stripped) is not None
+    if len(stripped) == len(before):
+        return False
+    return _FIELD_EXPRESSION_KEYWORD_END.search(stripped) is not None or _WORD_OPERATOR_END.search(stripped) is not None
 
 
 def _split_field_permissions(body: str) -> tuple[str, str]:
@@ -383,10 +405,12 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     whose opening ``/`` is followed by a non-space character, which cannot be
     a division: in ``ASSERT $value = /x PERMISSIONS FULL / y/`` the
     remainder pairs ``/ y/`` as a division and looks balanced (#517). That
-    opener is trusted only where an operand is expected (after an operator,
-    an opening bracket or ``ASSERT``/``VALUE``/``DEFAULT``): with an operand
-    on its left, as in ``$value/2`` or ``1/2``, it is a division written
-    without spaces. It is also trusted only when it is the first ``/`` of the
+    opener is trusted only where an operand is expected (after a symbol
+    operator, an opening bracket, ``ASSERT``/``VALUE``/``DEFAULT`` or a word
+    operator such as ``CONTAINS``, ``IN`` or ``AND``, as in ``ASSERT $value
+    CONTAINS /x PERMISSIONS FULL / y/``, #558): with an operand on its
+    left, as in ``$value/2`` or ``1/2``, it is a division written without
+    spaces. It is also trusted only when it is the first ``/`` of the
     text before the start, whether an earlier one was read as a division, as
     a stray closer or as part of a consumed pattern, since any such ``/`` can
     belong to a misread pattern: in the server's ``ASSERT ($value CONTAINS /
@@ -396,7 +420,8 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     a+/)`` the unspaced division is consumed as a pattern up to the ``/``
     before ``a+``. A pattern opening with a space is not trusted
     either, because the scan can misread one (``ASSERT / +/``, below), so
-    ``= / x PERMISSIONS FULL / y/`` remains a known limit. A body with no
+    ``= / x PERMISSIONS FULL / y/`` and ``CONTAINS / x PERMISSIONS FULL /
+    y/`` remain a known limit, whatever operator comes before. A body with no
     start left has no clause.
 
     The scan ending balanced is not enough to rule the candidates out: a
