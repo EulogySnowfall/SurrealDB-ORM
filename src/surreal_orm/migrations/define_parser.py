@@ -275,16 +275,18 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool, int]:
         (-1 when none was found or none was looked for), whether the text
         ends with no quote, pattern or bracket left open and no pattern end
         without its start, and the index of the ``/`` opening a pattern that
-        never closes (-1 when there is none, or when an earlier `` / `` read
-        as a division is still unmatched: that division can be a misread
-        pattern start, as in ``ASSERT ($value CONTAINS / a+/)``, which makes
-        the later ``/`` its end rather than an opener)
+        never closes (-1 when there is none, or when any earlier ``/`` was
+        read as a division or a stray closer: that ``/`` can belong to a
+        misread pattern, as in ``ASSERT ($value CONTAINS / a+/)`` or
+        ``/ a\\/ b/``, which makes the later ``/`` its end rather than an
+        opener)
     """
     depth = 0
     quote: str | None = None
     escaped = False
     stray = False
     divisions = 0
+    seen_slash = False
     previous = ""
     i = 0
     while i < len(text):
@@ -302,11 +304,12 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool, int]:
         if ch == "/" and _opens_regex_literal(text, i, previous):
             end = _regex_literal_end(text, i)
             if end == -1:
-                return -1, False, (i if divisions == 0 else -1)
+                return -1, False, (i if not seen_slash else -1)
             previous = "/"
             i = end
             continue
         if ch == "/":
+            seen_slash = True
             if i > 0 and text[i - 1].isspace() and text[i + 1 :].strip():
                 divisions += 1
             elif divisions:
@@ -349,13 +352,14 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     whose opening ``/`` is followed by a non-space character, which cannot be
     a division: in ``ASSERT $value = /x PERMISSIONS FULL / y/`` the
     remainder pairs ``/ y/`` as a division and looks balanced (#517). That
-    opener is trusted only when no earlier unmatched `` / `` read as a
-    division could be a misread pattern start: in the server's
-    ``ASSERT ($value CONTAINS / a+/) PERMISSIONS FOR ...`` the ``/`` after
-    ``a+`` closes ``/ a+/`` and opens nothing. A pattern opening with a
-    space is not trusted either, because the scan can misread one
-    (``ASSERT / +/``, below), so ``= / x PERMISSIONS FULL / y/`` remains a
-    known limit. A body with no start left has no clause.
+    opener is trusted only when no earlier ``/`` was read as a division or
+    a stray closer, since any such ``/`` can belong to a misread pattern: in
+    the server's ``ASSERT ($value CONTAINS / a+/) PERMISSIONS FOR ...`` the
+    ``/`` after ``a+`` closes ``/ a+/`` and opens nothing, and in
+    ``/ a\\/ b/`` the escaped slash brings the division count back to zero
+    before the closing ``/``. A pattern opening with a space is not trusted
+    either, because the scan can misread one (``ASSERT / +/``, below), so
+    ``= / x PERMISSIONS FULL / y/`` remains a known limit. A body with no start left has no clause.
 
     The scan ending balanced is not enough to rule the candidates out: a
     pattern starting with a space after a keyword (``ASSERT / +/``) is read

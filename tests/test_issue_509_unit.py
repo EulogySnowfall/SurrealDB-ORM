@@ -131,6 +131,25 @@ class TestI517SpacedSlashInPattern:
         assert result.assertion == "($value CONTAINS / a+/)"
         assert result.permissions == {"select": "$auth.x = 1"}
 
+    def test_server_output_with_an_escaped_slash_in_a_space_opened_pattern_keeps_its_clause(self) -> None:
+        """Exact SurrealDB 2.7.0 output: ``\\/`` cancels the misread division, the later ``/`` still opens nothing."""
+        result = parse_define_field(
+            "DEFINE FIELD a ON r517po TYPE string ASSERT ($value CONTAINS / a\\/ b/) "
+            "PERMISSIONS FOR select WHERE $auth.x = 1, FOR create, update FULL"
+        )
+
+        assert result.assertion == "($value CONTAINS / a\\/ b/)"
+        assert result.permissions == {"select": "$auth.x = 1"}
+
+    def test_server_output_with_an_escaped_slash_after_a_match_operator_keeps_its_clause(self) -> None:
+        result = parse_define_field(
+            "DEFINE FIELD a ON r517po TYPE string ASSERT ($value ~ / a\\/ b/) "
+            "PERMISSIONS FOR select NONE, FOR create, update FULL"
+        )
+
+        assert result.assertion == "($value ~ / a\\/ b/)"
+        assert result.permissions == {"select": "NONE"}
+
     @pytest.mark.xfail(
         strict=True,
         reason="Known limit: a pattern opening with a space is not trusted before a candidate start (ASSERT / +/)",
