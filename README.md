@@ -51,6 +51,25 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.47
+
+**Bug fix release (V2 LTS).** One `v2` fix (#494); pin unchanged (2.7.0).
+
+- **`AliasChoices` / `AliasPath` aliases and annotations.** A KNN/search result key that matches one of the names a
+  field reads through an `AliasChoices` or `AliasPath` validation alias now fills that field, instead of being
+  stripped from the row and attached to the instance as an extra attribute. Plain string aliases behave as before.
+  See the [CHANGELOG](CHANGELOG).
+
+## What's New in 0.21.46
+
+**Bug fix release (V2 LTS).** One `v2` fix (#412); pin unchanged (2.7.0).
+
+- **Generated migrations with a block `DEFAULT` import again.** A migration, or an `inspectdb` /
+  `generate_models_from_db()` models file, generated from a field whose server-reported `DEFAULT` is a block expression
+  that `SurrealFunc()` refuses now writes it as `_surreal_func_from_server('...')`; it used to write
+  `SurrealFunc('...')`, which raised `ValueError` on import. Files generated before the fix must be regenerated or
+  edited. `escape_single_quotes()` is deprecated in favour of `surql_string_literal()`. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.45
 
 **Bug fix release (V2 LTS).** One `v2` fix (#438); pin unchanged (2.7.0).
@@ -187,9 +206,10 @@ unchanged (2.7.0).
   fails is closed instead of being reused.
 - **`set_credentials()`** closes an idle connection that cannot sign in with the new credentials, and a token minted
   for replaced credentials is never put back.
-- **Behaviour change:** a release can send one or two extra RPCs (WebSocket: `invalidate` then `authenticate`; HTTP:
-  a `signin` only when the pool has no token for the current credentials), and a request of the previous holder
-  rejected with 401 after the release raises `QueryError` instead of being retried. See the [CHANGELOG](CHANGELOG).
+- **Behaviour change:** a release can send extra RPCs (HTTP: none, or one `signin` when the pool has no
+  token for the current credentials; WebSocket: `invalidate` then `authenticate`, plus a `signin` if the server
+  refuses the token), and a request of the previous holder rejected with 401 after the release raises `QueryError`
+  instead of being retried. See the [CHANGELOG](CHANGELOG).
 
 ## What's New in 0.21.33
 

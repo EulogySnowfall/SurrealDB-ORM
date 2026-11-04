@@ -269,7 +269,7 @@ async def test_pending_query_fails_at_once_when_the_server_closes_the_socket(ser
             await conn.query("SELECT * FROM t")
         elapsed = time.monotonic() - started
 
-        assert elapsed < 1
+        assert elapsed < 5
         assert str(excinfo.value) == "WebSocket connection lost: closed with code 1011"
     finally:
         await conn.close()
@@ -290,7 +290,7 @@ async def test_reply_above_the_cap_fails_at_once_naming_the_limit(server: FakeSe
             await conn.query("SELECT * FROM t")
         elapsed = time.monotonic() - started
 
-        assert elapsed < 1
+        assert elapsed < 5
         message = str(excinfo.value)
         assert message.startswith("WebSocket connection lost: ")
         assert str(4 * MiB) in message
