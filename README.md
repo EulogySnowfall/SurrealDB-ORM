@@ -51,6 +51,16 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.48
+
+**End-of-maintenance notice release (V2 LTS).** No functional change (#473); pin unchanged (2.7.0).
+
+- **The `v2` line stops at SurrealDB-ORM 0.39.0.** The README, `SECURITY.md` and the `DeprecationWarning` shown on
+  `import surreal_orm` now say 0.21.x is no longer maintained once SurrealDB-ORM 0.39.0 is released: no further
+  security or bug fixes after that. SurrealDB 2.x users should move to
+  [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite). Only the warning's text changes, not
+  its category. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.47
 
 **Bug fix release (V2 LTS).** One `v2` fix (#494); pin unchanged (2.7.0).
