@@ -225,7 +225,9 @@ class ModelCodeGenerator:
             if isinstance(field.default, SurrealFunc):
                 # A default read back from the server repr()s as the helper
                 # that built it (the constructor may refuse it), so the
-                # generated module imports that helper instead.
+                # generated module imports that helper instead. The written
+                # import path is a stability contract: see the helper's
+                # docstring in surreal_orm/surreal_function.py.
                 if _is_from_server(field.default):
                     extra_imports.add("from surreal_orm.surreal_function import _surreal_func_from_server")
                 else:
