@@ -101,3 +101,32 @@ class TestI509RegexLiteral:
 
         assert result.assertion == "/ it's/ = $value"
         assert result.permissions == {"select": "/ x/ = name"}
+
+
+class TestI517SpacedSlashInPattern:
+    """#517: a pattern holding a spaced slash still keeps a PERMISSIONS start inside it."""
+
+    def test_a_spaced_slash_does_not_close_the_pattern_early(self) -> None:
+        """``/ y/`` pairs as a division in the remainder; the text before the start is still inside ``/x``."""
+        result = parse_define_field("DEFINE FIELD a ON t TYPE string ASSERT $value = /x PERMISSIONS FULL / y/")
+
+        assert result.assertion == "$value = /x PERMISSIONS FULL / y/"
+        assert result.permissions == {}
+
+    def test_a_real_clause_after_such_a_pattern_is_still_found(self) -> None:
+        result = parse_define_field(
+            "DEFINE FIELD a ON t TYPE string ASSERT $value = /x PERMISSIONS FULL / y/ PERMISSIONS FOR select NONE"
+        )
+
+        assert result.assertion == "$value = /x PERMISSIONS FULL / y/"
+        assert result.permissions == {"select": "NONE"}
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="Known limit: a pattern opening with a space is not trusted before a candidate start (ASSERT / +/)",
+    )
+    def test_a_pattern_opening_with_a_space_is_a_known_limit(self) -> None:
+        result = parse_define_field("DEFINE FIELD a ON t TYPE string ASSERT $value = / x PERMISSIONS FULL / y/")
+
+        assert result.assertion == "$value = / x PERMISSIONS FULL / y/"
+        assert result.permissions == {}

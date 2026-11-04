@@ -248,7 +248,7 @@ def _regex_literal_end(text: str, start: int) -> int:
     return -1
 
 
-def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
+def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool, int]:
     """Scan a DEFINE FIELD body (or part of one) token by token.
 
     Quotes (``'``, ``"`` and backticks, with backslash escapes), regex
@@ -271,10 +271,11 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
             any quote, pattern or bracket
 
     Returns:
-        ``(index, balanced)``: the index of that clause start (-1 when none
-        was found or none was looked for), and whether the text ends with no
-        quote, pattern or bracket left open and no pattern end without its
-        start
+        ``(index, balanced, open_pattern)``: the index of that clause start
+        (-1 when none was found or none was looked for), whether the text
+        ends with no quote, pattern or bracket left open and no pattern end
+        without its start, and the index of the ``/`` opening a pattern that
+        never closes (-1 when there is none)
     """
     depth = 0
     quote: str | None = None
@@ -298,7 +299,7 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
         if ch == "/" and _opens_regex_literal(text, i, previous):
             end = _regex_literal_end(text, i)
             if end == -1:
-                return -1, False
+                return -1, False, i
             previous = "/"
             i = end
             continue
@@ -316,11 +317,11 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
         elif ch in ")]}":
             depth -= 1
         elif find_clause and depth == 0 and ch in "Pp" and _FIELD_PERMISSIONS_START.match(text, i):
-            return i, True
+            return i, True, -1
         if not ch.isspace():
             previous = ch
         i += 1
-    return -1, quote is None and depth == 0 and not stray
+    return -1, quote is None and depth == 0 and not stray, -1
 
 
 def _split_field_permissions(body: str) -> tuple[str, str]:
@@ -341,7 +342,13 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     (``DEFAULT 'x PERMISSIONS FULL'``) leaves the quote open and is skipped
     (#287), and one inside a regex literal (``ASSERT $value = / PERMISSIONS
     FULL/``) leaves the pattern's closing ``/`` without its start (#509).
-    A body with no start left has no clause.
+    A start is also skipped when the text before it ends inside a pattern
+    whose opening ``/`` is followed by a non-space character, which cannot be
+    a division: in ``ASSERT $value = /x PERMISSIONS FULL / y/`` the
+    remainder pairs ``/ y/`` as a division and looks balanced (#517). A
+    pattern opening with a space is not trusted there, because the scan can
+    misread one (``ASSERT / +/``, below), so ``= / x PERMISSIONS FULL / y/``
+    remains a known limit. A body with no start left has no clause.
 
     The scan ending balanced is not enough to rule the candidates out: a
     pattern starting with a space after a keyword (``ASSERT / +/``) is read
@@ -355,12 +362,15 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
         ``(definition, permissions)``: the body before the clause, and the
         clause after its ``PERMISSIONS`` keyword (empty when there is none)
     """
-    index, _ = _scan_field_body(body, find_clause=True)
+    index, _, _ = _scan_field_body(body, find_clause=True)
     if index != -1:
         return body[:index], body[index + len("PERMISSIONS") :].strip()
 
     starts = [m.start() for m in _FIELD_PERMISSIONS_START.finditer(body)]
     for start in reversed(starts):
+        opener = _scan_field_body(body[:start], find_clause=False)[2]
+        if opener != -1 and not body[opener + 1].isspace():
+            continue
         remainder = body[start + len("PERMISSIONS") :]
         if _scan_field_body(remainder, find_clause=False)[1]:
             return body[:start], remainder.strip()
