@@ -6,6 +6,75 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.49] - 2026-11-03
+
+**Bug fix release (V2 LTS).** One `v2` fix from the 0.21.43 review
+follow-ups (#528, #548): a `WebSocketConnection` request that waits for a
+reconnect to restore the session gets an error message that names why it
+could not be served. Also a test follow-up (#500, #546) and documentation
+corrections. The SurrealDB pin is unchanged (tested against 2.7.0,
+supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`WebSocketConnection` names the cause when a request waiting for the
+  session cannot be served.** `close()` during the wait raises
+  `ConnectionError("WebSocket connection closed while waiting for the
+  session to be restored")`; a reconnect that gave up raises
+  `ConnectionError("WebSocket connection lost: reconnect gave up after N
+  attempts")`. Before, both raised `"Not connected. Call connect() first."`,
+  which reads as a usage error (#528).
+
+### Behaviour change
+
+- Only the `ConnectionError` message changes, in those two cases. The
+  exception type and the control flow are the same, and a request made
+  before `connect()` or after `close()` keeps
+  `"Not connected. Call connect() first."`.
+
+### Known limitations
+
+- A reconnect that gave up keeps its finished task until the connection is
+  cleaned up. If a later `connect()` then fails with an error other than
+  `aiohttp.ClientError` (for example `asyncio.TimeoutError` or `OSError`),
+  the next requests report "reconnect gave up after N attempts" for what was
+  a failed `connect()`. The exception type is still `ConnectionError`.
+
+### Documentation
+
+- The `save(tx=)` known limitation over HTTP (#251) applies to an
+  already-saved record whose data holds no `SurrealFunc`, no object
+  containing an object or array, and no array of objects; the earlier text
+  said "no nested object/array". Corrected in the README, `CLAUDE.md`, and
+  the [0.21.13] and [0.21.43] entries of this file (#528).
+- The CBOR tag-12 hook comment lists every exception it guards:
+  `ValueError`, `OverflowError` or `OSError` (#528).
+
+### Tests
+
+- `tests/sdk/test_issue_518_v2_unit.py` covers both new messages and the
+  unchanged one; the `bulk_update()` alias test asserts the column written
+  (`SET editor_id = $_bu0`) (#528).
+- The #486 annotation tests check that reassigning a bad
+  `SearchScore`/`SearchHighlight` `ref`, aggregation field, or
+  `GeoDistance` field/point raises at the assignment itself and leaves the
+  rendered output unchanged (#500, #546).
+
+### Migration notes
+
+- None. Code that matches the old message text for these two cases should
+  match the new text, or catch `ConnectionError` by type.
+
+### Verification
+
+Against SurrealDB 2.7.0, on #548's validated head: 3,899 unit tests on each
+of Python 3.12, 3.13 and 3.14, and 819 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The new and touched tests passed three
+times in a row.
+
+---
+
 ## [0.21.48] - 2026-11-03
 
 **End-of-maintenance notice release (V2 LTS).** No functional change: the
@@ -297,8 +366,8 @@ supported range 2.6.x – 2.7.x).
   record ID into the query text only inside an HTTP transaction, #326),
   [0.21.15] Verification wording (#265), and [0.21.13] (the `tx_1` positions
   and the #251 known limitation, which covers only `save(tx=)` of an
-  already-saved record whose data holds no `SurrealFunc` and no nested
-  object/array, #252). The README carries the #326 and #252 corrections,
+  already-saved record whose data holds no `SurrealFunc`, no object
+  containing an object or array, and no array of objects, #252). The README carries the #326 and #252 corrections,
   `CLAUDE.md` the #252 one.
 - The CBOR tag-hook comment and test docstring say that, with cbor2 5.x
   (the `v2` pin), an exception from the tag hook propagates out of
@@ -2185,8 +2254,9 @@ does not read as an object. With two or more fields the commit fails with a
 parse error; with one field `commit()` returns without an error, but the
 server rolls the whole transaction back, its other statements included. That
 covers `update(tx=)`, `merge(tx=)` without a `SurrealFunc`, and `save(tx=)` of
-an already-saved record whose data holds no `SurrealFunc` and no nested
-object/array, on an HTTP connection. WebSocket transactions are not affected.
+an already-saved record whose data holds no `SurrealFunc`, no object
+containing an object or array, and no array of objects, on an HTTP
+connection. WebSocket transactions are not affected.
 
 ### Verification
 
