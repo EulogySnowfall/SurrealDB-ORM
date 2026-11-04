@@ -324,17 +324,19 @@ async def _write_other_table(
     client: Any,
     written: list[int],
     *,
+    stop: asyncio.Event | None = None,
     max_conflicts: int = _MAX_WRITE_CONFLICTS,
     backoff: float = 0.01,
 ) -> None:
-    """Create ``i308_other:w<n>`` records one after another until cancelled.
+    """Create ``i308_other:w<n>`` records one after another until ``stop`` is set.
 
     ``written[0]`` counts the successful writes only. A write rejected with the
     server's retryable-conflict sentence is retried with the same id (see
     ``_query_retrying()``); a persistent conflict or any other error fails with
-    the raw response.
+    the raw response. ``stop`` is checked between writes, so a write in flight
+    always completes.
     """
-    while True:
+    while stop is None or not stop.is_set():
         await _query_retrying(
             client, f"CREATE i308_other:w{written[0]} SET i = {written[0]};", max_conflicts=max_conflicts, backoff=backoff
         )
@@ -346,19 +348,32 @@ _WARM_UP_WRITES = 5
 
 
 @asynccontextmanager
-async def _busy_other_table(*, client: Any = None, progress_timeout: float = EVENT_TIMEOUT) -> AsyncIterator[list[int]]:
+async def _busy_other_table(
+    *,
+    client: Any = None,
+    progress_timeout: float = EVENT_TIMEOUT,
+    stop_timeout: float = EVENT_TIMEOUT,
+) -> AsyncIterator[list[int]]:
     """Keep writing to ``i308_other`` in the background while the block runs.
 
     Yields a one-item list holding the number of successful writes so far. The
     writer is running (``_WARM_UP_WRITES`` writes in) when the block starts.
     After the block, at least one more write must land within
     ``progress_timeout`` seconds: the feed kept moving while the block read it,
-    however long the read took. The writer is then cancelled and awaited; a
-    writer that died fails the test with its own error.
+    however long the read took. A writer that died fails the test with its own
+    error.
+
+    The writer is then stopped between two writes and awaited for at most
+    ``stop_timeout`` seconds, never cancelled: a cancellation that lands while
+    httpx is inside a request (its shielded response close) can be lost, and
+    awaiting the cancelled task then never ends; the full suite hung that way
+    on 2.7.0. Only a writer that does not stop in time is cancelled, without
+    waiting for it, after the test has already failed.
     """
     written = [0]
+    stop = asyncio.Event()
     writer_client = client if client is not None else await _client()
-    task = asyncio.create_task(_write_other_table(writer_client, written))
+    task = asyncio.create_task(_write_other_table(writer_client, written, stop=stop))
 
     async def reached(target: int) -> None:
         while written[0] < target:
@@ -368,6 +383,7 @@ async def _busy_other_table(*, client: Any = None, progress_timeout: float = EVE
             assert not task.done(), task
             await asyncio.sleep(0.01)
 
+    failed = False
     try:
         await asyncio.wait_for(reached(_WARM_UP_WRITES), START_TIMEOUT)
         start = written[0]
@@ -378,9 +394,21 @@ async def _busy_other_table(*, client: Any = None, progress_timeout: float = EVE
             raise AssertionError(
                 f"no write landed on i308_other within {progress_timeout}s of the block (stuck at {written[0]})"
             ) from None
+    except BaseException:
+        failed = True
+        raise
     finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        stop.set()
+        done, _ = await asyncio.wait({task}, timeout=stop_timeout)
+        if not done:
+            task.cancel()
+            if not failed:
+                raise AssertionError(f"the background writer did not stop within {stop_timeout}s")
+        elif not task.cancelled():
+            # Retrieved in every case; raised only when nothing else failed first.
+            error = task.exception()
+            if error is not None and not failed:
+                raise error
 
 
 class TestBusyFeed:
@@ -510,18 +538,43 @@ class TestWriteRetry:
 
 
 class _AlwaysOkClient:
-    """Answers every query with success after ``delay`` seconds; hangs for good once ``stall_after`` is reached."""
+    """Answers every query with success after ``delay`` seconds.
+
+    A query hangs for good once ``stall_after`` queries were answered, or
+    once ``stall`` is set.
+    """
 
     def __init__(self, *, delay: float = 0.001, stall_after: int | None = None) -> None:
         self.delay = delay
         self.stall_after = stall_after
+        self.stall = False
+        self.hanging = False
         self.count = 0
 
     async def query(self, sql: str) -> _FakeResponse:
-        if self.stall_after is not None and self.count >= self.stall_after:
+        if self.stall or (self.stall_after is not None and self.count >= self.stall_after):
+            self.hanging = True
             await asyncio.Event().wait()
         self.count += 1
         await asyncio.sleep(self.delay)
+        return _OK
+
+
+class _RecordingClient:
+    """Answers every query with success after ``delay`` seconds and counts the queries cancelled in flight."""
+
+    def __init__(self, *, delay: float) -> None:
+        self.delay = delay
+        self.started = self.finished = self.cancelled = 0
+
+    async def query(self, sql: str) -> _FakeResponse:
+        self.started += 1
+        try:
+            await asyncio.sleep(self.delay)
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        self.finished += 1
         return _OK
 
 
@@ -535,8 +588,27 @@ class TestBusyOtherTableProgress:
 
     async def test_no_write_after_the_yield_fails_within_the_bound(self) -> None:
         with pytest.raises(AssertionError, match="no write landed"):
-            async with _busy_other_table(client=_AlwaysOkClient(stall_after=5), progress_timeout=0.2):
+            async with _busy_other_table(client=_AlwaysOkClient(stall_after=5), progress_timeout=0.2, stop_timeout=0.2):
                 pass
+
+    async def test_the_writer_is_stopped_between_requests_never_cancelled_in_one(self) -> None:
+        """Cancelling a task inside an httpx request can be lost (the task then never ends), so the writer is not cancelled."""
+        client = _RecordingClient(delay=0.02)
+        async with _busy_other_table(client=client):
+            pass
+        assert client.cancelled == 0
+        assert client.started == client.finished
+
+    async def test_a_writer_that_does_not_stop_fails_within_the_bound(self) -> None:
+        client = _AlwaysOkClient()
+        with pytest.raises(AssertionError, match="did not stop"):
+            async with _busy_other_table(client=client, stop_timeout=0.2) as written:
+                start = written[0]
+                while written[0] <= start:
+                    await asyncio.sleep(0.01)
+                client.stall = True
+                while not client.hanging:
+                    await asyncio.sleep(0.01)
 
     async def test_a_writer_that_died_fails_with_its_own_error(self) -> None:
         client = _FakeClient([_OK] * 5 + [_OTHER_ERROR])
