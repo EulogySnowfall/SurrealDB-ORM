@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.50)
+> Context document for Claude AI - Last updated: November 2026 (0.21.51)
 
 <!-- -->
 
@@ -20,12 +20,26 @@
 
 ---
 
-## Current Version: 0.21.50 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.51 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.51
+
+One fix, `v2` only: #517 via #554 (`surreal_orm/migrations/define_parser.py`), the 0.21.42 review follow-up. Pin
+unchanged (2.7.0). Also the #555 documentation correction.
+
+- **A slash can open a pattern or divide.** `_scan_field_body()` also returns the index of a `/` that opens a pattern
+  which never closes, but only when no earlier `/` was seen (as a division, a stray closer or part of a consumed
+  pattern). `_split_field_permissions()` skips a `PERMISSIONS` start that falls inside such a pattern when its opener is
+  followed by a non-space character and sits where an operand is expected (after an operator or an opening bracket, at
+  the start of the body, or after `ASSERT`/`VALUE`/`DEFAULT`); with an operand on its left (`$value/2`) the candidate is
+  tried as before.
+- **Open:** a pattern starting with a space (`/ x PERMISSIONS FULL / y/`, strict `xfail`) and a pattern after a word
+  operator (`CONTAINS`, `IN`, `INSIDE`; review suggestion on #554) are still split. Hand-written statements only.
 
 ### What's New in 0.21.50
 

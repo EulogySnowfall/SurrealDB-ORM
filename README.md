@@ -51,6 +51,15 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.51
+
+**Bug fix release (V2 LTS).** One `v2` fix (#517); pin unchanged (2.7.0).
+
+- **A `PERMISSIONS` keyword inside a regex literal no longer ends a field's expression.** `parse_define_field()` keeps
+  the whole `ASSERT`/`VALUE`/`DEFAULT` of a hand-written `DEFINE FIELD` whose pattern holds a slash followed by a
+  space, such as `ASSERT $value = /x PERMISSIONS FULL / y/`, instead of reading the rest of the pattern as
+  permissions. Statements reported by the server parse as before. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.50
 
 **Bug fix release (V2 LTS).** One `v2` fix (#534); pin unchanged (2.7.0).
