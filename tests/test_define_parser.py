@@ -698,6 +698,12 @@ class TestQuotesAndRegexLiterals:
         assert result.assertion == '$value != "it\'s"'
         assert result.comment == "x"
 
+    def test_backtick_identifier_with_apostrophe(self) -> None:
+        result = parse_define_field("DEFINE FIELD b ON pq TYPE object ASSERT $value.`it's` = 1 COMMENT 'x' PERMISSIONS FULL")
+        assert result.field_type == "object"
+        assert result.assertion == "$value.`it's` = 1"
+        assert result.comment == "x"
+
     def test_regex_with_apostrophe(self) -> None:
         result = parse_define_field(
             "DEFINE FIELD r1 ON pq TYPE string ASSERT $value = /^[A-Za-z' -]+$/ COMMENT 'name'" + _FIELD_PERMISSIONS
