@@ -2,23 +2,24 @@
 
 ## Supported Versions
 
-Two release lines are maintained, one per SurrealDB major version:
+Two release lines, one per SurrealDB major version; the `v2` line ends when SurrealDB-ORM 0.39.0 is released:
 
-| Version     | SurrealDB     | Branch | Supported          |
-| ----------- | ------------- | ------ | ------------------ |
-| **0.38.x**  | 3.2.x – 3.3.x | `main` | :white_check_mark: |
-| **0.21.x**  | 2.6.x – 2.7.x | `v2`   | :warning:          |
-| < 0.21.x    | -             | -      | :x:                |
+| Version     | SurrealDB     | Branch | Supported                        |
+| ----------- | ------------- | ------ | -------------------------------- |
+| **0.38.x**  | 3.2.x – 3.3.x | `main` | :white_check_mark:               |
+| **0.21.x**  | 2.6.x – 2.7.x | `v2`   | :warning: until 0.39.0, then :x: |
+| < 0.21.x    | -             | -      | :x:                              |
 
 `main` requires **SurrealDB 3.2+** as of ORM 0.32.0. The `v2` line supports
 SurrealDB **2.6.x and 2.7.x** (tested against **v2.7.0** as of 0.21.8) and
-receives security and bug fixes only.
+receives security and bug fixes only until SurrealDB-ORM 0.39.0 is released.
 
 > [!WARNING]
-> :warning: The `v2` branch is **deprecated** (security & bug fixes only) in favor of
-> [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite), which supports
-> SurrealDB 2.x via the official SurrealDB Python SDK v2. The `v2` branch receives **security and
-> bug fixes only** until SurrealDB-ORM-lite reaches **v0.40.0 (beta)**, after which it will be retired.
+> :warning: The `v2` line (0.21.x) is **no longer maintained once SurrealDB-ORM 0.39.0 is
+> released**: from then on 0.21.x is **unsupported** and receives no security fixes. It is
+> superseded by [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite),
+> which supports SurrealDB 2.x via the official SurrealDB Python SDK v2. **Security reports
+> for SurrealDB 2.x go to SurrealDB-ORM-lite**, following its security policy.
 
 ## Versioning Scheme
 
