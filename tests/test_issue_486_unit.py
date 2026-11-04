@@ -107,10 +107,15 @@ BAD_FIELD = "amount) AS x, (SELECT * FROM secrets"
 
 
 def _assign_then_render(annotation: Any, attribute: str, value: Any) -> None:
-    """Assign *value* and render; one of the two must raise."""
+    """Assigning *value* must raise, and leave the annotation rendering as before.
+
+    Only ``setattr()`` sits inside ``pytest.raises``: a check that ran at
+    render time alone would let a bad value be stored and still pass.
+    """
+    before = annotation.to_surql("alias")
     with pytest.raises((TypeError, ValueError)):
         setattr(annotation, attribute, value)
-        annotation.to_surql("alias")
+    assert annotation.to_surql("alias") == before
 
 
 class TestReassignedAnnotationArgumentsAreChecked:
