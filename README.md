@@ -51,6 +51,16 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.49
+
+**Bug fix release (V2 LTS).** One `v2` fix (#528); pin unchanged (2.7.0).
+
+- **Clearer errors while a WebSocket reconnect restores the session.** A request waiting for the session now fails
+  with `ConnectionError("WebSocket connection closed while waiting for the session to be restored")` when `close()`
+  is called during the wait, and `ConnectionError("WebSocket connection lost: reconnect gave up after N attempts")`
+  when the reconnect gives up. Both used to say `"Not connected. Call connect() first."`. Only the message changes,
+  not the exception type. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.48
 
 **End-of-maintenance notice release (V2 LTS).** No functional change (#473); pin unchanged (2.7.0).
