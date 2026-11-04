@@ -215,6 +215,88 @@ async def test_changes_stopped_before_the_swap_are_not_restarted(server: I270Ser
         await _next(stream)
 
 
+async def test_changes_stopped_during_the_replacement_end(server: I270Server, monkeypatch: pytest.MonkeyPatch) -> None:
+    """stop() while the replacement client is being resolved ends the stream; no new feed starts."""
+    stream = I270Item.objects().changes(since=0, poll_interval=0.01)
+    server.feed.write("i270_items", {"id": "i270_items:a"})
+    await _next(stream)
+    old = await Manager.get_client()
+    await Manager.close_connection()
+
+    real_get_client = Manager.get_client
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def held_get_client(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        await gate.wait()
+        return await real_get_client(*args, **kwargs)
+
+    monkeypatch.setattr(Manager, "get_client", held_get_client)
+    server.feed.write("i270_items", {"id": "i270_items:b"})
+    pending = asyncio.ensure_future(_next(stream))
+    await asyncio.wait_for(entered.wait(), 1)
+    stream.stop()
+    gate.set()
+
+    with pytest.raises(StopAsyncIteration):
+        await pending
+    assert stream._connection is old, "a stopped stream moved to a new client"
+
+
+async def test_changes_stopped_while_a_failing_poll_is_in_flight_end(server: I270Server) -> None:
+    """A poll that fails after stop() ends the stream instead of raising ChangeFeedError."""
+    stream = I270Item.objects().changes(since=0, poll_interval=0.01)
+    server.feed.write("i270_items", {"id": "i270_items:a"})
+    await _next(stream)
+
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def failing_query(sql: str, vars: dict[str, Any] | None = None) -> QueryResponse:
+        entered.set()
+        await gate.wait()
+        raise SDKConnectionError("Not connected. Call connect() first.")
+
+    server.feed.query = failing_query  # type: ignore[method-assign]
+    pending = asyncio.ensure_future(_next(stream))
+    await asyncio.wait_for(entered.wait(), 1)
+    stream.stop()
+    await Manager.close_connection()
+    gate.set()
+
+    with pytest.raises(StopAsyncIteration):
+        await pending
+
+
+async def test_changes_resume_on_the_connection_first_resolved(server: I270Server) -> None:
+    """A stream first read under using("a") resumes on "a", even when iterated outside using()."""
+    Manager.add_connection(
+        "a",
+        url="http://i270-a.invalid",
+        user="root",
+        password="root",
+        namespace="i270_ns",
+        database="i270_a",
+        protocol="json",
+    )
+    stream = I270Item.objects().changes(since=0, poll_interval=0.01)
+    server.feed.write("i270_items", {"id": "i270_items:a"})
+    async with Manager.using("a"):
+        assert _ids([await _next(stream)]) == ["i270_items:a"]
+    first = Manager._clients["a"]
+    assert stream._connection is first
+
+    await Manager.close_connection("a")
+    server.feed.write("i270_items", {"id": "i270_items:b"})
+    assert _ids([await _next(stream)]) == ["i270_items:b"]
+
+    assert stream._connection is not first
+    assert stream._connection is Manager._clients["a"]
+    assert stream._connection.database == "i270_a"
+    stream.stop()
+
+
 # ==================== a cancelled build closes its client ====================
 
 

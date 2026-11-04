@@ -276,6 +276,10 @@ class ChangeModelStream(Generic[T]):
         self._connection = connection
         # Only a client the stream resolved itself is replaced after a reconnect().
         self._resolves_connection = connection is None
+        # Connection name the stream resolved its first client under; a
+        # replacement client comes from the same name, whatever context the
+        # consumer iterates in.
+        self._connection_name: str | None = None
         self._stopped = False
         self._table = table
         self._since = since
@@ -295,7 +299,8 @@ class ChangeModelStream(Generic[T]):
         if self._connection is None:
             from .connection_manager import SurrealDBConnectionManager
 
-            self._connection = await SurrealDBConnectionManager.get_client(self._model.get_connection_name())
+            self._connection_name = self._model.get_connection_name()
+            self._connection = await SurrealDBConnectionManager.get_client(self._connection_name)
 
         self._feed = ChangeFeedStream(
             connection=self._connection,
@@ -333,15 +338,19 @@ class ChangeModelStream(Generic[T]):
         Only a stream that resolved its client through ``get_client()`` is
         moved, and only when that client is no longer connected (it was
         closed by ``reconnect()`` or ``close_connection()``) and
-        ``get_client()`` now returns another one. Any other failure is the
-        caller's to raise.
+        ``get_client()`` now returns another one. The new client comes from
+        the connection name the first one was resolved under, not from the
+        context the consumer iterates in. Any other failure is the caller's to
+        raise. A stream stopped meanwhile, before or during ``get_client()``,
+        gets ``None`` and no new feed.
         """
         if not self._resolves_connection or self._stopped or failed.connection.is_connected:
             return None
         from .connection_manager import SurrealDBConnectionManager
 
-        client = await SurrealDBConnectionManager.get_client(self._model.get_connection_name())
-        if client is failed.connection:
+        name = self._connection_name if self._connection_name is not None else self._model.get_connection_name()
+        client = await SurrealDBConnectionManager.get_client(name)
+        if self._stopped or client is failed.connection:
             return None
         logger.debug("Change feed on %r resumes on a new HTTP client at %s.", self._table, failed.cursor)
         self._connection = client
@@ -424,10 +433,16 @@ class ChangeModelStream(Generic[T]):
                         yield event
                 return
             except ChangeFeedError:
+                # A stream stopped while its poll was in flight ends, whatever
+                # that poll ran into.
+                if self._stopped:
+                    return
                 # Only a poll fails this way, never an entry half delivered, so
                 # the feed's cursor is where the next read starts. Before the
                 # first read has set it, the stream starts over from ``since``.
                 replacement = await self._replacement_feed(feed)
+                if self._stopped:
+                    return
                 if replacement is None:
                     raise
                 if feed.cursor is not None:
