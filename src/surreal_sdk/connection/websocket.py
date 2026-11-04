@@ -603,13 +603,27 @@ class WebSocketConnection(BaseSurrealConnection):
         (re-creating live queries) never waits: the session it is restoring was
         lost again, and only that same task can restore it, so it fails at once
         and moves on to its next attempt.
+
+        The message names the cause: ``close()`` during the wait, a reconnect
+        that gave up, a session not restored within ``timeout``, or a
+        connection that is not open (never connected, or already closed).
         """
         if self._reconnect_task is not None and asyncio.current_task() is self._reconnect_task:
             raise ConnectionError("WebSocket connection lost while restoring the session")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.timeout
+        waited = False
         while not self._session_ready.is_set():
             if self._closing or not self._connected:
+                if self._closing and waited:
+                    # close() ran while this request waited for the restore.
+                    raise ConnectionError("WebSocket connection closed while waiting for the session to be restored")
+                if not self._closing and self._reconnect_task is not None:
+                    # The reconnect ended with every attempt failed (close()
+                    # would have cleared the task).
+                    raise ConnectionError(
+                        f"WebSocket connection lost: reconnect gave up after {self.max_reconnect_attempts} attempts"
+                    )
                 raise ConnectionError("Not connected. Call connect() first.")
             reconnect = self._reconnect_task
             if reconnect is None or reconnect.done():
@@ -622,6 +636,7 @@ class WebSocketConnection(BaseSurrealConnection):
                 await asyncio.wait({ready, reconnect}, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
             finally:
                 ready.cancel()
+            waited = True
 
     async def _send_on_socket(self, request: RPCRequest) -> RPCResponse:
         """Send *request* on the current socket and wait for its reply (see :meth:`_send_rpc`)."""

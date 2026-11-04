@@ -550,8 +550,8 @@ behaviour change.
   `MERGE { k = $k, ... }` body is not an object to SurrealDB 2.x, so with two or more fields the
   commit fails with a parse error, and with one field `commit()` returns without an error while the
   server rolls the whole transaction back. That covers `update(tx=)`, `merge(tx=)` without a
-  `SurrealFunc`, and `save(tx=)` of an already-saved record whose data holds no `SurrealFunc` and
-  no nested object/array, on an HTTP connection (WebSocket transactions are not affected).
+  `SurrealFunc`, and `save(tx=)` of an already-saved record whose data holds no `SurrealFunc`, no
+  object containing an object or array, and no array of objects, on an HTTP connection (WebSocket transactions are not affected).
 
 ## What's New in 0.21.12
 

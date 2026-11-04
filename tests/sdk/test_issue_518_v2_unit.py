@@ -251,14 +251,14 @@ class TestFailedRestore:
             await asyncio.wait_for(server.arrival(2, "use").wait(), 5)
             server.gates[(2, "use")].set()
 
-            with pytest.raises(ConnectionError):
+            with pytest.raises(ConnectionError, match="reconnect gave up after 2 attempts"):
                 await asyncio.wait_for(query, 5)
             assert time.monotonic() - started < 5, "the caller waited for its whole timeout"
             assert all("query" not in sock.received for sock in server.sockets[1:])
             assert not conn.is_connected
 
-            # A later request fails at once too.
-            with pytest.raises(ConnectionError):
+            # A later request fails at once too, with the same cause.
+            with pytest.raises(ConnectionError, match="reconnect gave up after 2 attempts"):
                 await asyncio.wait_for(conn.query("RETURN 1"), 1)
         finally:
             await conn.close()
@@ -290,9 +290,20 @@ class TestCloseDuringReconnect:
         assert not query.done()
 
         await asyncio.wait_for(conn.close(), 5)
-        with pytest.raises(ConnectionError):
+        with pytest.raises(ConnectionError, match="closed while waiting for the session to be restored"):
             await asyncio.wait_for(query, 5)
         assert "query" not in server.sockets[1].received
+
+    async def test_request_after_close_keeps_the_not_connected_message(self, server: _Server) -> None:
+        conn = await _connected(server)
+        await conn.close()
+        with pytest.raises(ConnectionError, match=r"Not connected\. Call connect\(\) first\."):
+            await asyncio.wait_for(conn.query("RETURN 1"), 1)
+
+    async def test_request_before_connect_keeps_the_not_connected_message(self) -> None:
+        conn = WebSocketConnection("ws://127.0.0.1:9", "ns", "db", protocol="json")
+        with pytest.raises(ConnectionError, match=r"Not connected\. Call connect\(\) first\."):
+            await asyncio.wait_for(conn.query("RETURN 1"), 1)
 
 
 class TestResubscribeAfterRestore:
