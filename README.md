@@ -10,13 +10,12 @@
 <!-- -->
 
 > [!WARNING]
-> **Deprecated (since 0.21.0).** This V2 branch is deprecated in favor of
+> **No longer maintained once SurrealDB-ORM 0.39.0 is released.** This `v2` line (0.21.x,
+> SurrealDB 2.x) has been deprecated since 0.21.0 in favor of
 > **[SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite)**, which
-> continues to support **SurrealDB 2.x** on top of the now-matured **official SurrealDB
-> Python SDK v2** — the SDK improvements are what make a bundled custom SDK unnecessary
-> for the 2.x line. This branch will only receive **security and bug fixes** until
-> SurrealDB-ORM-lite reaches **v0.40.0 (beta)**, after which it will be retired. New projects
-> targeting SurrealDB 2.x should adopt SurrealDB-ORM-lite.
+> supports **SurrealDB 2.x** on top of the official **SurrealDB Python SDK v2**. When
+> SurrealDB-ORM 0.39.0 is released, this branch stops receiving security and bug fixes and
+> 0.21.x is unsupported. Users of SurrealDB 2.x should move to SurrealDB-ORM-lite.
 
 **SurrealDB-ORM** is a Django-style ORM for [SurrealDB](https://surrealdb.com/) with async support, Pydantic validation, and JWT authentication.
 
@@ -26,17 +25,17 @@
 
 ## Branch Strategy
 
-| Branch                                                                        | SurrealDB Version | Status             | Version |
-| ----------------------------------------------------------------------------- | ----------------- | ------------------ | ------- |
-| [`main`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main)           | 3.X               | Active development | 0.3y.x  |
-| [`v2`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (this branch) | 2.X               | Deprecated (LTS)¹  | 0.2y.x  |
+| Branch                                                                        | SurrealDB Version | Status                     | Version |
+| ----------------------------------------------------------------------------- | ----------------- | -------------------------- | ------- |
+| [`main`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main)           | 3.X               | Active development         | 0.3y.x  |
+| [`v2`](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (this branch) | 2.X               | Unmaintained after 0.39.0¹ | 0.2y.x  |
 
-> ¹ Deprecated since 0.21.0 — see the notice above. Superseded by [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite).
+> ¹ Deprecated since 0.21.0 and no longer maintained once SurrealDB-ORM 0.39.0 is released — see the notice above. SurrealDB 2.x users: use [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite).
 
 ### V2 LTS Policy
 
 - **No new features** are developed on this branch
-- **Security vulnerabilities** and **bug fixes** are actively maintained
+- **Security vulnerabilities** and **bug fixes** are maintained until SurrealDB-ORM 0.39.0 is released, then the line stops
 - **SurrealDB 2.X compatibility updates** are automatically monitored and applied
 - A daily workflow checks for new SurrealDB 2.X releases (< 3.0), runs integration tests, and auto-creates PRs
 - Security patches trigger automatic version bumps and PyPI releases
@@ -51,6 +50,16 @@
 For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main) (0.3y.x).
 
 ---
+
+## What's New in 0.21.48
+
+**End-of-maintenance notice release (V2 LTS).** No functional change (#473); pin unchanged (2.7.0).
+
+- **The `v2` line stops at SurrealDB-ORM 0.39.0.** The README, `SECURITY.md` and the `DeprecationWarning` shown on
+  `import surreal_orm` now say 0.21.x is no longer maintained once SurrealDB-ORM 0.39.0 is released: no further
+  security or bug fixes after that. SurrealDB 2.x users should move to
+  [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite). Only the warning's text changes, not
+  its category. See the [CHANGELOG](CHANGELOG).
 
 ## What's New in 0.21.47
 

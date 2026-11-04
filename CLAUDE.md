@@ -1,14 +1,15 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.47)
+> Context document for Claude AI - Last updated: November 2026 (0.21.48)
 
 <!-- -->
 
 > [!WARNING]
-> **This is the deprecated `v2` LTS branch** (SurrealDB 2.x), superseded since 0.21.0 by
+> **This is the deprecated `v2` LTS branch** (0.21.x, SurrealDB 2.x), superseded since 0.21.0 by
 > [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite), which targets
-> SurrealDB 2.x on the official SurrealDB Python SDK v2. The `v2` branch receives security and
-> bug fixes only until SurrealDB-ORM-lite reaches v0.40.0 (beta), then it is retired. The `main` branch
+> SurrealDB 2.x on the official SurrealDB Python SDK v2. The `v2` line is **no longer maintained
+> once SurrealDB-ORM 0.39.0 is released**: no more security or bug fixes, and 0.21.x is
+> unsupported. SurrealDB 2.x users should move to SurrealDB-ORM-lite. The `main` branch
 > targets SurrealDB 3.x. Do not develop new features here.
 
 ## Project Vision
@@ -19,12 +20,23 @@
 
 ---
 
-## Current Version: 0.21.47 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.48 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
-| Branch | SurrealDB tested | Supported range | ORM line | Status                          |
-| ------ | ---------------- | --------------- | -------- | ------------------------------- |
-| `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) |
-| `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development              |
+| Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
+| ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
+| `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
+| `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.48
+
+The end-of-maintenance notice, #473 via #507 (`README.md`, `SECURITY.md`, `CLAUDE.md`, the import-time warning in
+`surreal_orm/__init__.py`). No functional change; pin unchanged (2.7.0).
+
+- **The `v2` line is no longer maintained once SurrealDB-ORM 0.39.0 is released.** The old rule ("retired when
+  SurrealDB-ORM-lite reaches v0.40.0") named another project's version and did not say when fixes stop. Every notice
+  now says 0.39.0 and points SurrealDB 2.x users to SurrealDB-ORM-lite.
+- **Only the `DeprecationWarning` text changes** (category, `stacklevel` and timing unchanged). The test imports the
+  package in a fresh interpreter, so reloading the module does not re-create its classes under the other tests.
 
 ### What's New in 0.21.47
 
