@@ -293,11 +293,16 @@ async def _busy_other_table() -> AsyncIterator[list[int]]:
 
         async def warmed_up() -> None:
             while written[0] < 5:
+                if task.done():
+                    # Raise the writer's own error rather than a bare "stopped".
+                    task.result()
                 assert not task.done(), task
                 await asyncio.sleep(0.01)
 
         await asyncio.wait_for(warmed_up(), START_TIMEOUT)
         yield written
+        if task.done():
+            task.result()
         assert not task.done(), "the background writer stopped before the reads ended"
     finally:
         task.cancel()

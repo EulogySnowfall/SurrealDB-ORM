@@ -42,8 +42,10 @@ async def root_conn() -> AsyncGenerator[HTTPConnection, None]:
         assert response.is_ok, response.raw
         yield conn
     finally:
-        await conn.close()
-        await _remove_database()
+        try:
+            await conn.close()
+        finally:
+            await _remove_database()
 
 
 async def _remove_database() -> None:
