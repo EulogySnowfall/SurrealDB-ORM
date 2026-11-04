@@ -121,6 +121,16 @@ class TestI517SpacedSlashInPattern:
         assert result.assertion == "$value = /x PERMISSIONS FULL / y/"
         assert result.permissions == {"select": "NONE"}
 
+    def test_server_output_with_a_space_opened_pattern_keeps_its_clause(self) -> None:
+        """Exact SurrealDB 2.7.0 ``INFO FOR TABLE`` output: the ``/`` after ``a+`` ends ``/ a+/``, it opens nothing."""
+        result = parse_define_field(
+            "DEFINE FIELD a ON r517po TYPE string ASSERT ($value CONTAINS / a+/) "
+            "PERMISSIONS FOR select WHERE $auth.x = 1, FOR create, update FULL"
+        )
+
+        assert result.assertion == "($value CONTAINS / a+/)"
+        assert result.permissions == {"select": "$auth.x = 1"}
+
     @pytest.mark.xfail(
         strict=True,
         reason="Known limit: a pattern opening with a space is not trusted before a candidate start (ASSERT / +/)",

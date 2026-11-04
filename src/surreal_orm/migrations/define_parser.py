@@ -275,7 +275,10 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool, int]:
         (-1 when none was found or none was looked for), whether the text
         ends with no quote, pattern or bracket left open and no pattern end
         without its start, and the index of the ``/`` opening a pattern that
-        never closes (-1 when there is none)
+        never closes (-1 when there is none, or when an earlier `` / `` read
+        as a division is still unmatched: that division can be a misread
+        pattern start, as in ``ASSERT ($value CONTAINS / a+/)``, which makes
+        the later ``/`` its end rather than an opener)
     """
     depth = 0
     quote: str | None = None
@@ -299,7 +302,7 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool, int]:
         if ch == "/" and _opens_regex_literal(text, i, previous):
             end = _regex_literal_end(text, i)
             if end == -1:
-                return -1, False, i
+                return -1, False, (i if divisions == 0 else -1)
             previous = "/"
             i = end
             continue
@@ -345,10 +348,14 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     A start is also skipped when the text before it ends inside a pattern
     whose opening ``/`` is followed by a non-space character, which cannot be
     a division: in ``ASSERT $value = /x PERMISSIONS FULL / y/`` the
-    remainder pairs ``/ y/`` as a division and looks balanced (#517). A
-    pattern opening with a space is not trusted there, because the scan can
-    misread one (``ASSERT / +/``, below), so ``= / x PERMISSIONS FULL / y/``
-    remains a known limit. A body with no start left has no clause.
+    remainder pairs ``/ y/`` as a division and looks balanced (#517). That
+    opener is trusted only when no earlier unmatched `` / `` read as a
+    division could be a misread pattern start: in the server's
+    ``ASSERT ($value CONTAINS / a+/) PERMISSIONS FOR ...`` the ``/`` after
+    ``a+`` closes ``/ a+/`` and opens nothing. A pattern opening with a
+    space is not trusted either, because the scan can misread one
+    (``ASSERT / +/``, below), so ``= / x PERMISSIONS FULL / y/`` remains a
+    known limit. A body with no start left has no clause.
 
     The scan ending balanced is not enough to rule the candidates out: a
     pattern starting with a space after a keyword (``ASSERT / +/``) is read
