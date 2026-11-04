@@ -110,6 +110,16 @@ async def test_concurrent_requests_survive_repeated_reconnect() -> None:
     assert await I232Note.objects().count() == completed
 
 
+async def _wait_for_swap(previous: Any, timeout: float = 5.0) -> None:
+    """Return once the default client is no longer *previous* (bounded by *timeout*)."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while SurrealDBConnectionManager._clients.get("default") is previous:
+        if loop.time() > deadline:
+            pytest.fail("reconnect() never installed a new default client")
+        await asyncio.sleep(0.005)
+
+
 async def _tx_item_ids() -> set[str]:
     return {str(item.id) for item in await I232TxItem.objects().all()}
 
@@ -122,7 +132,9 @@ async def test_transaction_spanning_a_concurrent_reconnect_commits() -> None:
     async def body() -> None:
         async with await SurrealDBConnectionManager.transaction() as tx:
             await I232TxItem(id="span_a", v=1).save(tx=tx)
-            await asyncio.sleep(0.3)  # application work while the client is swapped
+            # Application work while the client is swapped: wait for the swap
+            # itself, so the transaction spans it however slow the runner is.
+            await _wait_for_swap(previous)
             await I232TxItem(id="span_b", v=2).save(tx=tx)
 
     async def refresher() -> Any:
