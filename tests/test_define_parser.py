@@ -728,6 +728,20 @@ class TestQuotesAndRegexLiterals:
         assert result.assertion == "$value != ''"
         assert result.comment == "k"
 
+    def test_regex_ending_in_escaped_backslash(self) -> None:
+        # As 3.3.5 prints it: on 3.x a backslash in a regex escapes the next
+        # character, so `\\/` is an escaped backslash and the closing slash.
+        result = _field("TYPE string ASSERT $value = /a\\\\/ COMMENT 'x/y' PERMISSIONS FULL")
+        assert result.field_type == "string"
+        assert result.assertion == "$value = /a\\\\/"
+        assert result.comment == "x/y"
+
+    def test_regex_ending_in_escaped_backslash_then_another_regex(self) -> None:
+        result = _field("TYPE string VALUE /a\\\\/ ASSERT $value = /b\\\\/ COMMENT 'k/v' PERMISSIONS FULL")
+        assert result.value == "/a\\\\/"
+        assert result.assertion == "$value = /b\\\\/"
+        assert result.comment == "k/v"
+
     def test_division_is_not_a_regex(self) -> None:
         result = _field("TYPE int VALUE $value / 2 ASSERT $value < 10 COMMENT 'half' PERMISSIONS FULL")
         assert result.value == "$value / 2"

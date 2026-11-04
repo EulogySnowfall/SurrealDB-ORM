@@ -163,15 +163,17 @@ def _operand_expected(text: str, i: int) -> bool:
 def _regex_literal_end(text: str, start: int) -> int:
     """Return the index just past the regex literal opening at *start*.
 
-    Read as SurrealDB's lexer reads it: ``\\/`` is an escaped slash, a
-    backslash before anything else escapes nothing.
+    Read as SurrealDB 3.x's lexer reads it: a backslash escapes the next
+    character, whatever it is. So ``\\/`` is an escaped slash, and in
+    ``/a\\\\/`` the second backslash is escaped and the final ``/`` closes
+    the literal (3.x accepts that pattern and prints it back as is).
 
     Returns:
         The index after the closing ``/``, or -1 when the literal never closes
     """
     i = start + 1
     while i < len(text):
-        if text[i] == "\\" and text.startswith("/", i + 1):
+        if text[i] == "\\":
             i += 2
         elif text[i] == "/":
             return i + 1
