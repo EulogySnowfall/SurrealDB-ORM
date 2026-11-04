@@ -15,6 +15,7 @@ in the remainder can be that start (``WHERE / x/``).
 import pytest
 
 from src.surreal_orm.migrations.define_parser import parse_define_field
+from src.surreal_orm.surreal_function import SurrealFunc
 
 
 class TestI509RegexLiteral:
@@ -101,3 +102,95 @@ class TestI509RegexLiteral:
 
         assert result.assertion == "/ it's/ = $value"
         assert result.permissions == {"select": "/ x/ = name"}
+
+
+class TestI517SpacedSlashInPattern:
+    """#517: a pattern holding a spaced slash still keeps a PERMISSIONS start inside it."""
+
+    def test_a_spaced_slash_does_not_close_the_pattern_early(self) -> None:
+        """``/ y/`` pairs as a division in the remainder; the text before the start is still inside ``/x``."""
+        result = parse_define_field("DEFINE FIELD a ON t TYPE string ASSERT $value = /x PERMISSIONS FULL / y/")
+
+        assert result.assertion == "$value = /x PERMISSIONS FULL / y/"
+        assert result.permissions == {}
+
+    def test_a_real_clause_after_such_a_pattern_is_still_found(self) -> None:
+        result = parse_define_field(
+            "DEFINE FIELD a ON t TYPE string ASSERT $value = /x PERMISSIONS FULL / y/ PERMISSIONS FOR select NONE"
+        )
+
+        assert result.assertion == "$value = /x PERMISSIONS FULL / y/"
+        assert result.permissions == {"select": "NONE"}
+
+    def test_server_output_with_a_space_opened_pattern_keeps_its_clause(self) -> None:
+        """Exact SurrealDB 2.7.0 ``INFO FOR TABLE`` output: the ``/`` after ``a+`` ends ``/ a+/``, it opens nothing."""
+        result = parse_define_field(
+            "DEFINE FIELD a ON r517po TYPE string ASSERT ($value CONTAINS / a+/) "
+            "PERMISSIONS FOR select WHERE $auth.x = 1, FOR create, update FULL"
+        )
+
+        assert result.assertion == "($value CONTAINS / a+/)"
+        assert result.permissions == {"select": "$auth.x = 1"}
+
+    def test_server_output_with_an_escaped_slash_in_a_space_opened_pattern_keeps_its_clause(self) -> None:
+        """Exact SurrealDB 2.7.0 output: ``\\/`` cancels the misread division, the later ``/`` still opens nothing."""
+        result = parse_define_field(
+            "DEFINE FIELD a ON r517po TYPE string ASSERT ($value CONTAINS / a\\/ b/) "
+            "PERMISSIONS FOR select WHERE $auth.x = 1, FOR create, update FULL"
+        )
+
+        assert result.assertion == "($value CONTAINS / a\\/ b/)"
+        assert result.permissions == {"select": "$auth.x = 1"}
+
+    def test_server_output_with_an_escaped_slash_after_a_match_operator_keeps_its_clause(self) -> None:
+        result = parse_define_field(
+            "DEFINE FIELD a ON r517po TYPE string ASSERT ($value ~ / a\\/ b/) "
+            "PERMISSIONS FOR select NONE, FOR create, update FULL"
+        )
+
+        assert result.assertion == "($value ~ / a\\/ b/)"
+        assert result.permissions == {"select": "NONE"}
+
+    def test_an_unspaced_division_in_an_assertion_keeps_its_clause(self) -> None:
+        """``$value/2`` has an operand on the left of its ``/``: a division, not a pattern opener."""
+        result = parse_define_field("DEFINE FIELD a ON t TYPE int ASSERT $value/2 > 1 PERMISSIONS FOR select NONE")
+
+        assert result.assertion == "$value/2 > 1"
+        assert result.permissions == {"select": "NONE"}
+
+    def test_an_unspaced_division_in_a_value_keeps_its_clause(self) -> None:
+        result = parse_define_field("DEFINE FIELD a ON t TYPE int VALUE $value/2 PERMISSIONS FOR select WHERE $auth.x = 1")
+
+        assert result.value == "$value/2"
+        assert result.permissions == {"select": "$auth.x = 1"}
+
+    def test_an_unspaced_division_in_a_default_keeps_its_clause(self) -> None:
+        result = parse_define_field("DEFINE FIELD a ON t TYPE float DEFAULT 1/2 PERMISSIONS FULL")
+
+        assert result.default == SurrealFunc("1/2")
+        assert result.permissions == {}
+
+    def test_an_unspaced_division_before_a_space_opened_pattern_keeps_its_clause(self) -> None:
+        """The ``/`` closing ``/ a+/`` is not an opener: an earlier ``/`` was consumed as a pattern."""
+        result = parse_define_field(
+            "DEFINE FIELD a ON t TYPE string ASSERT $value = ($value/2 + / a+/) PERMISSIONS FOR select NONE"
+        )
+
+        assert result.assertion == "$value = ($value/2 + / a+/)"
+        assert result.permissions == {"select": "NONE"}
+
+    def test_an_unspaced_division_before_a_space_opened_pattern_in_a_default_keeps_its_clause(self) -> None:
+        result = parse_define_field("DEFINE FIELD a ON t TYPE any DEFAULT (1/2 AND / a+/) PERMISSIONS FOR select NONE")
+
+        assert result.default == SurrealFunc("(1/2 AND / a+/)")
+        assert result.permissions == {"select": "NONE"}
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="Known limit: a pattern opening with a space is not trusted before a candidate start (ASSERT / +/)",
+    )
+    def test_a_pattern_opening_with_a_space_is_a_known_limit(self) -> None:
+        result = parse_define_field("DEFINE FIELD a ON t TYPE string ASSERT $value = / x PERMISSIONS FULL / y/")
+
+        assert result.assertion == "$value = / x PERMISSIONS FULL / y/"
+        assert result.permissions == {}

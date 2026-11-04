@@ -14,10 +14,22 @@ from typing import TYPE_CHECKING, Any, ClassVar, Self
 
 from surreal_sdk.exceptions import AuthenticationError, QueryError, SurrealDBError
 
+from ..model_base import SurrealDbError
+
 if TYPE_CHECKING:
     from surreal_sdk import HTTPConnection
 
     from ..cache import ConnectionIdentity
+
+
+class _SessionRecordError(SurrealDbError):
+    """``RETURN $auth`` failed on an authenticated session.
+
+    Raised by :meth:`AuthenticatedUserMixin._read_session_record` with the
+    server's error text, so the callers report that error instead of an empty
+    ``$auth``, and ``change_password()`` does not mistake it for a wrong
+    current password.
+    """
 
 
 class AuthenticatedUserMixin:
@@ -323,18 +335,22 @@ class AuthenticatedUserMixin:
         escaping, and ``type::thing("t:000000")`` would read the key as the
         number ``0``.
 
-        A statement that comes back as ``ERR`` yields ``None`` too: its result
-        is the server's error text, never a record ID, so the callers raise
-        ``SurrealDbError`` ("could not be read") instead of looking it up.
+        A statement that comes back as ``ERR`` is never used as a record ID:
+        its result is the server's error text, which is raised.
 
         Returns:
-            The record ID, or ``None`` when the session has no ``$auth`` record
-            or ``RETURN $auth`` failed.
+            The record ID, or ``None`` when the session has no ``$auth`` record.
+
+        Raises:
+            _SessionRecordError: ``RETURN $auth`` came back as ``ERR``; the
+                message carries the server's error text.
         """
         auth_result = await client.query("RETURN $auth")
         first_qr = auth_result.first_result
-        if first_qr is None or not first_qr.is_ok:
+        if first_qr is None:
             return None
+        if not first_qr.is_ok:
+            raise _SessionRecordError(f"the session record could not be read: {first_qr.result}")
         return first_qr.result
 
     @classmethod
@@ -465,6 +481,8 @@ class AuthenticatedUserMixin:
                 raise SurrealDbError("Signup succeeded but no JWT token was returned by the server.")
             # Read $auth while the ephemeral session is still open.
             session_record = await cls._read_session_record(client)
+        except _SessionRecordError as e:
+            raise _SessionRecordError(f"Signup succeeded but {e}") from e
         except (SurrealDBError, AuthenticationError, QueryError) as e:
             raise SurrealDbError(f"Signup failed: {e}") from e
         finally:
@@ -495,6 +513,7 @@ class AuthenticatedUserMixin:
             ``(token, session_record)``.
 
         Raises:
+            _SessionRecordError: If signin succeeds but ``RETURN $auth`` fails.
             SurrealDbError: If signin fails, or ``$auth`` is empty afterwards.
         """
         from ..connection_manager import SurrealDBConnectionManager
@@ -533,6 +552,8 @@ class AuthenticatedUserMixin:
             token = response.token
             # Read $auth while the ephemeral session is still open.
             session_record = await cls._read_session_record(client)
+        except _SessionRecordError as e:
+            raise _SessionRecordError(f"Signin succeeded but {e}") from e
         except (SurrealDBError, AuthenticationError, QueryError) as e:
             raise SurrealDbError(f"Signin failed: {e}") from e
         finally:
@@ -782,8 +803,10 @@ class AuthenticatedUserMixin:
             True if password was changed successfully
 
         Raises:
-            SurrealDbError: If old password is incorrect, or the update did
-                not change exactly the signed-in record
+            SurrealDbError: If old password is incorrect, the session record
+                could not be read after signin (the server's error is in the
+                message), or the update did not change exactly the signed-in
+                record
         """
         from ..connection_manager import SurrealDBConnectionManager
         from ..model_base import SurrealDbError
@@ -795,6 +818,9 @@ class AuthenticatedUserMixin:
 
         try:
             _, session_record = await cls._signin_session(**{identifier_field: identifier_value, password_field: old_password})
+        except _SessionRecordError:
+            # The password was accepted; reading the session failed.
+            raise
         except SurrealDbError:
             raise SurrealDbError("Invalid current password") from None
 

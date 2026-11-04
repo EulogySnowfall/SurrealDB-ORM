@@ -51,6 +51,15 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.50
+
+**Bug fix release (V2 LTS).** One `v2` fix (#534); pin unchanged (2.7.0).
+
+- **Auth errors keep the server's text.** When the session record (`RETURN $auth`) cannot be read after a successful
+  sign-in or sign-up, `signin()` and `signup()` raise `SurrealDbError` with the server's error text instead of saying
+  the session was empty, and `change_password()` no longer reports `Invalid current password` in that case. Only the
+  message changes, not the exception type. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.49
 
 **Bug fix release (V2 LTS).** One `v2` fix (#528); pin unchanged (2.7.0).
