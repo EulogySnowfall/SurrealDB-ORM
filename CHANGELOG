@@ -6,6 +6,67 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.51] - 2026-11-04
+
+**Bug fix release (V2 LTS).** One `v2` fix from the 0.21.42 review
+follow-ups (#517, #554): `parse_define_field()` no longer cuts a
+hand-written field's expression at a `PERMISSIONS` keyword inside a regex
+literal. Also a documentation correction. The SurrealDB pin is unchanged
+(tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **A `PERMISSIONS` keyword inside a regex literal no longer ends the
+  field's expression.** `parse_define_field()` no longer cuts a hand-written
+  field's `ASSERT`/`VALUE`/`DEFAULT` at a `PERMISSIONS` keyword inside a
+  regex literal when the pattern holds a slash followed by a space and no
+  real `PERMISSIONS` clause follows, such as
+  `ASSERT $value = /x PERMISSIONS FULL / y/`. Before, the expression was
+  truncated and the rest of the pattern was read as permissions (#517).
+  Statements reported by the server (introspection, `schema_diff`,
+  `makemigrations`) parse as before.
+
+### Behaviour change
+
+- None to emitted DDL or to introspection; only the result of
+  `parse_define_field()` on such hand-written statements changes.
+
+### Known limitations
+
+- A pattern that both starts with a space and contains `PERMISSIONS`
+  followed by a spaced slash (`ASSERT $value = / x PERMISSIONS FULL / y/`)
+  is still truncated at that keyword; a strict `xfail` records it.
+- A pattern after a word operator (`CONTAINS`, `IN`, `INSIDE`, …), such as
+  `ASSERT $value CONTAINS /x PERMISSIONS FULL / y/`, is still split, as
+  before this release. Both cases affect hand-written statements only.
+
+### Documentation
+
+- The [0.21.49] Verification sentence says which run followed which merge:
+  the full unit suite after #507, the touched unit tests after #546 (#555).
+
+### Tests
+
+- `tests/test_issue_509_unit.py` covers the new case, SurrealDB 2.7.0
+  output with an escaped slash in a pattern starting with a space, unspaced
+  divisions, and an unspaced division before a pattern that opens with a
+  space (#554).
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, on #554's validated head (the released tree):
+3,920 unit tests on each of Python 3.12, 3.13 and 3.14 (1 expected failure,
+the new strict `xfail`), and 819 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. `tests/test_issue_509_unit.py` passed
+three times in a row.
+
+---
+
 ## [0.21.50] - 2026-11-04
 
 **Bug fix release (V2 LTS).** One `v2` fix from the 0.21.44 review
@@ -132,8 +193,9 @@ of Python 3.12, 3.13 and 3.14, and 819 integration tests pass (4 expected
 failures, the existing strict `xfail`s for integer record ids over
 WebSocket); `ruff` and `mypy` clean. The new and touched tests passed three
 times in a row. The released tree also carries #507's four tests and #546's
-change to `tests/test_issue_486_unit.py`: after merging them, the unit suite
-passed 3,903 tests and the touched unit tests (93) passed.
+change to `tests/test_issue_486_unit.py`: after merging #507 the unit suite
+passed 3,903 tests, and after merging #546 the touched unit tests (93)
+passed.
 
 ---
 
