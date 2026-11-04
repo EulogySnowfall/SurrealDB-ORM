@@ -6,6 +6,73 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.52] - 2026-11-04
+
+**Bug fix release (V2 LTS).** One `v2` fix from the 0.21.49 review
+follow-ups (#550, #561): after a WebSocket reconnect gave up, a later failed
+`connect()` is no longer reported as that give-up. Also documentation and
+test follow-ups. The SurrealDB pin is unchanged (tested against 2.7.0,
+supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **A failed `connect()` is no longer reported as an earlier reconnect
+  give-up.** After a WebSocket reconnect gave up, a later `connect()` that
+  failed with an exception other than `aiohttp.ClientError` (for example
+  `TimeoutError` or `OSError`) made the next requests report "reconnect gave
+  up after N attempts". They now report the failed connection. This fixes
+  the [0.21.49] known limitation (#550).
+
+### Behaviour change
+
+- `WebSocketConnection.connect()` now releases the socket, the HTTP session
+  and the reader on any failure, not only on `aiohttp.ClientError`. The
+  original exception is re-raised unchanged; a `ClientError` is still raised
+  as `ConnectionError`. Before, a `use()` that failed during `connect()` left
+  a half-open connection that still reported itself as connected (#550).
+
+### Documentation
+
+- `_surreal_func_from_server()` documents that generated migration and
+  `inspectdb` models files import it as
+  `surreal_orm.surreal_function._surreal_func_from_server`, so its path,
+  name and signature are kept stable despite the private name (#540).
+- The `escape_single_quotes()` deprecation note names the release that
+  deprecated it, 0.21.46 (#540).
+- Every `v2` maintenance statement gives its end date: the README header
+  line, the V2 LTS Policy bullets (2.X monitoring, the daily workflow,
+  automatic security releases) and both notes in `docs/roadmap.md` say the
+  line is no longer maintained once SurrealDB-ORM 0.39.0 is released (#547).
+- The [0.21.49] Known limitations item is marked fixed in this release
+  (#550).
+
+### Tests
+
+- `tests/sdk/test_websocket_connection.py` covers a request after a
+  `connect()` failing with `TimeoutError` or `OSError` (both fail on
+  0.21.51), the give-up message itself, and a running reconnect task kept
+  when it is the caller (#550).
+- `tests/test_issue_540_v2_unit.py` checks the import contract and the
+  deprecation release (#540).
+- The `TestBusyFeed` change-feed integration tests no longer fail or hang
+  under full-suite load on SurrealDB 2.7.0: the background writer retries
+  the server's retryable write conflicts and is stopped between requests
+  instead of being cancelled mid-request (#551).
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, on the released tree: 3,929 unit tests on Python
+3.13 (1 expected failure, the strict `xfail` from #509) and 830 integration
+tests pass (4 expected failures, the existing strict `xfail`s for integer
+record ids over WebSocket). #561's validated head passed the unit suite on
+Python 3.12, 3.13 and 3.14 with the same count; `ruff` and `mypy` clean.
+
+---
+
 ## [0.21.51] - 2026-11-04
 
 **Bug fix release (V2 LTS).** One `v2` fix from the 0.21.42 review
@@ -155,11 +222,12 @@ supported range 2.6.x – 2.7.x).
 
 ### Known limitations
 
-- A reconnect that gave up keeps its finished task until the connection is
-  cleaned up. If a later `connect()` then fails with an error other than
-  `aiohttp.ClientError` (for example `asyncio.TimeoutError` or `OSError`),
-  the next requests report "reconnect gave up after N attempts" for what was
-  a failed `connect()`. The exception type is still `ConnectionError`.
+- **Fixed in [0.21.52] (#550).** A reconnect that gave up keeps its
+  finished task until the connection is cleaned up. If a later `connect()`
+  then fails with an error other than `aiohttp.ClientError` (for example
+  `asyncio.TimeoutError` or `OSError`), the next requests report
+  "reconnect gave up after N attempts" for what was a failed `connect()`.
+  The exception type is still `ConnectionError`.
 
 ### Documentation
 
