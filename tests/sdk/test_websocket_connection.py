@@ -1,11 +1,14 @@
 """Tests for WebSocket connection module."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import Any
 
+import aiohttp
 import pytest
 
 from src.surreal_sdk.connection.websocket import WebSocketConnection
+from src.surreal_sdk.exceptions import ConnectionError
 
 
 class TestWebSocketConnection:
@@ -151,3 +154,79 @@ class TestWebSocketConnectionIntegration:
         # Kill
         await connection.kill(live_id)
         assert live_id not in connection.live_queries
+
+
+async def _gave_up(conn: WebSocketConnection) -> None:
+    """Put *conn* in the state a reconnect that gave up leaves behind (issue #550).
+
+    Every attempt failed: the finished reconnect task is still in
+    ``_reconnect_task``, the connection is not connected and its session is
+    not ready.
+    """
+
+    async def every_attempt_failed() -> None:
+        return None
+
+    task = asyncio.create_task(every_attempt_failed())
+    await task
+    conn._reconnect_task = task
+    conn._connected = False
+    conn._session_ready.clear()
+
+
+class TestStaleReconnectMessageAfterFailedConnect:
+    """Issue #550: a failed connect() after a give-up is not reported as the give-up.
+
+    No server: ``aiohttp.ClientSession.ws_connect`` is replaced by a function
+    raising an exception other than ``aiohttp.ClientError``.
+    """
+
+    @pytest.mark.parametrize("error", [TimeoutError(), OSError("network unreachable")])
+    async def test_request_after_failed_connect_does_not_report_the_give_up(
+        self, monkeypatch: pytest.MonkeyPatch, error: BaseException
+    ) -> None:
+        conn = WebSocketConnection("ws://127.0.0.1:9", "ns", "db", max_reconnect_attempts=3)
+        await _gave_up(conn)
+
+        async def failing_ws_connect(*args: Any, **kwargs: Any) -> Any:
+            raise error
+
+        monkeypatch.setattr(aiohttp.ClientSession, "ws_connect", failing_ws_connect)
+        with pytest.raises(type(error)):
+            await conn.connect()
+
+        with pytest.raises(ConnectionError) as excinfo:
+            await conn.query("RETURN 1")
+        assert "reconnect gave up" not in str(excinfo.value)
+        # The failed connect() leaves no half-open HTTP session behind.
+        assert conn._session is None
+        await conn.close()
+
+    async def test_request_after_give_up_still_reports_it(self) -> None:
+        conn = WebSocketConnection("ws://127.0.0.1:9", "ns", "db", max_reconnect_attempts=3)
+        await _gave_up(conn)
+
+        with pytest.raises(ConnectionError, match="reconnect gave up after 3 attempts"):
+            await conn.query("RETURN 1")
+        await conn.close()
+
+    async def test_connect_from_the_running_reconnect_task_keeps_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        conn = WebSocketConnection("ws://127.0.0.1:9", "ns", "db")
+
+        async def failing_ws_connect(*args: Any, **kwargs: Any) -> Any:
+            raise OSError("network unreachable")
+
+        monkeypatch.setattr(aiohttp.ClientSession, "ws_connect", failing_ws_connect)
+        seen: list[asyncio.Task[None] | None] = []
+
+        async def reconnect() -> None:
+            with pytest.raises(OSError):
+                await conn.connect()
+            seen.append(conn._reconnect_task)
+
+        task = asyncio.create_task(reconnect())
+        conn._reconnect_task = task
+        await asyncio.wait_for(task, 5)
+        assert seen == [task]
+        assert conn._reconnect_task is task
+        await conn.close()

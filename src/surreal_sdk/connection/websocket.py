@@ -136,9 +136,22 @@ class WebSocketConnection(BaseSurrealConnection):
         return self._request_id
 
     async def connect(self) -> Self:
-        """Establish WebSocket connection. Returns self for fluent API."""
+        """Establish WebSocket connection. Returns self for fluent API.
+
+        A finished reconnect task (one that gave up) is dropped first: it
+        describes the previous connection, and a request after this
+        ``connect()`` fails must not be reported as that give-up. A running
+        one is kept, since the reconnect task may be the caller.
+
+        If the connection cannot be opened, every resource opened so far is
+        released before the exception propagates: an ``aiohttp.ClientError``
+        is raised as ``ConnectionError``, any other exception unchanged.
+        """
         if self._connected:
             return self
+
+        if self._reconnect_task is not None and self._reconnect_task.done():
+            self._reconnect_task = None
 
         self._closing = False
         self._session = aiohttp.ClientSession()
@@ -169,6 +182,11 @@ class WebSocketConnection(BaseSurrealConnection):
         except aiohttp.ClientError as e:
             await self._cleanup()
             raise ConnectionError(f"WebSocket connection failed: {e}")
+        except Exception:
+            # Same release for any other failure (asyncio.TimeoutError, OSError,
+            # an error reply to use()), so no half-open session is left behind.
+            await self._cleanup()
+            raise
 
     async def close(self) -> None:
         """Close WebSocket connection."""
@@ -190,8 +208,9 @@ class WebSocketConnection(BaseSurrealConnection):
                 pass
             self._reader_task = None
 
-        # Cancel reconnect task
-        if self._reconnect_task:
+        # Cancel reconnect task, unless it is the caller (a connect() it made
+        # failed): a task cannot cancel and await itself, and it ends on its own.
+        if self._reconnect_task and self._reconnect_task is not asyncio.current_task():
             self._reconnect_task.cancel()
             try:
                 await self._reconnect_task
