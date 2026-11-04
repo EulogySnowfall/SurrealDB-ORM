@@ -70,6 +70,12 @@ def _surreal_func_from_server(expression: str) -> SurrealFunc:
 
     Not for application code: use ``SurrealFunc`` for hand-written values.
 
+    Stability: generated migration files and ``inspectdb`` models files import
+    this helper as ``surreal_orm.surreal_function._surreal_func_from_server``
+    and call it with one positional string. Those files outlive the release
+    that wrote them, so its module path, name and signature must stay stable
+    despite the leading underscore.
+
     Args:
         expression: The expression, as the server echoes it
 

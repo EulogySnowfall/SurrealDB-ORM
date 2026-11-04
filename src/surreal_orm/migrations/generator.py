@@ -141,6 +141,8 @@ class MigrationGenerator:
         # A server-side DEFAULT is a SurrealFunc; its repr needs the import.
         # One read back from the server repr()s as the helper that built it
         # (the constructor may refuse it), so that helper is imported instead.
+        # The written import path is a stability contract: see the helper's
+        # docstring in surreal_orm/surreal_function.py.
         funcs = [value for op in operations for value in vars(op).values() if isinstance(value, SurrealFunc)]
         if any(not _is_from_server(value) for value in funcs):
             lines.append("from surreal_orm import SurrealFunc")
