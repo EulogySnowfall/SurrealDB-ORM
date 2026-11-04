@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.48)
+> Context document for Claude AI - Last updated: November 2026 (0.21.49)
 
 <!-- -->
 
@@ -20,12 +20,25 @@
 
 ---
 
-## Current Version: 0.21.48 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.49 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.49
+
+One fix, `v2` only: #528 via #548 (`surreal_sdk/connection/websocket.py`), the 0.21.43 review follow-up. Pin unchanged
+(2.7.0). Also test follow-up #500 (#546) and the #251 wording in README, `CLAUDE.md` and `CHANGELOG`.
+
+- **A failure message should name its cause.** `_wait_for_session()` raised `Not connected. Call connect() first.`
+  for every way the wait could end. It now says "closed while waiting for the session to be restored" after
+  `close()`, and "reconnect gave up after N attempts" when the reconnect task ended without a session; before
+  `connect()` and after `close()` the old text stays. Type and control flow unchanged.
+- **Open (review suggestion on #548):** a gave-up reconnect leaves its finished task in `_reconnect_task` until
+  `_cleanup()`; a later `connect()` failing with a non-`aiohttp.ClientError` (`asyncio.TimeoutError`, `OSError`) skips
+  `_cleanup()`, so requests then report "reconnect gave up" for a failed `connect()`.
 
 ### What's New in 0.21.48
 
@@ -101,7 +114,7 @@ One fix, `v2` only: #518 via #524 (`surreal_sdk/connection/websocket.py`), backp
 - **A failed restore step drops only its own socket.** Before, it called `_cleanup()` from inside the reconnect task,
   which cancelled that task. The reconnect task never waits on itself while re-creating live queries.
 - **Open (review suggestion on #524):** a request woken by `close()` during a reconnect gets
-  `Not connected. Call connect() first.`, which reads as a usage error.
+  `Not connected. Call connect() first.`, which reads as a usage error (fixed in 0.21.49, #528).
 
 ### What's New in 0.21.42
 
