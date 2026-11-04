@@ -8,7 +8,9 @@
 * ``_read_session_record()`` ignored a per-statement ``ERR`` for
   ``RETURN $auth``: the error text was used as the record ID, so ``signin()`` /
   ``signup()`` raised ``DoesNotExist`` and ``change_password()`` ran its
-  ``UPDATE`` against it, instead of the documented ``SurrealDbError``.
+  ``UPDATE`` against it, instead of the documented ``SurrealDbError``. Since
+  #534 an ``ERR`` raises ``SurrealDbError`` carrying the server's text, and only
+  an empty ``$auth`` returns ``None``.
 """
 
 from __future__ import annotations
@@ -118,9 +120,10 @@ def _manager(root: AsyncMock) -> MagicMock:
 
 class TestSessionRecordError:
     @pytest.mark.asyncio
-    async def test_read_session_record_returns_none_on_err(self) -> None:
+    async def test_read_session_record_raises_on_err(self) -> None:
         client = _ephemeral(_err_response())
-        assert await U392User._read_session_record(client) is None
+        with pytest.raises(SurrealDbError, match="boom"):
+            await U392User._read_session_record(client)
 
     @pytest.mark.asyncio
     async def test_read_session_record_returns_ok_value(self) -> None:
