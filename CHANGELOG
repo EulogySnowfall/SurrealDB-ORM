@@ -6,6 +6,52 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.48] - 2026-11-03
+
+**End-of-maintenance notice release (V2 LTS).** No functional change: the
+`v2` line now states when it stops being maintained (#473, #507). The
+SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Changed
+
+- The README banner and branch table, `SECURITY.md`, the root `CLAUDE.md`
+  banner and the `DeprecationWarning` shown on `import surreal_orm` now say
+  the `v2` line (0.21.x, SurrealDB 2.x) is **no longer maintained once
+  SurrealDB-ORM 0.39.0 is released**: no further security or bug fixes after
+  that release. SurrealDB 2.x users, and security reports for 2.x, are
+  pointed to [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite).
+  This replaces the earlier "retired once SurrealDB-ORM-lite reaches v0.40.0"
+  wording (#473).
+
+### Behaviour change
+
+- Only the text of the import-time `DeprecationWarning` changes; its category
+  (`DeprecationWarning`), `stacklevel` and when it fires do not. Code that
+  filters it by category is unaffected; a filter on the message text
+  (`v0.40.0`, `will be retired`) no longer matches.
+
+### Tests
+
+- `tests/test_issue_473_v2_unit.py` imports the package in a fresh
+  interpreter and checks the warning's category and text (#473).
+
+### Migration notes
+
+- SurrealDB 2.x users should plan to move to SurrealDB-ORM-lite. After
+  SurrealDB-ORM 0.39.0 is released, 0.21.x receives no further security or
+  bug fixes.
+
+### Verification
+
+Against SurrealDB 2.7.0, on #507's validated head: 3,877 unit tests on each
+of Python 3.12, 3.13 and 3.14, and 819 integration tests pass (4 expected
+failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. The new test file passed three times in
+a row.
+
+---
+
 ## [0.21.47] - 2026-11-03
 
 **Bug fix release (V2 LTS).** One fix, `v2` only, from the 0.21.36 review
