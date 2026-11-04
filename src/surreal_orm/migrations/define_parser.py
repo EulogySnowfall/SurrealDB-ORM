@@ -42,6 +42,11 @@ _FIELD_PERMISSIONS_START = re.compile(r"(?:^|(?<=\s))PERMISSIONS\s+(?:FULL|NONE|
 # closing bracket or quote — never one of these.
 _REGEX_AFTER = frozenset("=([{,:!<>+-|&?")
 
+# A DEFINE FIELD clause keyword that takes an expression, at the end of the
+# text before a ``/``: an operand is expected there, so the ``/`` can only
+# open a pattern (``ASSERT /x/``), while ``$value/2`` divides.
+_FIELD_EXPRESSION_KEYWORD_END = re.compile(r"(?:^|(?<=\s))(?:ASSERT|VALUE|DEFAULT)\Z", re.IGNORECASE)
+
 # The four actions a table PERMISSIONS clause can govern, in the order
 # SurrealDB reports them.
 _PERMISSION_ACTIONS = ("select", "create", "update", "delete")
@@ -248,7 +253,7 @@ def _regex_literal_end(text: str, start: int) -> int:
     return -1
 
 
-def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
+def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool, int]:
     """Scan a DEFINE FIELD body (or part of one) token by token.
 
     Quotes (``'``, ``"`` and backticks, with backslash escapes), regex
@@ -271,16 +276,23 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
             any quote, pattern or bracket
 
     Returns:
-        ``(index, balanced)``: the index of that clause start (-1 when none
-        was found or none was looked for), and whether the text ends with no
-        quote, pattern or bracket left open and no pattern end without its
-        start
+        ``(index, balanced, open_pattern)``: the index of that clause start
+        (-1 when none was found or none was looked for), whether the text
+        ends with no quote, pattern or bracket left open and no pattern end
+        without its start, and the index of the ``/`` opening a pattern that
+        never closes (-1 when there is none, or when any earlier ``/`` was
+        seen at all, whether read as a division, as a stray closer or as
+        part of a consumed pattern: that ``/`` can belong to a misread
+        pattern, as in ``ASSERT ($value CONTAINS / a+/)``, ``/ a\\/ b/`` or
+        ``($value/2 + / a+/)``, which makes the later ``/`` its end rather
+        than an opener)
     """
     depth = 0
     quote: str | None = None
     escaped = False
     stray = False
     divisions = 0
+    seen_slash = False
     previous = ""
     i = 0
     while i < len(text):
@@ -298,11 +310,13 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
         if ch == "/" and _opens_regex_literal(text, i, previous):
             end = _regex_literal_end(text, i)
             if end == -1:
-                return -1, False
+                return -1, False, (i if not seen_slash else -1)
+            seen_slash = True
             previous = "/"
             i = end
             continue
         if ch == "/":
+            seen_slash = True
             if i > 0 and text[i - 1].isspace() and text[i + 1 :].strip():
                 divisions += 1
             elif divisions:
@@ -316,11 +330,35 @@ def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool]:
         elif ch in ")]}":
             depth -= 1
         elif find_clause and depth == 0 and ch in "Pp" and _FIELD_PERMISSIONS_START.match(text, i):
-            return i, True
+            return i, True, -1
         if not ch.isspace():
             previous = ch
         i += 1
-    return -1, quote is None and depth == 0 and not stray
+    return -1, quote is None and depth == 0 and not stray, -1
+
+
+def _operand_expected_at(text: str, i: int) -> bool:
+    """Whether the ``/`` at *i* sits where an operand is expected.
+
+    It does after an operator or an opening bracket (:data:`_REGEX_AFTER`),
+    at the start of *text*, and after a clause keyword that takes an
+    expression (:data:`_FIELD_EXPRESSION_KEYWORD_END`) followed by whitespace.
+    Anything else — a name, a number, a closing bracket or quote — is an
+    operand on its left, so the ``/`` can be a division written without
+    spaces (``$value/2``, ``1/2``), which SurrealDB accepts.
+
+    Args:
+        text: The text being scanned
+        i: The index of the ``/``
+
+    Returns:
+        True when only a pattern can start at *i*
+    """
+    before = text[:i]
+    stripped = before.rstrip()
+    if not stripped or stripped[-1] in _REGEX_AFTER:
+        return True
+    return len(stripped) < len(before) and _FIELD_EXPRESSION_KEYWORD_END.search(stripped) is not None
 
 
 def _split_field_permissions(body: str) -> tuple[str, str]:
@@ -341,7 +379,25 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
     (``DEFAULT 'x PERMISSIONS FULL'``) leaves the quote open and is skipped
     (#287), and one inside a regex literal (``ASSERT $value = / PERMISSIONS
     FULL/``) leaves the pattern's closing ``/`` without its start (#509).
-    A body with no start left has no clause.
+    A start is also skipped when the text before it ends inside a pattern
+    whose opening ``/`` is followed by a non-space character, which cannot be
+    a division: in ``ASSERT $value = /x PERMISSIONS FULL / y/`` the
+    remainder pairs ``/ y/`` as a division and looks balanced (#517). That
+    opener is trusted only where an operand is expected (after an operator,
+    an opening bracket or ``ASSERT``/``VALUE``/``DEFAULT``): with an operand
+    on its left, as in ``$value/2`` or ``1/2``, it is a division written
+    without spaces. It is also trusted only when it is the first ``/`` of the
+    text before the start, whether an earlier one was read as a division, as
+    a stray closer or as part of a consumed pattern, since any such ``/`` can
+    belong to a misread pattern: in the server's ``ASSERT ($value CONTAINS /
+    a+/) PERMISSIONS FOR ...`` the ``/`` after ``a+`` closes ``/ a+/`` and
+    opens nothing, in ``/ a\\/ b/`` the escaped slash brings the division
+    count back to zero before the closing ``/``, and in ``($value/2 + /
+    a+/)`` the unspaced division is consumed as a pattern up to the ``/``
+    before ``a+``. A pattern opening with a space is not trusted
+    either, because the scan can misread one (``ASSERT / +/``, below), so
+    ``= / x PERMISSIONS FULL / y/`` remains a known limit. A body with no
+    start left has no clause.
 
     The scan ending balanced is not enough to rule the candidates out: a
     pattern starting with a space after a keyword (``ASSERT / +/``) is read
@@ -355,12 +411,15 @@ def _split_field_permissions(body: str) -> tuple[str, str]:
         ``(definition, permissions)``: the body before the clause, and the
         clause after its ``PERMISSIONS`` keyword (empty when there is none)
     """
-    index, _ = _scan_field_body(body, find_clause=True)
+    index, _, _ = _scan_field_body(body, find_clause=True)
     if index != -1:
         return body[:index], body[index + len("PERMISSIONS") :].strip()
 
     starts = [m.start() for m in _FIELD_PERMISSIONS_START.finditer(body)]
     for start in reversed(starts):
+        opener = _scan_field_body(body[:start], find_clause=False)[2]
+        if opener != -1 and not body[opener + 1].isspace() and _operand_expected_at(body, opener):
+            continue
         remainder = body[start + len("PERMISSIONS") :]
         if _scan_field_body(remainder, find_clause=False)[1]:
             return body[:start], remainder.strip()
