@@ -2,7 +2,8 @@
 
 > Planning document for future ORM features - Last updated: October 2026 (0.21.18)
 >
-> **Note:** This is the deprecated `v2` LTS branch (SurrealDB 2.x). New feature work happens on
+> **Note:** This is the deprecated `v2` LTS branch (SurrealDB 2.x), no longer maintained once
+> SurrealDB-ORM 0.39.0 is released. New feature work happens on
 > [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite) and the `main` branch
 > (SurrealDB 3.x); this roadmap is retained for historical context.
 
@@ -1287,7 +1288,7 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 > **Not planned on `v2`.** The versions below were the pre-LTS plan. They shipped on `main`
 > (SurrealDB 3.x, under different version numbers) or moved to
 > [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite); the `v2` line takes
-> security and bug fixes only.
+> security and bug fixes only, and is no longer maintained once SurrealDB-ORM 0.39.0 is released.
 
 | Version | Focus            | Key Features                                                |
 | ------- | ---------------- | ----------------------------------------------------------- |
