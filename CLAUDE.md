@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.51)
+> Context document for Claude AI - Last updated: November 2026 (0.21.52)
 
 <!-- -->
 
@@ -20,12 +20,29 @@
 
 ---
 
-## Current Version: 0.21.51 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.52 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.52
+
+One fix, `v2` only: #550 via #561 (`surreal_sdk/connection/websocket.py`), the 0.21.49 review follow-up. Pin unchanged
+(2.7.0). Also docs-only #559 (#540) and #557 (#547), and a test-only fix (#560, #551).
+
+- **`connect()` drops a finished reconnect task first.** `_wait_for_session()` keys "reconnect gave up after N
+  attempts" on `_reconnect_task is not None`, and only `_cleanup()` cleared it, which `connect()` ran on
+  `aiohttp.ClientError` only. A running reconnect task is kept: `_reconnect()` itself calls `connect()`.
+- **`connect()` runs `_cleanup()` on any exception** (a `ClientError` still becomes `ConnectionError`, anything else is
+  re-raised unchanged), so a `use()` failing inside `connect()` no longer leaves `_connected` true. `_cleanup()` skips
+  cancelling and awaiting the reconnect task when that task is the caller (`asyncio.current_task()`).
+- **`_surreal_func_from_server()` is a stable import despite its name** (#559): generated migration and `inspectdb`
+  files import it from `surreal_orm.surreal_function`, so its path, name and signature must not change.
+- **`TestBusyFeed`'s writer** retries "This transaction can be retried" replies (2.7.0 returns them now and then for
+  concurrent writes to different `CHANGEFEED` tables) and is stopped between requests, never cancelled mid-request:
+  cancelling an in-flight httpx request under load hung the suite (#560).
 
 ### What's New in 0.21.51
 
@@ -64,7 +81,7 @@ One fix, `v2` only: #528 via #548 (`surreal_sdk/connection/websocket.py`), the 0
   `connect()` and after `close()` the old text stays. Type and control flow unchanged.
 - **Open (review suggestion on #548):** a gave-up reconnect leaves its finished task in `_reconnect_task` until
   `_cleanup()`; a later `connect()` failing with a non-`aiohttp.ClientError` (`asyncio.TimeoutError`, `OSError`) skips
-  `_cleanup()`, so requests then report "reconnect gave up" for a failed `connect()`, tracked in #550.
+  `_cleanup()`, so requests then report "reconnect gave up" for a failed `connect()`, tracked in #550 (fixed in 0.21.52).
 
 ### What's New in 0.21.48
 

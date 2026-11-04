@@ -51,6 +51,17 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.52
+
+**Bug fix release (V2 LTS).** One `v2` fix (#550); pin unchanged (2.7.0).
+
+- **A failed `connect()` is no longer reported as an earlier reconnect give-up.** After a WebSocket reconnect gave up,
+  a later `connect()` failing with an error other than `aiohttp.ClientError` (for example `TimeoutError` or `OSError`)
+  made the next requests report "reconnect gave up after N attempts"; they now report the failed connection.
+  `WebSocketConnection.connect()` also releases the socket, the HTTP session and the reader on any failure, so a
+  failed `use()` no longer leaves a half-open connection that reports itself as connected. See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.51
 
 **Bug fix release (V2 LTS).** One `v2` fix (#517); pin unchanged (2.7.0).
