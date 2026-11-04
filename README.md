@@ -5,7 +5,7 @@
 [![codecov](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM/graph/badge.svg?token=XUONTG2M6Z)](https://codecov.io/gh/EulogySnowfall/SurrealDB-ORM)
 ![GitHub License](https://img.shields.io/github/license/EulogySnowfall/SurrealDB-ORM)
 
-> **V2 LTS Branch** - Maintenance-only for SurrealDB 2.X compatibility. For SurrealDB 3.X, see the [`main` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main).
+> **V2 LTS Branch** - Maintenance-only for SurrealDB 2.X compatibility, until SurrealDB-ORM 0.39.0 is released. For SurrealDB 3.X, see the [`main` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/main).
 
 <!-- -->
 
@@ -36,9 +36,9 @@
 
 - **No new features** are developed on this branch
 - **Security vulnerabilities** and **bug fixes** are maintained until SurrealDB-ORM 0.39.0 is released, then the line stops
-- **SurrealDB 2.X compatibility updates** are automatically monitored and applied
-- A daily workflow checks for new SurrealDB 2.X releases (< 3.0), runs integration tests, and auto-creates PRs
-- Security patches trigger automatic version bumps and PyPI releases
+- Until SurrealDB-ORM 0.39.0 is released, **SurrealDB 2.X compatibility updates** are automatically monitored and applied
+- Until SurrealDB-ORM 0.39.0 is released, a daily workflow checks for new SurrealDB 2.X releases (< 3.0), runs integration tests, and auto-creates PRs
+- Until SurrealDB-ORM 0.39.0 is released, security patches trigger automatic version bumps and PyPI releases
 
 ### SurrealDB Compatibility
 
