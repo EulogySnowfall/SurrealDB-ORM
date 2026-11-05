@@ -46,7 +46,12 @@ class ConnectionPool:
             size: Maximum pool size
             connection_type: "http" or "websocket"
             timeout: Connection timeout in seconds
-            **kwargs: Additional connection arguments
+            **kwargs: Additional keyword arguments passed to every connection
+                the pool creates, whatever ``connection_type`` (for example
+                ``protocol="json"``). A keyword the transport does not take
+                (``max_message_size`` on an HTTP pool) raises ``TypeError``
+                when the first connection is created, at the first
+                ``acquire()``.
         """
         if size <= 0:
             raise ValueError(f"Pool size must be > 0, got {size}")
@@ -82,7 +87,15 @@ class ConnectionPool:
         await self.close()
 
     def _create_connection(self) -> BaseSurrealConnection:
-        """Create a new connection instance."""
+        """
+        Create a new connection instance.
+
+        Both transports receive the pool's extra keywords.
+
+        Raises:
+            TypeError: If a keyword is not accepted by the transport's
+                connection class.
+        """
         if self.connection_type == "websocket":
             return WebSocketConnection(
                 self.url,
@@ -97,6 +110,7 @@ class ConnectionPool:
                 self.namespace,
                 self.database,
                 timeout=self.timeout,
+                **self.kwargs,
             )
 
     async def _init_connection(self, conn: BaseSurrealConnection) -> None:
