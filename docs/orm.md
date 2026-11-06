@@ -112,12 +112,16 @@ if SurrealDBConnectionManager.is_connected():
 # Get current settings
 settings = SurrealDBConnectionManager.get_connection_kwargs()
 
-# Reconnect: the new client is signed in and swapped in first; requests still
-# running on the old client, and transactions still open on it, finish before
-# it is closed (waits at most 30 s). Cancelling reconnect(), e.g. with
-# asyncio.wait_for(), does not cut them off: the last of them closes the old
-# client. Call get_client() again after an await rather than keeping a client:
-# a kept one is closed by the next reconnect().
+# Reconnect: the new client is signed in and swapped in first; RPC requests
+# still running on the old client (not sql(), health(), status() or rest_*()),
+# and transactions still open on it, finish before it is closed (waits at most
+# 30 s). Cancelling reconnect(), e.g. with asyncio.wait_for(), does not cut
+# them off: the last of them closes the old client. Call get_client() again
+# after an await rather than keeping a client: a kept one is closed by the next
+# reconnect(). A QuerySet.changes() stream follows the new client.
+# Call reconnect() from the task that opened a transaction, not from a task the
+# transaction awaits (asyncio.gather(), a TaskGroup): the two would wait for
+# each other until the 30 s timeout, and the commit would then fail.
 # Not needed to renew an expired token: the HTTP client signs in again on a 401.
 await SurrealDBConnectionManager.reconnect()
 
