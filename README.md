@@ -51,6 +51,19 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.54
+
+**Bug fix release (V2 LTS).** Two `v2` backports (#569, #568); pin unchanged (2.7.0).
+
+- **`QuerySet.changes()` streams survive `reconnect()`.** A stream no longer stops with
+  `ChangeFeedError: Not connected` after `SurrealDBConnectionManager.reconnect()` or `close_connection()`: a stream
+  without `connection=` resolves its client again under the same connection name and resumes from its cursor, with no
+  change delivered twice or skipped.
+- **Migrations read DEFINE clauses with one scanner.** A comparison in a field's `VALUE` / `ASSERT`
+  (`ASSERT $value > 0 COMMENT 'positive'`), or a double-quoted string in a permission condition, no longer swallows
+  the clauses or `FOR` groups after it, so `schema_diff()` / `makemigrations` stop reporting such fields and tables as
+  changed on every run. The emitted DDL is unchanged. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.53
 
 **Bug fix release (V2 LTS).** One `v2` fix (#558); pin unchanged (2.7.0).

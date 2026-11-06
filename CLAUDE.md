@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.53)
+> Context document for Claude AI - Last updated: November 2026 (0.21.54)
 
 <!-- -->
 
@@ -20,12 +20,32 @@
 
 ---
 
-## Current Version: 0.21.53 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.54 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.54
+
+Two backports from `main`: #569 via #573 (`surreal_orm/live.py`, backport of #567) and #568 via #574
+(`surreal_orm/migrations/define_parser.py`, backport of #564). Pin unchanged (2.7.0). Also the #572 wording fix in the
+0.21.51 notes.
+
+- **A `changes()` stream re-resolves its client.** `ChangeModelStream` used to keep the client from `_ensure_feed()`
+  for its whole life, so the first poll after `reconnect()` / `close_connection()` failed with `Not connected`. A stream
+  without `connection=` records the connection name it resolved; when a poll fails on a client that is no longer
+  connected it calls `get_client()` for that name (not `get_connection_name()`, which reads the iterating task's
+  `using()` context) and resumes from the feed's cursor, which on 2.x only sits between entries. `stop()` is checked
+  before and after the `get_client()` await. An explicit `connection=`, a rejected statement, or a failure on a client
+  still connected raise `ChangeFeedError` as before, so no retry loop.
+- **One scanner, `_top_level()`,** behind `_consume_until_keyword()` (and so the clause splitter) and
+  `_split_permission_groups()`: single, double and backtick quotes with backslash escapes, regex literals with the 2.x
+  rule (only `\/` escapes), `()[]{}` depth, and `<...>` as brackets only after a parameterised type name
+  (`_GENERIC_TYPES`) or as a `<type>` cast where an operand is expected. `_split_field_permissions()` keeps its own scan.
+- **Open (review suggestions):** `stop()` before the first iteration still polls (#573, also on `main`);
+  `references` is missing from `_GENERIC_TYPES`, so `references<a | comment>` is cut at `comment` (#574).
 
 ### What's New in 0.21.53
 
@@ -70,7 +90,8 @@ unchanged (2.7.0). Also the #555 documentation correction.
   the start of the body, or after `ASSERT`/`VALUE`/`DEFAULT`); with an operand on its left (`$value/2`) the candidate is
   tried as before.
 - **Open:** a pattern starting with a space (`/ x PERMISSIONS FULL / y/`, strict `xfail`) and a pattern after a word
-  operator (`CONTAINS`, `IN`, `INSIDE`; review suggestion on #554, fixed in 0.21.53) are still split.
+  operator (`CONTAINS`, `IN`, `INSIDE`; review suggestion on #554) were still split in this release (fixed in 0.21.53,
+  #558).
   Hand-written statements only.
 
 ### What's New in 0.21.50

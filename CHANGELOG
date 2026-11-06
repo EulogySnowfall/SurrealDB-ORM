@@ -6,6 +6,80 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.54] - 2026-11-06
+
+**Bug fix release (V2 LTS).** Two `v2` backports from `main`: `changes()`
+streams resume after `reconnect()` (#569 via #573, backport of #567), and
+the migration DEFINE parser reads clauses with one SurrealQL scanner (#568
+via #574, backport of #564). Also the #572 wording fix in the [0.21.51]
+notes. The SurrealDB pin is unchanged (tested against 2.7.0, supported range
+2.6.x – 2.7.x).
+
+### Fixed
+
+- **`QuerySet.changes()` streams survive `reconnect()`.** A stream no longer
+  stops with `ChangeFeedError: Not connected` after
+  `SurrealDBConnectionManager.reconnect()` or `close_connection()`. A stream
+  that resolved its own client (no `connection=`) resolves it again under
+  the connection name it first used, not the `using()` context of whoever
+  iterates, and resumes from its cursor, so no change is delivered twice or
+  skipped (#569, #573).
+- **A comparison in `VALUE` / `ASSERT` no longer swallows the clauses after
+  it.** `makemigrations`, `schemadiff` and `inspectdb` read DEFINE clauses
+  with one SurrealQL scanner. `ASSERT $value > 0 COMMENT 'positive'` used to
+  fold `COMMENT` into the assertion, because every `<` and `>` counted as an
+  angle bracket; the same held for `<`, `<=`, `>=` and a comparison inside
+  `VALUE IF ... ELSE` (#568, #574).
+- **A double-quoted string in a permission condition no longer swallows the
+  remaining `FOR` groups.** A condition holding `"it's"` (as SurrealDB
+  reports it), or a quote inside a regex literal, opened a quote that ran to
+  the end of the clause. Applies to table and field permissions. Regex
+  literals keep the 2.x escape rule (only `\/`) (#568, #574).
+
+### Behaviour change
+
+- A `changes()` stream without `connection=` now resumes after its client is
+  closed instead of raising `ChangeFeedError`. `stop()` during the client
+  switch, or during a poll that then fails, ends the stream. A stream given
+  `connection=` still raises `ChangeFeedError`, and so does a rejected
+  statement or a failed request on a client that is still connected.
+- The introspected state of fields and tables with such `VALUE` / `ASSERT`
+  expressions or permission conditions now matches the models, so
+  `schema_diff()` / `makemigrations` stop reporting them as changed on every
+  run. The emitted DDL is unchanged.
+
+### Known limitations
+
+- `stop()` called before the first iteration of a `changes()` stream does
+  not prevent it from polling (also on `main`; review suggestion on #573).
+- `references<...>` is not in the parser's list of parameterised types, so
+  a union such as `references<a | comment>` is cut at `comment`, while
+  `record<user | comment>` is read whole (review suggestion on #574).
+
+### Documentation
+
+- The `reconnect()` drain counts RPC requests only (not `sql()`,
+  `health()`, `status()` or `rest_*()`). Call `reconnect()` from the task
+  that opened a transaction, not from a task the transaction awaits
+  (`asyncio.gather()`, a `TaskGroup`) (#573).
+- The [0.21.51] known limitation about a pattern after a word operator now
+  says it was still split in that release and is fixed in [0.21.53] (#572).
+
+### Migration notes
+
+- None. The first diff after upgrading simply stops listing the fields and
+  tables described above.
+
+### Verification
+
+Against SurrealDB 2.7.0, on the released tree (`origin/v2` after #574):
+4,022 unit tests pass on each of Python 3.12, 3.13 and 3.14 (1 expected
+failure, the strict `xfail` from 0.21.51), and 833 integration tests pass
+(4 expected failures, the existing strict `xfail`s for integer record ids
+over WebSocket); `ruff` and `mypy` clean.
+
+---
+
 ## [0.21.53] - 2026-11-05
 
 **Bug fix release (V2 LTS).** One `v2` fix from the 0.21.51 review
@@ -160,10 +234,10 @@ literal. Also a documentation correction. The SurrealDB pin is unchanged
 - A pattern that both starts with a space and contains `PERMISSIONS`
   followed by a spaced slash (`ASSERT $value = / x PERMISSIONS FULL / y/`)
   is still truncated at that keyword; a strict `xfail` records it.
-- **Fixed in [0.21.53] (#558).** A pattern after a word operator
-  (`CONTAINS`, `IN`, `INSIDE`, …), such as
-  `ASSERT $value CONTAINS /x PERMISSIONS FULL / y/`, is still split, as
-  before this release. Both cases affect hand-written statements only.
+- A pattern after a word operator (`CONTAINS`, `IN`, `INSIDE`, …), such as
+  `ASSERT $value CONTAINS /x PERMISSIONS FULL / y/`, was still split in
+  this release (fixed in [0.21.53], #558). Both cases affect hand-written
+  statements only.
 
 ### Documentation
 
