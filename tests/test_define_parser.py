@@ -589,3 +589,218 @@ class TestParseDefineAccessBearer:
         assert result["table"] == "users"
         assert result["signup_fields"]["email"] == "$email"
         assert result["duration_grant"] is None
+
+
+# ==================== SurrealQL scanning (#273) ====================
+
+# Definitions below are written as INFO FOR TABLE / INFO FOR DB report them on
+# the pinned server (3.3.5): operators spaced, a division as `` / ``, a cast as
+# ``<type>`` with no space after ``<``.
+
+_FIELD_PERMISSIONS = " PERMISSIONS FOR select WHERE type = 'public', FOR create, update NONE"
+
+
+def _field(body: str) -> FieldState:
+    return parse_define_field(f"DEFINE FIELD f ON i273 {body}")
+
+
+class TestComparisonsDoNotHideLaterClauses:
+    """A ``<`` / ``>`` operator is not a bracket: the clauses after it are read."""
+
+    def test_issue_row_assert_greater_than_then_comment(self) -> None:
+        result = parse_define_field(
+            "DEFINE FIELD n ON fu TYPE int DEFAULT 1 VALUE $value ASSERT $value > 0 COMMENT 'positive' PERMISSIONS FULL"
+        )
+        assert result.field_type == "int"
+        assert result.default == 1
+        assert result.value == "$value"
+        assert result.assertion == "$value > 0"
+        assert result.comment == "positive"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            # 2.7.0 rendering
+            "IF string::len($value) > 3 { $value } ELSE { 'none' }",
+            # 3.3.5 rendering
+            "(IF string::len($value) > 3 { $value } ELSE { 'none' })",
+        ],
+    )
+    def test_issue_row_value_with_comparison_then_assert_and_comment(self, value: str) -> None:
+        result = parse_define_field(
+            f"DEFINE FIELD s ON fu TYPE string VALUE {value} ASSERT $value != '' COMMENT 'name' PERMISSIONS FULL"
+        )
+        assert result.value == value
+        assert result.assertion == "$value != ''"
+        assert result.comment == "name"
+
+    @pytest.mark.parametrize("operator", [">", "<", ">=", "<=", "!=", "=", "<-", "->"])
+    def test_every_operator_in_assert(self, operator: str) -> None:
+        result = _field(f"TYPE int ASSERT $value {operator} 0 COMMENT 'c' PERMISSIONS FULL")
+        assert result.assertion == f"$value {operator} 0"
+        assert result.comment == "c"
+
+    def test_less_than_in_value_then_comment(self) -> None:
+        result = _field("TYPE bool VALUE string::len($value) < 10 COMMENT 'short' PERMISSIONS FULL")
+        assert result.value == "string::len($value) < 10"
+        assert result.comment == "short"
+
+    def test_two_comparisons_in_one_assert(self) -> None:
+        result = _field("TYPE none | string VALUE <string> $value ASSERT $value <= 'z' AND $value >= 'a' COMMENT 'c'")
+        assert result.field_type == "string"
+        assert result.nullable is True
+        assert result.value == "<string> $value"
+        assert result.assertion == "$value <= 'z' AND $value >= 'a'"
+        assert result.comment == "c"
+
+    def test_comparison_between_numbers_then_assert(self) -> None:
+        result = _field("TYPE bool VALUE 1 < 2 ASSERT $value PERMISSIONS FULL")
+        assert result.value == "1 < 2"
+        assert result.assertion == "$value"
+
+
+class TestTypesKeepTheirAngleBrackets:
+    """Angle brackets after a type name, or forming a cast, still nest."""
+
+    @pytest.mark.parametrize(
+        ("body", "field_type", "nullable"),
+        [
+            ("TYPE array<string> COMMENT 'a'", "array<string>", False),
+            ("TYPE option<record<user>> COMMENT 'a'", "record<user>", True),
+            ("TYPE set<int, 10> COMMENT 'a'", "set<int, 10>", False),
+            ("TYPE geometry<point> COMMENT 'a'", "geometry<point>", False),
+            ("TYPE none | geometry<point> COMMENT 'a'", "geometry<point>", True),
+            ("TYPE array<record<user | post>, 5> COMMENT 'a'", "array<record<user | post>, 5>", False),
+        ],
+    )
+    def test_generic_types(self, body: str, field_type: str, nullable: bool) -> None:
+        result = _field(body + " PERMISSIONS FULL")
+        assert (result.field_type, result.nullable, result.comment) == (field_type, nullable, "a")
+
+    @pytest.mark.parametrize("cast", ["<string>", "<array<int>>", "<option<record<user>>>", "<set<int, 10>>"])
+    def test_casts_in_value(self, cast: str) -> None:
+        result = _field(f"TYPE any VALUE {cast} $value ASSERT $value != NONE COMMENT 'k' PERMISSIONS FULL")
+        assert result.value == f"{cast} $value"
+        assert result.assertion == "$value != NONE"
+        assert result.comment == "k"
+
+    def test_cast_after_comparison(self) -> None:
+        result = _field("TYPE bool VALUE $value > <int> '3' COMMENT 'k'")
+        assert result.value == "$value > <int> '3'"
+        assert result.comment == "k"
+
+
+class TestQuotesAndRegexLiterals:
+    """Rows of the follow-up triage comment on #273, sections 1 and 2."""
+
+    def test_double_quoted_string_with_apostrophe(self) -> None:
+        result = parse_define_field("DEFINE FIELD d ON pq TYPE string ASSERT $value != \"it's\" COMMENT 'x' PERMISSIONS FULL")
+        assert result.assertion == '$value != "it\'s"'
+        assert result.comment == "x"
+
+    def test_backtick_identifier_with_apostrophe(self) -> None:
+        result = parse_define_field("DEFINE FIELD b ON pq TYPE object ASSERT $value.`it's` = 1 COMMENT 'x' PERMISSIONS FULL")
+        assert result.field_type == "object"
+        assert result.assertion == "$value.`it's` = 1"
+        assert result.comment == "x"
+
+    def test_regex_with_apostrophe(self) -> None:
+        result = parse_define_field(
+            "DEFINE FIELD r1 ON pq TYPE string ASSERT $value = /^[A-Za-z' -]+$/ COMMENT 'name'" + _FIELD_PERMISSIONS
+        )
+        assert result.field_type == "string"
+        assert result.assertion == "$value = /^[A-Za-z' -]+$/"
+        assert result.comment == "name"
+
+    def test_regex_with_escaped_parenthesis(self) -> None:
+        result = parse_define_field("DEFINE FIELD r2 ON pq TYPE string ASSERT $value = /^\\(x/" + _FIELD_PERMISSIONS)
+        assert result.field_type == "string"
+        assert result.assertion == "$value = /^\\(x/"
+        assert result.comment is None
+
+    def test_regex_with_double_quote(self) -> None:
+        result = parse_define_field(
+            "DEFINE FIELD r3 ON pq TYPE string ASSERT $value = /^[^\"]+$/ COMMENT 'q'" + _FIELD_PERMISSIONS
+        )
+        assert result.field_type == "string"
+        assert result.assertion == '$value = /^[^"]+$/'
+        assert result.comment == "q"
+
+    @pytest.mark.parametrize("pattern", ["/it's/", '/say "hi"/', "/^\\(x/", "/[(]/", "/ a/", "/a\\/b'/"])
+    def test_regex_in_value_hides_nothing(self, pattern: str) -> None:
+        result = _field(f"TYPE string VALUE {pattern} ASSERT $value != '' COMMENT 'k'" + _FIELD_PERMISSIONS)
+        assert result.field_type == "string"
+        assert result.value == pattern
+        assert result.assertion == "$value != ''"
+        assert result.comment == "k"
+
+    def test_regex_ending_in_escaped_backslash(self) -> None:
+        # As 3.3.5 prints it: on 3.x a backslash in a regex escapes the next
+        # character, so `\\/` is an escaped backslash and the closing slash.
+        result = _field("TYPE string ASSERT $value = /a\\\\/ COMMENT 'x/y' PERMISSIONS FULL")
+        assert result.field_type == "string"
+        assert result.assertion == "$value = /a\\\\/"
+        assert result.comment == "x/y"
+
+    def test_regex_ending_in_escaped_backslash_then_another_regex(self) -> None:
+        result = _field("TYPE string VALUE /a\\\\/ ASSERT $value = /b\\\\/ COMMENT 'k/v' PERMISSIONS FULL")
+        assert result.value == "/a\\\\/"
+        assert result.assertion == "$value = /b\\\\/"
+        assert result.comment == "k/v"
+
+    def test_division_is_not_a_regex(self) -> None:
+        result = _field("TYPE int VALUE $value / 2 ASSERT $value < 10 COMMENT 'half' PERMISSIONS FULL")
+        assert result.value == "$value / 2"
+        assert result.assertion == "$value < 10"
+        assert result.comment == "half"
+
+    def test_two_divisions_are_not_a_regex(self) -> None:
+        result = _field("TYPE float VALUE $value / 2 / 3 COMMENT 'x' PERMISSIONS FULL")
+        assert result.value == "$value / 2 / 3"
+
+    def test_field_permission_condition_with_apostrophe(self) -> None:
+        result = _field(
+            "TYPE string COMMENT 'x' PERMISSIONS FOR select WHERE name = \"it's\", FOR create, update WHERE $auth.id = id"
+        )
+        assert result.field_type == "string"
+        assert result.comment == "x"
+
+
+class TestTablePermissionsQuoting:
+    """Section 3 of the follow-up triage comment on #273."""
+
+    def test_double_quoted_condition_with_apostrophe(self) -> None:
+        result = parse_define_table(
+            'DEFINE TABLE pq2 TYPE NORMAL SCHEMAFULL COMMENT "it\'s" '
+            'PERMISSIONS FOR select WHERE name = "it\'s", FOR create, update, delete NONE'
+        )
+        assert result["comment"] == "it's"
+        assert result["permissions"] == {
+            "select": 'name = "it\'s"',
+            "create": "NONE",
+            "update": "NONE",
+            "delete": "NONE",
+        }
+
+    def test_regex_condition_with_apostrophe(self) -> None:
+        result = parse_define_table(
+            "DEFINE TABLE pq3 TYPE NORMAL SCHEMAFULL PERMISSIONS FOR select WHERE name = /it's/, FOR create, update, delete NONE"
+        )
+        assert result["permissions"] == {
+            "select": "name = /it's/",
+            "create": "NONE",
+            "update": "NONE",
+            "delete": "NONE",
+        }
+
+    def test_comparison_condition(self) -> None:
+        result = parse_define_table(
+            "DEFINE TABLE pq4 TYPE NORMAL SCHEMAFULL "
+            "PERMISSIONS FOR select WHERE age > 18, FOR create, update WHERE $auth.age >= 21, FOR delete NONE COMMENT 'c'"
+        )
+        assert result["permissions"] == {
+            "select": "age > 18",
+            "create": "$auth.age >= 21",
+            "update": "$auth.age >= 21",
+            "delete": "NONE",
+        }
