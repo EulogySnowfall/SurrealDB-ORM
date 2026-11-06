@@ -50,7 +50,7 @@ Pin unchanged (3.3.5). `v2`: backports tracked in #568 (#564) and #569 (the
 - **Open (review suggestion on #567):** a resume whose `get_client()` fails
   raises `SurrealDbConnectionError` / `ValueError`, not `ChangeFeedError`.
 - Release-docs corrections carried here: 0.34.7 wording (#270 item 6),
-  0.34.11 `sqlmigrate` (#305), 0.38.0 query-text guarantee (#472), 0.38.1
+  0.34.11 `sqlmigrate` (#305), 0.38.0 README query-text guarantee (#472), 0.38.1
   pool auth note (#488).
 
 ### What's New in 0.38.2

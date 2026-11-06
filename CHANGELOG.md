@@ -70,10 +70,9 @@ both backports tracked, #568 (#564) and #569 (#567, the `changes()` part).
   body calls `reconnect()` commits on its own client, and that `reconnect()`
   returns before the previous client is closed when the calling task has
   transactions open on it (#270); the `[0.34.11]` entry no longer says
-  `sqlmigrate` reaches the database (#305); the 0.38.0 README section and
-  `docs/orm.md` say that field names and indexes are checked at the call and
-  values are bound, instead of "nothing a user types reaches the query text"
-  (#472).
+  `sqlmigrate` reaches the database (#305); the 0.38.0 README section says that field names and indexes are checked at
+  the call and values are bound, instead of "nothing a user types reaches the
+  query text" (#472).
 
 ### Known limitations
 
