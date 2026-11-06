@@ -110,12 +110,16 @@ if SurrealDBConnectionManager.is_connected():
 # Get current settings
 settings = SurrealDBConnectionManager.get_connection_kwargs()
 
-# Reconnect: the new client is signed in and swapped in first; requests still
-# running on the old client, and transactions still open on it, finish before
-# it is closed (waits at most 30 s). Cancelling reconnect(), e.g. with
-# asyncio.wait_for(), does not cut them off: the last of them closes the old
-# client. Call get_client() again after an await rather than keeping a client:
-# a kept one is closed by the next reconnect().
+# Reconnect: the new client is signed in and swapped in first; RPC requests
+# still running on the old client (not sql(), health(), status() or rest_*()),
+# and transactions still open on it, finish before it is closed (waits at most
+# 30 s). Cancelling reconnect(), e.g. with asyncio.wait_for(), does not cut
+# them off: the last of them closes the old client. Call get_client() again
+# after an await rather than keeping a client: a kept one is closed by the next
+# reconnect(). A QuerySet.changes() stream follows the new client.
+# Call reconnect() from the task that opened a transaction, not from a task the
+# transaction awaits (asyncio.gather(), a TaskGroup): the two would wait for
+# each other until the 30 s timeout, and the commit would then fail.
 # Not needed to renew an expired token: the HTTP client signs in again on a 401.
 await SurrealDBConnectionManager.reconnect()
 
@@ -1001,6 +1005,14 @@ async for event in stream:
 # Access cursor for resumability
 print(stream.cursor)  # Use this to resume later
 ```
+
+A stream follows `SurrealDBConnectionManager.reconnect()` and
+`close_connection()`: when a poll fails because its HTTP client was closed, it
+resolves the client again, under the connection name it first used (a stream
+first read inside `using("a")` stays on `"a"`), and resumes from its cursor, so
+no change is delivered twice or skipped. A `ChangeModelStream` built with an
+explicit `connection=` keeps that connection and raises `ChangeFeedError` once
+it is closed. Any other failed poll raises `ChangeFeedError`, as before.
 
 ---
 
