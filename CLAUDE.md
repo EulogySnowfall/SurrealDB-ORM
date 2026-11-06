@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.52)
+> Context document for Claude AI - Last updated: November 2026 (0.21.53)
 
 <!-- -->
 
@@ -20,12 +20,26 @@
 
 ---
 
-## Current Version: 0.21.52 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.53 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.53
+
+One fix, `v2` only: #558 via #565 (`surreal_orm/migrations/define_parser.py`), the 0.21.51 review follow-up. Pin
+unchanged (2.7.0).
+
+- **A word operator expects an operand.** `_operand_expected_at()`, consulted only by `_split_field_permissions()`'s
+  fallback for an unclosed pattern before a `PERMISSIONS` candidate, also accepts a whole-word operator (`CONTAINS`
+  family, `INSIDE` family, `OUTSIDE`, `INTERSECTS`, `IN`, `NOT IN`, `IS`, `IS NOT`, `AND`, `OR`) or `THEN`/`ELSE`/
+  `RETURN`, preceded by whitespace and followed by whitespace before the `/` (`_WORD_OPERATOR_END`). The first scan and
+  `_scan_field_body()` are unchanged, so server-reported DDL, emitted DDL and introspection are not affected.
+- **Whole words only:** `$value.in /2` and `x_in /2` stay divisions. SurrealDB 2.7.0 accepts a pattern after each word.
+- **Open:** a pattern opening with a space (strict `xfail`) and a bare field named like an operator before an unspaced
+  `/` (`in /2`, read as the operator). Hand-written statements only.
 
 ### What's New in 0.21.52
 
@@ -56,7 +70,8 @@ unchanged (2.7.0). Also the #555 documentation correction.
   the start of the body, or after `ASSERT`/`VALUE`/`DEFAULT`); with an operand on its left (`$value/2`) the candidate is
   tried as before.
 - **Open:** a pattern starting with a space (`/ x PERMISSIONS FULL / y/`, strict `xfail`) and a pattern after a word
-  operator (`CONTAINS`, `IN`, `INSIDE`; review suggestion on #554) are still split. Hand-written statements only.
+  operator (`CONTAINS`, `IN`, `INSIDE`; review suggestion on #554, fixed in 0.21.53) are still split.
+  Hand-written statements only.
 
 ### What's New in 0.21.50
 

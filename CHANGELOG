@@ -6,6 +6,63 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.53] - 2026-11-05
+
+**Bug fix release (V2 LTS).** One `v2` fix from the 0.21.51 review
+follow-ups (#558, #565): `parse_define_field()` no longer cuts a
+hand-written regex literal at a `PERMISSIONS` keyword inside the pattern
+when the pattern follows a word operator. The SurrealDB pin is unchanged
+(tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **A regex literal after a word operator is kept whole.**
+  `parse_define_field()` no longer cuts a hand-written regex literal at a
+  `PERMISSIONS` keyword inside the pattern when the pattern follows a word
+  operator (`CONTAINS` and its variants, the `INSIDE` family, `OUTSIDE`,
+  `INTERSECTS`, `IN`, `NOT IN`, `IS`, `IS NOT`, `AND`, `OR`) or
+  `THEN`/`ELSE`/`RETURN`, with whitespace before the `/`. Example:
+  `ASSERT $value CONTAINS /x PERMISSIONS FULL / y/`. Before, the assertion
+  came back as `$value CONTAINS /x` and the rest of the pattern was read as
+  permissions. This fixes the second [0.21.51] known limitation (#558).
+
+### Behaviour change
+
+- None for server-reported DDL, emitted DDL or introspection. Only
+  hand-written statements with such a pattern are read differently.
+  Unspaced divisions (`$value/2`, `1/2`) and names that end in an operator
+  word (`$value.in`, `x_in`) are read as before.
+
+### Known limitations
+
+- A pattern that opens with a space (`= / x PERMISSIONS FULL / y/`,
+  `CONTAINS / x ...`) is still not trusted, whatever operator comes before
+  it (strict `xfail` from 0.21.51). A field written bare with an
+  operator's name before an unspaced `/` (`in /2`) is read as the operator.
+  Both cases affect hand-written statements only.
+
+### Tests
+
+- `tests/test_issue_558_unit.py` (62 tests) covers each word operator
+  before a pattern containing `PERMISSIONS`, unspaced divisions and
+  operator-suffixed names read as before, and the existing #509/#517 cases
+  (#565).
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, on #565's validated head (the released tree):
+3,991 unit tests on each of Python 3.12, 3.13 and 3.14 (1 expected failure,
+the strict `xfail` from 0.21.51), and 830 integration tests pass (4
+expected failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean. `tests/test_issue_558_unit.py` passed
+three times in a row.
+
+---
+
 ## [0.21.52] - 2026-11-04
 
 **Bug fix release (V2 LTS).** One `v2` fix from the 0.21.49 review
@@ -103,7 +160,8 @@ literal. Also a documentation correction. The SurrealDB pin is unchanged
 - A pattern that both starts with a space and contains `PERMISSIONS`
   followed by a spaced slash (`ASSERT $value = / x PERMISSIONS FULL / y/`)
   is still truncated at that keyword; a strict `xfail` records it.
-- A pattern after a word operator (`CONTAINS`, `IN`, `INSIDE`, …), such as
+- **Fixed in [0.21.53] (#558).** A pattern after a word operator
+  (`CONTAINS`, `IN`, `INSIDE`, …), such as
   `ASSERT $value CONTAINS /x PERMISSIONS FULL / y/`, is still split, as
   before this release. Both cases affect hand-written statements only.
 
