@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.38.2)
+> Context document for Claude AI - Last updated: November 2026 (0.38.3)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.38.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.38.3 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,40 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.38.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.38.3
+
+Two fixes: #273 via #564 (`migrations/define_parser.py` only) and #270 via
+#567 (`live.py`, `connection_manager.py`, `query_set.py`, `docs/orm.md`).
+Pin unchanged (3.3.5). `v2`: backports tracked in #568 (#564) and #569 (the
+`changes()` part of #567; `v2`'s `_build_client()` already closes on
+`CancelledError`).
+
+- **One SurrealQL scanner in the DEFINE parser.** `_top_level()` replaces
+  three hand-written scanners: quotes and backticks with backslash escapes,
+  regex literals, `()[]{}` depth, and `<...>` as brackets only after a
+  parameterised type name (`array<string>`) or as a `<type>` cast. Counting
+  every `<` / `>` folded the clauses after a comparison into `ASSERT` /
+  `VALUE`, and an unskipped regex or a double-quoted permission condition
+  swallowed the rest, so the diff never converged.
+- **A `/` starts a regex where an operand is expected or when no whitespace
+  follows** (SurrealDB prints a division as ` / `). On 3.x a backslash
+  escapes any character (`/a\\/` closes at the final slash); `v2` keeps the
+  2.x rule (only `\/`), which the backport must not copy from `main`.
+- **`ChangeModelStream` re-resolves a closed client.** Only a stream that
+  resolved its own client (no `connection=`), only when that client reports
+  `is_connected == False`, and under the connection name retained at the
+  first resolution, not the consumer's `using()` context. It resumes from the
+  feed's cursor, which only sits between entries, so nothing repeats or is
+  skipped. `stop()` is honoured before, during and after the switch.
+- **`_build_client()` closes a half-built client on `CancelledError`**
+  (shielded) and re-raises the cancellation; `CancelledError` is not an
+  `Exception`, so the old handlers never saw it.
+- **Open (review suggestion on #567):** a resume whose `get_client()` fails
+  raises `SurrealDbConnectionError` / `ValueError`, not `ChangeFeedError`.
+- Release-docs corrections carried here: 0.34.7 wording (#270 item 6),
+  0.34.11 `sqlmigrate` (#305), 0.38.0 query-text guarantee (#472), 0.38.1
+  pool auth note (#488).
 
 ### What's New in 0.38.2
 
@@ -56,8 +90,8 @@ there; the rest is tracked in #486.
 
 - **The connection owns its auth-state writes.** `_install_auth(token,
   signin_args)` and `_clear_auth()` call `_auth_changed()`;
-  `ConnectionPool._sign_in_as_pool()` and every branch of `_reset_auth()` go
-  through them instead of assigning `_token` / `_authenticated` /
+  `ConnectionPool._sign_in_as_pool()` and every auth change `_reset_auth()`
+  makes go through them (or through `authenticate()`) instead of assigning `_token` / `_authenticated` /
   `_signin_args` directly, so the generation and identity counters (#390)
   see every pool auth change.
 - **The retry matcher is end-anchored**
@@ -601,7 +635,7 @@ passed, 1 skipped, 1 xfailed (#147 still XFAIL).
 
 - **`run_async()` used the thread's current event loop.** A click command
   starts with none: 3.12–3.13 created one with a `DeprecationWarning`, 3.14+
-  raises `RuntimeError`, so every database command failed on 3.14 and 3.15.
+  raises `RuntimeError`, so every command running async code failed on 3.14 and 3.15.
   It is `asyncio.run()` now. The cached HTTP client survives the closed loop
   because `HTTPConnection` keeps no pooled connection alive.
 - **`shell` keeps one `asyncio.Runner`**, entered only to connect and to run

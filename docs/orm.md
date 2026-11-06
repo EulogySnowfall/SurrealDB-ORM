@@ -446,9 +446,9 @@ entry points for them:
 - **`FieldPath`**, used in `annotate()`, which projects a nested value of each record (a filtered array, one element,
   a destructured object) and attaches it to the model instances.
 
-Every value is bound as a query parameter (`$_fN` in filters, `$_paN` in annotations); every field name is checked
-when the call is made (letters, digits and underscores, dotted paths of those), so nothing a user types reaches the
-query text.
+Every value is bound as a query parameter (`$_fN` in filters, `$_paN` in annotations). Field names and indexes are
+written into the query text, so they are checked when the call is made: letters, digits and underscores, dotted paths
+of those, and a non-negative `int` for `at()`.
 
 The examples on this page use these records:
 

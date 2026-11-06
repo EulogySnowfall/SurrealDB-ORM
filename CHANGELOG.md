@@ -6,6 +6,83 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.38.3] - 2026-11-05
+
+**Fix release.** Two fixes: the migration DEFINE parser, #273 via #564
+(`surreal_orm/migrations/define_parser.py` only), and `changes()` streams
+across `reconnect()`, #270 via #567 (`surreal_orm/live.py`,
+`connection_manager.py`, `query_set.py`, `docs/orm.md`). Read *Behaviour
+change* below if you run `makemigrations` / `schemadiff` or iterate a
+`changes()` stream while the connection may be reconnected. The SurrealDB pin
+is unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x). `v2`:
+both backports tracked, #568 (#564) and #569 (#567, the `changes()` part).
+
+### Fixed
+
+- **The migration DEFINE parser (used by `makemigrations`, `schemadiff` and
+  `inspectdb`) no longer folds the clauses after a `<` / `>` comparison in a
+  field's `VALUE` or `ASSERT` into that clause**: `ASSERT $value > 0 COMMENT
+  'positive'` now reads as an assertion and a comment. The same holds for
+  `<=`, `>=` and `!=` (#273).
+- **A regex literal containing a quote or a parenthesis** (`/^[A-Za-z'
+  -]+$/`, `/^\(x/`, `/^[^"]+$/`), or ending in an escaped backslash, no
+  longer hides the clauses or the field `PERMISSIONS` after it; a
+  backtick-quoted identifier containing a quote (``ASSERT $value.`it's` =
+  1``) no longer does either (#273).
+- **A table permission condition holding a double-quoted string with an
+  apostrophe** now yields one permission entry per action (#273).
+- **A `QuerySet.changes()` stream on a connection it resolved itself (no
+  `connection=`) keeps delivering across
+  `SurrealDBConnectionManager.reconnect()`**, or after `close_connection()`.
+  The stream used to keep the HTTP client it resolved first, so the first poll
+  after a reconnect failed with `ChangeFeedError: ... Not connected`. It now
+  resumes on the current client from its cursor, with no change lost or
+  delivered twice, and on the connection name it first resolved, even when it
+  is then iterated outside the `using()` block it started in. A stream given
+  `connection=` keeps that connection, as before (#270).
+- **Cancelling `reconnect()` or `get_client()` while the new client is
+  connecting or signing in** (for example `asyncio.wait_for(reconnect(), 5)`
+  expiring) no longer leaves that client open. It is closed, the
+  `CancelledError` propagates unchanged, and the previous client stays
+  registered (#270).
+
+### Changed
+
+- **Behaviour change:** fields and tables misread before are now introspected
+  correctly, so `schema_diff()` / `makemigrations` stop reporting them as
+  changed on every run. No DDL change. Review the next `makemigrations` run
+  once: fields that previously diffed forever should now be left alone. A
+  migration generated earlier from a misread field may carry merged clauses in
+  its rollback; check it before rolling back (#273).
+- **Behaviour change:** a `changes()` stream without `connection=` no longer
+  ends with `ChangeFeedError` (`Not connected`) after `reconnect()`; it
+  switches to the current client. Other poll failures still raise. With
+  `connection=` passed explicitly, the behaviour is unchanged (#270).
+
+### Documentation
+
+- The `reconnect()` docstring and `docs/orm.md` now say "RPC requests" for
+  the drain (`sql()`, `health()`, `status()` and `rest_*()` are not counted),
+  and say to call `reconnect()` from the task that opened a transaction, not
+  from a task that transaction awaits (`asyncio.gather()`, `TaskGroup`)
+  (#270).
+- Release-note corrections: the `[0.34.7]` entry now says a transaction whose
+  body calls `reconnect()` commits on its own client, and that `reconnect()`
+  returns before the previous client is closed when the calling task has
+  transactions open on it (#270); the `[0.34.11]` entry no longer says
+  `sqlmigrate` reaches the database (#305); the 0.38.0 README section and
+  `docs/orm.md` say that field names and indexes are checked at the call and
+  values are bound, instead of "nothing a user types reaches the query text"
+  (#472).
+
+### Known limitations
+
+- When a `changes()` stream resumes after its client was closed and
+  `get_client()` itself fails, the iteration raises what `get_client()`
+  raises (`SurrealDbConnectionError` when the server is unreachable,
+  `ValueError` when the connection was removed with `remove_connection()` /
+  `unset_connection()`), not `ChangeFeedError` (review suggestion on #567).
+
 ## [0.38.2] - 2026-11-03
 
 **Fix release.** WebSocket reconnect, #510 via #513
@@ -1411,7 +1488,7 @@ pin is unchanged (tested against 3.3.4, supported range 3.2.x – 3.3.x).
 
 ### Fixed
 
-- **Every CLI command that reaches the database failed on Python 3.14+ (#280,
+- **Every CLI command that runs async code failed on Python 3.14+ (#280,
   #298).** `makemigrations` (reading the schema), `migrate`, `upgrade`,
   `rollback`, `status`, `sqlmigrate`, `inspectdb`, `schemadiff` and `shell`
   raised `RuntimeError: There is no current event loop` before doing
@@ -1683,8 +1760,8 @@ unchanged (tested against 3.3.4, supported range 3.2.x – 3.3.x).
 - **An HTTP transaction opened before `reconnect()` lost its writes (#232,
   #260).** `HTTPTransaction` buffers its statements until commit, and the
   commit ran on the closed client: it failed with `Not connected`, and none of
-  the writes reached the database. A transaction opened by another task, or
-  inside its own body, now commits on the client it was opened on.
+  the writes reached the database. A transaction opened by another task, or one
+  whose body calls `reconnect()`, now commits on the client it was opened on.
 - **`close_connection()` / `remove_connection()` kept a dead client
   registered when closing it failed (#232, #260)**, for example with
   `RuntimeError: Event loop is closed`. The error escaped before the registry
@@ -1699,11 +1776,11 @@ unchanged (tested against 3.3.4, supported range 3.2.x – 3.3.x).
 ### Behaviour change
 
 - For a call that runs to completion, `reconnect()` returns only after the
-  previous client is closed. That can take up to 30 s while other tasks finish
-  RPC requests or transactions on it; whatever still uses it after that is cut
-  off by the close. Transactions opened by the task calling `reconnect()` are
-  not waited for: the previous client closes when the last of them commits or
-  rolls back. The default WebSocket client is still closed at once, as before.
+  previous client is closed, unless the calling task itself has transactions
+  open on it: the client then closes when the last of them commits or rolls
+  back. That can take up to 30 s while other tasks finish RPC requests or
+  transactions on it; whatever still uses it after that is cut off by the
+  close. The default WebSocket client is still closed at once, as before.
 - If the new client cannot connect or authenticate, `reconnect()` raises
   `SurrealDbConnectionError` and leaves the current clients in place. The
   previous client used to be closed and removed already.
