@@ -424,16 +424,27 @@ class SurrealDBConnectionManager:
 
         The new client is built and signed in first, then swapped in under the
         connection lock, so concurrent callers of ``get_client()`` always get a
-        connected client. Requests already running on the previous client, and
-        transactions already open on it (from ``transaction()``, which send
-        their statements at commit), are allowed to finish: it is closed once
-        none is left, or after ``_reconnect_drain_timeout`` seconds (30 by
-        default), whichever comes first, and this call returns after that
-        close. Transactions opened by the task calling ``reconnect()`` are not
-        waited for (they cannot end while it waits): the previous client is
-        then closed when the last of them commits or rolls back. The default
-        WebSocket client, if any, is closed as before and recreated on the next
-        ``get_ws_client()``.
+        connected client. RPC requests already running on the previous client
+        (``query()``, ``select()``, ``create()`` and the other RPC methods;
+        not ``sql()``, ``health()``, ``status()`` or the ``rest_*()`` calls,
+        which are not counted), and transactions already open on it (from
+        ``transaction()``, which send their statements at commit), are allowed
+        to finish: it is closed once none is left, or after
+        ``_reconnect_drain_timeout`` seconds (30 by default), whichever comes
+        first, and this call returns after that close. Transactions opened by
+        the task calling ``reconnect()`` are not waited for (they cannot end
+        while it waits): the previous client is then closed when the last of
+        them commits or rolls back. The default WebSocket client, if any, is
+        closed as before and recreated on the next ``get_ws_client()``.
+
+        Call ``reconnect()`` from the task that opened a transaction, not from
+        a task that the transaction awaits (``asyncio.gather()``, a
+        ``TaskGroup``): that task is not the transaction's own, so the drain
+        waits for the transaction while the transaction waits for the drain,
+        until the timeout closes the previous client and the commit fails.
+
+        A ``QuerySet.changes()`` stream (a ``ChangeModelStream`` built without
+        ``connection=``) moves to the new client and resumes from its cursor.
 
         Code that keeps a client from ``get_client()`` across an ``await``
         and uses it after a ``reconnect()`` gets ``Not connected`` once that
@@ -447,7 +458,7 @@ class SurrealDBConnectionManager:
         timing out) does not close the previous client under the requests and
         transactions still using it. Cancelled before the swap, it leaves the
         current clients in place. Cancelled after it, the new client stays
-        installed and the previous one is closed by the last request or
+        installed and the previous one is closed by the last RPC request or
         transaction to finish on it (at once if none is left); the
         cancellation then propagates as usual.
 
