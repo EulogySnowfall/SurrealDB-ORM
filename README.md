@@ -37,6 +37,17 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.38.3
+
+**Fix release.** Two fixes. The migration DEFINE parser ([#273](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/273))
+reads a `<` / `>` comparison in a field's `VALUE` or `ASSERT`, a regex literal holding a quote or a parenthesis, and a
+double-quoted table permission condition without folding the clauses after them into one, so `makemigrations` /
+`schemadiff` stop reporting those fields and tables as changed on every run (behaviour change, no DDL change). A
+`QuerySet.changes()` stream without `connection=` keeps delivering across `SurrealDBConnectionManager.reconnect()`
+([#270](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/270)): it resumes on the current client from its cursor
+instead of ending with `ChangeFeedError` (behaviour change), and a cancelled `reconnect()` no longer leaves a half-built
+client open. SurrealDB pin unchanged (3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.38.2
 
 **Fix release.** WebSocket reconnect ([#510](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/510)).
@@ -62,8 +73,8 @@ See [CHANGELOG.md](CHANGELOG.md) for the full notes.
 
 **Minor release — Advanced Queries** ([#457](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/457)). Filter
 records by the elements of an array field, and project nested values (filtered arrays, one element, destructured
-objects) with `FieldPath`. Every field name is checked at the call and every value is bound, so nothing a user types
-reaches the query text. ORM layer only; SurrealDB pin unchanged (3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full
+objects) with `FieldPath`. Field names and indexes are checked at the call and every value is bound as a query
+parameter. ORM layer only; SurrealDB pin unchanged (3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full
 notes.
 
 ```python
@@ -466,7 +477,7 @@ before upgrading if you consume change feeds.
 **Fix release.** No new public API and nothing to change on upgrade.
 
 - **The `surreal-orm` CLI works on Python 3.14 and 3.15**
-  ([#280](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/280)). Every command that reaches the database
+  ([#280](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/280)). Every command that runs async code
   (`makemigrations`, `migrate`, `upgrade`, `rollback`, `status`, `sqlmigrate`, `inspectdb`, `schemadiff`, `shell`)
   failed with `RuntimeError: There is no current event loop`. Commands now run on a fresh event loop with
   `asyncio.run()`, and on Python 3.12 – 3.13 they no longer emit an event-loop `DeprecationWarning`.
