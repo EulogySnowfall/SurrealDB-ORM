@@ -51,6 +51,15 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.53
+
+**Bug fix release (V2 LTS).** One `v2` fix (#558); pin unchanged (2.7.0).
+
+- **A regex literal after a word operator is kept whole.** `parse_define_field()` no longer cuts a hand-written pattern
+  at a `PERMISSIONS` keyword inside it when the pattern follows a word operator (`CONTAINS`, `IN`, `INSIDE`, `AND`, …)
+  or `THEN`/`ELSE`/`RETURN`, such as `ASSERT $value CONTAINS /x PERMISSIONS FULL / y/`. Server-reported and emitted DDL
+  are unchanged. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.52
 
 **Bug fix release (V2 LTS).** One `v2` fix (#550); pin unchanged (2.7.0).
