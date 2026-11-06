@@ -399,10 +399,10 @@ class TestRealShapesAreReproduced:
             pytest.param(
                 "DEFINE FIELD a ON p259 TYPE string PERMISSIONS FOR select WHERE "
                 "string::contains($value, 'x, y') AND type = \"it's\", FOR create, update FULL",
-                # The group splitter tracks single quotes only, so the
-                # apostrophe inside "it's" keeps the trailing FULL group
-                # attached to the condition — and the text comes out unchanged.
-                "PERMISSIONS FOR select WHERE string::contains($value, 'x, y') AND type = \"it's\", FOR create, update FULL",
+                # The double-quoted "it's" is one string (#568), so the
+                # trailing FULL group is its own group; FULL is a field's
+                # default and is not restated, as in the case below.
+                "PERMISSIONS FOR select WHERE string::contains($value, 'x, y') AND type = \"it's\"",
                 id="comma-in-call-and-double-quoted-apostrophe",
             ),
             pytest.param(

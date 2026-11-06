@@ -9,6 +9,7 @@ compatible with the migration state classes (FieldState, IndexState, etc.).
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import Any
 
 from ..surreal_function import SurrealFunc, _surreal_func_from_server
@@ -41,6 +42,33 @@ _FIELD_PERMISSIONS_START = re.compile(r"(?:^|(?<=\s))PERMISSIONS\s+(?:FULL|NONE|
 # expected. A division has an operand on its left — a name, a number, a
 # closing bracket or quote — never one of these.
 _REGEX_AFTER = frozenset("=([{,:!<>+-|&?")
+
+# Type names that take parameters in angle brackets: ``array<string>``,
+# ``option<record<user>>``, ``set<int, 10>``, ``geometry<point>``. Only a
+# ``<`` written right after one of them opens a bracket.
+_GENERIC_TYPES = frozenset({"array", "set", "option", "record", "geometry", "either", "range", "future", "function"})
+
+# Type names a cast can start with: ``<int> $value``, ``<array<int>> $v``.
+_CAST_TYPES = _GENERIC_TYPES | frozenset(
+    {
+        "any",
+        "bool",
+        "bytes",
+        "datetime",
+        "decimal",
+        "duration",
+        "float",
+        "int",
+        "none",
+        "null",
+        "number",
+        "object",
+        "point",
+        "regex",
+        "string",
+        "uuid",
+    }
+)
 
 # A DEFINE FIELD clause keyword that takes an expression, at the end of the
 # text before a ``/``: an operand is expected there, so the ``/`` can only
@@ -161,60 +189,27 @@ def _extract_clauses(body: str, keywords: list[str]) -> dict[str, str]:
 def _consume_until_keyword(text: str, keywords: list[str]) -> tuple[str, str]:
     """Consume text until the next recognized keyword boundary.
 
-    Respects parentheses, quoted strings, and angle brackets so that
-    expressions like ``string::concat(first_name, ' ', last_name)`` or
-    ``array<string>`` are not split prematurely. A string is single- or
-    double-quoted, as the server reports it, and a backslash escapes the
-    character after it: ``COMMENT "it's"`` must not open a single-quoted
-    string that swallows every later clause.
+    Only a keyword at the top level of the text counts (see
+    :func:`_top_level`), so ``string::concat(first_name, ' ', last_name)``,
+    ``array<string>``, ``COMMENT "it's"`` or ``/^[A-Za-z' -]+$/`` is not
+    split, while ``$value > 0 COMMENT 'positive'`` is.
 
     Returns:
         (consumed_value, remaining_text)
     """
-    i = 0
-    depth_paren = 0
-    depth_angle = 0
-    quote = ""
-
-    while i < len(text):
-        ch = text[i]
-
-        if quote:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == quote:
-                quote = ""
-            i += 1
-            continue
-        if ch in ("'", '"'):
-            quote = ch
-            i += 1
-            continue
-
-        if ch == "(":
-            depth_paren += 1
-        elif ch == ")":
-            depth_paren -= 1
-        elif ch == "<":
-            depth_angle += 1
-        elif ch == ">":
-            depth_angle -= 1
-
-        # Only check for keyword boundaries at depth 0, and only where a clause
-        # could actually start: after whitespace. Without the left-hand check a
-        # keyword appearing inside an expression ended the clause — `PERMISSIONS
-        # FOR select WHERE meta.type != NONE` was cut at `type`, leaving the
-        # condition as `meta.` and the table type as `!= none`.
-        if depth_paren == 0 and depth_angle == 0 and (i == 0 or text[i - 1] in (" ", "\t", "\n")):
-            upper_rest = text[i:].upper()
+    for i in _top_level(text):
+        # Only check where a clause could actually start: after whitespace.
+        # Without the left-hand check a keyword appearing inside an expression
+        # ended the clause — `PERMISSIONS FOR select WHERE meta.type != NONE`
+        # was cut at `type`, leaving the condition as `meta.` and the table
+        # type as `!= none`.
+        if i == 0 or text[i - 1] in (" ", "\t", "\n"):
+            upper_rest = text[i : i + 16].upper()
             for kw in keywords:
                 if upper_rest.startswith(kw):
                     after_kw = text[i + len(kw) :]
                     if after_kw == "" or after_kw[0] in (" ", "\t", "\n"):
                         return text[:i], text[i:]
-
-        i += 1
 
     return text, ""
 
@@ -264,6 +259,138 @@ def _regex_literal_end(text: str, start: int) -> int:
         else:
             i += 1
     return -1
+
+
+def _quoted_end(text: str, start: int) -> int:
+    """Return the index just past the string or identifier quoted at *start*.
+
+    A single-quoted, double-quoted or backtick-quoted token closes at its own
+    quote character, and a backslash escapes the character after it, as
+    SurrealDB reports them. An unterminated one runs to the end of the text.
+
+    Args:
+        text: The text being scanned
+        start: The index of the opening quote
+
+    Returns:
+        The index after the closing quote, or ``len(text)``
+    """
+    quote = text[start]
+    i = start + 1
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+        elif text[i] == quote:
+            return i + 1
+        else:
+            i += 1
+    return len(text)
+
+
+def _word_before(text: str, end: int) -> str:
+    """Return the identifier ending right before *end* (empty when none)."""
+    i = end
+    while i > 0 and (text[i - 1].isalnum() or text[i - 1] == "_"):
+        i -= 1
+    return text[i:end]
+
+
+def _type_bracket_end(text: str, start: int) -> int:
+    """Return the index just past the type brackets opening at *start*.
+
+    A ``<`` opens type brackets in two places only: right after a type name
+    that takes parameters (``array<string>``, ``option<record<user>>``), and
+    as a cast, a ``<`` followed at once by a type name where an operand is
+    expected (``<int> $value``, ``<array<int>> $value``). Anywhere else it is
+    an operator (``$value < 10``, ``<-follows``), and so is every ``>``
+    outside type brackets (``$value > 0``, ``->likes``).
+
+    Args:
+        text: The text being scanned
+        start: The index of the ``<``
+
+    Returns:
+        The index after the matching ``>``, or -1 when *start* is an operator
+    """
+    if _word_before(text, start).lower() not in _GENERIC_TYPES:
+        cast_type = re.match(r"[a-z]+", text[start + 1 :], re.IGNORECASE)
+        if cast_type is None or cast_type.group(0).lower() not in _CAST_TYPES:
+            return -1
+        if not _operand_expected_at(text, start):
+            return -1
+    depth = 0
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch in "'\"`":
+            i = _quoted_end(text, i)
+            continue
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        elif not (ch.isalnum() or ch in " \t\n_,|:.-{}[]"):
+            # Not something a type is written with: `$`, `(`, `=`, `;`
+            return -1
+        i += 1
+    return -1
+
+
+def _top_level(text: str) -> Iterator[int]:
+    """Yield the index of every character of *text* at the top level.
+
+    The clause scanner shared by :func:`_consume_until_keyword` (and so the
+    clause splitter) and :func:`_split_permission_groups`. A character is at
+    the top level when it sits outside any string or quoted identifier
+    (single, double or backtick quotes, with backslash escapes), regex literal
+    (``/…/``, read with the 2.x rule of :func:`_regex_literal_end`; a ``/``
+    where an operand is expected opens one, even followed by a space, as in
+    ``ASSERT / it's/ = $value``), type
+    brackets (``array<…>``, a ``<type>`` cast) and ``()``, ``[]`` or ``{}``
+    pair. The brackets themselves are not yielded.
+
+    A ``<`` or ``>`` used as an operator is yielded like any other character:
+    counting it as a bracket left ``ASSERT $value > 0`` open, which hid every
+    clause after it (#568).
+
+    Args:
+        text: The text to scan
+
+    Yields:
+        Indices into *text*, in increasing order
+    """
+    depth = 0
+    previous = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch in "'\"`":
+            i = _quoted_end(text, i)
+            previous = ch
+            continue
+        if ch == "/" and (_opens_regex_literal(text, i, previous) or _operand_expected_at(text, i)):
+            end = _regex_literal_end(text, i)
+            if end != -1:
+                previous = "/"
+                i = end
+                continue
+        elif ch == "<":
+            end = _type_bracket_end(text, i)
+            if end != -1:
+                previous = ">"
+                i = end
+                continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif depth == 0:
+            yield i
+        if not ch.isspace():
+            previous = ch
+        i += 1
 
 
 def _scan_field_body(text: str, *, find_clause: bool) -> tuple[int, bool, int]:
@@ -700,10 +827,11 @@ def parse_define_table(statement: str) -> dict[str, Any]:
 def _split_permission_groups(raw: str) -> list[str]:
     """Split a PERMISSIONS clause into its ``FOR ...`` groups.
 
-    Scanning rather than matching a regex, so that a ``FOR`` inside a quoted
-    string or a parenthesised sub-expression does not start a new group. The
-    regex this replaces also backtracked quadratically on a long run of ``FOR``
-    tokens.
+    Scanning rather than matching a regex, so that a ``FOR`` inside a string,
+    a regex literal or a parenthesised sub-expression does not start a new
+    group (see :func:`_top_level`), and a double-quoted ``"it's"`` does not
+    open a string that runs to the end of the clause (#568). The regex this
+    replaced also backtracked quadratically on a long run of ``FOR`` tokens.
 
     Args:
         raw: The clause body, without the ``PERMISSIONS`` keyword
@@ -713,31 +841,12 @@ def _split_permission_groups(raw: str) -> list[str]:
     """
     groups: list[str] = []
     start: int | None = None
-    depth = 0
-    in_quote = False
-    i = 0
 
-    while i < len(raw):
-        ch = raw[i]
-
-        if ch == "'" and not (in_quote and i > 0 and raw[i - 1] == "\\"):
-            in_quote = not in_quote
-            i += 1
-            continue
-        if in_quote:
-            i += 1
-            continue
-
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-
-        # A group starts at a `FOR` token: at depth 0, preceded by nothing, a
-        # separator or whitespace, and followed by whitespace.
+    for i in _top_level(raw):
+        # A group starts at a `FOR` token: preceded by nothing, a separator or
+        # whitespace, and followed by whitespace.
         if (
-            depth == 0
-            and raw[i : i + 3].upper() == "FOR"
+            raw[i : i + 3].upper() == "FOR"
             and (i == 0 or raw[i - 1] in " \t\n,")
             and i + 3 < len(raw)
             and raw[i + 3] in " \t\n"
@@ -745,8 +854,6 @@ def _split_permission_groups(raw: str) -> list[str]:
             if start is not None:
                 groups.append(raw[start:i])
             start = i
-
-        i += 1
 
     if start is not None:
         groups.append(raw[start:])
