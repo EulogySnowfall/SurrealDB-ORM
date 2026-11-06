@@ -2233,7 +2233,16 @@ class QuerySet(Generic[T]):
         Returns:
             ``ChangeModelStream`` — async iterator yielding ``ModelChangeEvent``.
             A poll the server rejects, or a failed request, raises
-            ``ChangeFeedError`` from the iteration; it is not retried.
+            ``ChangeFeedError`` from the iteration; it is not retried. A poll
+            that fails because ``SurrealDBConnectionManager.reconnect()`` (or
+            ``close_connection()``) closed the client is the exception: the
+            stream resolves the client again, under the connection name it
+            first used, and resumes from its cursor. A poll is an RPC request,
+            so ``reconnect()`` lets one in flight finish before closing the
+            client (the drain counts RPC requests only, not ``sql()``,
+            ``health()``, ``status()`` or ``rest_*()``); call ``reconnect()``
+            from the task that opened a transaction, not from a task the
+            transaction awaits.
 
         Example::
 
