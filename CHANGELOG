@@ -6,6 +6,54 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.56] - 2026-11-07
+
+**Bug fix release (V2 LTS).** The 0.21.55 review follow-ups (#601 via
+#608): a `changes()` stream stopped while its first iteration is still
+resolving the HTTP client no longer polls. The SurrealDB pin is unchanged
+(tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`stop()` during the first client build ends a `changes()` stream.** A
+  `ChangeModelStream` stopped while its first `__anext__()` was still waiting
+  for `get_client()` now ends (`StopAsyncIteration`) once the client is
+  resolved, without sending a change-feed query. Before, `stop()` found no
+  feed to stop, so the stream built one, polled once and could deliver
+  events after `stop()` (#601, #608).
+
+### Behaviour change
+
+- None beyond the fix: only a stream already stopped behaves differently.
+
+### Known limitations
+
+- If `stop()` arrives while the first `get_client()` is pending and that
+  call then raises (for example `SurrealDbConnectionError` when the server
+  cannot be reached), the error still reaches the caller of the stopped
+  stream. Only a successful client build ends quietly (review suggestion on
+  #608).
+
+### Tests
+
+- The #577 parser test `test_references_type_with_keyword_named_table_is_one_bracket`
+  now says it mirrors the #568 case and passed before the #577 fix; the
+  parametrised test after it is the regression guard. No library change.
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, on the fix branch merged as #608: 4,029 unit tests
+pass on each of Python 3.12, 3.13 and 3.14 (1 expected failure, the strict
+`xfail` from 0.21.51), and 833 integration tests pass (4 expected failures,
+the existing strict `xfail`s for integer record ids over WebSocket); `ruff`
+and `mypy` clean. The new test fails against the 0.21.55 `src/`.
+
+---
+
 ## [0.21.55] - 2026-11-07
 
 **Bug fix release (V2 LTS).** The two follow-ups from the 0.21.54 reviews
