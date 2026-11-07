@@ -51,6 +51,15 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.57
+
+**Bug fix release (V2 LTS).** One backport from `main` (#604); pin unchanged (2.7.0).
+
+- **`ConnectionPool` keywords reach HTTP connections.** An HTTP pool (the default `connection_type`) now passes its extra
+  keywords to `HTTPConnection`, so `SurrealDB.pool(..., protocol="json")` uses JSON instead of CBOR. **Behaviour
+  change:** a keyword `HTTPConnection` does not take (such as the WebSocket-only `max_message_size`) now raises
+  `TypeError` at the first `acquire()` instead of being ignored. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.56
 
 **Bug fix release (V2 LTS).** The 0.21.55 review follow-up (#601); pin unchanged (2.7.0).

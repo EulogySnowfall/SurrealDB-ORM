@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.56)
+> Context document for Claude AI - Last updated: November 2026 (0.21.57)
 
 <!-- -->
 
@@ -20,12 +20,23 @@
 
 ---
 
-## Current Version: 0.21.56 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.57 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.57
+
+One fix PR, #604 via #613 (`surreal_sdk/connection/pool.py`), backport of #566 / #603. Pin unchanged (2.7.0).
+
+- **The HTTP branch of `_create_connection()` passes `**self.kwargs`**, like the WebSocket branch. `HTTPConnection` on
+  `v2` takes only `timeout` and `protocol` besides the positional arguments, so anything else raises `TypeError` at
+  construction; `acquire()` builds inside the `try` that releases the semaphore and before `_in_use.add()`, so no slot
+  is lost. The pool's `timeout` is a named parameter and can never also sit in `self.kwargs`.
+- **Behaviour change:** unknown keywords on an HTTP pool raise at the first `acquire()`; an invalid `protocol` value
+  raises `ValueError` there (review suggestion on #613).
 
 ### What's New in 0.21.56
 
