@@ -6,7 +6,7 @@ Defines the abstract interface that all connection types must implement.
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
 
 from .. import jsonl
 from ..files import FileInfo, FileRef, _check_bucket
@@ -35,6 +35,15 @@ class BaseSurrealConnection(ABC):
 
     #: Serialization protocol, set by each transport's ``__init__``.
     protocol: Literal["json", "cbor"]
+
+    #: Largest request ``file_put()`` sends, in bytes, set by each transport's
+    #: ``__init__`` (``max_request_size=``); ``None`` disables the check.
+    max_request_size: int | None = None
+
+    #: The transport and the server setting of its request limit, named by the
+    #: error ``file_put()`` raises over ``max_request_size``.
+    _transport_name: ClassVar[str] = "SurrealDB"
+    _server_size_setting: ClassVar[str] = "request size limit"
 
     def __init__(
         self,
@@ -615,6 +624,30 @@ class BaseSurrealConnection(ABC):
             raise QueryError("The server returned no result for the file statement", query=sql)
         return response.results[-1].result
 
+    def _check_request_size(self, file: FileRef, data: bytes | bytearray | memoryview) -> None:
+        """Refuse an upload the transport would reject, before anything is sent.
+
+        The estimate is the data, the pointer's bucket and key (UTF-8) and 512
+        bytes for the request envelope (measured at about 45 bytes over CBOR).
+
+        Raises:
+            PayloadTooLargeError: The estimate exceeds ``max_request_size``.
+        """
+        limit = self.max_request_size
+        if limit is None:
+            return
+        size = memoryview(data).nbytes + len(file.bucket.encode()) + len(file.key.encode()) + 512
+        if size > limit:
+            from ..exceptions import PayloadTooLargeError
+
+            raise PayloadTooLargeError(
+                f"File upload of {size} bytes exceeds this {self._transport_name} connection's request limit of "
+                f"{limit} bytes; use a WebSocket connection (up to 128 MiB by default) or raise max_request_size "
+                f"together with the server's {self._server_size_setting}",
+                size=size,
+                limit=limit,
+            )
+
     @staticmethod
     def _unexpected_file_result(function: str, result: object, sql: str) -> Exception:
         """The error for a file function result of a type the server does not send."""
@@ -628,8 +661,11 @@ class BaseSurrealConnection(ABC):
 
         Experimental: follows SurrealDB's experimental ``files`` capability.
         The server must be started with ``--allow-experimental=files``. The
-        whole payload is sent in one request and held in memory. File writes
-        are not transactional: a ``CANCEL`` does not undo them.
+        whole payload is sent in one request and held in memory, so it must
+        fit the transport: the connection's ``max_request_size`` (4 MiB over
+        HTTP, 128 MiB over WebSocket by default, as on the server) is
+        checked first and nothing is sent above it. File writes are not
+        transactional: a ``CANCEL`` does not undo them.
 
         Args:
             file: Where to write.
@@ -643,6 +679,9 @@ class BaseSurrealConnection(ABC):
             ValueError: On a JSON-protocol connection.
             TypeError: If *file* is not a ``FileRef`` or *data* is not bytes,
                 ``bytearray`` or ``memoryview``.
+            PayloadTooLargeError: The upload is over the connection's
+                ``max_request_size`` (nothing was sent), or the HTTP server
+                answered ``413``.
             FilesNotEnabledError: The server's ``files`` capability is off.
             QueryError: The server rejected the write (missing bucket,
                 read-only bucket, permission denied, backend error).
@@ -650,6 +689,7 @@ class BaseSurrealConnection(ABC):
         ref = self._check_file_args(file)
         if not isinstance(data, (bytes, bytearray, memoryview)):
             raise TypeError(f"File data must be bytes, bytearray or memoryview, got {type(data).__name__}")
+        self._check_request_size(ref, data)
         function = "file::put" if overwrite else "file::put_if_not_exists"
         await self._run_file_statement(f"{function}($_file, $_data);", {"_file": ref, "_data": bytes(data)})
 

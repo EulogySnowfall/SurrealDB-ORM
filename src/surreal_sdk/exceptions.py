@@ -151,6 +151,39 @@ class FilesNotEnabledError(QueryError):
         )
 
 
+class PayloadTooLargeError(QueryError):
+    """Raised when a request is over the size limit of its transport.
+
+    Experimental: follows SurrealDB's experimental ``files`` capability.
+    File uploads need a server started with ``--allow-experimental=files``.
+    Raised by ``file_put()`` before anything is sent, when its estimate of
+    the request exceeds the connection's ``max_request_size``, and by the HTTP
+    transport when the server answers ``413`` (its body limit,
+    ``SURREAL_HTTP_MAX_RPC_BODY_SIZE``, 4 MiB by default), whatever the
+    request. It is a ``QueryError`` with ``code`` 413, so existing handlers
+    keep catching it.
+
+    Attributes:
+        size: The estimated size of the refused request in bytes (the data,
+            the file pointer and 512 bytes for the request envelope), or
+            ``None`` when the server refused it.
+        limit: The connection's ``max_request_size``, or ``None`` when the
+            server refused the request.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        size: int | None = None,
+        limit: int | None = None,
+        query: str | None = None,
+    ):
+        self.size = size
+        self.limit = limit
+        super().__init__(message, query=query, code=413)
+
+
 class TimeoutError(SurrealDBError):
     """Raised when an operation times out."""
 

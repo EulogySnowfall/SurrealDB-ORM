@@ -18,11 +18,20 @@ from datetime import UTC, datetime
 from typing import Any, Self
 
 import cbor2
+import httpx
 import pytest
 from cbor2 import CBORTag
 
 import surreal_sdk
-from surreal_sdk import FileInfo, FileRef, FilesNotEnabledError, HTTPConnection, WebSocketConnection
+from surreal_sdk import (
+    ConnectionPool,
+    FileInfo,
+    FileRef,
+    FilesNotEnabledError,
+    HTTPConnection,
+    PayloadTooLargeError,
+    WebSocketConnection,
+)
 from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.exceptions import QueryError, TableNotFoundError
 from surreal_sdk.protocol.cbor import TAG_FILE, decode, encode
@@ -722,3 +731,275 @@ class TestFileExports:
         assert "experimental" in doc.lower()
         assert "files" in doc
         assert "--allow-experimental=files" in doc
+
+
+# --------------------------------------------------------------------------- U10, U11: request-size limits
+
+MiB = 1024 * 1024
+HTTP_LIMIT = 4 * MiB
+WS_LIMIT = 128 * MiB
+#: What ``file_put()`` adds to the data for the request envelope (the CBOR envelope is about 45 bytes).
+ENVELOPE = 512
+
+E6 = (
+    "File upload of {size} bytes exceeds this {transport} connection's request limit of {limit} bytes; use a "
+    "WebSocket connection (up to 128 MiB by default) or raise max_request_size together with the server's {env_var}"
+)
+E7 = (
+    "Request rejected by the server: body over its size limit (HTTP 413 - {text}); "
+    "raise SURREAL_HTTP_MAX_RPC_BODY_SIZE or use a WebSocket connection"
+)
+
+TRANSPORTS = [
+    pytest.param(HTTPConnection, HTTP_LIMIT, "HTTP", "SURREAL_HTTP_MAX_RPC_BODY_SIZE", id="http"),
+    pytest.param(WebSocketConnection, WS_LIMIT, "WebSocket", "SURREAL_WEBSOCKET_MAX_MESSAGE_SIZE", id="ws"),
+]
+
+
+def _overhead(ref: FileRef) -> int:
+    """What the estimate adds to the data of an upload to *ref*."""
+    return len(ref.bucket.encode()) + len(ref.key.encode()) + ENVELOPE
+
+
+def _recording(conn: BaseSurrealConnection) -> list[RPCRequest]:
+    """Replace *conn*'s transport with one that records each request and answers ``OK``."""
+    sent: list[RPCRequest] = []
+
+    async def send_rpc(request: RPCRequest) -> RPCResponse:
+        sent.append(request)
+        return _ok(None)
+
+    conn._send_rpc = send_rpc  # type: ignore[method-assign]
+    return sent
+
+
+class TestMaxRequestSize:
+    """U10: ``file_put()`` refuses, before any request, an upload the transport would reject."""
+
+    @pytest.mark.parametrize(("factory", "limit", "transport", "env_var"), TRANSPORTS)
+    def test_default(self, factory: type[BaseSurrealConnection], limit: int, transport: str, env_var: str) -> None:
+        conn = factory("http://localhost:1", "ns", "db")  # type: ignore[call-arg]
+        assert conn.max_request_size == limit
+
+    @pytest.mark.parametrize(("factory", "limit", "transport", "env_var"), TRANSPORTS)
+    async def test_at_the_limit_is_sent(
+        self, factory: type[BaseSurrealConnection], limit: int, transport: str, env_var: str
+    ) -> None:
+        conn = factory("http://localhost:1", "ns", "db")  # type: ignore[call-arg]
+        sent = _recording(conn)
+        data = bytes(limit - _overhead(REF))  # zero-filled, so not resident until written
+        await conn.file_put(REF, data)
+        assert len(sent) == 1
+        assert sent[0].params[1]["_data"] is data
+
+    @pytest.mark.parametrize(("factory", "limit", "transport", "env_var"), TRANSPORTS)
+    async def test_over_the_limit_raises_before_sending(
+        self, factory: type[BaseSurrealConnection], limit: int, transport: str, env_var: str
+    ) -> None:
+        conn = factory("http://localhost:1", "ns", "db")  # type: ignore[call-arg]
+        sent = _recording(conn)
+        size = limit + 1
+        with pytest.raises(PayloadTooLargeError) as excinfo:
+            await conn.file_put(REF, bytes(size - _overhead(REF)))
+        assert sent == []
+        error = excinfo.value
+        assert isinstance(error, QueryError)
+        assert error.code == 413
+        assert error.size == size
+        assert error.limit == limit
+        assert str(error) == E6.format(size=size, transport=transport, limit=limit, env_var=env_var)
+
+    @pytest.mark.parametrize(("factory", "limit", "transport", "env_var"), TRANSPORTS)
+    async def test_overwrite_false_is_checked_too(
+        self, factory: type[BaseSurrealConnection], limit: int, transport: str, env_var: str
+    ) -> None:
+        conn = factory("http://localhost:1", "ns", "db", max_request_size=1024)  # type: ignore[call-arg]
+        sent = _recording(conn)
+        with pytest.raises(PayloadTooLargeError):
+            await conn.file_put(REF, bytes(1025 - _overhead(REF)), overwrite=False)
+        assert sent == []
+
+    @pytest.mark.parametrize(("factory", "limit", "transport", "env_var"), TRANSPORTS)
+    async def test_custom_value(self, factory: type[BaseSurrealConnection], limit: int, transport: str, env_var: str) -> None:
+        conn = factory("http://localhost:1", "ns", "db", max_request_size=2048)  # type: ignore[call-arg]
+        assert conn.max_request_size == 2048
+        sent = _recording(conn)
+        await conn.file_put(REF, bytes(2048 - _overhead(REF)))
+        assert len(sent) == 1
+        with pytest.raises(PayloadTooLargeError) as excinfo:
+            await conn.file_put(REF, bytes(2049 - _overhead(REF)))
+        assert len(sent) == 1
+        assert excinfo.value.limit == 2048
+        assert str(excinfo.value) == E6.format(size=2049, transport=transport, limit=2048, env_var=env_var)
+
+    @pytest.mark.parametrize(("factory", "limit", "transport", "env_var"), TRANSPORTS)
+    async def test_none_disables_the_check(
+        self, factory: type[BaseSurrealConnection], limit: int, transport: str, env_var: str
+    ) -> None:
+        conn = factory("http://localhost:1", "ns", "db", max_request_size=None)  # type: ignore[call-arg]
+        assert conn.max_request_size is None
+        sent = _recording(conn)
+        await conn.file_put(REF, bytes(limit + 1))
+        assert len(sent) == 1
+
+    async def test_key_and_bucket_count_in_utf8_bytes(self) -> None:
+        ref = FileRef("bé", "/é")
+        conn = HTTPConnection("http://localhost:1", "ns", "db", max_request_size=1024)
+        sent = _recording(conn)
+        overhead = len("bé".encode()) + len("/é".encode()) + ENVELOPE
+        assert overhead == 3 + 3 + ENVELOPE
+        await conn.file_put(ref, bytes(1024 - overhead))
+        with pytest.raises(PayloadTooLargeError):
+            await conn.file_put(ref, bytes(1025 - overhead))
+        assert len(sent) == 1
+
+    async def test_memoryview_counts_bytes_not_items(self) -> None:
+        """A memoryview of wider items is as many bytes as its buffer, which is what is sent."""
+        conn = HTTPConnection("http://localhost:1", "ns", "db", max_request_size=1024)
+        sent = _recording(conn)
+        items = (1024 - _overhead(REF)) // 4 + 1  # 4-byte items: over by up to 4 bytes, under in item count
+        view = memoryview(bytearray(items * 4)).cast("I")
+        assert len(view) == items
+        with pytest.raises(PayloadTooLargeError) as excinfo:
+            await conn.file_put(REF, view)
+        assert excinfo.value.size == items * 4 + _overhead(REF)
+        assert sent == []
+
+    async def test_bytearray_and_memoryview_accepted(self) -> None:
+        conn = HTTPConnection("http://localhost:1", "ns", "db", max_request_size=1024)
+        sent = _recording(conn)
+        await conn.file_put(REF, bytearray(b"ab"))
+        await conn.file_put(REF, memoryview(b"cd"))
+        assert [request.params[1]["_data"] for request in sent] == [b"ab", b"cd"]
+
+    async def test_query_is_not_checked(self) -> None:
+        """Only file_put() reads the limit: a user who raised the server's limit keeps using query()."""
+        conn = HTTPConnection("http://localhost:1", "ns", "db", max_request_size=1024)
+        sent = _recording(conn)
+        await conn.query("RETURN $d;", {"d": bytes(4096)})
+        assert len(sent) == 1
+
+    async def test_data_type_checked_before_size(self) -> None:
+        conn = HTTPConnection("http://localhost:1", "ns", "db", max_request_size=1024)
+        with pytest.raises(TypeError):
+            await conn.file_put(REF, "x" * 4096)  # type: ignore[arg-type]
+
+    async def test_base_connection_without_a_limit_does_not_check(self) -> None:
+        conn = FakeConnection()
+        assert conn.max_request_size is None
+        await conn.file_put(REF, bytes(5 * MiB))
+        assert len(conn.requests) == 1
+
+    @pytest.mark.parametrize("factory", [HTTPConnection, WebSocketConnection])
+    @pytest.mark.parametrize(
+        ("value", "error", "text"),
+        [
+            ("5", TypeError, "max_request_size must be an int, got str"),
+            (True, TypeError, "max_request_size must be an int, got bool"),
+            (1.5, TypeError, "max_request_size must be an int, got float"),
+            (0, ValueError, "max_request_size must be >= 1, got 0"),
+            (-1, ValueError, "max_request_size must be >= 1, got -1"),
+        ],
+    )
+    def test_invalid_value(
+        self, factory: type[BaseSurrealConnection], value: object, error: type[Exception], text: str
+    ) -> None:
+        with pytest.raises(error) as excinfo:
+            factory("http://localhost:1", "ns", "db", max_request_size=value)  # type: ignore[call-arg]
+        assert str(excinfo.value) == text
+
+    def test_websocket_keeps_the_receive_cap_apart(self) -> None:
+        conn = WebSocketConnection("ws://localhost:1", "ns", "db", max_request_size=1024, max_message_size=2048)
+        assert conn.max_request_size == 1024
+        assert conn.max_message_size == 2048
+        assert conn._max_msg_size() == 2048
+
+    def test_websocket_pool_forwards_it(self) -> None:
+        pool = ConnectionPool("ws://localhost:1", "ns", "db", connection_type="websocket", max_request_size=16 * MiB)
+        conn = pool._create_connection()
+        assert isinstance(conn, WebSocketConnection)
+        assert conn.max_request_size == 16 * MiB
+
+    @pytest.mark.parametrize("factory", [HTTPConnection, WebSocketConnection])
+    def test_constructor_documents_it(self, factory: type[BaseSurrealConnection]) -> None:
+        doc = factory.__init__.__doc__ or ""
+        assert "max_request_size" in doc
+        assert "Experimental: follows SurrealDB's experimental ``files`` capability." in doc
+        if factory is WebSocketConnection:
+            assert "max_message_size" in doc
+
+
+def _http_413(text: str) -> HTTPConnection:
+    """An HTTP connection whose client answers every request with a ``413``."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(413, text=text)
+
+    conn = HTTPConnection("http://fake", "ns", "db")
+    conn._client = httpx.AsyncClient(base_url="http://fake", transport=httpx.MockTransport(handler))
+    conn._connected = True
+    return conn
+
+
+class TestHttp413:
+    """U11: an HTTP ``413`` raises ``PayloadTooLargeError``, still a ``QueryError``."""
+
+    @pytest.mark.parametrize("protocol", ["cbor", "json"])
+    async def test_query_413(self, protocol: str) -> None:
+        conn = _http_413("length limit exceeded")
+        conn.protocol = protocol  # type: ignore[assignment]
+        try:
+            with pytest.raises(PayloadTooLargeError) as excinfo:
+                await conn.query("RETURN 1;")
+        finally:
+            await conn.close()
+        error = excinfo.value
+        assert isinstance(error, QueryError)
+        assert error.code == 413
+        assert error.size is None
+        assert error.limit is None
+        assert str(error) == E7.format(text="length limit exceeded")
+
+    async def test_file_put_413(self) -> None:
+        """The server's limit can be lower than the client's: its 413 is the same error."""
+        conn = _http_413("length limit exceeded")
+        try:
+            with pytest.raises(PayloadTooLargeError) as excinfo:
+                await conn.file_put(REF, b"x" * 1024)
+        finally:
+            await conn.close()
+        assert str(excinfo.value) == E7.format(text="length limit exceeded")
+
+    async def test_other_status_unchanged(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, text="bad")
+
+        conn = HTTPConnection("http://fake", "ns", "db")
+        conn._client = httpx.AsyncClient(base_url="http://fake", transport=httpx.MockTransport(handler))
+        conn._connected = True
+        try:
+            with pytest.raises(QueryError) as excinfo:
+                await conn.query("RETURN 1;")
+        finally:
+            await conn.close()
+        assert type(excinfo.value) is QueryError
+        assert str(excinfo.value) == "HTTP error: 400 - bad"
+        assert excinfo.value.code == 400
+
+
+class TestPayloadTooLargeError:
+    def test_exported(self) -> None:
+        assert "PayloadTooLargeError" in surreal_sdk.__all__
+        assert surreal_sdk.PayloadTooLargeError is PayloadTooLargeError
+        assert issubclass(PayloadTooLargeError, QueryError)
+
+    def test_defaults(self) -> None:
+        error = PayloadTooLargeError("too big")
+        assert error.code == 413
+        assert error.size is None
+        assert error.limit is None
+        assert error.query is None
+
+    def test_experimental_label(self) -> None:
+        doc = PayloadTooLargeError.__doc__ or ""
+        assert "Experimental: follows SurrealDB's experimental ``files`` capability." in doc

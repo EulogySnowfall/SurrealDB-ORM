@@ -21,7 +21,7 @@ from datetime import datetime
 
 import pytest
 
-from surreal_sdk import FileInfo, FileRef, HTTPConnection, WebSocketConnection
+from surreal_sdk import FileInfo, FileRef, HTTPConnection, PayloadTooLargeError, WebSocketConnection
 from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.exceptions import QueryError
 from surreal_sdk.types import QueryResponse
@@ -337,3 +337,52 @@ async def test_bucket_permissions_for_a_record_user(files_conn: HTTPConnection, 
         assert await files_conn.file_get(ref) == b"public"
     finally:
         await files_conn.file_delete(ref)
+
+
+# ---------------------------------------------------------------------------
+# I4 - request-size limits
+# ---------------------------------------------------------------------------
+
+MiB = 1024 * 1024
+
+
+async def test_http_upload_over_the_limit_raises_before_sending(files_conn: HTTPConnection) -> None:
+    """I4: 4 MiB + 1 over HTTP is refused client-side; the connection still works, the file was not written."""
+    ref = FileRef("fsi_files", f"{_area()}/big.bin")
+    with pytest.raises(PayloadTooLargeError) as excinfo:
+        await files_conn.file_put(ref, os.urandom(4 * MiB + 1))
+    assert excinfo.value.code == 413
+    assert excinfo.value.limit == 4 * MiB
+    assert await files_conn.file_exists(ref) is False
+    await files_conn.file_put(ref, b"small")
+    try:
+        assert await files_conn.file_get(ref) == b"small"
+    finally:
+        await files_conn.file_delete(ref)
+
+
+@pytest.fixture
+async def ws_conn(files_conn: HTTPConnection, fsi_buckets: tuple[str, ...]) -> AsyncGenerator[WebSocketConnection, None]:
+    """A root WebSocket connection of its own."""
+    ws = WebSocketConnection(SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE, auto_reconnect=False)
+    await ws.connect()
+    try:
+        await ws.signin(SURREALDB_USER, SURREALDB_PASS)
+        yield ws
+    finally:
+        await ws.close()
+
+
+@pytest.mark.parametrize("size", [4 * MiB + 1, 5 * MiB], ids=["4MiB+1", "5MiB"])
+async def test_websocket_upload_over_the_http_limit(ws_conn: WebSocketConnection, size: int) -> None:
+    """I4: what HTTP refuses goes through a WebSocket (128 MiB by default) and round-trips."""
+    ref = FileRef("fsi_files", f"{_area()}/big.bin")
+    data = os.urandom(size)
+    await ws_conn.file_put(ref, data)
+    try:
+        assert await ws_conn.file_get(ref) == data
+        info = await ws_conn.file_head(ref)
+        assert info is not None
+        assert info.size == size
+    finally:
+        await ws_conn.file_delete(ref)

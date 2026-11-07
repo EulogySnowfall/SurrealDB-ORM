@@ -27,6 +27,7 @@ from .exceptions import (
     DataFormatError,
     DataImportError,
     FilesNotEnabledError,
+    PayloadTooLargeError,
     QueryError,
     SurrealDBError,
     TableNotFoundError,
@@ -149,6 +150,7 @@ __all__ = [
     "DataFormatError",
     "DataImportError",
     "FilesNotEnabledError",
+    "PayloadTooLargeError",
     # JSON Lines import/export
     "ImportReport",
     "jsonl",
