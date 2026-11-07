@@ -14,14 +14,30 @@ a ``finally``, and its teardown fails if any of them is still defined.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
+from surreal_orm import (
+    BaseSurrealModel,
+    FileField,
+    LiveAction,
+    Q,
+    SurrealConfigDict,
+    SurrealDBConnectionManager,
+)
+from surreal_orm.debug import QueryLogger
+from surreal_orm.migrations.define_parser import parse_define_field
+from surreal_orm.migrations.introspector import ModelIntrospector
+from surreal_orm.migrations.operations import AddField
+from surreal_orm.migrations.state import TableState
 from surreal_sdk import FileInfo, FileRef, HTTPConnection, PayloadTooLargeError, WebSocketConnection
 from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.exceptions import QueryError
@@ -432,3 +448,116 @@ async def test_websocket_upload_over_the_http_limit(ws_conn: WebSocketConnection
         assert info.size == size
     finally:
         await ws_conn.file_delete(ref)
+
+
+# ---------------------------------------------------------------------------
+# I5 - FileField column through a migration, model round trip, filters, live()
+# ---------------------------------------------------------------------------
+
+I5_TABLE = "fsi_i5_docs"
+
+
+class FSII5Doc(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name=I5_TABLE, schema_mode="SCHEMAFULL")
+
+    id: str | None = None
+    title: str = ""
+    avatar: FileField["fsi_files"]  # noqa: F821, UP037
+
+
+@pytest.fixture
+async def i5_table(files_conn: HTTPConnection, fsi_buckets: tuple[str, ...]) -> AsyncGenerator[TableState, None]:
+    """The model's table, its columns created by AddField from the model introspector; the ORM pointed at it."""
+    state = ModelIntrospector([FSII5Doc]).introspect().tables[I5_TABLE]
+    sql = f"REMOVE TABLE IF EXISTS {I5_TABLE}; DEFINE TABLE {I5_TABLE} SCHEMAFULL; " + " ".join(
+        AddField.from_field_state(I5_TABLE, field).forwards() for field in state.fields.values()
+    )
+    SurrealDBConnectionManager.set_connection(
+        SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE, SURREALDB_DATABASE
+    )
+    try:
+        error = _statement_error(await files_conn.query(sql))
+        if error is not None:
+            raise QueryError(error, query=sql)
+        yield state
+    finally:
+        await files_conn.query(f"REMOVE TABLE IF EXISTS {I5_TABLE};")
+        await SurrealDBConnectionManager.close_connection()
+        await SurrealDBConnectionManager.unset_connection()
+
+
+async def test_file_field_column_converges(files_conn: HTTPConnection, i5_table: TableState) -> None:
+    """I5 / AC10: the server reports the column as `none | file<b>`, which parses back to the model's state."""
+    response = await files_conn.query(f"INFO FOR TABLE {I5_TABLE};")
+    assert _statement_error(response) is None
+    assert response.first_result is not None
+    definition = response.first_result.result["fields"]["avatar"]
+    assert "none | file<fsi_files>" in definition
+    assert parse_define_field(definition) == i5_table.fields["avatar"]
+
+
+async def test_file_field_model_round_trip_and_filters(i5_table: TableState) -> None:
+    """I5 / AC16: save and reload a FileRef; the pointer and its "bucket:/key" text both find the row."""
+    ref = FileRef("fsi_files", f"{_area()}/avatar.png")
+    await FSII5Doc(id="has_avatar", title="a", avatar=ref).save()
+    await FSII5Doc(id="no_avatar", title="b").save()
+
+    loaded = await FSII5Doc.objects().get("has_avatar")
+    assert isinstance(loaded.avatar, FileRef)
+    assert loaded.avatar == ref
+    assert (await FSII5Doc.objects().get("no_avatar")).avatar is None
+
+    async def ids(**filters: Any) -> list[str | None]:
+        return [doc.id for doc in await FSII5Doc.objects().filter(**filters).exec()]
+
+    assert await ids(avatar=ref) == ["has_avatar"]
+    assert await ids(avatar=str(ref)) == ["has_avatar"]
+    assert await ids(avatar__in=[str(ref)]) == ["has_avatar"]
+    # Only membership: the server reads an absent value (NONE) as IS NOT NULL too,
+    # so the row without an avatar matches as well, for any optional column.
+    assert "has_avatar" in await ids(avatar__isnull=False)
+    assert sorted(await ids(avatar__not_in=[str(ref)])) == ["no_avatar"]
+    assert await FSII5Doc.objects().filter(Q(avatar=str(ref))).count() == 1
+
+
+async def test_file_field_rejects_another_bucket_before_any_query(i5_table: TableState) -> None:
+    """I5: a pointer outside the field's buckets fails validation, so nothing reaches the server."""
+    other = FileRef("fsi_ro", "/elsewhere.png")
+    async with QueryLogger() as logger:
+        with pytest.raises(ValidationError, match="not in the allowed bucket"):
+            FSII5Doc(id="other", avatar=other)
+        doc = FSII5Doc(id="other")
+        with pytest.raises(ValidationError, match="not in the allowed bucket"):
+            doc.avatar = other
+    assert logger.total_queries == 0
+    assert await FSII5Doc.objects().filter(id="other").count() == 0
+
+
+async def test_file_field_live_filter_with_pointer_text(i5_table: TableState) -> None:
+    """I5 / AC16: live() filtered with the text gets the matching UPDATE, then its DELETE.
+
+    The server sends the deleted record with the DELETE, so the instance still
+    carries the pointer; an id-only DELETE (no record) builds an instance whose
+    file field reads None (unit test ``TestFileFieldLiveEvents``).
+    """
+    ref = FileRef("fsi_files", f"{_area()}/live.png")
+    await FSII5Doc(id="hit", title="a", avatar=ref).save()
+    await FSII5Doc(id="miss", title="a", avatar=FileRef("fsi_files", f"{_area()}/miss.png")).save()
+    client = await SurrealDBConnectionManager.get_client()
+
+    async with FSII5Doc.objects().filter(avatar=str(ref)).live() as stream:
+        # The decoy is written first: a filter that wrongly matched it would deliver it first.
+        for record in ("miss", "hit"):
+            response = await client.query(f"UPDATE {I5_TABLE}:{record} SET title = 'b';")
+            assert _statement_error(response) is None
+        update = await asyncio.wait_for(anext(stream), timeout=5.0)
+        assert update.action == LiveAction.UPDATE
+        assert update.record_id == f"{I5_TABLE}:hit"
+        assert update.instance.avatar == ref
+
+        response = await client.query(f"DELETE {I5_TABLE}:hit;")
+        assert _statement_error(response) is None
+        deleted = await asyncio.wait_for(anext(stream), timeout=5.0)
+        assert deleted.action == LiveAction.DELETE
+        assert deleted.record_id == f"{I5_TABLE}:hit"
+        assert deleted.instance.avatar == ref

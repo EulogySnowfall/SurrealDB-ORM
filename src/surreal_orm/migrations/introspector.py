@@ -12,8 +12,11 @@ from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
+from surreal_sdk.files import FileRef
+
 from ..fields.computed import _ComputedMarker, get_computed_expression, is_computed_field
 from ..fields.encrypted import is_encrypted_field
+from ..fields.file import _FileMarker
 from ..fields.references import _ReferencesMarker
 from ..fields.relation import (
     _find_marker,
@@ -206,6 +209,14 @@ class ModelIntrospector:
                 return None
             return self._introspect_link_field(name, marker)
 
+        # A FileField / ImageField is an Annotated whose inner type is already
+        # `FileRef | None`. The union unwrapping below only looks at a
+        # top-level union, so a bare `FileField["a"]` would keep
+        # nullable=False and map the Annotated itself to `any`.
+        file_marker = _find_marker(type_hint, field_info.metadata, _FileMarker)
+        if file_marker is not None:
+            return self._introspect_file_field(name, file_marker)
+
         # Check for Computed type
         computed_expression: str | None = None
         if is_computed_field(type_hint):
@@ -337,6 +348,29 @@ class ModelIntrospector:
             on_delete=on_delete_to_surql(marker.on_delete),
         )
 
+    def _introspect_file_field(self, name: str, marker: _FileMarker) -> FieldState:
+        """
+        Build the field state for a :class:`~surreal_orm.fields.FileField` or
+        :class:`~surreal_orm.fields.ImageField` column.
+
+        The column is ``option<file<a | b>>``: the buckets in the order they
+        were declared (the server reports them back in that order) and
+        nullable, since a file field defaults to ``None``.  An image field is
+        the same column; the image check happens in Python on upload.
+
+        Args:
+            name: Field name
+            marker: The file marker on the field
+
+        Returns:
+            FieldState for the file pointer column
+        """
+        return FieldState(
+            name=name,
+            field_type=FieldType.FILE.generic(" | ".join(marker.buckets)),
+            nullable=True,
+        )
+
     def _map_type(self, python_type: Any) -> str:
         """
         Map a Python type to a SurrealDB type string.
@@ -366,6 +400,10 @@ class ModelIntrospector:
                 inner_type = self._map_type(args[0])
                 return f"set<{inner_type}>"
             return "set"
+
+        # A bare FileRef annotation is a pointer to any bucket
+        if python_type is FileRef:
+            return FieldType.FILE.value
 
         # Handle basic types
         if python_type in PYTHON_TO_SURREAL_TYPE:

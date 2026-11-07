@@ -587,3 +587,200 @@ class TestFileWriteCoercion:
         _query, variables = client.query.call_args[0]
         assert variables["_bu0_att"] == FileRef("fsu_b", "/k")
         assert variables["_oc0_att"] == FileRef("fsu_b", "/c")
+
+
+# ---------------------------------------------------------------------------
+# U22 — ModelIntrospector maps file columns to file<bucket> (AC10)
+# ---------------------------------------------------------------------------
+
+
+class FSUColumns(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="fsu_columns")
+
+    id: str | None = None
+    att: FileField["a"]  # noqa: F821, UP037
+    two: FileField["zz", "aa"]  # noqa: F821, UP037
+    pic: ImageField["img"]  # noqa: F821, UP037
+    loose: FileRef | None = None
+    required: FileRef
+    title: str = ""
+
+
+def _columns_state(model: type[BaseSurrealModel]) -> Any:
+    from surreal_orm.migrations.introspector import ModelIntrospector
+
+    return ModelIntrospector([model]).introspect().tables[model.get_table_name()]
+
+
+class TestFileColumnIntrospection:
+    def test_bare_file_field_is_an_optional_file_column(self) -> None:
+        """The generic union path would keep nullable=False and map the Annotated to any."""
+        field = _columns_state(FSUColumns).fields["att"]
+        assert field.field_type == "file<a>"
+        assert field.nullable is True
+
+    def test_bare_file_field_renders_option_file(self) -> None:
+        from surreal_orm.migrations.operations import AddField
+
+        field = _columns_state(FSUColumns).fields["att"]
+        sql = AddField.from_field_state("fsu_columns", field).forwards()
+        assert "TYPE option<file<a>>" in sql
+
+    @pytest.mark.parametrize("name", ["att", "opt"])
+    def test_union_spellings_give_the_same_state(self, name: str) -> None:
+        bare = _columns_state(FSUColumns).fields["att"]
+        union = _columns_state(FSUDocUnion).fields[name]
+        assert (union.field_type, union.nullable) == (bare.field_type, bare.nullable)
+        assert union.default is None
+
+    def test_buckets_keep_the_declared_order(self) -> None:
+        field = _columns_state(FSUColumns).fields["two"]
+        assert field.field_type == "file<zz | aa>"
+        assert field.nullable is True
+
+    def test_image_field_maps_like_a_file_field(self) -> None:
+        field = _columns_state(FSUColumns).fields["pic"]
+        assert (field.field_type, field.nullable) == ("file<img>", True)
+
+    def test_bare_file_ref_is_an_untyped_file_column(self) -> None:
+        from surreal_orm.migrations.operations import AddField
+
+        loose = _columns_state(FSUColumns).fields["loose"]
+        assert (loose.field_type, loose.nullable) == ("file", True)
+        assert "TYPE option<file>" in AddField.from_field_state("fsu_columns", loose).forwards()
+        required = _columns_state(FSUColumns).fields["required"]
+        assert (required.field_type, required.nullable) == ("file", False)
+
+    def test_field_info_metadata_alone_is_enough(self) -> None:
+        """When get_type_hints fails the introspector reads FieldInfo; the marker is in its metadata."""
+        from surreal_orm.migrations.introspector import ModelIntrospector
+
+        info = FSUColumns.model_fields["att"]
+        field = ModelIntrospector([])._introspect_field("att", info.annotation, info, FSUColumns)
+        assert field is not None
+        assert (field.field_type, field.nullable) == ("file<a>", True)
+
+    @pytest.mark.parametrize(
+        ("name", "server_text"),
+        [
+            ("att", "DEFINE FIELD att ON fsu_columns TYPE none | file<a> PERMISSIONS FULL"),
+            ("two", "DEFINE FIELD two ON fsu_columns TYPE none | file<zz | aa> PERMISSIONS FULL"),
+            ("loose", "DEFINE FIELD loose ON fsu_columns TYPE none | file PERMISSIONS FULL"),
+            ("required", "DEFINE FIELD required ON fsu_columns TYPE file PERMISSIONS FULL"),
+        ],
+    )
+    def test_server_definition_compares_equal(self, name: str, server_text: str) -> None:
+        """What INFO FOR TABLE reports for the column (M15) is the model's state: no diff."""
+        from surreal_orm.migrations.define_parser import parse_define_field
+
+        assert parse_define_field(server_text) == _columns_state(FSUColumns).fields[name]
+
+    def test_unchanged_model_diffs_to_nothing(self) -> None:
+        from surreal_orm.migrations.define_parser import parse_define_field
+        from surreal_orm.migrations.operations import AddField, AlterField, DropField
+        from surreal_orm.migrations.state import SchemaState, TableState
+
+        target = SchemaState(tables={"fsu_columns": _columns_state(FSUColumns)})
+        texts = {
+            "att": "DEFINE FIELD att ON fsu_columns TYPE none | file<a> PERMISSIONS FULL",
+            "two": "DEFINE FIELD two ON fsu_columns TYPE none | file<zz | aa> PERMISSIONS FULL",
+            "pic": "DEFINE FIELD pic ON fsu_columns TYPE none | file<img> PERMISSIONS FULL",
+            "loose": "DEFINE FIELD loose ON fsu_columns TYPE none | file PERMISSIONS FULL",
+            "required": "DEFINE FIELD required ON fsu_columns TYPE file PERMISSIONS FULL",
+            "title": "DEFINE FIELD title ON fsu_columns TYPE string DEFAULT '' PERMISSIONS FULL",
+        }
+        current_table = TableState(name="fsu_columns", fields={name: parse_define_field(text) for name, text in texts.items()})
+        current = SchemaState(tables={"fsu_columns": current_table})
+        field_ops = [op for op in current.diff(target) if isinstance(op, (AddField, AlterField, DropField))]
+        assert field_ops == []
+
+
+# ---------------------------------------------------------------------------
+# U23 — inspectdb: file<bucket> columns become FileField / FileRef (AC10)
+# ---------------------------------------------------------------------------
+
+
+def _generated_state() -> Any:
+    from surreal_orm.migrations.state import FieldState, SchemaState, TableState
+
+    fields = {
+        "att": FieldState(name="att", field_type="file<x>", nullable=True),
+        "two": FieldState(name="two", field_type="file<zz | aa>", nullable=True),
+        "loose": FieldState(name="loose", field_type="file", nullable=True),
+        "required": FieldState(name="required", field_type="file", nullable=False),
+    }
+    return SchemaState(tables={"fsu_gen_docs": TableState(name="fsu_gen_docs", fields=fields)})
+
+
+def _import_generated(source: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> Any:
+    """Write *source* to a module of its own and import it (Pydantic resolves annotations there)."""
+    import importlib.util
+    import sys
+
+    path = tmp_path / f"{name}.py"
+    path.write_text(source)
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestFileColumnCodeGeneration:
+    def _source(self, state: Any = None) -> str:
+        from surreal_orm.migrations.model_generator import ModelCodeGenerator
+
+        return ModelCodeGenerator().generate(state if state is not None else _generated_state())
+
+    def test_annotations(self) -> None:
+        source = self._source()
+        assert '    att: FileField["x"]\n' in source
+        assert '    two: FileField["zz", "aa"]\n' in source
+        assert "    loose: FileRef | None = None\n" in source
+        assert "    required: FileRef\n" in source
+
+    def test_imports(self) -> None:
+        source = self._source()
+        assert "from surreal_orm.fields import FileField" in source
+        assert "from surreal_orm import FileRef" in source
+
+    def test_generated_source_re_introspects_equal(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from surreal_orm.migrations.introspector import ModelIntrospector
+
+        module = _import_generated(self._source(), tmp_path, monkeypatch, "fsu_generated_models")
+        table = ModelIntrospector([module.FsuGenDoc]).introspect().tables["fsu_gen_docs"]
+        assert table.fields == _generated_state().tables["fsu_gen_docs"].fields
+
+    @pytest.mark.parametrize("field_type", ["file<`my-b`>", "file<a | `my-b`>"])
+    def test_non_identifier_bucket_falls_back_to_file_ref(
+        self, field_type: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A FileField subscript must be an identifier: the generated module would not import otherwise."""
+        from surreal_orm.migrations.state import FieldState, SchemaState, TableState
+
+        field = FieldState(name="att", field_type=field_type, nullable=True)
+        state = SchemaState(tables={"fsu_odd_docs": TableState(name="fsu_odd_docs", fields={"att": field})})
+        source = self._source(state)
+        assert f"    att: FileRef | None = None  # {field_type}: bucket name is not an identifier\n" in source
+        assert "FileField" not in source
+
+        module = _import_generated(source, tmp_path, monkeypatch, f"fsu_odd_models_{len(field_type)}")
+        doc = module.FsuOddDoc(att="my-b:/k")
+        assert doc.att == FileRef("my-b", "/k")
+
+
+class TestFileFieldLiveEvents:
+    """A DELETE without the record, or a DIFF event, builds an id-only instance (M30)."""
+
+    @pytest.mark.parametrize(("action", "diff"), [("DELETE", False), ("UPDATE", True)])
+    def test_id_only_instance_reads_none(self, action: str, diff: bool) -> None:
+        from surreal_orm.live import LiveModelStream
+        from surreal_sdk.streaming.live_select import LiveAction, LiveChange
+
+        stream = LiveModelStream(model=FSUDoc, connection=None, table="fsu_doc", diff=diff)
+        change = LiveChange(id="live-uuid", action=LiveAction(action), record_id="fsu_doc:x", result={})
+        event = stream._to_event(change)
+        assert event.instance.id == "x"
+        assert event.instance.att is None
+        assert event.instance.pic is None
