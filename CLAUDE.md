@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.38.3)
+> Context document for Claude AI - Last updated: November 2026 (0.38.4)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.38.3 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.38.4 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,28 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.38.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.38.4
+
+One fix, #566 via #603 (`surreal_sdk/connection/pool.py` only). Pin unchanged
+(3.3.5). `v2`: same defect, backport tracked in #604.
+
+- **`ConnectionPool._create_connection()` forwards `**self.kwargs` on both
+  branches.** The HTTP branch (the default `connection_type`) had built each
+  connection from url, namespace, database and timeout alone since the pool
+  was written, so `protocol="json"` was ignored and an unknown keyword was
+  dropped with no error.
+- **Behaviour change:** a keyword `HTTPConnection` does not take
+  (`max_message_size`, a typo) raises `TypeError` when the first connection
+  is created, inside `acquire()`; the failed acquire gives its semaphore slot
+  back.
+- **Open (review suggestion on #603):** the pool's auth paths
+  (`_sign_in_as_pool()`, `_reset_auth()`, the release-time restore) are
+  tested over CBOR only; no JSON pool goes through acquire, sign-in and
+  release on a real server yet.
+- Release-docs corrections carried here: 0.38.3 `changes()` docstring
+  (#575), 0.35.6 legacy defaults (#421), 0.35.5 same-argument `signin()`
+  (#409), 0.34.13 README cache wording (#319).
 
 ### What's New in 0.38.3
 
