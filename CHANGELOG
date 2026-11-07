@@ -6,6 +6,50 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.55] - 2026-11-07
+
+**Bug fix release (V2 LTS).** The two follow-ups from the 0.21.54 reviews
+(#577 via #599): a `changes()` stream stopped before its first iteration no
+longer polls, and the migration DEFINE parser reads `references<...>` as one
+parameterised type. The SurrealDB pin is unchanged (tested against 2.7.0,
+supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`stop()` before the first iteration ends a `changes()` stream.** A
+  `ChangeModelStream` stopped with `stop()` before its first iteration now
+  ends at once (`StopAsyncIteration`). It no longer resolves an HTTP client
+  or polls the change feed as if `stop()` had never been called (#577, #599).
+- **`references<...>` is read as one type.** The migrations DEFINE parser
+  reads `references<...>` as one parameterised type, like `record<...>`. A
+  union naming a table after a clause keyword (`references<a | comment | b>`)
+  is no longer cut at that keyword (#577, #599).
+
+### Behaviour change
+
+- `stop()` is final in every state, including before iteration: a stream
+  stopped before its first `__anext__()` yields nothing.
+
+### Documentation
+
+- The two [0.21.54] known limitations (`stop()` before the first iteration;
+  `references<...>` missing from the parser) are marked fixed in this
+  release.
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, on the fix branch merged as #599: 4,028 unit tests
+pass on each of Python 3.12, 3.13 and 3.14 (1 expected failure, the strict
+`xfail` from 0.21.51), and 833 integration tests pass (4 expected failures,
+the existing strict `xfail`s for integer record ids over WebSocket); `ruff`
+and `mypy` clean.
+
+---
+
 ## [0.21.54] - 2026-11-06
 
 **Bug fix release (V2 LTS).** Two `v2` backports from `main`: `changes()`
@@ -52,9 +96,11 @@ notes. The SurrealDB pin is unchanged (tested against 2.7.0, supported range
 
 - `stop()` called before the first iteration of a `changes()` stream does
   not prevent it from polling (also on `main`; review suggestion on #573).
+  Fixed in [0.21.55] (#577).
 - `references<...>` is not in the parser's list of parameterised types, so
   a union such as `references<a | comment>` is cut at `comment`, while
   `record<user | comment>` is read whole (review suggestion on #574).
+  Fixed in [0.21.55] (#577).
 
 ### Documentation
 
