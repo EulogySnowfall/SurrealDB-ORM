@@ -90,7 +90,7 @@ class TestCBOREncodeDecode:
         encoded = encode(original)
         decoded = decode(encoded)
         assert isinstance(decoded, Duration)
-        assert decoded.value == "2h"
+        assert decoded.value == (7200,)  # sent as tag 14, read back in compact form
 
     def test_datetime_roundtrip(self) -> None:
         original = datetime(2026, 2, 11, 12, 0, 0, tzinfo=UTC)
