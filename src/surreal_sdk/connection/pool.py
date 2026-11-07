@@ -46,7 +46,12 @@ class ConnectionPool:
             size: Maximum pool size
             connection_type: "http" or "websocket"
             timeout: Connection timeout in seconds
-            **kwargs: Additional connection arguments
+            **kwargs: Additional keyword arguments for the connection class
+                of the chosen ``connection_type`` (``HTTPConnection`` for
+                ``"http"``, ``WebSocketConnection`` for ``"websocket"``), such
+                as ``protocol``. They are passed as is when a connection is
+                created, so a keyword that class does not take raises
+                ``TypeError`` at the first ``acquire()``.
         """
         if size <= 0:
             raise ValueError(f"Pool size must be > 0, got {size}")
@@ -97,6 +102,7 @@ class ConnectionPool:
                 self.namespace,
                 self.database,
                 timeout=self.timeout,
+                **self.kwargs,
             )
 
     async def _init_connection(self, conn: BaseSurrealConnection) -> None:
