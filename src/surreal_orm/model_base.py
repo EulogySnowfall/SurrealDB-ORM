@@ -1641,6 +1641,35 @@ class BaseSurrealModel(BaseModel):
         Returns:
             Self: The updated model instance.
         """
+        return await self._merge_columns(data, tx=tx, refresh=refresh, extra_vars=extra_vars)
+
+    async def _merge_columns(
+        self,
+        data: dict[str, Any],
+        *,
+        tx: "BaseTransaction | None" = None,
+        refresh: bool = True,
+        extra_vars: dict[str, Any] | None = None,
+    ) -> Self:
+        """
+        Merge ``data`` into the record: the body of :meth:`merge`.
+
+        The columns come as a dict rather than as keywords, so a column named
+        ``tx``, ``refresh`` or ``extra_vars`` is written like any other (the
+        file helpers write one column whose name is the caller's field).
+        Signals, ``QueryLogger`` entries, foreign-key coercion and the
+        no-record-affected check are those of :meth:`merge`.
+
+        Args:
+            data: Columns to update. Not modified.
+            tx: Optional transaction to use for this operation.
+            refresh: Refresh the instance from the database after the update.
+            extra_vars: Additional query variables for :class:`SurrealFunc`
+                expressions.
+
+        Returns:
+            Self: The updated model instance.
+        """
         self._check_not_view()
 
         data_set = {key: value for key, value in data.items()}

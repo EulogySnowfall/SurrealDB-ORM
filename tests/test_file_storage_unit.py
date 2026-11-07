@@ -1314,3 +1314,105 @@ class TestDatabaseIntrospectorBuckets:
         from surreal_orm.migrations.introspector import ModelIntrospector
 
         assert ModelIntrospector([FSUColumns]).introspect().buckets is None
+
+
+# ---------------------------------------------------------------------------
+# U29 — merge() goes through _merge_columns() (§7.4, AC7)
+# ---------------------------------------------------------------------------
+
+
+class FSUMerge(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="fsu_merge")
+
+    id: str | None = None
+    title: str = ""
+
+
+def _merge_client() -> Any:
+    client = AsyncMock()
+    client.merge = AsyncMock(return_value=MagicMock(is_empty=False, records=[{"id": "fsu_merge:m1"}]))
+    return client
+
+
+class TestMergeColumns:
+    @pytest.mark.asyncio
+    async def test_merge_delegates_with_its_keywords(self) -> None:
+        doc = FSUMerge(id="m1")
+        extra = {"p": 1}
+        with patch.object(FSUMerge, "_merge_columns", new=AsyncMock(return_value=doc)) as helper:
+            assert await doc.merge(refresh=False, extra_vars=extra, title="t") is doc
+
+        helper.assert_awaited_once_with({"title": "t"}, tx=None, refresh=False, extra_vars=extra)
+
+    @pytest.mark.asyncio
+    async def test_merge_defaults_are_forwarded(self) -> None:
+        doc = FSUMerge(id="m1")
+        with patch.object(FSUMerge, "_merge_columns", new=AsyncMock(return_value=doc)) as helper:
+            await doc.merge(title="t")
+
+        helper.assert_awaited_once_with({"title": "t"}, tx=None, refresh=True, extra_vars=None)
+
+    @pytest.mark.asyncio
+    async def test_columns_named_like_merge_keywords_reach_the_wire(self) -> None:
+        # A file helper writes one column whose name may be "refresh", "tx" or
+        # "extra_vars": through _merge_columns() it is data, never a keyword.
+        doc = FSUMerge(id="m1")
+        client = _merge_client()
+        columns = {"refresh": "a", "tx": "b", "extra_vars": "c"}
+        with (
+            patch(
+                "surreal_orm.model_base.SurrealDBConnectionManager",
+                new=MagicMock(get_client=AsyncMock(return_value=client)),
+            ),
+            patch.object(FSUMerge, "refresh", new=AsyncMock()) as refresh,
+        ):
+            assert await doc._merge_columns(columns, refresh=False) is doc
+
+        thing, data = client.merge.call_args[0]
+        assert thing == "fsu_merge:m1"
+        assert data == {"refresh": "a", "tx": "b", "extra_vars": "c"}
+        refresh.assert_not_awaited()
+        assert columns == {"refresh": "a", "tx": "b", "extra_vars": "c"}
+
+    @pytest.mark.asyncio
+    async def test_refresh_true_refreshes(self) -> None:
+        doc = FSUMerge(id="m1")
+        client = _merge_client()
+        with (
+            patch(
+                "surreal_orm.model_base.SurrealDBConnectionManager",
+                new=MagicMock(get_client=AsyncMock(return_value=client)),
+            ),
+            patch.object(FSUMerge, "refresh", new=AsyncMock()) as refresh,
+        ):
+            await doc._merge_columns({"title": "t"})
+
+        refresh.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_update_signals_carry_the_columns(self) -> None:
+        from surreal_orm import post_update, pre_update
+
+        doc = FSUMerge(id="m1")
+        client = _merge_client()
+        seen: list[tuple[str, dict[str, Any]]] = []
+
+        async def on_pre(sender: Any, instance: Any, update_fields: dict[str, Any], **kwargs: Any) -> None:
+            seen.append(("pre", dict(update_fields)))
+
+        async def on_post(sender: Any, instance: Any, update_fields: dict[str, Any], **kwargs: Any) -> None:
+            seen.append(("post", dict(update_fields)))
+
+        pre_update.connect(FSUMerge)(on_pre)
+        post_update.connect(FSUMerge)(on_post)
+        try:
+            with patch(
+                "surreal_orm.model_base.SurrealDBConnectionManager",
+                new=MagicMock(get_client=AsyncMock(return_value=client)),
+            ):
+                await doc._merge_columns({"refresh": "a"}, refresh=False)
+        finally:
+            pre_update.disconnect(on_pre, sender=FSUMerge)
+            post_update.disconnect(on_post, sender=FSUMerge)
+
+        assert seen == [("pre", {"refresh": "a"}), ("post", {"refresh": "a"})]
