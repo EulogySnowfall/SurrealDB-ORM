@@ -44,9 +44,12 @@ _FIELD_PERMISSIONS_START = re.compile(r"(?:^|(?<=\s))PERMISSIONS\s+(?:FULL|NONE|
 _REGEX_AFTER = frozenset("=([{,:!<>+-|&?")
 
 # Type names that take parameters in angle brackets: ``array<string>``,
-# ``option<record<user>>``, ``set<int, 10>``, ``geometry<point>``. Only a
-# ``<`` written right after one of them opens a bracket.
-_GENERIC_TYPES = frozenset({"array", "set", "option", "record", "geometry", "either", "range", "future", "function"})
+# ``option<record<user>>``, ``set<int, 10>``, ``geometry<point>``,
+# ``references<user>``. Only a ``<`` written right after one of them opens a
+# bracket.
+_GENERIC_TYPES = frozenset(
+    {"array", "set", "option", "record", "references", "geometry", "either", "range", "future", "function"}
+)
 
 # Type names a cast can start with: ``<int> $value``, ``<array<int>> $v``.
 _CAST_TYPES = _GENERIC_TYPES | frozenset(
