@@ -15,16 +15,9 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-FILES_SKIP_REASON = "SurrealDB was started without --allow-experimental=files"
+from surreal_sdk import FilesNotEnabledError
 
-# What the server says when the capability is off (case-sensitive substrings,
-# measured on 3.2.6 and 3.3.5): a ``file::*`` call, a ``type::file()`` cast on
-# 3.3, and ``DEFINE BUCKET`` (a parse error, returned as an RPC error).
-_FILES_NOT_ENABLED_TEXTS = (
-    "Experimental capability `files` is not enabled",
-    "Experimental feature files is not enabled",
-    "expected the experimental files feature to be enabled",
-)
+FILES_SKIP_REASON = "SurrealDB was started without --allow-experimental=files"
 
 
 def files_required() -> bool:
@@ -50,6 +43,6 @@ def files_capability_outcome(error_text: str | None, require: bool) -> Literal["
     """
     if error_text is None:
         return "run"
-    if not any(text in error_text for text in _FILES_NOT_ENABLED_TEXTS):
+    if not FilesNotEnabledError.is_files_not_enabled(error_text):
         raise RuntimeError(f"File storage capability probe failed: {error_text}")
     return "fail" if require else "skip"

@@ -15,11 +15,14 @@ a ``finally``, and its teardown fails if any of them is still defined.
 from __future__ import annotations
 
 import os
+import uuid
 from collections.abc import AsyncGenerator
+from datetime import datetime
 
 import pytest
 
-from surreal_sdk import FileRef, HTTPConnection
+from surreal_sdk import FileInfo, FileRef, HTTPConnection, WebSocketConnection
+from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.exceptions import QueryError
 from surreal_sdk.types import QueryResponse
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
@@ -35,6 +38,8 @@ PROBE_SQL = f"DEFINE BUCKET IF NOT EXISTS {PROBE_BUCKET} BACKEND 'memory'; REMOV
 # The buckets the tests of this module use, with their definition clauses.
 FSI_BUCKETS: dict[str, str] = {
     "fsi_files": "BACKEND 'memory'",
+    "fsi_ro": "READONLY BACKEND 'memory'",
+    "fsi_perm": "BACKEND 'memory' PERMISSIONS WHERE $action INSIDE ['get', 'head', 'exists', 'list']",
 }
 
 
@@ -124,3 +129,211 @@ async def test_files_capability_probe(files_conn: HTTPConnection, fsi_buckets: t
     assert _statement_error(response) is None
     assert response.first_result is not None
     assert response.first_result.result is False
+
+
+# ---------------------------------------------------------------------------
+# I1-I3, I9 - SDK file methods
+# ---------------------------------------------------------------------------
+
+ALL_BYTES = bytes(range(256))
+
+
+@pytest.fixture(params=["http", "ws"])
+async def conn(
+    request: pytest.FixtureRequest, files_conn: HTTPConnection, fsi_buckets: tuple[str, ...]
+) -> AsyncGenerator[BaseSurrealConnection, None]:
+    """A root connection over HTTP (the module's) or over a fresh WebSocket."""
+    if request.param == "http":
+        yield files_conn
+        return
+    ws = WebSocketConnection(SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE, auto_reconnect=False)
+    await ws.connect()
+    try:
+        await ws.signin(SURREALDB_USER, SURREALDB_PASS)
+        yield ws
+    finally:
+        await ws.close()
+
+
+def _area() -> str:
+    """A key prefix of its own for one test, so runs and transports never share keys."""
+    return f"/t{uuid.uuid4().hex}"
+
+
+async def test_file_round_trip(conn: BaseSurrealConnection) -> None:
+    """I1: put, get, head, exists, copy, rename, delete over HTTP and WebSocket."""
+    area = _area()
+    ref = FileRef("fsi_files", f"{area}/data.bin")
+
+    assert await conn.file_put(ref, ALL_BYTES) is None
+    assert await conn.file_get(ref) == ALL_BYTES
+    assert await conn.file_exists(ref) is True
+
+    info = await conn.file_head(ref)
+    assert isinstance(info, FileInfo)
+    assert info.file == ref
+    assert info.size == 256
+    assert isinstance(info.updated, datetime)
+
+    copy = await conn.file_copy(ref, f"{area}/copy.bin")
+    assert copy == FileRef("fsi_files", f"{area}/copy.bin")
+    assert await conn.file_get(copy) == ALL_BYTES
+
+    moved = await conn.file_rename(copy, f"{area[1:]}/moved.bin")  # no leading "/": added
+    assert moved == FileRef("fsi_files", f"{area}/moved.bin")
+    assert await conn.file_exists(copy) is False
+    assert await conn.file_get(moved) == ALL_BYTES
+
+    assert await conn.file_delete(moved) is None
+    assert await conn.file_exists(moved) is False
+    assert await conn.file_delete(ref) is None
+
+
+async def test_missing_file(conn: BaseSurrealConnection) -> None:
+    """I1: a missing file reads as None, and deleting it succeeds."""
+    ref = FileRef("fsi_files", f"{_area()}/missing.bin")
+    assert await conn.file_get(ref) is None
+    assert await conn.file_head(ref) is None
+    assert await conn.file_exists(ref) is False
+    assert await conn.file_delete(ref) is None
+
+
+async def test_overwrite_false_keeps_the_existing_file(conn: BaseSurrealConnection) -> None:
+    """I1: the ``*_if_not_exists`` forms keep an existing target, silently."""
+    area = _area()
+    first = FileRef("fsi_files", f"{area}/first")
+    second = FileRef("fsi_files", f"{area}/second")
+    await conn.file_put(first, b"one")
+    await conn.file_put(second, b"two")
+
+    await conn.file_put(first, b"changed", overwrite=False)
+    assert await conn.file_get(first) == b"one"
+
+    assert await conn.file_copy(second, first.key, overwrite=False) == first
+    assert await conn.file_get(first) == b"one"
+
+    assert await conn.file_rename(second, first.key, overwrite=False) == first
+    assert await conn.file_get(first) == b"one"
+    assert await conn.file_get(second) == b"two"
+
+    await conn.file_put(first, b"three", overwrite=False)
+    await conn.file_delete(first)
+    await conn.file_put(first, b"three", overwrite=False)
+    assert await conn.file_get(first) == b"three"
+    await conn.file_delete(first)
+    await conn.file_delete(second)
+
+
+async def test_file_list(conn: BaseSurrealConnection) -> None:
+    """I2: prefix (with or without "/"), exclusive start, limit, key order."""
+    area = _area()
+    keys = [f"{area}/p/{n}" for n in (3, 1, 5, 2, 4)]
+    for key in keys:
+        await conn.file_put(FileRef("fsi_files", key), key.encode())
+    try:
+        listed = await conn.file_list("fsi_files", prefix=f"{area}/p/")
+        assert [info.key for info in listed] == sorted(keys)
+        assert all(info.bucket == "fsi_files" and info.size == len(info.key) for info in listed)
+
+        assert [info.key for info in await conn.file_list("fsi_files", prefix=f"{area[1:]}/p/")] == sorted(keys)
+        assert [info.key for info in await conn.file_list("fsi_files", prefix=f"{area}/p/", start=f"{area}/p/3")] == [
+            f"{area}/p/4",
+            f"{area}/p/5",
+        ]
+        assert [info.key for info in await conn.file_list("fsi_files", prefix=f"{area}/p/", limit=2)] == [
+            f"{area}/p/1",
+            f"{area}/p/2",
+        ]
+        everything = [info.key for info in await conn.file_list("fsi_files")]
+        assert everything == sorted(everything)
+        assert set(keys) <= set(everything)
+        assert await conn.file_list("fsi_files", prefix=f"{area}/none/") == []
+    finally:
+        for key in keys:
+            await conn.file_delete(FileRef("fsi_files", key))
+
+
+async def test_iter_files(conn: BaseSurrealConnection) -> None:
+    """I2: seven files read in pages of three."""
+    area = _area()
+    keys = sorted(f"{area}/i/{n}" for n in range(7))
+    for key in keys:
+        await conn.file_put(FileRef("fsi_files", key), b"x")
+    try:
+        assert [info.key async for info in conn.iter_files("fsi_files", prefix=f"{area}/i/", batch_size=3)] == keys
+        assert [info.key async for info in conn.iter_files("fsi_files", prefix=f"{area}/i/", batch_size=7)] == keys
+    finally:
+        for key in keys:
+            await conn.file_delete(FileRef("fsi_files", key))
+
+
+async def test_missing_bucket_raises(conn: BaseSurrealConnection) -> None:
+    """I3: a missing bucket is a statement error, raised with the server's text."""
+    ref = FileRef("fsi_nope", "/x")
+    for call, sql in [
+        (conn.file_put(ref, b"x"), "file::put($_file, $_data);"),
+        (conn.file_get(ref), "RETURN file::get($_file);"),
+        (conn.file_list("fsi_nope"), "RETURN file::list($_bucket, $_opts);"),
+    ]:
+        with pytest.raises(QueryError) as excinfo:
+            await call
+        assert type(excinfo.value) is QueryError
+        assert "fsi_nope" in excinfo.value.message
+        assert "does not exist" in excinfo.value.message
+        assert excinfo.value.query == sql
+
+
+async def test_read_only_bucket_write_raises(conn: BaseSurrealConnection) -> None:
+    """I3: a write to a READONLY bucket raises; a read of it does not."""
+    ref = FileRef("fsi_ro", "/x")
+    with pytest.raises(QueryError, match="read-only"):
+        await conn.file_put(ref, b"x")
+    assert await conn.file_get(ref) is None
+
+
+async def test_copy_of_missing_file_raises(conn: BaseSurrealConnection) -> None:
+    """I3: copying a file that does not exist raises."""
+    ref = FileRef("fsi_files", f"{_area()}/missing")
+    with pytest.raises(QueryError, match="Source key does not exist"):
+        await conn.file_copy(ref, "/target")
+    with pytest.raises(QueryError, match="Source key does not exist"):
+        await conn.file_rename(ref, "/target")
+
+
+@pytest.fixture
+async def record_user(files_conn: HTTPConnection, fsi_buckets: tuple[str, ...]) -> AsyncGenerator[HTTPConnection, None]:
+    """An HTTP connection signed up as a record user; the access and its table are removed afterwards."""
+    await files_conn.query(
+        """
+        DEFINE TABLE OVERWRITE fsi_user SCHEMALESS PERMISSIONS FULL;
+        DEFINE ACCESS OVERWRITE fsi_access ON DATABASE TYPE RECORD
+            SIGNUP (CREATE fsi_user SET name = $name)
+            SIGNIN (SELECT * FROM fsi_user WHERE name = $name)
+            DURATION FOR SESSION 1h;
+        """
+    )
+    user = HTTPConnection(SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE)
+    try:
+        await user.connect()
+        response = await user.signup(SURREALDB_NAMESPACE, SURREALDB_DATABASE, "fsi_access", name=uuid.uuid4().hex)
+        assert response.token
+        yield user
+    finally:
+        await user.close()
+        await files_conn.query("REMOVE ACCESS IF EXISTS fsi_access ON DATABASE; REMOVE TABLE IF EXISTS fsi_user;")
+
+
+async def test_bucket_permissions_for_a_record_user(files_conn: HTTPConnection, record_user: HTTPConnection) -> None:
+    """I9: a bucket allowing only reads lets a record user read and refuses its write."""
+    ref = FileRef("fsi_perm", f"{_area()}/readable")
+    await files_conn.file_put(ref, b"public")
+    try:
+        assert await record_user.file_get(ref) == b"public"
+        assert await record_user.file_exists(ref) is True
+        with pytest.raises(QueryError) as excinfo:
+            await record_user.file_put(ref, b"changed")
+        assert type(excinfo.value) is QueryError
+        assert "permission" in excinfo.value.message
+        assert await files_conn.file_get(ref) == b"public"
+    finally:
+        await files_conn.file_delete(ref)

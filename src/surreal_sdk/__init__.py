@@ -26,6 +26,7 @@ from .exceptions import (
     ConnectionError,
     DataFormatError,
     DataImportError,
+    FilesNotEnabledError,
     QueryError,
     SurrealDBError,
     TableNotFoundError,
@@ -147,6 +148,7 @@ __all__ = [
     "TransactionConflictError",
     "DataFormatError",
     "DataImportError",
+    "FilesNotEnabledError",
     # JSON Lines import/export
     "ImportReport",
     "jsonl",

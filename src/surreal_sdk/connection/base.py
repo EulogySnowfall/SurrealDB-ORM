@@ -5,11 +5,13 @@ Defines the abstract interface that all connection types must implement.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 from .. import jsonl
+from ..files import FileInfo, FileRef, _check_bucket
 from ..protocol.rpc import RPCRequest, RPCResponse
+from ..utils import require_int
 
 if TYPE_CHECKING:
     from ..functions import FunctionNamespace
@@ -174,9 +176,11 @@ class BaseSurrealConnection(ABC):
             The result from SurrealDB
 
         Raises:
+            FilesNotEnabledError: If the error says the server's experimental
+                ``files`` capability is off (a ``QueryError`` subclass).
             QueryError: If the RPC call fails
         """
-        from ..exceptions import QueryError, TableNotFoundError
+        from ..exceptions import FilesNotEnabledError, QueryError, TableNotFoundError
 
         request = RPCRequest(method=method, params=params or [])
         response = await self._send_rpc(request)
@@ -184,6 +188,11 @@ class BaseSurrealConnection(ABC):
         if response.is_error:
             message = response.error.message if response.error else "Unknown error"
             code = response.error.code if response.error else None
+            # A ``DEFINE BUCKET`` on a server without the experimental
+            # ``files`` capability is a parse error, returned as an RPC error
+            # on both transports (not a statement error).
+            if FilesNotEnabledError.is_files_not_enabled(message):
+                raise FilesNotEnabledError._from_server_text(message, code=code)
             if TableNotFoundError.is_table_not_found(message):
                 raise TableNotFoundError(message=message, code=code)
             raise QueryError(message=message, code=code)
@@ -564,6 +573,334 @@ class BaseSurrealConnection(ABC):
             relation=relation,
             on_query=_on_query,
         )
+
+    # File storage (experimental ``files`` capability)
+
+    def _require_cbor_for_files(self) -> None:
+        """Refuse a file operation on a JSON connection: JSON carries neither bytes nor pointers."""
+        if self.protocol != "cbor":
+            raise ValueError("File operations need protocol='cbor': JSON cannot carry bytes or file pointers")
+
+    def _check_file_args(self, file: object) -> FileRef:
+        """Check the protocol and the pointer of a file method, before any request."""
+        self._require_cbor_for_files()
+        if not isinstance(file, FileRef):
+            raise TypeError(f"file must be a FileRef, got {type(file).__name__}")
+        return file
+
+    async def _run_file_statement(self, sql: str, vars: dict[str, Any]) -> Any:
+        """Run one file statement and return its result, raising if the server rejected it.
+
+        ``query()`` raises only when the RPC fails; a rejected statement (a
+        missing bucket, a permission denied, the capability off) comes back as
+        an ``ERR`` result inside a successful RPC, so it is checked here, the
+        one place every file method goes through.
+
+        Raises:
+            FilesNotEnabledError: The server's experimental ``files``
+                capability is off.
+            QueryError: Any other statement error, with the server's text and
+                ``query=sql``.
+        """
+        from ..exceptions import FilesNotEnabledError, QueryError
+
+        response = await self.query(sql, vars)
+        for result in response.results:
+            if result.is_error:
+                message = str(result.result)
+                if FilesNotEnabledError.is_files_not_enabled(message):
+                    raise FilesNotEnabledError._from_server_text(message, query=sql)
+                raise QueryError(message, query=sql)
+        if not response.results:
+            raise QueryError("The server returned no result for the file statement", query=sql)
+        return response.results[-1].result
+
+    @staticmethod
+    def _unexpected_file_result(function: str, result: object, sql: str) -> Exception:
+        """The error for a file function result of a type the server does not send."""
+        from ..exceptions import QueryError
+
+        return QueryError(f"Unexpected result from {function}(): {type(result).__name__}", query=sql)
+
+    async def file_put(self, file: FileRef, data: bytes | bytearray | memoryview, *, overwrite: bool = True) -> None:
+        """
+        Write *data* to *file*, creating or replacing it.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``. The
+        whole payload is sent in one request and held in memory. File writes
+        are not transactional: a ``CANCEL`` does not undo them.
+
+        Args:
+            file: Where to write.
+            data: The content.
+            overwrite: ``True`` (default) replaces an existing file
+                (``file::put``). ``False`` uses ``file::put_if_not_exists``:
+                an existing file is **kept, silently** (no error, content
+                unchanged), as the server does.
+
+        Raises:
+            ValueError: On a JSON-protocol connection.
+            TypeError: If *file* is not a ``FileRef`` or *data* is not bytes,
+                ``bytearray`` or ``memoryview``.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the write (missing bucket,
+                read-only bucket, permission denied, backend error).
+        """
+        ref = self._check_file_args(file)
+        if not isinstance(data, (bytes, bytearray, memoryview)):
+            raise TypeError(f"File data must be bytes, bytearray or memoryview, got {type(data).__name__}")
+        function = "file::put" if overwrite else "file::put_if_not_exists"
+        await self._run_file_statement(f"{function}($_file, $_data);", {"_file": ref, "_data": bytes(data)})
+
+    async def file_get(self, file: FileRef) -> bytes | None:
+        """
+        Read the content of *file*.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``. The
+        whole file is returned in one reply and held in memory.
+
+        Returns:
+            The content, or ``None`` when no such file exists.
+
+        Raises:
+            ValueError: On a JSON-protocol connection.
+            TypeError: If *file* is not a ``FileRef``.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the read (missing bucket,
+                permission denied).
+        """
+        ref = self._check_file_args(file)
+        sql = "RETURN file::get($_file);"
+        result = await self._run_file_statement(sql, {"_file": ref})
+        if result is None:
+            return None
+        if isinstance(result, (bytes, bytearray)):
+            return bytes(result)
+        raise self._unexpected_file_result("file::get", result, sql)
+
+    async def file_head(self, file: FileRef) -> FileInfo | None:
+        """
+        Read the metadata (size, last write) of *file*.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``.
+
+        Returns:
+            The file's ``FileInfo``, or ``None`` when no such file exists.
+
+        Raises:
+            ValueError: On a JSON-protocol connection, or a malformed reply.
+            TypeError: If *file* is not a ``FileRef``.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the call.
+        """
+        ref = self._check_file_args(file)
+        result = await self._run_file_statement("RETURN file::head($_file);", {"_file": ref})
+        return None if result is None else FileInfo.from_result(result)
+
+    async def file_exists(self, file: FileRef) -> bool:
+        """
+        Tell whether *file* exists.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``.
+
+        Raises:
+            ValueError: On a JSON-protocol connection.
+            TypeError: If *file* is not a ``FileRef``.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the call (missing bucket,
+                permission denied).
+        """
+        ref = self._check_file_args(file)
+        sql = "RETURN file::exists($_file);"
+        result = await self._run_file_statement(sql, {"_file": ref})
+        if isinstance(result, bool):
+            return result
+        raise self._unexpected_file_result("file::exists", result, sql)
+
+    async def file_delete(self, file: FileRef) -> None:
+        """
+        Delete *file*; deleting a file that does not exist succeeds.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``. Not
+        transactional: a ``CANCEL`` does not bring the file back.
+
+        Raises:
+            ValueError: On a JSON-protocol connection.
+            TypeError: If *file* is not a ``FileRef``.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the call (missing bucket,
+                read-only bucket, permission denied).
+        """
+        ref = self._check_file_args(file)
+        await self._run_file_statement("file::delete($_file);", {"_file": ref})
+
+    async def _copy_or_rename(self, function: str, file: FileRef, key: str, overwrite: bool) -> FileRef:
+        """Run ``file::copy`` / ``file::rename`` (or their ``_if_not_exists`` forms) to *key*."""
+        ref = self._check_file_args(file)
+        target = ref.with_key(key)
+        if not overwrite:
+            function += "_if_not_exists"
+        await self._run_file_statement(f"{function}($_file, $_key);", {"_file": ref, "_key": target.key})
+        return target
+
+    async def file_copy(self, file: FileRef, key: str, *, overwrite: bool = True) -> FileRef:
+        """
+        Copy *file* to *key* in the same bucket.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``. The
+        target is always a key of *file*'s bucket: ``"other:/x"`` is the key
+        ``/other:/x`` there, never another bucket.
+
+        Args:
+            file: The source.
+            key: The target key (validated like ``FileRef.key``; a leading
+                ``/`` is added).
+            overwrite: ``True`` (default) replaces an existing target.
+                ``False`` uses ``file::copy_if_not_exists``: an existing
+                target is **kept, silently** (no error), as the server does.
+
+        Returns:
+            The target, ``file.with_key(key)``.
+
+        Raises:
+            ValueError: On a JSON-protocol connection, or an invalid *key*.
+            TypeError: If *file* is not a ``FileRef`` or *key* is not a ``str``.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the copy (the source does not
+                exist, missing or read-only bucket, permission denied).
+        """
+        return await self._copy_or_rename("file::copy", file, key, overwrite)
+
+    async def file_rename(self, file: FileRef, key: str, *, overwrite: bool = True) -> FileRef:
+        """
+        Move *file* to *key* in the same bucket.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``. The
+        target is always a key of *file*'s bucket.
+
+        Args:
+            file: The source.
+            key: The target key (validated like ``FileRef.key``; a leading
+                ``/`` is added).
+            overwrite: ``True`` (default) replaces an existing target.
+                ``False`` uses ``file::rename_if_not_exists``: an existing
+                target is **kept, silently** (no error, the source stays), as
+                the server does.
+
+        Returns:
+            The target, ``file.with_key(key)``.
+
+        Raises:
+            ValueError: On a JSON-protocol connection, or an invalid *key*.
+            TypeError: If *file* is not a ``FileRef`` or *key* is not a ``str``.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the move (the source does not
+                exist, missing or read-only bucket, permission denied).
+        """
+        return await self._copy_or_rename("file::rename", file, key, overwrite)
+
+    def _check_list_args(self, bucket: object, prefix: object, start: object) -> str:
+        """Check the arguments shared by ``file_list()`` and ``iter_files()``; return the bucket."""
+        self._require_cbor_for_files()
+        name = _check_bucket(bucket)
+        for arg, value in (("prefix", prefix), ("start", start)):
+            if value is not None and not isinstance(value, str):
+                raise TypeError(f"{arg} must be a str, got {type(value).__name__}")
+        return name
+
+    async def file_list(
+        self,
+        bucket: str,
+        *,
+        prefix: str | None = None,
+        start: str | None = None,
+        limit: int | None = None,
+    ) -> list[FileInfo]:
+        """
+        List the files of *bucket*, in key order.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``.
+
+        Args:
+            bucket: The bucket (any name a ``FileRef`` accepts).
+            prefix: Only keys starting with it (with or without the leading
+                ``/``).
+            start: Only keys **after** it (exclusive): pass the last key of
+                the previous page to read the next one.
+            limit: The most files to return (``>= 1``); ``None`` for all.
+
+        Returns:
+            One ``FileInfo`` per file.
+
+        Raises:
+            ValueError: On a JSON-protocol connection, an invalid bucket name,
+                or ``limit`` below 1.
+            TypeError: If *bucket*, *prefix* or *start* is not a ``str``, or
+                *limit* is not an ``int``.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the call (missing bucket,
+                permission denied).
+        """
+        name = self._check_list_args(bucket, prefix, start)
+        opts: dict[str, Any] = {}
+        if prefix is not None:
+            opts["prefix"] = prefix
+        if start is not None:
+            opts["start"] = start
+        if limit is not None:
+            opts["limit"] = require_int("limit", limit, minimum=1)
+        sql = "RETURN file::list($_bucket, $_opts);"
+        result = await self._run_file_statement(sql, {"_bucket": name, "_opts": opts})
+        if not isinstance(result, list):
+            raise self._unexpected_file_result("file::list", result, sql)
+        return [FileInfo.from_result(entry) for entry in result]
+
+    def iter_files(self, bucket: str, *, prefix: str | None = None, batch_size: int = 1000) -> AsyncIterator[FileInfo]:
+        """
+        Iterate over the files of *bucket* in key order, one page at a time.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``.
+
+        Each page is one :meth:`file_list` call whose ``start`` is the last
+        key of the previous page; iteration stops after a page shorter than
+        *batch_size*. Not a snapshot: a file written meanwhile after the
+        cursor is listed. The arguments are checked when the method is
+        called, before any query. Use it as
+        ``async for info in conn.iter_files("avatars"): ...``.
+
+        Args:
+            bucket: The bucket.
+            prefix: Only keys starting with it.
+            batch_size: Files per page (``>= 1``).
+
+        Raises:
+            ValueError, TypeError: As :meth:`file_list`, for *bucket*,
+                *prefix* and *batch_size*, at the call.
+            FilesNotEnabledError, QueryError: While iterating, as
+                :meth:`file_list`.
+        """
+        name = self._check_list_args(bucket, prefix, None)
+        size = require_int("batch_size", batch_size, minimum=1)
+        return self._iter_file_pages(name, prefix, size)
+
+    async def _iter_file_pages(self, bucket: str, prefix: str | None, batch_size: int) -> AsyncIterator[FileInfo]:
+        start: str | None = None
+        while True:
+            page = await self.file_list(bucket, prefix=prefix, start=start, limit=batch_size)
+            for info in page:
+                yield info
+            if len(page) < batch_size:
+                return
+            start = page[-1].key
 
     async def select(self, thing: str) -> RecordsResponse:
         """
