@@ -37,6 +37,15 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.38.4
+
+**Fix release.** `ConnectionPool` keywords reach HTTP connections
+([#566](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/566)). An HTTP pool (the default `connection_type`)
+dropped its extra keywords, so `SurrealDB.pool(..., protocol="json")` still spoke CBOR. Behaviour change: an HTTP pool
+given `protocol="json"` now uses JSON, and a keyword `HTTPConnection` does not take (a WebSocket-only option such as
+`max_message_size`, or a typo) raises `TypeError` at the first `acquire()` instead of being ignored. WebSocket pools
+are unchanged. SurrealDB pin unchanged (3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.38.3
 
 **Fix release.** Two fixes. The migration DEFINE parser ([#273](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/273))
@@ -240,7 +249,8 @@ friends = await alice.get_reachable("follows", max_depth=2)
 
 ## What's New in 0.35.6
 
-**Fix release.** String `DEFAULT` values and `SearchHighlight` tags are always written as string literals
+**Fix release.** String `DEFAULT` values (other than the deprecated no-argument call and bare `$identifier`
+forms) and `SearchHighlight` tags are always written as string literals
 ([#401](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/401)), and `validate_token()` / `authenticate_token()`
 accept only tokens of the model's own access definition
 ([#393](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/393)). See [CHANGELOG.md](CHANGELOG.md) for the full
@@ -452,8 +462,8 @@ below and [CHANGELOG.md](CHANGELOG.md).
 - **`QuerySet.cache()` no longer shares results between connections**
   ([#297](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/297)). The same query run under `using("a")` and
   `using("b")` against two databases returned the first database's cached rows. The cache key now includes the
-  effective connection (name, URL, namespace and database, never credentials), and a write only invalidates the
-  cached entries of the database it went to. `QueryCache.make_key()` / `set()` accept an optional `connection`
+  effective connection (name, URL, namespace and database, never credentials), and a write invalidates the cached
+  entries of the database it went to (see the CHANGELOG for one transaction caveat). `QueryCache.make_key()` / `set()` accept an optional `connection`
   keyword.
 
 ## What's New in 0.34.12
