@@ -6,6 +6,57 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.38.4] - 2026-11-07
+
+**Fix release.** One fix: `ConnectionPool` keywords on HTTP connections,
+#566 via #603 (`surreal_sdk/connection/pool.py` only). Read *Behaviour
+change* below if you build an HTTP pool (the default `connection_type`) with
+extra keywords. The SurrealDB pin is unchanged (tested against 3.3.5,
+supported range 3.2.x – 3.3.x). `v2`: same defect, backport tracked in #604.
+
+### Fixed
+
+- **`ConnectionPool` now passes its extra keywords to `HTTPConnection` as
+  well as to `WebSocketConnection`** (#566). An HTTP pool (the default
+  `connection_type`) used to drop them, so `SurrealDB.pool(...,
+  protocol="json")` still spoke CBOR. The `**kwargs` docstring now names the
+  connection class that receives them for each `connection_type`.
+
+### Changed
+
+- **Behaviour change:** an HTTP pool given `protocol="json"` now really uses
+  JSON. A keyword `HTTPConnection` does not take (for example the
+  WebSocket-only `max_message_size`, or a typo) now raises `TypeError` when
+  the first connection is created (first `acquire()`), where it used to be
+  silently ignored. WebSocket pools are unchanged (#566).
+
+### Upgrading
+
+- Remove WebSocket-only or misspelled keywords from HTTP pool constructors,
+  and check that nothing relied on an HTTP pool staying on CBOR when given
+  `protocol="json"`. A pool built without extra keywords behaves as before.
+
+### Known limitations
+
+- An HTTP pool on `protocol="json"` was not possible before this release. The
+  pool's own authentication paths (pool sign-in, the reset on release) are
+  tested over CBOR only, not yet over JSON against a server (review
+  suggestion on #603).
+
+### Documentation
+
+- Release-note corrections: the `[0.38.3]` *Documentation* entry now also
+  names the `QuerySet.changes()` docstring (#575); the `[0.35.6]` entry no
+  longer reads as if every `::` / `$` string default is quoted, since the
+  legacy no-argument call and bare `$identifier` forms still render unquoted
+  with a `DeprecationWarning` (#421); the `[0.35.5]` entry says that any
+  caller `signin()`, even with the same arguments, makes a pending `401`
+  raise `QueryError` (#409). README: the 0.35.6 section says the same about
+  the legacy defaults (#421), and the 0.34.13 section no longer says a write
+  only invalidates the entries of the database it went to (#319).
+
+---
+
 ## [0.38.3] - 2026-11-05
 
 **Fix release.** Two fixes: the migration DEFINE parser, #273 via #564
@@ -65,7 +116,9 @@ both backports tracked, #568 (#564) and #569 (#567, the `changes()` part).
   the drain (`sql()`, `health()`, `status()` and `rest_*()` are not counted),
   and say to call `reconnect()` from the task that opened a transaction, not
   from a task that transaction awaits (`asyncio.gather()`, `TaskGroup`)
-  (#270).
+  (#270). The `QuerySet.changes()` docstring now says that a poll failing
+  because `reconnect()` or `close_connection()` closed the client is resumed
+  on the current client instead of raised (#270).
 - Release-note corrections: the `[0.34.7]` entry now says a transaction whose
   body calls `reconnect()` commits on its own client, and that `reconnect()`
   returns before the previous client is closed when the calling task has
@@ -717,8 +770,9 @@ by the SurrealDB version monitor; entry backfilled in 0.36.0.
 
 ## [0.35.6] - 2026-10-28
 
-**Fix release.** Two fixes: string `DEFAULT` values and `SearchHighlight`
-tags are always written as string literals (#401 via #407), and
+**Fix release.** Two fixes: string `DEFAULT` values (other than the
+deprecated legacy expression forms below) and `SearchHighlight` tags are
+always written as string literals (#401 via #407), and
 `validate_token()` / `authenticate_token()` accept only tokens issued by the
 model's own access definition (#393 via #408). Read *Behaviour change* and
 *Upgrading* below if a model or migration file uses a `str` as a server-side
@@ -729,8 +783,10 @@ against 3.3.4, supported range 3.2.x – 3.3.x).
 ### Fixed
 
 - **A plain `str` field `DEFAULT` containing `::` or starting with `$` is now
-  emitted as a quoted string literal and read back as the same text.**
-  Previously `AddField`, `AlterField.forwards()` / `backwards()` and
+  emitted as a quoted string literal and read back as the same text**, other
+  than the legacy no-argument call (`time::now()`) and bare `$identifier`
+  forms, which still render unquoted with a `DeprecationWarning` (see
+  *Behaviour change*). Previously `AddField`, `AlterField.forwards()` / `backwards()` and
   `AlterField.from_field_states()` emitted it unquoted, so a text such as
   `'fr::CA'` read back from the database did not round-trip (#401).
 - **`SearchHighlight` renders both tags with `surql_string()`**, so a tag
@@ -798,11 +854,11 @@ supported range 3.2.x – 3.3.x).
   installed only if the connection's auth state is unchanged since the
   rejected request was sent, and is discarded otherwise (#390).
 - **`HTTPConnection`: a `401` on a request whose credentials have since been
-  changed by another task** (`signin()` with other arguments,
+  changed by another task** (`signin()`, even with the same arguments,
   `authenticate()`, `signup()`, `invalidate()`, `close()`) is now raised as
   `QueryError` instead of being answered by a new signin; the request is
-  never resent under the new credentials. When another task only renewed the
-  token of the same `signin()`, the request is retried with that token
+  never resent under the new credentials. When another task's transient-`401`
+  re-mint only renewed the token, the request is retried with that token
   without signing in again (#390).
 
 ### Behaviour change
