@@ -9,8 +9,15 @@ This package provides:
 - CLI tools for schema management
 """
 
-# Re-export LiveAction, TableNotFoundError and the data I/O names from SDK for convenience
-from surreal_sdk.exceptions import DataFormatError, DataImportError, TableNotFoundError
+# Re-export LiveAction, TableNotFoundError, the data I/O and the file storage names from SDK for convenience
+from surreal_sdk.exceptions import (
+    DataFormatError,
+    DataImportError,
+    FilesNotEnabledError,
+    PayloadTooLargeError,
+    TableNotFoundError,
+)
+from surreal_sdk.files import FileInfo, FileRef
 from surreal_sdk.jsonl import ImportReport
 from surreal_sdk.streaming.live_select import LiveAction
 
@@ -24,8 +31,10 @@ from .enum import OrderBy
 from .fields import (
     Computed,
     Encrypted,
+    FileField,
     ForeignKey,
     GeoField,
+    ImageField,
     LineStringField,
     ManyToMany,
     MultiPointField,
@@ -127,6 +136,13 @@ __all__ = [
     "Encrypted",
     "VectorField",
     "ReferencesField",
+    # File storage (experimental: SurrealDB files capability)
+    "FileField",
+    "ImageField",
+    "FileRef",
+    "FileInfo",
+    "FilesNotEnabledError",
+    "PayloadTooLargeError",
     # Geometry
     "GeoField",
     "PointField",
