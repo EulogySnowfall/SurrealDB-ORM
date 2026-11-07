@@ -6,6 +6,63 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.57] - 2026-11-07
+
+**Bug fix release (V2 LTS).** One backport from `main`: `ConnectionPool`
+keywords on HTTP connections (#604 via #613, backport of #566 / #603).
+Read *Behaviour change* below if you build an HTTP pool (the default
+`connection_type`) with extra keywords. The SurrealDB pin is unchanged
+(tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`ConnectionPool` passes its extra keywords to `HTTPConnection`.** A pool
+  with `connection_type="http"` (the default) built its connections from
+  `url`, `namespace`, `database` and `timeout` only, so
+  `SurrealDB.pool(..., protocol="json")` still spoke CBOR and any other
+  keyword was dropped without an error. It now passes them on, as the
+  WebSocket branch already did. The `**kwargs` docstring names the class
+  that receives them for each `connection_type` (#604, #613).
+
+### Behaviour change
+
+- An HTTP pool given `protocol="json"` now really uses JSON. A keyword
+  `HTTPConnection` does not take (for example the WebSocket-only
+  `max_message_size`, or a misspelling) now raises `TypeError` when the
+  first connection is created (first `acquire()`), where it used to be
+  silently ignored; an invalid value for a keyword it does take (for
+  example `protocol="msgpack"`) raises `ValueError` at the same point
+  (review suggestion on #613). `acquire()` releases its slot on that path,
+  so the pool stays usable. WebSocket pools are unchanged, and a pool built
+  without extra keywords behaves as before.
+
+### Tests
+
+- `tests/sdk/test_issue_604_v2_unit.py` (10 tests): `protocol` reaches the
+  HTTP connection through `ConnectionPool` and `SurrealDB.pool()`, the
+  default protocol and `timeout` are unchanged, an unknown keyword raises at
+  creation and at the first `acquire()` without losing a slot, and
+  WebSocket keywords are still passed on. 8 of them fail against the
+  0.21.56 `src/`.
+
+### Migration notes
+
+- Remove from an HTTP pool any keyword `HTTPConnection` cannot take
+  (besides the pool's own `timeout`, it takes only `protocol`), or use
+  `connection_type="websocket"` for WebSocket-only options. Check that
+  nothing relied on an HTTP pool staying on CBOR when given
+  `protocol="json"`.
+
+### Verification
+
+Against SurrealDB 2.7.0, on #613's validated head (the released tree):
+4,039 unit tests pass on each of Python 3.12, 3.13 and 3.14 (1 expected
+failure, the strict `xfail` from 0.21.51), and 833 integration tests pass
+(4 expected failures, the existing strict `xfail`s for integer record ids
+over WebSocket); `ruff` and `mypy` clean.
+
+---
+
 ## [0.21.56] - 2026-11-07
 
 **Bug fix release (V2 LTS).** The 0.21.55 review follow-ups (#601 via
