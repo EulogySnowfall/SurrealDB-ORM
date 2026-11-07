@@ -295,7 +295,7 @@ class TestCBOREncodeDecode:
         assert decoded["table"].name == "users"
 
     def test_encode_decode_duration(self) -> None:
-        """Test encoding and decoding Duration."""
+        """A text Duration is sent as tag 14 and decodes in the server's compact form."""
         duration = Duration(value="1h30m")
         data = {"timeout": duration}
 
@@ -303,7 +303,7 @@ class TestCBOREncodeDecode:
         decoded = cbor_decode(encoded)
 
         assert isinstance(decoded["timeout"], Duration)
-        assert decoded["timeout"].value == "1h30m"
+        assert decoded["timeout"].value == (5400,)
 
     def test_data_prefix_string_not_interpreted_as_record_link(self) -> None:
         """

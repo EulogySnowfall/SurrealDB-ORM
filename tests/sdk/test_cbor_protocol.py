@@ -188,14 +188,14 @@ class TestCBOREncodeDecode:
         cbor2 has a native ``date`` encoder (tag 1004, an RFC 8943 date
         string), so the ``default`` hook never saw one. SurrealDB does not
         read tag 1004: it rejects the whole request as a parse error. The
-        bytes must be those of a timezone-aware ``datetime`` (tag 0), the form
-        every datetime already travels in.
+        bytes must be those of a timezone-aware ``datetime`` (tag 12
+        ``[seconds, nanoseconds]``), the form every datetime travels in.
         """
         import cbor2
 
         midnight = datetime(2026, 2, 1, tzinfo=UTC)
-        assert encode(date(2026, 2, 1)) == cbor2.dumps(midnight)
-        assert encode(date(2026, 2, 1))[0] == 0xC0  # CBOR tag 0: date/time string
+        assert encode(date(2026, 2, 1)) == encode(midnight)
+        assert cbor2.loads(encode(date(2026, 2, 1))) == cbor2.CBORTag(12, (1769904000, 0))
         assert decode(encode({"d": [date(2026, 2, 1)]})) == {"d": [midnight]}
 
     def test_datetime_is_not_truncated_to_its_date(self) -> None:
@@ -203,7 +203,8 @@ class TestCBOREncodeDecode:
         import cbor2
 
         when = datetime(2026, 2, 1, 12, 30, 45, tzinfo=UTC)
-        assert encode(when) == cbor2.dumps(when)
+        assert cbor2.loads(encode(when)) == cbor2.CBORTag(12, (1769949045, 0))
+        assert decode(encode(when)) == when
 
     def test_encode_decode_record_id(self) -> None:
         """Encode and decode RecordId with custom tag."""
@@ -223,12 +224,12 @@ class TestCBOREncodeDecode:
         assert decoded.name == "users"
 
     def test_encode_decode_duration(self) -> None:
-        """Encode and decode Duration with custom tag."""
+        """A text Duration goes out as tag 14 and comes back in the server's compact form."""
         data = Duration(value="1h30m")
         encoded = encode(data)
         decoded = decode(encoded)
         assert isinstance(decoded, Duration)
-        assert decoded.value == "1h30m"
+        assert decoded.value == (5400,)
 
     def test_decode_nested_none_in_containers(self) -> None:
         """None nested in dicts and lists round-trips to Python None."""
