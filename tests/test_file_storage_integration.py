@@ -34,10 +34,13 @@ from surreal_orm import (
     SurrealDBConnectionManager,
 )
 from surreal_orm.debug import QueryLogger
+from surreal_orm.introspection import schema_diff
+from surreal_orm.migrations.db_introspector import DatabaseIntrospector
 from surreal_orm.migrations.define_parser import parse_define_field
 from surreal_orm.migrations.introspector import ModelIntrospector
-from surreal_orm.migrations.operations import AddField
-from surreal_orm.migrations.state import TableState
+from surreal_orm.migrations.operations import AddField, AlterBucket, DefineBucket, RemoveBucket
+from surreal_orm.migrations.state import BucketState, SchemaState, TableState
+from surreal_orm.utils import escape_record_id
 from surreal_sdk import FileInfo, FileRef, HTTPConnection, PayloadTooLargeError, WebSocketConnection
 from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.exceptions import QueryError
@@ -561,3 +564,101 @@ async def test_file_field_live_filter_with_pointer_text(i5_table: TableState) ->
         assert deleted.action == LiveAction.DELETE
         assert deleted.record_id == f"{I5_TABLE}:hit"
         assert deleted.instance.avatar == ref
+
+
+# ---------------------------------------------------------------------------
+# I7 - bucket migrations through the server (AC8, AC9)
+# ---------------------------------------------------------------------------
+
+I7_BUCKETS = ("fsi_i7_plain", "fsi_i7_ro", "fsi_i7-dash", "fsi_i7_where", "fsi_i7_alter", "fsi_i7_gone", "fsi_i7_dbonly")
+
+
+@pytest.fixture
+async def i7_buckets(files_conn: HTTPConnection, fsi_buckets: tuple[str, ...]) -> AsyncGenerator[None, None]:
+    """Remove the I7 buckets before and after each test."""
+    sql = " ".join(f"REMOVE BUCKET IF EXISTS {escape_record_id(name)};" for name in I7_BUCKETS)
+    await files_conn.query(sql)
+    try:
+        yield
+    finally:
+        await files_conn.query(sql)
+
+
+async def _apply(conn: HTTPConnection, sql: str) -> None:
+    error = _statement_error(await conn.query(sql))
+    if error is not None:
+        raise QueryError(error, query=sql)
+
+
+async def _db_buckets(conn: HTTPConnection) -> dict[str, BucketState]:
+    state = await DatabaseIntrospector(connection=conn).introspect()
+    assert state.buckets is not None
+    return state.buckets
+
+
+def _state_of(op: DefineBucket) -> BucketState:
+    return BucketState(
+        name=op.name,
+        backend=op.backend,
+        readonly=op.readonly,
+        permissions=op.permissions or "FULL",
+        comment=op.comment,
+    )
+
+
+async def test_bucket_definitions_read_back_equal(files_conn: HTTPConnection, i7_buckets: None) -> None:
+    """I7: each DefineBucket form, read back through INFO FOR DB, equals the operation's state."""
+    operations = [
+        DefineBucket("fsi_i7_plain", backend="memory"),
+        DefineBucket("fsi_i7_ro", backend="memory", readonly=True, permissions="FULL"),
+        DefineBucket("fsi_i7-dash", backend="memory", permissions="NONE", comment="it's"),
+        DefineBucket(
+            "fsi_i7_where",
+            backend="memory",
+            permissions="$action INSIDE ['get', 'head'] OR $auth.role = 'admin'",
+            comment="back\\slash COMMENT 'x'",
+        ),
+    ]
+    await _apply(files_conn, " ".join(op.forwards() for op in operations))
+    buckets = await _db_buckets(files_conn)
+    for op in operations:
+        assert buckets[op.name] == _state_of(op), op.name
+        assert buckets[op.name].permissions == _state_of(op).permissions
+
+
+async def test_alter_bucket_and_its_rollback(files_conn: HTTPConnection, i7_buckets: None) -> None:
+    """I7: AlterBucket replaces the definition; its rollback restores the previous one."""
+    current = BucketState(name="fsi_i7_alter", backend="memory", comment="old")
+    target = BucketState(name="fsi_i7_alter", backend="memory", readonly=True, permissions="NONE")
+    await _apply(files_conn, DefineBucket.from_bucket_state(current).forwards())
+    assert (await _db_buckets(files_conn))["fsi_i7_alter"] == current
+
+    alter = AlterBucket.from_bucket_states(current, target)
+    assert alter.reversible
+    await _apply(files_conn, alter.forwards())
+    assert (await _db_buckets(files_conn))["fsi_i7_alter"] == target
+    await _apply(files_conn, alter.backwards())
+    assert (await _db_buckets(files_conn))["fsi_i7_alter"] == current
+
+
+async def test_remove_bucket(files_conn: HTTPConnection, i7_buckets: None) -> None:
+    """I7: RemoveBucket drops the definition."""
+    await _apply(files_conn, DefineBucket("fsi_i7_gone", backend="memory").forwards())
+    assert "fsi_i7_gone" in await _db_buckets(files_conn)
+    await _apply(files_conn, RemoveBucket("fsi_i7_gone").forwards())
+    assert "fsi_i7_gone" not in await _db_buckets(files_conn)
+
+
+async def test_diff_against_models_leaves_buckets_alone(files_conn: HTTPConnection, i7_buckets: None) -> None:
+    """I7 / D17: models never declare buckets, so schema_diff() proposes none; a target listing none removes it."""
+    await _apply(files_conn, DefineBucket("fsi_i7_dbonly", backend="memory").forwards())
+
+    operations = await schema_diff(models=[FSII5Doc], connection=files_conn)
+    assert operations  # the model's table is not defined here
+    assert not [op for op in operations if isinstance(op, (DefineBucket, AlterBucket, RemoveBucket))]
+
+    db_state = await DatabaseIntrospector(connection=files_conn).introspect()
+    removals = [op for op in db_state.diff(SchemaState(buckets={})) if isinstance(op, RemoveBucket)]
+    removal = next(op for op in removals if op.name == "fsi_i7_dbonly")
+    await _apply(files_conn, removal.forwards())
+    assert "fsi_i7_dbonly" not in await _db_buckets(files_conn)

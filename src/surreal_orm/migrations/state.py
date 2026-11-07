@@ -403,6 +403,12 @@ class SchemaState:
     Attributes:
         tables: Dict of table name to TableState
         applied_migrations: List of already applied migration names
+        buckets: File storage buckets by name, or ``None`` when this state
+            does not describe buckets. ``DatabaseIntrospector`` always sets a
+            dict; ``ModelIntrospector`` leaves ``None`` (models never declare
+            buckets); a hand-built state opts in by setting a dict, which then
+            lists every bucket (``{}``: none). Experimental: follows
+            SurrealDB's experimental ``files`` capability.
     """
 
     tables: dict[str, TableState] = field(default_factory=dict)
@@ -410,10 +416,19 @@ class SchemaState:
     analyzers: dict[str, "AnalyzerState"] = field(default_factory=dict)
     apis: dict[str, "ApiState"] = field(default_factory=dict)
     graphql_config: "GraphQLConfigState | None" = None
+    buckets: "dict[str, BucketState] | None" = None
 
     def diff(self, target: "SchemaState") -> list["Operation"]:
         """
         Compute operations needed to transform this state into target state.
+
+        Buckets are compared only when ``target.buckets`` is a dict: a state
+        that does not describe buckets (``None``, as every model-built state)
+        yields no bucket operation in either direction. Otherwise every
+        database bucket, the project's own included, would come out as an
+        irreversible ``RemoveBucket`` on each run, and ``makemigrations
+        --drop-missing`` would delete its files. Bucket definitions and
+        alterations come first, removals last.
 
         Args:
             target: The desired schema state
@@ -423,12 +438,14 @@ class SchemaState:
         """
         from .operations import (
             AddField,
+            AlterBucket,
             AlterField,
             AlterTable,
             CreateTable,
             DefineAccess,
             DefineAnalyzer,
             DefineApi,
+            DefineBucket,
             DefineEvent,
             DefineGraphQLConfig,
             DropField,
@@ -437,12 +454,27 @@ class SchemaState:
             RemoveAccess,
             RemoveAnalyzer,
             RemoveApi,
+            RemoveBucket,
             RemoveEvent,
             RemoveGraphQLConfig,
             _effective_permissions,
         )
 
         operations: list[Operation] = []
+
+        # ── Buckets, only when the target describes them ──
+        deferred_remove_buckets: list[RemoveBucket] = []
+        if target.buckets is not None:
+            current_buckets = self.buckets or {}
+            for bucket_name, target_bucket in target.buckets.items():
+                current_bucket = current_buckets.get(bucket_name)
+                if current_bucket is None:
+                    operations.append(DefineBucket.from_bucket_state(target_bucket))
+                elif current_bucket != target_bucket:
+                    operations.append(AlterBucket.from_bucket_states(current_bucket, target_bucket))
+            deferred_remove_buckets = [
+                RemoveBucket(name=bucket_name) for bucket_name in current_buckets if bucket_name not in target.buckets
+            ]
 
         # ── Analyzers to create/update first (indexes may reference them) ──
         for analyzer_name, target_analyzer in target.analyzers.items():
@@ -656,6 +688,9 @@ class SchemaState:
             )
         elif self.graphql_config and not target.graphql_config:
             operations.append(RemoveGraphQLConfig())
+
+        # ── Bucket removals last (irreversible: a memory bucket loses its files) ──
+        operations.extend(deferred_remove_buckets)
 
         return operations
 

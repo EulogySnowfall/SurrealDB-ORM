@@ -1009,3 +1009,308 @@ class TestBucketMigrationFile:
         assert migration.operations == operations
         assert [op.reversible for op in migration.operations] == [True, True, True, False]
         assert migration.operations[2].backwards() == "DEFINE BUCKET OVERWRITE fsu_c PERMISSIONS FULL;"
+
+
+# ---------------------------------------------------------------------------
+# U25 — parse_define_bucket() reads every form INFO FOR DB reports (AC9)
+# ---------------------------------------------------------------------------
+
+# What ``INFO FOR DB`` reports under ``buckets``, measured on 3.3.5 and 3.2.6:
+# clauses in canonical order, ``PERMISSIONS FULL`` when none was given, a
+# comment holding ``'`` in double quotes, the expression re-rendered.
+INFO_BUCKETS: dict[str, str] = {
+    "fsu-a`b": "DEFINE BUCKET `fsu-a\\`b` READONLY BACKEND 'memory' PERMISSIONS FULL",
+    "fsu_p1": (
+        "DEFINE BUCKET fsu_p1 BACKEND 'memory' PERMISSIONS WHERE $action INSIDE ['get', 'head'] "
+        "OR $auth.role = 'admin' COMMENT \"it's\""
+    ),
+    "fsu_p3": "DEFINE BUCKET fsu_p3 BACKEND 'memory' PERMISSIONS WHERE $file.comment = 'COMMENT x' COMMENT 'c'",
+    "fsu_p5": "DEFINE BUCKET fsu_p5 BACKEND 'memory' PERMISSIONS NONE COMMENT 'back\\\\slash'",
+}
+
+
+def _info_bucket_states() -> dict[str, Any]:
+    from surreal_orm.migrations.state import BucketState
+
+    return {
+        "fsu-a`b": BucketState(name="fsu-a`b", backend="memory", readonly=True),
+        "fsu_p1": BucketState(
+            name="fsu_p1",
+            backend="memory",
+            permissions="$action INSIDE ['get', 'head'] OR $auth.role = 'admin'",
+            comment="it's",
+        ),
+        "fsu_p3": BucketState(name="fsu_p3", backend="memory", permissions="$file.comment = 'COMMENT x'", comment="c"),
+        "fsu_p5": BucketState(name="fsu_p5", backend="memory", permissions="NONE", comment="back\\slash"),
+    }
+
+
+class TestParseDefineBucket:
+    @pytest.mark.parametrize("name", list(INFO_BUCKETS))
+    def test_reads_what_info_for_db_reports(self, name: str) -> None:
+        from surreal_orm.migrations.define_parser import parse_define_bucket
+
+        state = parse_define_bucket(INFO_BUCKETS[name])
+        expected = _info_bucket_states()[name]
+        assert state == expected
+        # Exact fields, not only the normalised equality
+        assert (state.name, state.backend, state.readonly, state.permissions, state.comment) == (
+            expected.name,
+            expected.backend,
+            expected.readonly,
+            expected.permissions,
+            expected.comment,
+        )
+
+    @pytest.mark.parametrize(
+        ("statement", "fields"),
+        [
+            ("DEFINE BUCKET b", ("b", None, False, "FULL", None)),
+            ("DEFINE BUCKET b;", ("b", None, False, "FULL", None)),
+            ("define bucket b backend 'memory' permissions none", ("b", "memory", False, "NONE", None)),
+            ("DEFINE BUCKET IF NOT EXISTS b BACKEND 'memory'", ("b", "memory", False, "FULL", None)),
+            ("DEFINE BUCKET OVERWRITE b READONLY", ("b", None, True, "FULL", None)),
+            ("DEFINE BUCKET b BACKEND 'memory' READONLY", ("b", "memory", True, "FULL", None)),
+            ("DEFINE BUCKET b COMMENT 'c' BACKEND \"file:/tmp\"", ("b", "file:/tmp", False, "FULL", "c")),
+            ("DEFINE BUCKET b PERMISSIONS WHERE $action = 'get'", ("b", None, False, "$action = 'get'", None)),
+            (
+                "DEFINE BUCKET b PERMISSIONS WHERE $file.key = \"COMMENT 'x'\" COMMENT 'y'",
+                ("b", None, False, "$file.key = \"COMMENT 'x'\"", "y"),
+            ),
+            ("DEFINE BUCKET `a\\\\b` BACKEND 'memory'", ("a\\b", "memory", False, "FULL", None)),
+        ],
+    )
+    def test_other_forms(self, statement: str, fields: tuple[Any, ...]) -> None:
+        from surreal_orm.migrations.define_parser import parse_define_bucket
+
+        state = parse_define_bucket(statement)
+        assert (state.name, state.backend, state.readonly, state.permissions, state.comment) == fields
+
+    @pytest.mark.parametrize(
+        "state_fields",
+        [
+            {"name": "b"},
+            {"name": "b", "backend": "memory", "readonly": True, "permissions": "NONE", "comment": "it's"},
+            {"name": "my-b", "backend": "file:/tmp", "permissions": "$action INSIDE ['get', 'head']"},
+            {"name": "a`b\\c", "comment": "back\\slash \"q\" 'a'"},
+            {"name": "b", "permissions": "$file.comment = 'COMMENT x'", "comment": "COMMENT"},
+        ],
+    )
+    def test_round_trip_through_the_operations(self, state_fields: dict[str, Any]) -> None:
+        from surreal_orm.migrations.define_parser import parse_define_bucket
+        from surreal_orm.migrations.operations import AlterBucket, DefineBucket
+        from surreal_orm.migrations.state import BucketState
+
+        state = BucketState(**state_fields)
+        assert parse_define_bucket(DefineBucket.from_bucket_state(state).forwards()) == state
+        altered = AlterBucket.from_bucket_states(BucketState(name=state.name), state)
+        assert parse_define_bucket(altered.forwards()) == state
+        assert parse_define_bucket(altered.backwards()) == BucketState(name=state.name)
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "DEFINE TABLE b",
+            "DEFINE BUCKET",
+            "DEFINE BUCKET b BACKEND memory",
+            "DEFINE BUCKET b PERMISSIONS",
+            "DEFINE BUCKET b PERMISSIONS SOME",
+            "DEFINE BUCKET b PERMISSIONS WHERE",
+            "DEFINE BUCKET b COMMENT",
+            "DEFINE BUCKET b SOMETHING 'x'",
+            "DEFINE BUCKET b BACKEND 'memory' trailing",
+        ],
+    )
+    def test_unknown_text_raises(self, statement: str) -> None:
+        from surreal_orm.migrations.define_parser import parse_define_bucket
+
+        with pytest.raises(ValueError) as excinfo:
+            parse_define_bucket(statement)
+        assert str(excinfo.value) == f"Not a DEFINE BUCKET statement: {statement!r}"
+
+    def test_exported_next_to_the_other_parsers(self) -> None:
+        from surreal_orm import migrations
+        from surreal_orm.migrations import define_parser
+
+        assert migrations.parse_define_bucket is define_parser.parse_define_bucket
+        assert "parse_define_bucket" in migrations.__all__
+
+
+# ---------------------------------------------------------------------------
+# U26 — SchemaState.diff() handles buckets only when the target describes them (AC9)
+# ---------------------------------------------------------------------------
+
+
+def _bucket_kinds(operations: list[Any]) -> list[tuple[str, str]]:
+    from surreal_orm.migrations.operations import AlterBucket, DefineBucket, RemoveBucket
+
+    return [(type(op).__name__, op.name) for op in operations if isinstance(op, (DefineBucket, AlterBucket, RemoveBucket))]
+
+
+class TestBucketDiff:
+    def _state(self, **buckets: Any) -> Any:
+        from surreal_orm.migrations.state import SchemaState
+
+        return SchemaState(buckets=dict(buckets))
+
+    def test_add_change_remove(self) -> None:
+        from surreal_orm.migrations.operations import AlterBucket, DefineBucket, RemoveBucket, split_destructive
+        from surreal_orm.migrations.state import BucketState
+
+        current = self._state(
+            kept=BucketState(name="kept", backend="memory"),
+            changed=BucketState(name="changed", backend="memory", comment="old"),
+            gone=BucketState(name="gone", backend="memory"),
+        )
+        target = self._state(
+            kept=BucketState(name="kept", backend="memory", permissions=None),  # type: ignore[arg-type]
+            changed=BucketState(name="changed", backend="memory", permissions="NONE"),
+            new=BucketState(name="new", readonly=True),
+        )
+        operations = current.diff(target)
+        assert _bucket_kinds(operations) == [
+            ("AlterBucket", "changed"),
+            ("DefineBucket", "new"),
+            ("RemoveBucket", "gone"),
+        ]
+        alter = operations[0]
+        assert isinstance(alter, AlterBucket)
+        assert (alter.permissions, alter.comment, alter.previous_permissions, alter.previous_comment) == (
+            "NONE",
+            None,
+            "FULL",
+            "old",
+        )
+        assert alter.reversible
+        assert operations[1] == DefineBucket("new", readonly=True, permissions="FULL")
+        keep, destructive = split_destructive(operations)
+        assert _bucket_kinds(keep) == [("AlterBucket", "changed"), ("DefineBucket", "new")]
+        assert _bucket_kinds(destructive) == [("RemoveBucket", "gone")]
+        assert isinstance(destructive[0], RemoveBucket)
+
+    def test_defines_before_tables_removals_last(self) -> None:
+        from surreal_orm.migrations.operations import CreateTable, DefineAnalyzer, RemoveAnalyzer, RemoveBucket
+        from surreal_orm.migrations.state import AnalyzerState, BucketState, TableState
+
+        current = self._state(old=BucketState(name="old"))
+        current.analyzers["az_old"] = AnalyzerState(name="az_old", tokenizers=["blank"], filters=[])
+        target = self._state(new=BucketState(name="new"))
+        target.analyzers["az_new"] = AnalyzerState(name="az_new", tokenizers=["blank"], filters=[])
+        target.tables["fsu_t"] = TableState(name="fsu_t")
+        operations = current.diff(target)
+        assert _bucket_kinds(operations[:1]) == [("DefineBucket", "new")]
+        assert any(isinstance(op, DefineAnalyzer) for op in operations)
+        assert any(isinstance(op, CreateTable) for op in operations)
+        assert any(isinstance(op, RemoveAnalyzer) for op in operations)
+        assert isinstance(operations[-1], RemoveBucket)
+
+    def test_empty_dict_removes_every_bucket(self) -> None:
+        from surreal_orm.migrations.state import BucketState
+
+        current = self._state(a=BucketState(name="a"), b=BucketState(name="b"))
+        assert _bucket_kinds(current.diff(self._state())) == [("RemoveBucket", "a"), ("RemoveBucket", "b")]
+
+    def test_none_permissions_equal_full(self) -> None:
+        from surreal_orm.migrations.state import BucketState
+
+        current = self._state(a=BucketState(name="a", permissions="FULL"))
+        target = self._state(a=BucketState(name="a", permissions=None))  # type: ignore[arg-type]
+        assert current.diff(target) == []
+
+    def test_self_none_read_as_empty(self) -> None:
+        from surreal_orm.migrations.state import BucketState, SchemaState
+
+        assert _bucket_kinds(SchemaState().diff(self._state(a=BucketState(name="a")))) == [("DefineBucket", "a")]
+
+    def test_target_none_yields_no_bucket_operation(self) -> None:
+        from surreal_orm.migrations.state import BucketState, SchemaState
+
+        current = self._state(a=BucketState(name="a"), b=BucketState(name="b"))
+        assert SchemaState().buckets is None
+        assert current.diff(SchemaState()) == []
+
+    @pytest.mark.asyncio
+    async def test_model_built_target_never_touches_buckets(self) -> None:
+        """The ``makemigrations --drop-missing`` scenario: models never declare buckets."""
+        from surreal_orm.migrations.introspector import ModelIntrospector
+        from surreal_orm.migrations.operations import split_destructive
+
+        current = await _fake_db_introspection({"fsu_one": INFO_BUCKETS["fsu_p1"], "fsu_two": INFO_BUCKETS["fsu_p5"]})
+        assert set(current.buckets) == {"fsu_p1", "fsu_p5"}
+        target = ModelIntrospector([FSUColumns]).introspect()
+        assert target.buckets is None
+        keep, destructive = split_destructive(current.diff(target))
+        assert keep  # the table and its columns
+        assert _bucket_kinds(keep) == []
+        assert _bucket_kinds(destructive) == []
+
+    def test_clone_keeps_none_and_copies_a_dict(self) -> None:
+        from surreal_orm.migrations.state import BucketState, SchemaState
+
+        assert SchemaState().clone().buckets is None
+        state = self._state(a=BucketState(name="a"))
+        copy = state.clone()
+        assert copy.buckets == state.buckets
+        assert copy.buckets is not state.buckets
+        assert copy.buckets is not None and state.buckets is not None
+        assert copy.buckets["a"] is not state.buckets["a"]
+
+
+# ---------------------------------------------------------------------------
+# U27 — DatabaseIntrospector reads the buckets of INFO FOR DB (AC9)
+# ---------------------------------------------------------------------------
+
+
+async def _fake_db_introspection(buckets: Any, *, with_key: bool = True) -> Any:
+    from surreal_orm.migrations.db_introspector import DatabaseIntrospector
+
+    info: dict[str, Any] = {"tables": {}, "analyzers": {}}
+    if with_key:
+        info["buckets"] = buckets
+    result = MagicMock()
+    result.is_ok = True
+    result.result = info
+    response = MagicMock()
+    response.results = [result]
+    conn = AsyncMock()
+    conn.query.return_value = response
+    return await DatabaseIntrospector(connection=conn).introspect()
+
+
+class TestDatabaseIntrospectorBuckets:
+    @pytest.mark.asyncio
+    async def test_reads_every_bucket(self) -> None:
+        state = await _fake_db_introspection(INFO_BUCKETS)
+        assert state.buckets == _info_bucket_states()
+
+    @pytest.mark.asyncio
+    async def test_keyed_by_the_parsed_name(self) -> None:
+        state = await _fake_db_introspection({"whatever": "DEFINE BUCKET `my-b` BACKEND 'memory' PERMISSIONS FULL"})
+        assert list(state.buckets) == ["my-b"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("buckets", [{}, "not a dict"])
+    async def test_always_a_dict(self, buckets: Any) -> None:
+        assert (await _fake_db_introspection(buckets)).buckets == {}
+        assert (await _fake_db_introspection(buckets, with_key=False)).buckets == {}
+
+    @pytest.mark.asyncio
+    async def test_empty_database_gives_an_empty_dict(self) -> None:
+        from surreal_orm.migrations.db_introspector import DatabaseIntrospector
+
+        response = MagicMock()
+        response.results = []
+        conn = AsyncMock()
+        conn.query.return_value = response
+        assert (await DatabaseIntrospector(connection=conn).introspect()).buckets == {}
+
+    @pytest.mark.asyncio
+    async def test_unreadable_definition_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
+        state = await _fake_db_introspection({"bad": "DEFINE BUCKET bad SOMETHING", "ok": "DEFINE BUCKET ok BACKEND 'memory'"})
+        assert list(state.buckets) == ["ok"]
+        assert any("bucket" in record.getMessage() for record in caplog.records)
+
+    def test_model_introspector_leaves_none(self) -> None:
+        from surreal_orm.migrations.introspector import ModelIntrospector
+
+        assert ModelIntrospector([FSUColumns]).introspect().buckets is None
