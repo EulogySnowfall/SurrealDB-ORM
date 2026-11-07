@@ -10,8 +10,9 @@ Custom CBOR Tags used by SurrealDB:
 - TAG_NONE (6): None/null value
 - TAG_TABLE (7): Table name
 - TAG_RECORDID (8): Record ID (table:id)
-- TAG_STRING_UUID (9): UUID as string, decoded only. A ``UUID`` is sent as the
-  standard tag 37 (cbor2's native encoding); SurrealDB 4.0 refuses tag 9.
+- TAG_STRING_UUID (9): UUID as string, decoded only. A ``UUID`` (a subclass
+  included) is sent as the standard tag 37 (cbor2's native encoding);
+  SurrealDB 4.0 refuses tag 9.
 - TAG_STRING_DECIMAL (10): Decimal as string
 - TAG_DATETIME (12): DateTime as a compact [seconds, nanoseconds] pair, the form
   every ``datetime`` and ``date`` is sent in; an ISO 8601 string under this tag
@@ -284,8 +285,11 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
     value is parsed first (:func:`_parse_duration_text`); an invalid one raises
     ``ValueError`` before anything is sent.
 
-    A ``UUID`` never reaches this hook: cbor2 encodes it natively as tag 37,
-    which SurrealDB reads.
+    A plain ``UUID`` never reaches this hook: cbor2 encodes it natively as
+    tag 37, which SurrealDB reads. A ``UUID`` *subclass* does (exact-type
+    lookup again), such as ``asyncpg``'s ``pgproto.UUID``; it is rebuilt as a
+    plain ``UUID`` from its 128-bit value and encoded again, so it goes out as
+    tag 37 too, never as tag 9.
     """
     if isinstance(value, RecordId):
         # Encode RecordId as tagged array [table, id]
@@ -307,6 +311,8 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
                 fold=value.fold,
             )
         )
+    elif isinstance(value, UUID):
+        encoder.encode(UUID(int=value.int))
     elif isinstance(value, Duration):
         # Tag 14 carries only the compact array: a string there is a parse
         # error for the whole request (HTTP 400, no reply over WebSocket).

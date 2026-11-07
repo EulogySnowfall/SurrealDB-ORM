@@ -11,6 +11,7 @@ server result is the one 3.x gave before: bound values over HTTP and WebSocket,
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
@@ -36,6 +37,12 @@ DAY = date(2026, 2, 1)
 MIDNIGHT = datetime(2026, 2, 1, tzinfo=UTC)
 
 EVENT_TIMEOUT = 5.0
+
+UUID_TEXT = "12345678-1234-5678-1234-567812345678"
+
+
+class I578MyUUID(uuid.UUID):
+    """A ``UUID`` subclass, as ``asyncpg.pgproto.pgproto.UUID`` is."""
 
 
 class I578Event(BaseSurrealModel):
@@ -147,6 +154,21 @@ async def test_bound_values_inside_a_record_id_key(kind: str) -> None:
         await _first(conn, "CREATE type::record('i578_events', [$at, $d]) SET n = 1", {"at": AT, "d": Duration("2h")})
         found = await _first(conn, f"SELECT VALUE n FROM i578_events:[{AT_LITERAL}, 2h]", {})
         assert found == [1]
+    finally:
+        await conn.close()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("kind", ["http", "ws"])
+async def test_bound_uuid_subclass_is_a_uuid(kind: str) -> None:
+    conn = await _sdk_connection(kind)
+    try:
+        result = await _first(
+            conn,
+            f"RETURN [type::of($u), $u = u'{UUID_TEXT}', $u]",
+            {"u": I578MyUUID(UUID_TEXT)},
+        )
+        assert result == ["uuid", True, uuid.UUID(UUID_TEXT)]
     finally:
         await conn.close()
 

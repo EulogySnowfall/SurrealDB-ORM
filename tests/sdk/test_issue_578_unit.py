@@ -11,6 +11,7 @@ SDK's tag hook, so they see the tags actually on the wire.
 
 from __future__ import annotations
 
+import uuid
 import warnings
 from datetime import UTC, date, datetime, timedelta, timezone
 
@@ -27,6 +28,13 @@ REFUSED_TAGS = {0, 9, 13}
 
 class I578MyDT(datetime):
     """A ``datetime`` subclass, as ``pandas.Timestamp`` or ``pendulum.DateTime`` are."""
+
+
+class I578MyUUID(uuid.UUID):
+    """A ``UUID`` subclass, as ``asyncpg.pgproto.pgproto.UUID`` is."""
+
+
+UUID_TEXT = "12345678-1234-5678-1234-567812345678"
 
 
 def _raw(value: object) -> object:
@@ -199,8 +207,37 @@ class TestNoRefusedTag:
             "sub": I578MyDT(2025, 2, 13, tzinfo=UTC),
             "rid": RecordId("t", [datetime(2025, 2, 13, tzinfo=UTC)]),
             "dur": Duration("1h30m"),
+            "uuid": I578MyUUID(UUID_TEXT),
         }
         assert not _tags(_raw(payload)) & REFUSED_TAGS
+
+
+class TestUuidIsTag37:
+    """A UUID goes out as the standard tag 37, a subclass included, never tag 9.
+
+    cbor2 encodes a plain ``uuid.UUID`` natively but looks encoders up by exact
+    type, so a subclass reaches the SDK's default hook.
+    """
+
+    def test_plain_uuid(self) -> None:
+        raw = _raw(uuid.UUID(UUID_TEXT))
+        assert raw == uuid.UUID(UUID_TEXT)
+
+    def test_subclass_is_sent_as_tag_37(self) -> None:
+        data = encode(I578MyUUID(UUID_TEXT))
+        assert data == encode(uuid.UUID(UUID_TEXT))
+        # Tag 37 (0xd8 0x25) over a 16-byte string (0x50).
+        assert data == b"\xd8\x25\x50" + uuid.UUID(UUID_TEXT).bytes
+
+    def test_subclass_nested_and_in_record_id(self) -> None:
+        raw = _raw({"u": [I578MyUUID(UUID_TEXT)], "r": RecordId("t", [I578MyUUID(UUID_TEXT)])})
+        assert not _tags(raw) & REFUSED_TAGS
+        assert raw["u"] == [uuid.UUID(UUID_TEXT)]
+
+    def test_subclass_round_trips_as_a_plain_uuid(self) -> None:
+        value = decode(encode(I578MyUUID(UUID_TEXT)))
+        assert type(value) is uuid.UUID
+        assert value == uuid.UUID(UUID_TEXT)
 
 
 class TestOutOfRangeInteger:
