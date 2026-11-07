@@ -51,6 +51,15 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.55
+
+**Bug fix release (V2 LTS).** The 0.21.54 review follow-ups (#577); pin unchanged (2.7.0).
+
+- **`stop()` is final before iteration too.** A `QuerySet.changes()` stream stopped before its first iteration ends at
+  once (`StopAsyncIteration`) instead of resolving a client and polling the change feed.
+- **`references<...>` is one type in migrations.** The DEFINE parser reads `references<a | comment | b>` whole, like
+  `record<...>`, instead of cutting it at a clause keyword named inside the brackets. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.54
 
 **Bug fix release (V2 LTS).** Two `v2` backports (#569, #568); pin unchanged (2.7.0).

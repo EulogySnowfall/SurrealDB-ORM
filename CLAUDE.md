@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.54)
+> Context document for Claude AI - Last updated: November 2026 (0.21.55)
 
 <!-- -->
 
@@ -20,12 +20,26 @@
 
 ---
 
-## Current Version: 0.21.54 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.55 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.55
+
+One fix PR, #577 via #599 (`surreal_orm/live.py`, `surreal_orm/migrations/define_parser.py`): the two 0.21.54 review
+follow-ups. Pin unchanged (2.7.0).
+
+- **`_stream_events()` checks `_stopped` before `_ensure_feed()`.** `stop()` only set the flag, and the generator read it
+  after a failed poll, never before the first one; a stream stopped before iteration resolved a client and polled.
+  Behaviour change: `stop()` is final in every state.
+- **`references` is in `_GENERIC_TYPES`.** The `<` after it was read as an operator, so `references<a | comment | b>`
+  was cut at the clause keyword inside the brackets. Adding the name also lets a cast start with it,
+  which is harmless.
+- The #569 integration test closes its suspended `_stream_events()` generator in its `finally`, so a failure there is
+  reported against that test, not at garbage collection during a later one.
 
 ### What's New in 0.21.54
 
@@ -45,7 +59,8 @@ Two backports from `main`: #569 via #573 (`surreal_orm/live.py`, backport of #56
   rule (only `\/` escapes), `()[]{}` depth, and `<...>` as brackets only after a parameterised type name
   (`_GENERIC_TYPES`) or as a `<type>` cast where an operand is expected. `_split_field_permissions()` keeps its own scan.
 - **Open (review suggestions):** `stop()` before the first iteration still polls (#573, also on `main`);
-  `references` is missing from `_GENERIC_TYPES`, so `references<a | comment>` is cut at `comment` (#574).
+  `references` is missing from `_GENERIC_TYPES`, so `references<a | comment>` is cut at `comment` (#574). Both fixed in
+  0.21.55 (#577).
 
 ### What's New in 0.21.53
 
