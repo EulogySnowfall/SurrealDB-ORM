@@ -33,6 +33,7 @@ from .exceptions import (
     TransactionConflictError,
     TransactionError,
 )
+from .files import FileInfo, FileRef
 from .functions import (
     ArrayFunctions,
     CryptoFunctions,
@@ -109,6 +110,9 @@ __all__ = [
     "Table",
     "Duration",
     "cbor_is_available",
+    # File storage (experimental, --allow-experimental=files)
+    "FileRef",
+    "FileInfo",
     # Response Types
     "ResponseStatus",
     "QueryResult",
