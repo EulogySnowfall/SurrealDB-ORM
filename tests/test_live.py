@@ -561,6 +561,99 @@ class TestConnectionManagerWebSocket:
             SurrealDBConnectionManager._ws_clients.update(saved_ws)
 
 
+class _I598FakeWebSocket:
+    """Stand-in for ``WebSocketConnection`` whose ``connect()`` waits for a gate."""
+
+    instances: list["_I598FakeWebSocket"] = []
+    gate: asyncio.Event | None = None
+
+    def __init__(self, url: str, namespace: str, database: str, **kwargs: Any) -> None:
+        self.connected = False
+        self.closed = False
+        type(self).instances.append(self)
+
+    @property
+    def is_connected(self) -> bool:
+        return self.connected and not self.closed
+
+    async def connect(self) -> None:
+        gate = type(self).gate
+        if gate is not None:
+            await gate.wait()
+        self.connected = True
+
+    async def signin(self, user: str, password: str) -> None:
+        return None
+
+    async def query(self, sql: str, vars: dict[str, Any] | None = None) -> None:
+        return None
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class TestI598ConcurrentGetWsClient:
+    """Concurrent first ``get_ws_client()`` calls share one WebSocket client (#598)."""
+
+    @pytest.fixture
+    def manager(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from src.surreal_orm import connection_manager as cm
+        from src.surreal_orm.connection_config import ConnectionConfig
+
+        manager = cm.SurrealDBConnectionManager
+        monkeypatch.setattr(cm, "WebSocketConnection", _I598FakeWebSocket)
+        monkeypatch.setattr(_I598FakeWebSocket, "instances", [])
+        monkeypatch.setattr(_I598FakeWebSocket, "gate", None)
+        # Fresh registries and locks: a lock is bound to the loop of its first
+        # contended use, and each test runs its own loop.
+        monkeypatch.setattr(manager, "_configs", {})
+        monkeypatch.setattr(manager, "_clients", {})
+        monkeypatch.setattr(manager, "_ws_clients", {})
+        monkeypatch.setattr(manager, "_connection_lock", None)
+        monkeypatch.setattr(manager, "_ws_connection_lock", None, raising=False)
+        manager._configs["i598"] = ConnectionConfig(
+            url="http://i598.invalid:8000",
+            user="root",
+            password="root",
+            namespace="i598",
+            database="i598",
+        )
+        return manager
+
+    def test_concurrent_first_calls_build_one_client(self, manager: Any) -> None:
+        """Two callers waiting on the same first connect get the same client."""
+
+        async def scenario() -> tuple[Any, Any]:
+            gate = asyncio.Event()
+            _I598FakeWebSocket.gate = gate
+            first = asyncio.create_task(manager.get_ws_client("i598"))
+            second = asyncio.create_task(manager.get_ws_client("i598"))
+            # Let both callers reach the point where the first one is connecting.
+            for _ in range(5):
+                await asyncio.sleep(0)
+            gate.set()
+            return await asyncio.gather(first, second)
+
+        first, second = asyncio.run(scenario())
+
+        assert len(_I598FakeWebSocket.instances) == 1
+        assert first is second
+        assert manager._ws_clients["i598"] is first
+        assert first.is_connected
+
+    def test_ws_build_does_not_wait_on_http_lock(self, manager: Any) -> None:
+        """Building the WebSocket client does not take the HTTP client lock."""
+
+        async def scenario() -> Any:
+            async with manager._get_connection_lock():
+                return await asyncio.wait_for(manager.get_ws_client("i598"), timeout=5)
+
+        client = asyncio.run(scenario())
+
+        assert len(_I598FakeWebSocket.instances) == 1
+        assert manager._ws_clients["i598"] is client
+
+
 # ==================== Version ====================
 
 
