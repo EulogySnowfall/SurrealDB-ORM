@@ -414,7 +414,13 @@ class ChangeModelStream(Generic[T]):
         return await self._iterator.__anext__()
 
     async def _stream_events(self) -> AsyncIterator[ModelChangeEvent[T]]:
-        """Internal generator that yields ModelChangeEvent from the change feed."""
+        """Internal generator that yields ModelChangeEvent from the change feed.
+
+        A stream stopped before its first iteration ends here, before any
+        client is resolved or any poll is sent.
+        """
+        if self._stopped:
+            return
         feed = await self._ensure_feed()
         since = self._since
         while True:

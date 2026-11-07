@@ -80,6 +80,10 @@ async def test_changes_stream_survives_reconnect() -> None:
         received += [await _next(stream) for _ in range(3)]
     finally:
         stream.stop()
+        # Close the suspended generator here, not at garbage collection, so a
+        # failure in it is reported against this test.
+        if stream._iterator is not None:
+            await stream._iterator.aclose()
 
     assert [event.instance.n for event in received] == [1, 2, 3, 4]
     assert [event.instance.id for event in received] == ["before", "around", "after1", "after2"]
