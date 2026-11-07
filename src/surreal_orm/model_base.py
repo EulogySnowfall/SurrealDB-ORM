@@ -15,6 +15,7 @@ from typing import (
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
 from surreal_sdk.exceptions import QueryError, TransactionConflictError
+from surreal_sdk.files import FileRef
 from surreal_sdk.protocol.cbor import RecordId
 from surreal_sdk.types import QueryResponse
 
@@ -306,6 +307,32 @@ def _to_record_link(value: Any, table: str | None) -> Any:
             return RecordId(table=table, id=id_part)
 
     return to_record_id(value)
+
+
+def _to_file_ref(value: Any) -> Any:
+    """
+    Convert a file-column value given as text into a ``FileRef``.
+
+    SurrealDB never equates a bound string with a file pointer, so a filter or
+    a ``QuerySet`` write given the ``"bucket:/key"`` text a model accepts would
+    match nothing or be rejected.  The text is read with
+    :meth:`FileRef.parse`, the one reader of that form; anything else (a
+    ``FileRef``, ``None``) is returned unchanged.  No bucket check: a pointer
+    to another bucket simply matches no row, and a typed column's own check
+    rejects it on write.
+
+    Args:
+        value: The file-column value
+
+    Returns:
+        A ``FileRef``, or the original value
+
+    Raises:
+        ValueError: *value* is a string that is not a valid pointer.
+    """
+    if isinstance(value, str):
+        return FileRef.parse(value)
+    return value
 
 
 def _resolve_target_table(model_name: str) -> str | None:
@@ -886,6 +913,42 @@ class BaseSurrealModel(BaseModel):
             alias = cls.model_fields[field_name].alias
             if alias:
                 columns[alias] = table
+        return columns
+
+    @classmethod
+    def get_file_columns(cls) -> dict[str, tuple[str, ...] | None]:
+        """
+        Map each file-pointer *column* name to the buckets it accepts.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+
+        Covers :class:`~surreal_orm.fields.FileField` /
+        :class:`~surreal_orm.fields.ImageField` (also inside ``| None``) and a
+        bare ``FileRef`` annotation.  Like :meth:`get_foreign_key_columns`,
+        each field is listed under its name and, when declared, its alias, so
+        filters and bulk writes can coerce ``"bucket:/key"`` text.
+
+        Returns:
+            Dict mapping column name to the field's bucket names, or ``None``
+            for a bare ``FileRef`` annotation (any bucket).
+        """
+        # Local import: fields.relation imports record_link_to_str from this
+        # module at load time, so importing it at the top would be circular.
+        from .fields.file import _FileMarker
+        from .fields.relation import _find_marker, _unwrap_union
+
+        columns: dict[str, tuple[str, ...] | None] = {}
+        for name, field_info in cls.model_fields.items():
+            marker = _find_marker(field_info.annotation, field_info.metadata, _FileMarker)
+            if marker is not None:
+                buckets: tuple[str, ...] | None = marker.buckets
+            elif FileRef in _unwrap_union(field_info.annotation):
+                buckets = None
+            else:
+                continue
+            columns[name] = buckets
+            if field_info.alias:
+                columns[field_info.alias] = buckets
         return columns
 
     def get_id(self) -> str | None:

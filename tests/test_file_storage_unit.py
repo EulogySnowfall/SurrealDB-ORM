@@ -14,12 +14,13 @@ import re
 import warnings
 from pathlib import Path
 from typing import Any, Optional
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from pydantic.warnings import UnsupportedFieldAttributeWarning
 
-from surreal_orm import BaseSurrealModel, FileField, FileInfo, FileRef, ImageField, SurrealConfigDict
+from surreal_orm import BaseSurrealModel, FileField, FileInfo, FileRef, ImageField, Q, SurrealConfigDict
 from surreal_orm.fields import get_file_buckets, is_file_field, is_image_field
 from tests.files_capability import FILES_SKIP_REASON, files_capability_outcome
 
@@ -418,3 +419,171 @@ class TestFileFieldDefault:
         assert {"type": "string"} in prop["anyOf"]
         assert {"type": "null"} in prop["anyOf"]
         assert prop.get("default") is None
+
+
+# ---------------------------------------------------------------------------
+# U31 — "bucket:/key" text coerced in filters and QuerySet writes (M29, §7.5)
+# ---------------------------------------------------------------------------
+
+
+class FSUFiltered(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="fsu_filtered")
+
+    id: str | None = None
+    title: str = ""
+    att: FileField["fsu_b"]  # noqa: F821, UP037
+    aliased: FileField["fsu_b"] = Field(default=None, alias="att_col")  # noqa: F821, UP037
+    loose: FileRef | None = None
+
+
+def _bound(qs: Any) -> Any:
+    """The value the first filter binds (``$_f0``) once the WHERE is compiled."""
+    qs._compile_where_clause()
+    return qs._variables["_f0"]
+
+
+def _mock_client(records: list[Any] | None = None) -> Any:
+    client = AsyncMock()
+    client.query = AsyncMock(return_value=MagicMock(all_records=records or []))
+    return client
+
+
+class TestFileColumns:
+    def test_file_columns_by_name_and_alias(self) -> None:
+        assert FSUFiltered.get_file_columns() == {
+            "att": ("fsu_b",),
+            "aliased": ("fsu_b",),
+            "att_col": ("fsu_b",),
+            "loose": None,
+        }
+
+    def test_model_without_file_fields(self) -> None:
+        class FSUNoFiles(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="fsu_no_files")
+
+            id: str | None = None
+            name: str = ""
+
+        assert FSUNoFiles.get_file_columns() == {}
+
+
+class TestFileFilterCoercion:
+    def test_exact_text_binds_file_ref(self) -> None:
+        bound = _bound(FSUFiltered.objects().filter(att="fsu_b:/k"))
+        assert isinstance(bound, FileRef)
+        assert bound == FileRef("fsu_b", "/k")
+
+    def test_alias_column_is_coerced(self) -> None:
+        assert _bound(FSUFiltered.objects().filter(att_col="fsu_b:/k")) == FileRef("fsu_b", "/k")
+
+    def test_bare_file_ref_column_is_coerced(self) -> None:
+        assert _bound(FSUFiltered.objects().filter(loose="other:/k")) == FileRef("other", "/k")
+
+    def test_in_is_coerced_element_wise(self) -> None:
+        bound = _bound(FSUFiltered.objects().filter(att__in=["fsu_b:/a", FileRef("fsu_b", "/b")]))
+        assert bound == [FileRef("fsu_b", "/a"), FileRef("fsu_b", "/b")]
+        assert all(isinstance(item, FileRef) for item in bound)
+
+    def test_not_in_is_coerced_element_wise(self) -> None:
+        bound = _bound(FSUFiltered.objects().filter(att__not_in=("fsu_b:/a",)))
+        assert bound == [FileRef("fsu_b", "/a")]
+
+    def test_q_object_is_coerced(self) -> None:
+        assert _bound(FSUFiltered.objects().filter(Q(att="fsu_b:/k"))) == FileRef("fsu_b", "/k")
+
+    def test_file_ref_passes_unchanged(self) -> None:
+        ref = FileRef("fsu_b", "/k")
+        assert _bound(FSUFiltered.objects().filter(att=ref)) is ref
+
+    def test_other_bucket_is_not_checked(self) -> None:
+        # A pointer to another bucket simply matches no row.
+        assert _bound(FSUFiltered.objects().filter(att="elsewhere:/k")) == FileRef("elsewhere", "/k")
+
+    def test_isnull_is_untouched(self) -> None:
+        qs = FSUFiltered.objects().filter(att__isnull=True)
+        assert "att IS NULL" in qs._compile_query()
+
+    def test_string_lookup_is_untouched(self) -> None:
+        assert _bound(FSUFiltered.objects().filter(att__contains="x")) == "x"
+
+    def test_other_column_is_untouched(self) -> None:
+        assert _bound(FSUFiltered.objects().filter(title="fsu_b:/k")) == "fsu_b:/k"
+
+    def test_unparsable_text_raises_before_any_query(self) -> None:
+        with pytest.raises(ValueError, match=re.escape("Invalid file pointer 'nope': expected 'bucket:/key'")):
+            FSUFiltered.objects().filter(att="nope")._compile_where_clause()
+
+    def test_declared_variable_stays_a_reference(self) -> None:
+        qs = FSUFiltered.objects().filter(att="$ptr").variables(ptr=FileRef("fsu_b", "/k"))
+        assert "att = $ptr" in qs._compile_query()
+        assert qs._variables["ptr"] == FileRef("fsu_b", "/k")
+
+
+class TestFileWriteCoercion:
+    @pytest.mark.asyncio
+    async def test_bulk_update_binds_file_ref(self) -> None:
+        client = _mock_client([{}])
+        with patch(
+            "surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=client)),
+        ):
+            await FSUFiltered.objects().filter(title="t").bulk_update({"att": "fsu_b:/k", "att_col": "fsu_b:/c"})
+
+        _query, variables = client.query.call_args[0]
+        assert variables["_bu0"] == FileRef("fsu_b", "/k")
+        assert variables["_bu1"] == FileRef("fsu_b", "/c")
+
+    @pytest.mark.asyncio
+    async def test_bulk_update_unparsable_text_raises_before_any_query(self) -> None:
+        client = _mock_client([{}])
+        with patch(
+            "surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=client)),
+        ):
+            with pytest.raises(ValueError, match="Invalid file pointer"):
+                await FSUFiltered.objects().filter(title="t").bulk_update({"att": "nope"})
+        client.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_upsert_defaults_bind_file_ref(self) -> None:
+        client = _mock_client([{"id": "fsu_filtered:1"}])
+        with patch(
+            "surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=client)),
+        ):
+            await FSUFiltered.objects().upsert(defaults={"title": "t", "att": "fsu_b:/k"}, id="fsu_filtered:1")
+
+        _query, variables = client.query.call_args[0]
+        assert variables["_up_att"] == FileRef("fsu_b", "/k")
+        assert variables["_up_title"] == "t"
+
+    @pytest.mark.asyncio
+    async def test_upsert_on_conflict_binds_file_ref(self) -> None:
+        client = _mock_client([{"id": "fsu_filtered:1"}])
+        with patch(
+            "surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=client)),
+        ):
+            await FSUFiltered.objects().upsert(
+                defaults={"att": "fsu_b:/k"},
+                id="fsu_filtered:1",
+                on_conflict={"att": "fsu_b:/c"},
+            )
+
+        _query, variables = client.query.call_args[0]
+        assert variables["_up_att"] == FileRef("fsu_b", "/k")
+        assert variables["_oc_att"] == FileRef("fsu_b", "/c")
+
+    @pytest.mark.asyncio
+    async def test_bulk_upsert_on_conflict_binds_file_ref(self) -> None:
+        client = _mock_client([])
+        docs = [FSUFiltered(id="1", att="fsu_b:/k")]
+        with patch(
+            "surreal_orm.query_set.SurrealDBConnectionManager",
+            new=MagicMock(get_client=AsyncMock(return_value=client)),
+        ):
+            await FSUFiltered.objects().bulk_upsert(docs, on_conflict={"att": "fsu_b:/c"})
+
+        _query, variables = client.query.call_args[0]
+        assert variables["_bu0_att"] == FileRef("fsu_b", "/k")
+        assert variables["_oc0_att"] == FileRef("fsu_b", "/c")

@@ -59,7 +59,7 @@ import logging
 
 from surreal_sdk.protocol.cbor import RecordId
 
-from .model_base import SurrealDbError, _raise_on_statement_error, _to_record_link
+from .model_base import SurrealDbError, _raise_on_statement_error, _to_file_ref, _to_record_link
 
 logger = logging.getLogger(__name__)
 
@@ -1830,6 +1830,11 @@ class QuerySet(Generic[T]):
         lookups (``contains``, ``startswith``, ``regex``, ...) still match on
         the raw value.  ``in`` values are converted element-wise.
 
+        A file-pointer column (:meth:`BaseSurrealModel.get_file_columns`) is
+        handled the same way: ``"bucket:/key"`` text becomes a ``FileRef``
+        for the same lookups, and unparsable text raises ``ValueError``
+        before any query is sent.
+
         Args:
             field_name: The database field name being filtered on.
             lookup_name: The lookup type (e.g. "exact", "in").
@@ -1838,19 +1843,28 @@ class QuerySet(Generic[T]):
                 one of them is left for :meth:`_render_condition` to emit.
 
         Returns:
-            The value with record references converted to ``RecordId`` objects.
+            The value with record references converted to ``RecordId`` objects
+            and file pointers to ``FileRef`` objects.
         """
+        if lookup_name not in ("exact", "in", "not_in"):
+            return value
         targets = self.model.get_foreign_key_columns()
-        if field_name not in targets or lookup_name not in ("exact", "in", "not_in"):
-            return value
-        if is_declared_variable_reference(value, declared):
-            return value
+        if field_name in targets:
+            if is_declared_variable_reference(value, declared):
+                return value
+            table = targets[field_name]
+            if isinstance(value, (list, tuple, set)):
+                # Always a list: RecordId is unhashable, and IN takes an array anyway
+                return [_to_record_link(item, table) for item in value]
+            return _to_record_link(value, table)
 
-        table = targets[field_name]
-        if isinstance(value, (list, tuple, set)):
-            # Always a list: RecordId is unhashable, and IN takes an array anyway
-            return [_to_record_link(item, table) for item in value]
-        return _to_record_link(value, table)
+        if field_name in self.model.get_file_columns():
+            if is_declared_variable_reference(value, declared):
+                return value
+            if isinstance(value, (list, tuple, set)):
+                return [_to_file_ref(item) for item in value]
+            return _to_file_ref(value)
+        return value
 
     @staticmethod
     def _render_condition(
@@ -3094,15 +3108,19 @@ class QuerySet(Generic[T]):
         self._reject_graph("bulk_update")
         where_clause = self._compile_where_clause()
 
-        # Build SET clause — foreign-key values are bound as record links,
-        # since a record<...> column rejects a plain string on write
+        # Build SET clause — foreign-key values are bound as record links and
+        # file-pointer text as FileRef, since a record<...> or file<...>
+        # column rejects a plain string on write
         fk_targets = self.model.get_foreign_key_columns()
+        file_columns = self.model.get_file_columns()
         set_parts = []
         update_vars: dict[str, Any] = {}
         for field, value in data.items():
             validate_identifier(field, "field name")
             if field in fk_targets:
                 value = _to_record_link(value, fk_targets[field])
+            elif field in file_columns:
+                value = _to_file_ref(value)
             var_name = f"_bu{len(update_vars)}"
             update_vars[var_name] = value
             set_parts.append(f"{field} = ${var_name}")
@@ -3221,12 +3239,16 @@ class QuerySet(Generic[T]):
 
         table = self._model_table
         variables: dict[str, Any] = {}
-        # Bind foreign keys as record links, as the other write paths do
+        # Bind foreign keys as record links and file-pointer text as FileRef,
+        # as the other write paths do
         fk_columns = self.model.get_foreign_key_columns()
+        file_columns = self.model.get_file_columns()
 
         def _bind(field_name: str, value: Any) -> Any:
             if field_name in fk_columns:
                 return _to_record_link(value, fk_columns[field_name])
+            if field_name in file_columns:
+                return _to_file_ref(value)
             return value
 
         if on_conflict:
@@ -3337,6 +3359,7 @@ class QuerySet(Generic[T]):
         queries: list[str] = []
         all_variables: dict[str, Any] = {}
         fk_columns = self.model.get_foreign_key_columns()
+        file_columns = self.model.get_file_columns()
 
         for idx, instance in enumerate(instances):
             record_id = instance.get_id() if hasattr(instance, "get_id") else getattr(instance, "id", None)
@@ -3373,6 +3396,8 @@ class QuerySet(Generic[T]):
                         conflict_parts.append(f"{field_name} = ${var_name}")
                         if field_name in fk_columns:
                             value = _to_record_link(value, fk_columns[field_name])
+                        elif field_name in file_columns:
+                            value = _to_file_ref(value)
                         all_variables[var_name] = value
 
                 query = f"INSERT INTO {table} {{{', '.join(obj_parts)}}} ON DUPLICATE KEY UPDATE {', '.join(conflict_parts)}"
