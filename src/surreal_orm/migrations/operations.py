@@ -6,6 +6,7 @@ applied (forwards) or reverted (backwards).
 """
 
 import re
+import unicodedata
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
@@ -15,7 +16,8 @@ from typing import TYPE_CHECKING, Any
 from ..fields.relation import on_delete_to_surql
 from ..surreal_function import SurrealFunc
 from ..types import FieldType
-from ..utils import surql_string
+from ..utils import escape_record_id, surql_string
+from .state import BUCKET_PERMISSION_KEYWORDS, BucketState, normalize_bucket_permissions
 
 if TYPE_CHECKING:
     from .state import FieldState, TableState
@@ -1753,6 +1755,295 @@ class RemoveAnalyzer(Operation):
 
     def describe(self) -> str:
         return f"Remove analyzer {self.name}"
+
+
+#: ``PERMISSIONS WHERE <expr>`` is rendered here, so the expression must not repeat the keyword.
+_BUCKET_WHERE_RE = re.compile(r"\s*WHERE\b", re.IGNORECASE)
+
+
+def _check_bucket_name(name: object) -> None:
+    """
+    Reject a bucket name that cannot be written into ``DEFINE BUCKET``.
+
+    Any other text is accepted: :func:`_render_bucket_name` backtick-escapes a
+    name that is not an identifier (``my-b``), as ``INFO FOR DB`` prints it.
+
+    Raises:
+        ValueError: *name* is not a non-empty string, or holds a control character
+    """
+    if not isinstance(name, str) or not name or any(unicodedata.category(ch) == "Cc" for ch in name):
+        raise ValueError(f"Invalid bucket name {name!r}")
+
+
+def _check_bucket_permissions(permissions: str | None) -> None:
+    """
+    Reject a permission rule that would render as ``PERMISSIONS WHERE WHERE …``.
+
+    Raises:
+        ValueError: *permissions* starts with ``WHERE`` or is blank
+    """
+    if permissions is not None and (not permissions.strip() or _BUCKET_WHERE_RE.match(permissions)):
+        raise ValueError(f"Bucket permissions take the expression without WHERE, or 'FULL' / 'NONE': {permissions!r}")
+
+
+def _render_bucket_name(name: str) -> str:
+    """Write *name* bare when it is an identifier, else in backticks (the record-id escape)."""
+    return escape_record_id(name)
+
+
+def _render_define_bucket(
+    name: str,
+    *,
+    overwrite: bool,
+    backend: str | None,
+    readonly: bool,
+    permissions: str | None,
+    comment: str | None,
+) -> str:
+    """
+    Render one ``DEFINE BUCKET`` statement (C11, or C12 with *overwrite*).
+
+    Clauses come in the server's canonical order — ``READONLY BACKEND
+    PERMISSIONS COMMENT`` — which is also how ``INFO FOR DB`` reports them.
+    ``permissions=None`` renders no clause, which the server reads as ``FULL``.
+
+    Args:
+        name: Bucket name
+        overwrite: Emit ``DEFINE BUCKET OVERWRITE`` (replaces the whole definition)
+        backend: Backend string, or ``None`` for the server's global bucket
+        readonly: Add ``READONLY``
+        permissions: ``None``, ``"FULL"`` / ``"NONE"`` or a ``WHERE`` expression
+        comment: ``COMMENT`` text
+
+    Returns:
+        The statement, ending with ``;``
+    """
+    parts = ["DEFINE BUCKET"]
+    if overwrite:
+        parts.append("OVERWRITE")
+    parts.append(_render_bucket_name(name))
+    if readonly:
+        parts.append("READONLY")
+    if backend is not None:
+        parts.append(f"BACKEND {surql_string(backend)}")
+    if permissions is not None:
+        rule = normalize_bucket_permissions(permissions)
+        parts.append(f"PERMISSIONS {rule}" if rule in BUCKET_PERMISSION_KEYWORDS else f"PERMISSIONS WHERE {rule}")
+    if comment is not None:
+        parts.append(f"COMMENT {surql_string(comment)}")
+    return " ".join(parts) + ";"
+
+
+@dataclass
+class DefineBucket(Operation):
+    r"""
+    Define a file storage bucket.
+
+    Experimental: follows SurrealDB's experimental ``files`` capability.
+    The server must be started with ``--allow-experimental=files``
+    (``SURREAL_CAPS_ALLOW_EXPERIMENTAL=files``); otherwise the statement fails
+    and the executor raises ``FilesNotEnabledError``.
+
+    Warning:
+        Without ``permissions`` the bucket is ``FULL``: every record user can
+        read and write every file in it. Restrict it with a rule on
+        ``$action`` (``put``, ``get``, ``head``, ``delete``, ``copy``,
+        ``rename``, ``exists``, ``list``), ``$file`` and ``$auth``, for
+        example ``permissions="$action INSIDE ['get', 'head'] OR
+        $auth.role = 'admin'"`` (read for all, write for admins).
+
+    A bucket takes a single permission rule — ``"FULL"``, ``"NONE"`` or an
+    expression written without ``WHERE`` — not one rule per action.
+    ``backend`` is a plain string passed to the server unchanged
+    (``'memory'``, ``'file:/dir'`` with the directory in
+    ``SURREAL_BUCKET_FOLDER_ALLOWLIST``…); the server rejects one it does not
+    support. ``None`` uses the server's global bucket
+    (``SURREAL_GLOBAL_BUCKET``). ``backend``, ``permissions`` and ``comment``
+    are migration-author text, like table permissions: never build them from
+    user input. A name that is not an identifier is written in backticks.
+
+    Example:
+        DefineBucket("avatars", backend="memory", readonly=True,
+                     permissions="$auth.id != NONE", comment="it's")
+
+    Generates:
+        DEFINE BUCKET avatars READONLY BACKEND 'memory' PERMISSIONS WHERE $auth.id != NONE COMMENT 'it\'s';
+    """
+
+    name: str
+    backend: str | None = None
+    readonly: bool = False
+    permissions: str | None = None
+    comment: str | None = None
+
+    def __post_init__(self) -> None:
+        _check_bucket_name(self.name)
+        _check_bucket_permissions(self.permissions)
+
+    @classmethod
+    def from_bucket_state(cls, state: BucketState) -> "DefineBucket":
+        """
+        Build the operation that creates *state*.
+
+        Args:
+            state: The bucket definition to create
+
+        Returns:
+            A ``DefineBucket`` carrying every field of *state*
+        """
+        return cls(
+            name=state.name,
+            backend=state.backend,
+            readonly=state.readonly,
+            permissions=normalize_bucket_permissions(state.permissions),
+            comment=state.comment,
+        )
+
+    def forwards(self) -> str:
+        return _render_define_bucket(
+            self.name,
+            overwrite=False,
+            backend=self.backend,
+            readonly=self.readonly,
+            permissions=self.permissions,
+            comment=self.comment,
+        )
+
+    def backwards(self) -> str:
+        return f"REMOVE BUCKET {_render_bucket_name(self.name)};"
+
+    def describe(self) -> str:
+        return f"Define bucket {self.name}"
+
+
+@dataclass
+class AlterBucket(Operation):
+    """
+    Redefine a file storage bucket that already exists.
+
+    Experimental: follows SurrealDB's experimental ``files`` capability.
+    The server must be started with ``--allow-experimental=files``.
+
+    The statement is ``DEFINE BUCKET OVERWRITE``, which replaces the **whole**
+    definition: an omitted ``PERMISSIONS`` becomes ``FULL`` and an omitted
+    ``COMMENT`` is dropped. State every clause the bucket should keep.
+
+    Rolling back re-applies the previous definition, carried in the
+    ``previous_*`` fields (flat, so a generated migration file needs no other
+    import). Only an operation that knows it — ``previous_permissions`` set,
+    as :meth:`from_bucket_states` always does — is reversible; without it
+    ``backwards()`` is empty. ``previous_backend`` cannot be the signal:
+    ``None`` is a valid backend (the global bucket). The same warnings as
+    :class:`DefineBucket` apply.
+
+    Example:
+        AlterBucket("avatars", backend="memory", permissions="NONE",
+                    previous_backend="memory", previous_permissions="FULL")
+
+    Generates:
+        DEFINE BUCKET OVERWRITE avatars BACKEND 'memory' PERMISSIONS NONE;
+    """
+
+    name: str
+    backend: str | None = None
+    readonly: bool = False
+    permissions: str | None = None
+    comment: str | None = None
+    # Previous definition, for a rollback
+    previous_backend: str | None = None
+    previous_readonly: bool = False
+    previous_permissions: str | None = None
+    previous_comment: str | None = None
+
+    def __post_init__(self) -> None:
+        _check_bucket_name(self.name)
+        _check_bucket_permissions(self.permissions)
+        _check_bucket_permissions(self.previous_permissions)
+        self.reversible = self.previous_permissions is not None
+
+    @classmethod
+    def from_bucket_states(cls, current: BucketState, target: BucketState) -> "AlterBucket":
+        """
+        Build the operation that redefines *current* as *target*.
+
+        Args:
+            current: The bucket definition the database holds
+            target: The definition to apply
+
+        Returns:
+            A reversible ``AlterBucket`` carrying both definitions
+        """
+        return cls(
+            name=target.name,
+            backend=target.backend,
+            readonly=target.readonly,
+            permissions=normalize_bucket_permissions(target.permissions),
+            comment=target.comment,
+            previous_backend=current.backend,
+            previous_readonly=current.readonly,
+            previous_permissions=normalize_bucket_permissions(current.permissions),
+            previous_comment=current.comment,
+        )
+
+    def forwards(self) -> str:
+        return _render_define_bucket(
+            self.name,
+            overwrite=True,
+            backend=self.backend,
+            readonly=self.readonly,
+            permissions=self.permissions,
+            comment=self.comment,
+        )
+
+    def backwards(self) -> str:
+        if not self.reversible:
+            return ""
+        return _render_define_bucket(
+            self.name,
+            overwrite=True,
+            backend=self.previous_backend,
+            readonly=self.previous_readonly,
+            permissions=self.previous_permissions,
+            comment=self.previous_comment,
+        )
+
+    def describe(self) -> str:
+        return f"Alter bucket {self.name}"
+
+
+@dataclass
+class RemoveBucket(Operation):
+    """
+    Remove a file storage bucket.
+
+    Experimental: follows SurrealDB's experimental ``files`` capability.
+    The server must be started with ``--allow-experimental=files``.
+
+    Irreversible: the bucket's definition is gone, and with a ``memory``
+    backend so are its files. ``makemigrations`` holds it back unless
+    ``--drop-missing`` is passed (:func:`split_destructive`).
+
+    Example:
+        RemoveBucket("my-b")
+
+    Generates:
+        REMOVE BUCKET `my-b`;
+    """
+
+    name: str
+
+    def __post_init__(self) -> None:
+        _check_bucket_name(self.name)
+        self.reversible = False
+
+    def forwards(self) -> str:
+        return f"REMOVE BUCKET {_render_bucket_name(self.name)};"
+
+    def backwards(self) -> str:
+        return ""
+
+    def describe(self) -> str:
+        return f"Remove bucket {self.name}"
 
 
 @dataclass

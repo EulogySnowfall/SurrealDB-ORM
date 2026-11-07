@@ -30,6 +30,7 @@ from .migration import Migration
 from .model_generator import ModelCodeGenerator
 from .operations import (
     AddField,
+    AlterBucket,
     AlterField,
     AlterTable,
     CreateIndex,
@@ -37,6 +38,7 @@ from .operations import (
     DataMigration,
     DefineAccess,
     DefineBearerAccess,
+    DefineBucket,
     DefineGraphQLConfig,
     DropField,
     DropIndex,
@@ -45,9 +47,11 @@ from .operations import (
     RawSQL,
     RebuildIndex,
     RemoveAccess,
+    RemoveBucket,
     RemoveGraphQLConfig,
     split_destructive,
 )
+from .state import BucketState
 
 __all__ = [
     "split_destructive",
@@ -77,6 +81,11 @@ __all__ = [
     "RebuildIndex",
     "DefineGraphQLConfig",
     "RemoveGraphQLConfig",
+    # File storage buckets (experimental: SurrealDB's ``files`` capability)
+    "DefineBucket",
+    "AlterBucket",
+    "RemoveBucket",
+    "BucketState",
     # Execution
     "MigrationExecutor",
     "MigrationStatementError",

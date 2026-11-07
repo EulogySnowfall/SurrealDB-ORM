@@ -186,6 +186,72 @@ class AnalyzerState:
         return self.name == other.name and self.tokenizers == other.tokenizers and self.filters == other.filters
 
 
+#: The two bucket permission keywords; anything else is a ``WHERE`` expression.
+BUCKET_PERMISSION_KEYWORDS = frozenset({"FULL", "NONE"})
+
+
+def normalize_bucket_permissions(permissions: str | None) -> str:
+    """
+    Read a bucket's permissions the way the server stores them.
+
+    ``None`` (no ``PERMISSIONS`` clause) is the server's default ``FULL``, and
+    the keywords are case-insensitive; an expression is kept as written
+    (stripped), since only the server knows its canonical form.
+
+    Args:
+        permissions: ``None``, ``"FULL"`` / ``"NONE"`` in any case, or an expression
+
+    Returns:
+        ``"FULL"``, ``"NONE"`` or the stripped expression
+    """
+    if permissions is None:
+        return "FULL"
+    text = permissions.strip()
+    return text.upper() if text.upper() in BUCKET_PERMISSION_KEYWORDS else text
+
+
+@dataclass
+class BucketState:
+    """
+    Represents the state of a file storage bucket (``DEFINE BUCKET``).
+
+    Experimental: follows SurrealDB's experimental ``files`` capability.
+    Buckets exist only on a server started with ``--allow-experimental=files``.
+
+    Equality reads ``None`` permissions as ``"FULL"`` (the server's default)
+    and the keywords case-insensitively, so a bucket defined without a
+    ``PERMISSIONS`` clause equals the ``PERMISSIONS FULL`` the server reports
+    for it. An expression is compared as text: write it as ``INFO FOR DB``
+    prints it, or the diff proposes an ``AlterBucket`` on every run.
+
+    Attributes:
+        name: Bucket name
+        backend: Backend string passed to the server (``'memory'``,
+            ``'file:/dir'``…), or ``None`` for the server's global bucket
+        readonly: Whether the bucket is ``READONLY``
+        permissions: ``"FULL"``, ``"NONE"`` or the ``WHERE`` expression
+            without the keyword
+        comment: ``COMMENT`` text
+    """
+
+    name: str
+    backend: str | None = None
+    readonly: bool = False
+    permissions: str = "FULL"
+    comment: str | None = None
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, BucketState):
+            return False
+        return (
+            self.name == other.name
+            and self.backend == other.backend
+            and self.readonly == other.readonly
+            and normalize_bucket_permissions(self.permissions) == normalize_bucket_permissions(other.permissions)
+            and self.comment == other.comment
+        )
+
+
 @dataclass
 class EventState:
     """

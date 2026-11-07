@@ -784,3 +784,228 @@ class TestFileFieldLiveEvents:
         assert event.instance.id == "x"
         assert event.instance.att is None
         assert event.instance.pic is None
+
+
+# ---------------------------------------------------------------------------
+# U24 — DefineBucket / AlterBucket / RemoveBucket (AC8, C11-C13)
+# ---------------------------------------------------------------------------
+
+
+class TestBucketOperations:
+    def test_define_bucket_spec_example(self) -> None:
+        from surreal_orm.migrations.operations import DefineBucket
+
+        op = DefineBucket("avatars", backend="memory", readonly=True, permissions="$auth.id != NONE", comment="it's")
+        assert op.forwards() == (
+            "DEFINE BUCKET avatars READONLY BACKEND 'memory' PERMISSIONS WHERE $auth.id != NONE COMMENT 'it\\'s';"
+        )
+        assert op.backwards() == "REMOVE BUCKET avatars;"
+        assert op.reversible is True
+        assert op.describe() == "Define bucket avatars"
+
+    def test_define_bucket_without_backend_uses_the_global_bucket(self) -> None:
+        from surreal_orm.migrations.operations import DefineBucket
+
+        assert DefineBucket("x").forwards() == "DEFINE BUCKET x;"
+
+    def test_clause_order_is_the_servers(self) -> None:
+        from surreal_orm.migrations.operations import DefineBucket
+
+        op = DefineBucket("b", comment="c", permissions="NONE", backend="memory", readonly=True)
+        assert op.forwards() == "DEFINE BUCKET b READONLY BACKEND 'memory' PERMISSIONS NONE COMMENT 'c';"
+
+    @pytest.mark.parametrize(("given", "rendered"), [("FULL", "FULL"), ("full", "FULL"), (" None ", "NONE")])
+    def test_keyword_permissions(self, given: str, rendered: str) -> None:
+        from surreal_orm.migrations.operations import DefineBucket
+
+        assert DefineBucket("b", permissions=given).forwards() == f"DEFINE BUCKET b PERMISSIONS {rendered};"
+
+    def test_backend_and_comment_go_through_surql_string(self) -> None:
+        from surreal_orm.migrations.operations import DefineBucket
+
+        op = DefineBucket("b", backend="file:C:\\data's", comment="a\\b 'c'")
+        assert op.forwards() == "DEFINE BUCKET b BACKEND 'file:C:\\\\data\\'s' COMMENT 'a\\\\b \\'c\\'';"
+
+    @pytest.mark.parametrize(
+        ("name", "rendered"), [("my-b", "`my-b`"), ("7b", "`7b`"), ("a`b\\c", "`a\\`b\\\\c`"), ("ok_1", "ok_1")]
+    )
+    def test_name_rendered_bare_or_backticked(self, name: str, rendered: str) -> None:
+        from surreal_orm.migrations.operations import AlterBucket, DefineBucket, RemoveBucket
+
+        assert DefineBucket(name).forwards() == f"DEFINE BUCKET {rendered};"
+        assert DefineBucket(name).backwards() == f"REMOVE BUCKET {rendered};"
+        assert RemoveBucket(name).forwards() == f"REMOVE BUCKET {rendered};"
+        assert AlterBucket(name).forwards() == f"DEFINE BUCKET OVERWRITE {rendered};"
+
+    def test_remove_bucket(self) -> None:
+        from surreal_orm.migrations.operations import RemoveBucket
+
+        op = RemoveBucket("my-b")
+        assert op.forwards() == "REMOVE BUCKET `my-b`;"
+        assert op.backwards() == ""
+        assert op.reversible is False
+        assert op.describe() == "Remove bucket my-b"
+
+    def test_alter_bucket_without_previous_is_irreversible(self) -> None:
+        from surreal_orm.migrations.operations import AlterBucket, split_destructive
+
+        op = AlterBucket("x", backend="memory")
+        assert op.forwards() == "DEFINE BUCKET OVERWRITE x BACKEND 'memory';"
+        assert op.reversible is False
+        assert op.backwards() == ""
+        assert op.describe() == "Alter bucket x"
+        assert split_destructive([op]) == ([], [op])
+
+    def test_alter_bucket_from_states_is_reversible(self) -> None:
+        from surreal_orm.migrations.operations import AlterBucket
+        from surreal_orm.migrations.state import BucketState
+
+        current = BucketState(name="b", backend="memory", readonly=True, permissions="NONE", comment="old")
+        target = BucketState(name="b", backend="file:/srv", permissions="$action = 'get'")
+        op = AlterBucket.from_bucket_states(current, target)
+        assert op.previous_permissions == "NONE"
+        assert op.reversible is True
+        assert op.forwards() == "DEFINE BUCKET OVERWRITE b BACKEND 'file:/srv' PERMISSIONS WHERE $action = 'get';"
+        assert op.backwards() == "DEFINE BUCKET OVERWRITE b READONLY BACKEND 'memory' PERMISSIONS NONE COMMENT 'old';"
+
+    def test_alter_bucket_from_states_with_global_previous_backend(self) -> None:
+        """``None`` is a valid backend (the global bucket), so it cannot be the reversibility signal."""
+        from surreal_orm.migrations.operations import AlterBucket
+        from surreal_orm.migrations.state import BucketState
+
+        op = AlterBucket.from_bucket_states(BucketState(name="b"), BucketState(name="b", backend="memory"))
+        assert op.previous_backend is None
+        assert op.previous_permissions == "FULL"
+        assert op.reversible is True
+        assert op.backwards() == "DEFINE BUCKET OVERWRITE b PERMISSIONS FULL;"
+
+    def test_define_bucket_from_state(self) -> None:
+        from surreal_orm.migrations.operations import DefineBucket
+        from surreal_orm.migrations.state import BucketState
+
+        state = BucketState(name="b", backend="memory", readonly=True, permissions="NONE", comment="c")
+        op = DefineBucket.from_bucket_state(state)
+        assert op == DefineBucket("b", backend="memory", readonly=True, permissions="NONE", comment="c")
+
+    @pytest.mark.parametrize("name", ["", "a\nb", "a\x00b", "tab\there", "\x7f", 3, None])
+    def test_invalid_name(self, name: Any) -> None:
+        from surreal_orm.migrations.operations import AlterBucket, DefineBucket, RemoveBucket
+
+        for cls in (DefineBucket, AlterBucket, RemoveBucket):
+            with pytest.raises(ValueError, match=re.escape(f"Invalid bucket name {name!r}")):
+                cls(name)
+
+    @pytest.mark.parametrize("permissions", ["WHERE $auth.id != NONE", "  where true", "WHERE"])
+    def test_permissions_with_where_rejected(self, permissions: str) -> None:
+        from surreal_orm.migrations.operations import AlterBucket, DefineBucket
+
+        message = f"Bucket permissions take the expression without WHERE, or 'FULL' / 'NONE': {permissions!r}"
+        with pytest.raises(ValueError, match=re.escape(message)):
+            DefineBucket("b", permissions=permissions)
+        with pytest.raises(ValueError, match=re.escape(message)):
+            AlterBucket("b", permissions=permissions)
+        with pytest.raises(ValueError, match=re.escape(message)):
+            AlterBucket("b", previous_permissions=permissions)
+
+    def test_expression_starting_with_where_like_word_is_kept(self) -> None:
+        from surreal_orm.migrations.operations import DefineBucket
+
+        op = DefineBucket("b", permissions="whereabouts = true")
+        assert op.forwards() == "DEFINE BUCKET b PERMISSIONS WHERE whereabouts = true;"
+
+    @pytest.mark.parametrize("name", ["DefineBucket", "AlterBucket", "RemoveBucket", "BucketState"])
+    def test_experimental_label(self, name: str) -> None:
+        import surreal_orm.migrations as migrations
+
+        doc = getattr(migrations, name).__doc__
+        assert doc is not None
+        assert "experimental" in doc.lower()
+        assert "files" in doc
+
+    def test_define_bucket_docstring_warns_about_full_first(self) -> None:
+        from surreal_orm.migrations.operations import DefineBucket
+
+        doc = DefineBucket.__doc__ or ""
+        assert "FULL" in doc and "$action" in doc
+        first_warning = doc.lower().index("warning")
+        assert "full" in doc[first_warning : first_warning + 300].lower()
+
+    def test_exports(self) -> None:
+        import surreal_orm
+        import surreal_orm.migrations as migrations
+        from surreal_orm.migrations import operations, state
+
+        for name in ("DefineBucket", "AlterBucket", "RemoveBucket"):
+            assert getattr(surreal_orm, name) is getattr(operations, name)
+            assert getattr(migrations, name) is getattr(operations, name)
+            assert name in surreal_orm.__all__ and name in migrations.__all__
+        assert migrations.BucketState is state.BucketState
+        assert "BucketState" in migrations.__all__
+
+
+class TestBucketState:
+    @pytest.mark.parametrize(("left", "right"), [(None, "FULL"), ("full", "FULL"), ("none", " NONE ")])
+    def test_permissions_normalised_for_equality(self, left: Any, right: str) -> None:
+        from surreal_orm.migrations.state import BucketState
+
+        assert BucketState(name="b", permissions=left) == BucketState(name="b", permissions=right)
+
+    def test_defaults(self) -> None:
+        from surreal_orm.migrations.state import BucketState
+
+        state = BucketState(name="b")
+        assert (state.backend, state.readonly, state.permissions, state.comment) == (None, False, "FULL", None)
+
+    @pytest.mark.parametrize(
+        "changes",
+        [
+            {"backend": "memory"},
+            {"readonly": True},
+            {"permissions": "NONE"},
+            {"permissions": "$action = 'get'"},
+            {"comment": "c"},
+            {"name": "other"},
+        ],
+    )
+    def test_every_field_compared(self, changes: dict[str, Any]) -> None:
+        from dataclasses import replace
+
+        from surreal_orm.migrations.state import BucketState
+
+        assert BucketState(name="b") != replace(BucketState(name="b"), **changes)
+
+    def test_expression_compared_as_text(self) -> None:
+        from surreal_orm.migrations.state import BucketState
+
+        assert BucketState(name="b", permissions="$a = 1") != BucketState(name="b", permissions="$a=1")
+        assert BucketState(name="b", permissions="$a = 1") != "b"
+
+
+# ---------------------------------------------------------------------------
+# U33 — a generated migration file with every bucket operation loads (AC8)
+# ---------------------------------------------------------------------------
+
+
+class TestBucketMigrationFile:
+    def test_generated_file_executes_and_round_trips(self, tmp_path: Path) -> None:
+        import runpy
+
+        from surreal_orm.migrations.generator import MigrationGenerator
+        from surreal_orm.migrations.operations import AlterBucket, DefineBucket, RemoveBucket
+        from surreal_orm.migrations.state import BucketState
+
+        operations = [
+            DefineBucket("fsu_a"),
+            DefineBucket("fsu_b", backend="memory", permissions="NONE"),
+            AlterBucket.from_bucket_states(
+                BucketState(name="fsu_c"),
+                BucketState(name="fsu_c", backend="memory", readonly=True, permissions="$action = 'get'", comment="it's"),
+            ),
+            RemoveBucket("my-b"),
+        ]
+        path = MigrationGenerator(tmp_path).generate(name="buckets", operations=operations)
+        namespace = runpy.run_path(str(path))
+        migration = namespace["migration"]
+        assert migration.operations == operations
+        assert [op.reversible for op in migration.operations] == [True, True, True, False]
+        assert migration.operations[2].backwards() == "DEFINE BUCKET OVERWRITE fsu_c PERMISSIONS FULL;"

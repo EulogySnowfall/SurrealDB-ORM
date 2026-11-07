@@ -56,13 +56,16 @@ from .graph import MAX_GRAPH_DEPTH, MAX_PATH_DEPTH, GraphDirection
 from .introspection import generate_models_from_db, schema_diff
 from .live import ChangeModelStream, LiveModelStream, ModelChangeEvent
 from .migrations.operations import (
+    AlterBucket,
     DefineAnalyzer,
     DefineApi,
     DefineBearerAccess,
+    DefineBucket,
     DefineEvent,
     DefineGraphQLConfig,
     RebuildIndex,
     RemoveApi,
+    RemoveBucket,
     RemoveEvent,
     RemoveGraphQLConfig,
 )
@@ -206,13 +209,16 @@ __all__ = [
     "generate_models_from_db",
     "schema_diff",
     # Migrations
+    "AlterBucket",
     "DefineAnalyzer",
     "DefineApi",
     "DefineBearerAccess",
+    "DefineBucket",
     "DefineEvent",
     "DefineGraphQLConfig",
     "RebuildIndex",
     "RemoveApi",
+    "RemoveBucket",
     "RemoveEvent",
     "RemoveGraphQLConfig",
     # Debug
