@@ -36,9 +36,10 @@ One fix, #578 via #607 (`surreal_sdk/protocol/cbor.py` only). Pin unchanged
   `datetime` subclass as a plain `datetime` and a `UUID` subclass as a plain
   `UUID` (tag 37), so the old tag-9 branch, reached only by subclasses, is
   gone.
-- **Behaviour change:** an invalid duration text and an integer outside
-  `[-2**64, 2**64 - 1]` (a bignum, HTTP 400 / no WebSocket reply) raise
-  `ValueError` in `_preprocess_for_cbor()` before any request.
+- **Behaviour change:** an invalid duration text (`_parse_duration_text()`,
+  from the `default` hook) and an integer outside `[-2**64, 2**64 - 1]` (a
+  bignum, HTTP 400 / no WebSocket reply; `_preprocess_for_cbor()`) raise
+  `ValueError` during `encode()`, before any request.
 - **Open:** the walk does not enter `RecordId` keys or dict keys, so a
   `date` there still goes out as cbor2's native date tag and a bignum there
   is not caught; integers between the signed and unsigned 64-bit bounds
