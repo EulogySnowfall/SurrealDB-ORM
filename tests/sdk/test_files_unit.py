@@ -76,6 +76,41 @@ class TestFileRefNormalisation:
         ref = FileRef("av", "/x")
         with pytest.raises(AttributeError):
             ref.key = "/y"  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            del ref.bucket  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            ref.extra = 1  # type: ignore[attr-defined]
+
+    def test_repr(self) -> None:
+        assert repr(FileRef("av", "x")) == "FileRef(bucket='av', key='/x')"
+
+    def test_not_equal_to_other_types(self) -> None:
+        assert FileRef("av", "/x") != ("av", "/x")
+        assert FileRef("av", "/x") != "av:/x"
+
+    def test_not_a_dataclass(self) -> None:
+        # Pydantic dumps a dataclass instance as a dict in Python mode, which
+        # would write {"bucket", "key"} instead of the pointer.
+        import dataclasses
+
+        assert not dataclasses.is_dataclass(FileRef("av", "/x"))
+
+    @pytest.mark.parametrize("ref", [FileRef("av", "/x"), FileRef._from_wire("av", "/../x")], ids=["valid", "wire"])
+    def test_copy_and_pickle_round_trip(self, ref: FileRef) -> None:
+        import copy
+        import pickle
+
+        for clone in (copy.copy(ref), copy.deepcopy(ref), pickle.loads(pickle.dumps(ref))):
+            assert clone == ref
+            assert type(clone) is FileRef
+            assert (clone.bucket, clone.key) == (ref.bucket, ref.key)
+
+    def test_match_args(self) -> None:
+        match FileRef("av", "/x"):
+            case FileRef(bucket, key):
+                assert (bucket, key) == ("av", "/x")
+            case _:  # pragma: no cover
+                pytest.fail("FileRef did not match its positional pattern")
 
     def test_str_is_bucket_colon_key(self) -> None:
         assert str(FileRef("av", "x.png")) == "av:/x.png"

@@ -16,7 +16,7 @@ enable it.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import FrozenInstanceError, dataclass
 from datetime import datetime
 from typing import Any
 
@@ -64,7 +64,6 @@ def _normalise_key(key: object) -> str:
     return normalised
 
 
-@dataclass(frozen=True, slots=True)
 class FileRef:
     """A SurrealDB file pointer (``f"bucket:/key"``), sent as CBOR tag 55.
 
@@ -78,19 +77,52 @@ class FileRef:
     (``my-b`` is fine). ``key`` gets a leading ``/`` if it has none, as the
     server does (``FileRef("av", "x.png").key == "/x.png"``); it must not be
     ``/`` alone, contain NUL or have a ``.`` / ``..`` segment. Two spellings
-    of one key compare (and hash) equal.
+    of one key compare (and hash) equal. Instances are immutable.
+
+    As a Pydantic field type (``avatar: FileRef | None = None``) it accepts
+    a ``FileRef`` or its ``"bucket:/key"`` text, keeps the ``FileRef`` in a
+    Python-mode dump and writes the text in a JSON-mode dump.
 
     Raises:
         TypeError: ``bucket`` or ``key`` is not a ``str``.
         ValueError: ``bucket`` or ``key`` is invalid.
     """
 
+    # Not a dataclass on purpose: Pydantic dumps any dataclass instance as a
+    # dict in Python mode, whatever the field's serializer returns, so a model
+    # holding a dataclass pointer would write {"bucket", "key"} instead of
+    # tag 55. An ordinary class passes through a Python-mode dump unchanged.
+    __slots__ = ("bucket", "key")
+    __match_args__ = ("bucket", "key")
+
     bucket: str
     key: str
 
-    def __post_init__(self) -> None:
-        _check_bucket(self.bucket)
-        object.__setattr__(self, "key", _normalise_key(self.key))
+    def __init__(self, bucket: str, key: str) -> None:
+        object.__setattr__(self, "bucket", _check_bucket(bucket))
+        object.__setattr__(self, "key", _normalise_key(key))
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise FrozenInstanceError(f"cannot assign to field {name!r}")
+
+    def __delattr__(self, name: str) -> None:
+        raise FrozenInstanceError(f"cannot delete field {name!r}")
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, FileRef):
+            return NotImplemented
+        return (self.bucket, self.key) == (other.bucket, other.key)
+
+    def __hash__(self) -> int:
+        return hash((self.bucket, self.key))
+
+    def __repr__(self) -> str:
+        return f"FileRef(bucket={self.bucket!r}, key={self.key!r})"
+
+    def __reduce__(self) -> tuple[Any, tuple[str, str]]:
+        # Rebuilt without validation, like a decoded pointer, so a key the
+        # server sent (``/../x`` on a memory bucket) survives copy and pickle.
+        return (_file_ref_from_wire, (self.bucket, self.key))
 
     @classmethod
     def parse(cls, text: str) -> FileRef:
@@ -140,6 +172,49 @@ class FileRef:
         object.__setattr__(ref, "bucket", bucket)
         object.__setattr__(ref, "key", key)
         return ref
+
+    @classmethod
+    def _pydantic_validate(cls, value: Any) -> FileRef:
+        """Pydantic validator: a ``FileRef`` as is, a ``str`` through :meth:`parse`."""
+        from pydantic_core import PydanticCustomError
+
+        if isinstance(value, FileRef):
+            return value
+        if isinstance(value, str):
+            try:
+                return cls.parse(value)
+            except ValueError as exc:
+                # Through the context, not the template: a key may hold "{".
+                raise PydanticCustomError("file_pointer", "{message}", {"message": str(exc)}) from exc
+        raise PydanticCustomError(
+            "file_pointer",
+            "{message}",
+            {"message": f"Expected a FileRef or a 'bucket:/key' string, got {type(value).__name__}"},
+        )
+
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source_type: Any, handler: Any) -> Any:
+        """Pydantic schema hook, so a model can annotate ``FileRef``.
+
+        ``pydantic_core`` is imported here, not at module level: the SDK does
+        not depend on Pydantic, and only Pydantic calls this hook.
+        """
+        from pydantic_core import core_schema
+
+        return core_schema.no_info_plain_validator_function(
+            cls._pydantic_validate,
+            serialization=core_schema.plain_serializer_function_ser_schema(str, when_used="json"),
+        )
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, schema: Any, handler: Any) -> dict[str, Any]:
+        """The JSON form of a pointer is its ``"bucket:/key"`` text."""
+        return {"type": "string"}
+
+
+def _file_ref_from_wire(bucket: str, key: str) -> FileRef:
+    """Module-level rebuild target for ``FileRef.__reduce__`` (picklable by name)."""
+    return FileRef._from_wire(bucket, key)
 
 
 @dataclass(frozen=True, slots=True)
