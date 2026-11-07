@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.55)
+> Context document for Claude AI - Last updated: November 2026 (0.21.56)
 
 <!-- -->
 
@@ -20,12 +20,24 @@
 
 ---
 
-## Current Version: 0.21.55 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.56 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.56
+
+One fix PR, #601 via #608 (`surreal_orm/live.py`): the 0.21.55 review follow-ups. Pin unchanged (2.7.0).
+
+- **`_stream_events()` reads `_stopped` again after `_ensure_feed()`.** 0.21.55 read it only before. A `stop()` that
+  landed while the first `get_client()` was pending found `self._feed` still `None`, so `_ensure_feed()` built a feed
+  and `feed.stream()` polled once. No `await` sits between the second check and the poll.
+- The #577 parser test for `references<a | comment>` now says it mirrors the #568 case and passed before that fix; the
+  parametrised cases are the regression guard.
+- **Open (review suggestion on #608):** a first `get_client()` that raises after `stop()` still propagates its error;
+  only a successful build ends quietly.
 
 ### What's New in 0.21.55
 

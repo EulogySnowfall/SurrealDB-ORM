@@ -51,6 +51,14 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.56
+
+**Bug fix release (V2 LTS).** The 0.21.55 review follow-up (#601); pin unchanged (2.7.0).
+
+- **`stop()` during the first client build is final.** A `QuerySet.changes()` stream stopped while its first iteration
+  is still resolving the HTTP client ends (`StopAsyncIteration`) once the client is resolved, instead of polling the
+  change feed once and possibly delivering events after `stop()`. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.55
 
 **Bug fix release (V2 LTS).** The 0.21.54 review follow-ups (#577); pin unchanged (2.7.0).
