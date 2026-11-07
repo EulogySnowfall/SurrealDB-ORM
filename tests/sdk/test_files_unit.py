@@ -33,8 +33,9 @@ from surreal_sdk import (
     WebSocketConnection,
 )
 from surreal_sdk.connection.base import BaseSurrealConnection
-from surreal_sdk.exceptions import QueryError, TableNotFoundError
-from surreal_sdk.protocol.cbor import TAG_FILE, decode, encode
+from surreal_sdk.exceptions import DataFormatError, QueryError, TableNotFoundError
+from surreal_sdk.jsonl import JSONL_TAGS, decode_value, dumps_record, encode_value, loads_record
+from surreal_sdk.protocol.cbor import TAG_FILE, RecordId, decode, encode
 from surreal_sdk.protocol.rpc import RPCError, RPCRequest, RPCResponse, SurrealJSONEncoder
 
 E2 = "Invalid bucket name {bucket!r}: expected a non-empty string without ':', '/', whitespace or control characters"
@@ -302,6 +303,91 @@ class TestExports:
         assert "experimental" in doc.lower()
         assert "files" in doc
         assert "--allow-experimental=files" in doc
+
+
+# --------------------------------------------------------------------------- U13: JSON Lines ``$file`` tag
+
+
+class TestJsonlFileTag:
+    """U13: a pointer column goes through JSON Lines as ``{"$file": [bucket, key]}`` (typed) or text."""
+
+    def test_tag_is_listed(self) -> None:
+        assert "$file" in JSONL_TAGS
+
+    def test_typed_encode(self) -> None:
+        assert encode_value(FileRef("av", "x.png")) == {"$file": ["av", "/x.png"]}
+
+    def test_untyped_encode_is_the_pointer_text(self) -> None:
+        ref = FileRef("my-b", "/a/b c.png")
+        assert encode_value(ref, typed=False) == "my-b:/a/b c.png"
+        assert FileRef.parse(encode_value(ref, typed=False)) == ref
+
+    def test_decode_goes_through_the_constructor(self) -> None:
+        decoded = decode_value({"$file": ["av", "x.png"]})
+        assert isinstance(decoded, FileRef)
+        assert decoded == FileRef("av", "/x.png")
+        assert decoded.key == "/x.png"
+
+    def test_record_round_trip(self) -> None:
+        record = {
+            "id": RecordId("users", "alice"),
+            "avatar": FileRef("av", "/alice.png"),
+            "nested": {"thumbs": [FileRef("th", "/1.png"), None]},
+        }
+        line = dumps_record(record)
+        assert '"avatar":{"$file":["av","/alice.png"]}' in line
+        assert loads_record(line) == record
+
+    def test_untyped_record_reads_back_as_text(self) -> None:
+        line = dumps_record({"id": RecordId("users", "a"), "avatar": FileRef("av", "/a.png")}, typed=False)
+        assert loads_record(line) == {"id": "users:a", "avatar": "av:/a.png"}
+
+    def test_object_with_a_file_key_is_wrapped(self) -> None:
+        assert encode_value({"$file": 1}) == {"$object": {"$file": 1}}
+        assert decode_value(encode_value({"$file": 1})) == {"$file": 1}
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "av:/x.png",
+            ["av"],
+            ["av", "/x", "/y"],
+            [1, "/x"],
+            ["av", 1],
+            ["", "/x"],
+            ["a:b", "/x"],
+            ["a b", "/x"],
+            ["av", "/"],
+            ["av", "/../x"],
+            ["av", "/a\x00b"],
+            None,
+            {"bucket": "av", "key": "/x"},
+        ],
+        ids=repr,
+    )
+    def test_invalid_payload_is_refused_with_its_line(self, payload: Any) -> None:
+        line = json.dumps({"f": {"$file": payload}})
+        with pytest.raises(DataFormatError) as info:
+            loads_record(line, _line=7)
+        assert str(info.value) == f"Line 7: invalid $file value: {payload!r}"
+        assert info.value.line == 7
+
+    @pytest.mark.parametrize("typed", [True, False])
+    def test_pointer_that_would_not_read_back_is_refused_at_export(self, typed: bool) -> None:
+        # The decoder keeps a key written by other means (a memory bucket
+        # stores "/../x"); the codec refuses it at export instead of writing a
+        # line that the import, through the validating constructor, rejects.
+        ref = FileRef._from_wire("av", "/../x")
+        with pytest.raises(DataFormatError) as info:
+            dumps_record({"id": RecordId("t", "a"), "f": ref}, typed=typed)
+        assert str(info.value) == "Cannot write f of t:a as JSON Lines: invalid file pointer 'av:/../x'"
+        assert info.value.path == "f"
+
+    def test_pointer_with_a_non_text_part_is_refused_at_export(self) -> None:
+        ref = FileRef._from_wire(1, "/x")  # type: ignore[arg-type]
+        with pytest.raises(DataFormatError) as info:
+            encode_value(ref, _path="f")
+        assert info.value.path == "f"
 
 
 # --------------------------------------------------------------------------- U7-U9, U12: connection file methods

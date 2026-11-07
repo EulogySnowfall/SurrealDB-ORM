@@ -171,7 +171,9 @@ class TestRoundTrip:
 
     def test_tags_constant(self) -> None:
         assert (
-            frozenset({"$record", "$table", "$datetime", "$decimal", "$uuid", "$duration", "$bytes", "$float", "$object"})
+            frozenset(
+                {"$record", "$table", "$datetime", "$decimal", "$uuid", "$duration", "$bytes", "$float", "$object", "$file"}
+            )
             == JSONL_TAGS
         )
 

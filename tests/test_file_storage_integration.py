@@ -18,12 +18,14 @@ import os
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
 from surreal_sdk import FileInfo, FileRef, HTTPConnection, PayloadTooLargeError, WebSocketConnection
 from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.exceptions import QueryError
+from surreal_sdk.protocol.cbor import RecordId
 from surreal_sdk.types import QueryResponse
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 from tests.files_capability import FILES_SKIP_REASON, files_capability_outcome, files_required
@@ -359,6 +361,50 @@ async def test_http_upload_over_the_limit_raises_before_sending(files_conn: HTTP
         assert await files_conn.file_get(ref) == b"small"
     finally:
         await files_conn.file_delete(ref)
+
+
+# ---------------------------------------------------------------------------
+# I8 - JSON Lines export / import of a pointer column
+# ---------------------------------------------------------------------------
+
+
+async def test_jsonl_round_trips_a_pointer_column(conn: BaseSurrealConnection, tmp_path: Path) -> None:
+    """I8: ``export_jsonl()`` writes pointers as ``$file`` tags and ``import_jsonl()`` binds them back."""
+    suffix = uuid.uuid4().hex[:12]
+    source, target = f"fsi_jsonl_src_{suffix}", f"fsi_jsonl_dst_{suffix}"
+    area = _area()
+    avatar = FileRef("fsi_files", f"{area}/a.png")
+    thumbs = [FileRef("fsi_files", f"{area}/t1.png"), FileRef("fsi_ro", f"{area}/t2.png")]
+    await conn.file_put(avatar, b"avatar bytes")
+    try:
+        response = await conn.query(
+            f"CREATE {source}:a SET avatar = $avatar, thumbs = $thumbs; CREATE {source}:b SET avatar = NONE;",
+            {"avatar": avatar, "thumbs": thumbs},
+        )
+        assert _statement_error(response) is None
+
+        dest = tmp_path / "files.jsonl"
+        assert await conn.export_jsonl(source, dest) == 2
+        lines = dest.read_text(encoding="utf-8").splitlines()
+        assert f'"avatar":{{"$file":["fsi_files","{area}/a.png"]}}' in lines[0]
+
+        report = await conn.import_jsonl(target, dest)
+        assert (report.lines, report.rows) == (2, 2)
+
+        rows = (await conn.query(f"SELECT * FROM {target} ORDER BY id;")).first_result.records
+        assert [row["id"] for row in rows] == [RecordId(target, "a"), RecordId(target, "b")]
+        assert rows[0]["avatar"] == avatar
+        assert isinstance(rows[0]["avatar"], FileRef)
+        assert rows[0]["thumbs"] == thumbs
+        assert "avatar" not in rows[1]
+        # The stored value is a pointer, not text: a file function reads it in the database.
+        stored = await conn.query(f"RETURN file::exists({target}:a.avatar); RETURN type::of({target}:a.avatar);")
+        assert _statement_error(stored) is None
+        assert [result.result for result in stored.results] == [True, "file"]
+        assert await conn.file_get(rows[0]["avatar"]) == b"avatar bytes"
+    finally:
+        await conn.query(f"REMOVE TABLE IF EXISTS {source}; REMOVE TABLE IF EXISTS {target};")
+        await conn.file_delete(avatar)
 
 
 @pytest.fixture
