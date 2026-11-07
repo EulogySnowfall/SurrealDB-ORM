@@ -46,6 +46,9 @@ def test_references_is_a_parameterised_type() -> None:
 
 def test_references_type_with_keyword_named_table_is_one_bracket() -> None:
     # Mirrors test_type_with_keyword_named_table_is_one_bracket (#568) for references<...>.
+    # It passed before the #577 fix too: a two-member union whose last member is
+    # keyword-named was already read whole. The regression guard is the
+    # parametrised test below, where another member follows the keyword-named one.
     field = parse_define_field("DEFINE FIELD r ON fu TYPE references<a | comment> COMMENT 'c' PERMISSIONS FULL")
     assert field.field_type == "references<a | comment>"
     assert field.comment == "c"

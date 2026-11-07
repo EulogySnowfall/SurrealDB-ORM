@@ -417,11 +417,15 @@ class ChangeModelStream(Generic[T]):
         """Internal generator that yields ModelChangeEvent from the change feed.
 
         A stream stopped before its first iteration ends here, before any
-        client is resolved or any poll is sent.
+        client is resolved or any poll is sent. One stopped while its first
+        client is being resolved ends once it is, before the first poll:
+        ``stop()`` found no feed to stop then.
         """
         if self._stopped:
             return
         feed = await self._ensure_feed()
+        if self._stopped:
+            return
         since = self._since
         while True:
             try:
