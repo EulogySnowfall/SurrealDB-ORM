@@ -37,6 +37,16 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.38.5
+
+**Fix release.** CBOR encoding ready for SurrealDB 4.0 ([#578](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/578)).
+Bound `datetime` and `date` values are sent as tag 12 `[seconds, nanoseconds]` instead of tag 0 (an ISO string), text
+`Duration` values as tag 14 instead of tag 13, and a `uuid.UUID` subclass as tag 37 instead of tag 9. SurrealDB 4.0
+refuses tags 0, 9 and 13; every 3.x server reads the new forms and stores and compares the same values as before
+(checked on 3.2.6 and 3.3.5). Behaviour change: an invalid duration text (`Duration("1h 30m")`, `"1.5h"`) and an integer
+CBOR could only send as a bignum (below `-2**64` or above `2**64 - 1`) raise `ValueError` before the request instead of
+failing on the server. SurrealDB pin unchanged (3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.38.4
 
 **Fix release.** `ConnectionPool` keywords reach HTTP connections

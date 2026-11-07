@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.38.4)
+> Context document for Claude AI - Last updated: November 2026 (0.38.5)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.38.4 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.38.5 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,31 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.38.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.38.5
+
+One fix, #578 via #607 (`surreal_sdk/protocol/cbor.py` only). Pin unchanged
+(3.3.5). `v2`: not needed, same encoder but its forms only fail on 4.0.
+
+- **Send the compact forms every server reads.** `encode()` passes cbor2
+  `encoders={datetime: _encode_datetime}` (tag 12 `[seconds, nanoseconds]`,
+  seconds floored, naive read as UTC) instead of `timezone=UTC` (native
+  tag 0). A text `Duration` is parsed by `_parse_duration_text()` (the
+  server's literal grammar, u64 seconds) and sent as tag 14; tag 13 is
+  decode-only. SurrealDB 4.0 refuses tags 0, 9 and 13; 3.2.6 and 3.3.5 store
+  and compare the same values.
+- **cbor2 looks encoders up by exact type**: a plain `datetime` or `UUID`
+  never reaches the `default` hook, a subclass does. The hook rebuilds a
+  `datetime` subclass as a plain `datetime` and a `UUID` subclass as a plain
+  `UUID` (tag 37), so the old tag-9 branch, reached only by subclasses, is
+  gone.
+- **Behaviour change:** an invalid duration text and an integer outside
+  `[-2**64, 2**64 - 1]` (a bignum, HTTP 400 / no WebSocket reply) raise
+  `ValueError` in `_preprocess_for_cbor()` before any request.
+- **Open:** the walk does not enter `RecordId` keys or dict keys, so a
+  `date` there still goes out as cbor2's native date tag and a bignum there
+  is not caught; integers between the signed and unsigned 64-bit bounds
+  still wrap on 3.3 (review suggestions on #607).
 
 ### What's New in 0.38.4
 

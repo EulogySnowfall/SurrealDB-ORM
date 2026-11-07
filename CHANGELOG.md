@@ -6,6 +6,72 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.38.5] - 2026-11-07
+
+**Fix release.** One fix: the CBOR encoder's datetime, date, duration and
+UUID forms, #578 via #607 (`surreal_sdk/protocol/cbor.py` only). It prepares
+the SDK for SurrealDB 4.0, which refuses the tags the encoder used to send;
+on 3.x servers the stored and compared values are the same as before. Read
+*Behaviour change* below if you build `Duration` values from text or bind
+very large integers. The SurrealDB pin is unchanged (tested against 3.3.5,
+supported range 3.2.x – 3.3.x). `v2`: not needed; it has the same encoder,
+but those forms only fail on SurrealDB 4.0, which `v2` never targets.
+
+### Fixed
+
+- **Bound `datetime` and `date` values are sent as CBOR tag 12
+  `[seconds, nanoseconds]`** instead of the standard tag 0 (an ISO 8601
+  string), and **text `Duration` values as tag 14 `[seconds, nanoseconds]`**
+  instead of tag 13 (a duration string), at any depth (#578). Datetimes and
+  durations inside a record id key are covered too. SurrealDB 4.0 refuses
+  tags 0, 9 and 13, while every 3.x server reads tags 12 and 14. On 3.2 and 3.3 the server stores and compares
+  the same values as before (checked on 3.2.6 and 3.3.5, over HTTP and
+  WebSocket). A naive `datetime` is still read as UTC and still warned
+  about; an instant before 1970 is sent with negative seconds and positive
+  nanoseconds. Update the ORM before the server.
+- **A `uuid.UUID` subclass** (for example asyncpg's `pgproto.UUID`) is sent
+  as the standard tag 37, like a plain `UUID`; tag 9 is no longer sent
+  (#578).
+- Tags 9 and 13, and an ISO string under tag 12, are still decoded.
+
+### Changed
+
+- **Behaviour change:** an invalid duration text (`Duration("1h 30m")`,
+  `"1.5h"`, `"1H"`, …) raises `ValueError` while the request is being
+  encoded, before anything is sent, instead of failing on the server. The
+  text is read as SurrealDB reads a duration literal: units `ns`, `us`/`µs`,
+  `ms`, `s`, `m`, `h`, `d`, `w`, `y` (365 days), compound and repeated parts
+  in any order, seconds within the unsigned 64-bit range. A text `Duration`
+  encoded and decoded locally comes back in the compact form the server
+  sends (`Duration("1h30m")` becomes `Duration((5400,))`) (#578).
+- **Behaviour change:** an integer outside the 64-bit range CBOR carries
+  without a bignum (below `-2**64` or above `2**64 - 1`) raises `ValueError`
+  before any request; SurrealDB rejected it with HTTP 400 (no reply at all
+  over WebSocket, so the request waited for its timeout). Integers within
+  64 bits are sent unchanged (#578).
+
+### Upgrading
+
+- No API, DDL or pin change. Check that no code builds a `Duration` from a
+  text the server would refuse (spaces, fractions, upper-case units, a
+  sign); it now raises `ValueError` before the request.
+
+### Known limitations
+
+- A `date` (not a `datetime`) inside a `RecordId` key is not converted: it
+  still goes out as cbor2's native date tag, which SurrealDB does not read,
+  as before this release. Use a UTC-midnight `datetime` there (found while
+  preparing this release).
+- The 64-bit range check does not run on an integer inside a `RecordId` key
+  or a dict key: there a bignum still goes out and is rejected by the server
+  as before (review suggestion on #607).
+- An integer between the signed and the unsigned 64-bit bounds is still sent
+  unchanged, as #578 asked: SurrealDB 3.3 wraps it into a signed 64-bit
+  integer with no error (`2**64 - 1` reads back as `-1`), and 4.0 refuses it
+  (review suggestion on #607).
+
+---
+
 ## [0.38.4] - 2026-11-07
 
 **Fix release.** One fix: `ConnectionPool` keywords on HTTP connections,
