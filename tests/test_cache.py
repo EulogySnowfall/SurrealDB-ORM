@@ -1,15 +1,17 @@
 """Tests for QueryCache — v0.11.0."""
 
+import asyncio
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.surreal_orm.cache import QueryCache
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from src.surreal_orm.signals import Signal, post_delete, post_save, post_update
+from surreal_sdk.transaction import BaseTransaction, HTTPTransaction, WebSocketTransaction
 from surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
 
 # ── Test model ───────────────────────────────────────────────────────────────
@@ -379,6 +381,163 @@ class TestSignalsConnectWithoutConfigure:
         assert QueryCache.get("k") is None
 
 
+# ── Issue #360: a transactional write drops the table's entries again at commit ──
+
+
+class I360CacheUser(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="i360_cache_users")
+    id: str | None = None
+    name: str = ""
+
+
+class _I360Database:
+    """The rows a read sees: ``before`` until a commit reaches the server, ``after`` once it has."""
+
+    def __init__(self) -> None:
+        self.rows: list[dict[str, Any]] = [{"id": "i360_cache_users:r1", "name": "before"}]
+
+    def commit(self) -> None:
+        self.rows = [{"id": "i360_cache_users:r1", "name": "after"}]
+
+    def read_client(self) -> AsyncMock:
+        async def _query(*args: Any, **kwargs: Any) -> QueryResponse:
+            return _u267_ok([dict(row) for row in self.rows])
+
+        client = AsyncMock()
+        client.query = AsyncMock(side_effect=_query)
+        return client
+
+    def tx_connection(self) -> MagicMock:
+        """What the transaction talks to: the ``COMMIT`` makes the write visible."""
+
+        async def _query(sql: str, *args: Any, **kwargs: Any) -> QueryResponse:
+            if "COMMIT TRANSACTION" in sql:
+                self.commit()
+            return _u267_ok([])
+
+        conn = MagicMock()
+        conn.query = AsyncMock(side_effect=_query)
+        for method in ("create", "upsert", "merge", "update", "delete"):
+            setattr(conn, method, AsyncMock(return_value=MagicMock(records=[{"id": "i360_cache_users:r1"}], is_empty=False)))
+        return conn
+
+
+async def _i360_names() -> list[str]:
+    return [user.name for user in await I360CacheUser.objects().cache(ttl=60).exec()]
+
+
+def _i360_reading_before_commit(base: type[BaseTransaction], seen: list[list[str]]) -> type[BaseTransaction]:
+    """A transaction that runs the cached read from another task right before it commits."""
+
+    class _ReadBeforeCommit(base):  # type: ignore[misc,valid-type]
+        async def commit(self) -> QueryResponse:
+            seen.append(await asyncio.create_task(_i360_names()))
+            return await super().commit()  # type: ignore[no-any-return]
+
+    return _ReadBeforeCommit
+
+
+def _i360_persisted() -> I360CacheUser:
+    user = I360CacheUser.from_db({"id": "i360_cache_users:r1", "name": "before"})
+    assert isinstance(user, I360CacheUser)
+    return user
+
+
+async def _i360_update(tx: BaseTransaction) -> None:
+    user = _i360_persisted()
+    user.name = "after"
+    await user.update(tx=tx)
+
+
+_I360_WRITES: dict[str, Callable[[BaseTransaction], Awaitable[Any]]] = {
+    "save": lambda tx: I360CacheUser(id="r2", name="after").save(tx=tx),
+    "update": _i360_update,
+    "merge": lambda tx: _i360_persisted().merge(name="after", tx=tx),
+    "delete": lambda tx: _i360_persisted().delete(tx=tx),
+}
+
+
+class TestI360InvalidateAgainOnCommit:
+    """Issue #360 — a read cached between a ``tx=`` write and its commit does not outlive the commit."""
+
+    @pytest.fixture(autouse=True)
+    def _signals(self) -> None:
+        QueryCache._connect_signals()
+
+    @pytest.mark.parametrize("kind", ["http", "websocket"])
+    @pytest.mark.parametrize("write", list(_I360_WRITES))
+    async def test_read_after_commit_sees_the_commit(self, write: str, kind: str) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        db = _I360Database()
+        seen: list[list[str]] = []
+        base: type[BaseTransaction] = HTTPTransaction if kind == "http" else WebSocketTransaction
+        tx_class = _i360_reading_before_commit(base, seen)
+        with patch.object(SurrealDBConnectionManager, "get_client", AsyncMock(return_value=db.read_client())):
+            assert await _i360_names() == ["before"]
+            async with tx_class(db.tx_connection()) as tx:
+                await _I360_WRITES[write](tx)
+            # The other task cached the pre-commit rows inside the window.
+            assert seen == [["before"]]
+            assert await _i360_names() == ["after"]
+
+    async def test_bulk_create_atomic(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        db = _I360Database()
+        seen: list[list[str]] = []
+        tx = _i360_reading_before_commit(HTTPTransaction, seen)(db.tx_connection())
+        with (
+            patch.object(SurrealDBConnectionManager, "get_client", AsyncMock(return_value=db.read_client())),
+            patch.object(SurrealDBConnectionManager, "transaction", AsyncMock(return_value=tx)),
+        ):
+            assert await _i360_names() == ["before"]
+            await I360CacheUser.objects().bulk_create([I360CacheUser(id="r2", name="n2")], atomic=True)
+            assert seen == [["before"]]
+            assert await _i360_names() == ["after"]
+
+    async def test_rollback_leaves_the_entries_and_does_not_fail(self) -> None:
+        from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+        db = _I360Database()
+        with patch.object(SurrealDBConnectionManager, "get_client", AsyncMock(return_value=db.read_client())):
+            with pytest.raises(RuntimeError, match="abort"):
+                async with HTTPTransaction(db.tx_connection()) as tx:
+                    await I360CacheUser(id="r2", name="after").save(tx=tx)
+                    assert await _i360_names() == ["before"]  # cached inside the window
+                    raise RuntimeError("abort")
+            assert tx.is_rolled_back
+            assert tx._commit_callbacks == {}
+            # Nothing was committed, so the entry cached in the window is still right.
+            assert await _i360_names() == ["before"]
+
+    async def test_one_callback_per_table_and_transaction(self) -> None:
+        tx = HTTPTransaction(_I360Database().tx_connection())
+        await tx._begin()
+        await I360CacheUser(id="a", name="a").save(tx=tx)
+        await I360CacheUser(id="b", name="b").save(tx=tx)
+        await CacheUser(id="c", name="c").save(tx=tx)
+        assert len(tx._commit_callbacks) == 2
+        await tx.rollback()
+
+    async def test_callback_keeps_neither_transaction_nor_instance(self) -> None:
+        import gc
+        import weakref
+
+        db = _I360Database()
+        tx = HTTPTransaction(db.tx_connection())
+        await tx._begin()
+        user = I360CacheUser(id="r2", name="after")
+        await user.save(tx=tx)
+        tx_ref, user_ref = weakref.ref(tx), weakref.ref(user)
+        callbacks = list(tx._commit_callbacks.values())
+        del tx, user
+        gc.collect()
+        assert callbacks
+        assert tx_ref() is None
+        assert user_ref() is None
+
+
 # ==================== Integration Tests ====================
 
 
@@ -534,3 +693,58 @@ class TestQueryCacheInvalidationEveryConnection:
         async with client.transaction() as tx:
             await I338RoutedItem(id="r3", label="three").save(tx=tx)
         assert await _i338_labels("i338_plain") == ["one", "three"]
+
+
+# ── Issue #360: a transactional write drops the table's entries again at commit ──
+
+
+class I360CacheItem(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="i360_cache_items")
+    id: str | None = None
+    label: str = ""
+
+
+async def _i360_labels() -> list[str]:
+    return sorted(row.label for row in await I360CacheItem.objects().cache(ttl=60).exec())
+
+
+@pytest.mark.integration
+class TestI360InvalidateAgainOnCommitIntegration:
+    """Issue #360 — over HTTP, a read cached before the commit does not outlive it."""
+
+    @pytest.fixture(autouse=True)
+    async def i360_data(self) -> AsyncGenerator[None, None]:
+        from src.surreal_orm import SurrealDBConnectionManager
+
+        client = await SurrealDBConnectionManager.get_client()
+        await client.query("DELETE FROM i360_cache_items; CREATE i360_cache_items:one SET label = 'one';")
+        QueryCache.configure(enabled=True, default_ttl=60)
+        QueryCache.clear()
+        yield
+        QueryCache.clear()
+
+    async def test_save_in_a_transaction(self) -> None:
+        from src.surreal_orm import SurrealDBConnectionManager
+
+        assert await _i360_labels() == ["one"]
+        async with await SurrealDBConnectionManager.transaction() as tx:
+            await I360CacheItem(id="two", label="two").save(tx=tx)
+            # Another task reads (and caches) the table before the commit.
+            assert await asyncio.create_task(_i360_labels()) == ["one"]
+        assert await _i360_labels() == ["one", "two"]
+
+    async def test_bulk_create_atomic(self) -> None:
+        commit = HTTPTransaction.commit
+        seen: list[list[str]] = []
+
+        async def _read_then_commit(self: HTTPTransaction) -> QueryResponse:
+            seen.append(await asyncio.create_task(_i360_labels()))
+            return await commit(self)
+
+        assert await _i360_labels() == ["one"]
+        with patch.object(HTTPTransaction, "commit", _read_then_commit):
+            await I360CacheItem.objects().bulk_create(
+                [I360CacheItem(id="two", label="two"), I360CacheItem(id="three", label="three")], atomic=True
+            )
+        assert seen == [["one"]]
+        assert await _i360_labels() == ["one", "three", "two"]

@@ -865,6 +865,39 @@ class TestIssue332SessionRecord:
         assert user.id == "zzzzzz"
         assert record_id == "I332User:zzzzzz"
 
+    async def test_authenticate_token_numeric_looking_key(self) -> None:
+        """#357 — a key such as ``⟨000000⟩`` resolves to that record, not to ``I332User:0``."""
+        model = self._model()
+        signed_in = await model.signin(email="shared332@example.com", password="first-password")
+
+        authenticated = await model.authenticate_token(signed_in.token)
+
+        assert authenticated is not None
+        user, record_id = authenticated
+        assert user.id == "000000"
+        assert user.name == "first"
+        assert record_id == "I332User:000000"
+
+    async def test_refresh_returns_session_record_numeric_looking_key(self) -> None:
+        """#357 — refresh_access_token() returns the record the new token belongs to."""
+        client = await surreal_orm.SurrealDBConnectionManager.get_client()
+        await client.query("""
+            CREATE I332User:zzzzzz SET
+                email = 'shared332@example.com',
+                password = crypto::argon2::generate('second-password'),
+                name = 'second';
+        """)
+        model = self._model()
+        signed_in = await model.signin(email="shared332@example.com", password="first-password")
+        assert signed_in.refresh_token
+
+        refreshed = await model.refresh_access_token(signed_in.refresh_token)
+
+        assert refreshed.user.id == "000000"
+        assert refreshed.user.name == "first"
+        assert refreshed.token
+        assert refreshed.refresh_token
+
     async def test_change_password_updates_only_the_signed_in_record(self) -> None:
         client = await surreal_orm.SurrealDBConnectionManager.get_client()
         await client.query("""

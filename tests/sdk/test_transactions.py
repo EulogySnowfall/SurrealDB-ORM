@@ -460,6 +460,134 @@ class TestTransactionError:
         assert err.rollback_succeeded is True
 
 
+# ── Issue #360: callbacks run once a transaction has committed ──────────────
+
+
+def _i360_ok() -> QueryResponse:
+    return QueryResponse(results=[QueryResult(status=ResponseStatus.OK, time="1ms", result=None)], raw=[])
+
+
+def _i360_connection() -> MagicMock:
+    conn = MagicMock()
+    conn.query = AsyncMock(return_value=_i360_ok())
+    return conn
+
+
+_I360_KINDS: dict[str, type[HTTPTransaction] | type[WebSocketTransaction]] = {
+    "http": HTTPTransaction,
+    "websocket": WebSocketTransaction,
+}
+
+
+@pytest.mark.parametrize("kind", list(_I360_KINDS))
+class TestI360CommitCallbacks:
+    """Issue #360 — ``_call_on_commit()`` runs its callbacks after a successful commit only."""
+
+    @staticmethod
+    async def _open(kind: str, conn: MagicMock) -> HTTPTransaction | WebSocketTransaction:
+        tx = _I360_KINDS[kind](conn)
+        await tx._begin()
+        await tx.query("UPDATE t:1 SET a = 1;")
+        return tx
+
+    async def test_runs_after_commit_once_per_key(self, kind: str) -> None:
+        tx = await self._open(kind, _i360_connection())
+        calls: list[tuple[str, bool]] = []
+        assert tx._call_on_commit("a", lambda: calls.append(("a", tx.is_committed))) is True
+        assert tx._call_on_commit("a", lambda: calls.append(("a-again", tx.is_committed))) is True
+        assert tx._call_on_commit("b", lambda: calls.append(("b", tx.is_committed))) is True
+        assert calls == []
+
+        await tx.commit()
+
+        # Each key runs once, in registration order, and only once is_committed is True.
+        assert calls == [("a", True), ("b", True)]
+        assert tx._commit_callbacks == {}
+
+    async def test_context_manager_commit_runs_them(self, kind: str) -> None:
+        calls: list[str] = []
+        async with _I360_KINDS[kind](_i360_connection()) as tx:
+            await tx.query("UPDATE t:1 SET a = 1;")
+            tx._call_on_commit("k", lambda: calls.append("k"))
+            assert calls == []
+        assert calls == ["k"]
+
+    async def test_rollback_runs_nothing(self, kind: str) -> None:
+        calls: list[str] = []
+        with pytest.raises(RuntimeError):
+            async with _I360_KINDS[kind](_i360_connection()) as tx:
+                tx._call_on_commit("k", lambda: calls.append("k"))
+                raise RuntimeError("boom")
+        assert tx.is_rolled_back
+        assert calls == []
+        assert tx._commit_callbacks == {}
+
+    async def test_failed_commit_runs_nothing(self, kind: str) -> None:
+        conn = _i360_connection()
+        tx = await self._open(kind, conn)
+        calls: list[str] = []
+        tx._call_on_commit("k", lambda: calls.append("k"))
+        conn.query = AsyncMock(side_effect=ConnectionError("gone"))
+
+        with pytest.raises(TransactionError):
+            await tx.commit()
+
+        assert not tx.is_committed
+        assert calls == []
+        assert tx._commit_callbacks == {}
+
+    async def test_raising_callback_is_logged_not_raised(self, kind: str, caplog: pytest.LogCaptureFixture) -> None:
+        tx = await self._open(kind, _i360_connection())
+        calls: list[str] = []
+
+        def _broken() -> None:
+            raise ValueError("callback broke")
+
+        tx._call_on_commit("broken", _broken)
+        tx._call_on_commit("after", lambda: calls.append("after"))
+
+        with caplog.at_level("WARNING", logger="surreal_sdk.transaction"):
+            result = await tx.commit()
+
+        assert isinstance(result, QueryResponse)
+        assert tx.is_committed
+        assert calls == ["after"]
+        assert any(r.exc_info is not None and "callback broke" in str(r.exc_info[1]) for r in caplog.records)
+
+    async def test_finished_transaction_registers_nothing(self, kind: str) -> None:
+        tx = await self._open(kind, _i360_connection())
+        await tx.commit()
+        calls: list[str] = []
+        assert tx._call_on_commit("late", lambda: calls.append("late")) is False
+        assert tx._commit_callbacks == {}
+        assert calls == []
+
+
+async def test_i360_http_rejected_batch_runs_nothing() -> None:
+    """A batch the server rejects (``status: ERR``) is a failed commit: nothing runs."""
+    conn = _i360_connection()
+    conn.query = AsyncMock(return_value=QueryResponse(results=[QueryResult(status=ResponseStatus.ERR, result="nope")], raw=[]))
+    tx = HTTPTransaction(conn)
+    await tx._begin()
+    await tx.query("UPDATE t:1 SET a = 1;")
+    calls: list[str] = []
+    tx._call_on_commit("k", lambda: calls.append("k"))
+    with pytest.raises(TransactionError):
+        await tx.commit()
+    assert calls == []
+    assert tx._commit_callbacks == {}
+
+
+async def test_i360_http_empty_transaction_commit_runs_them() -> None:
+    """A commit with nothing queued still commits, so its callbacks run."""
+    tx = HTTPTransaction(_i360_connection())
+    await tx._begin()
+    calls: list[str] = []
+    tx._call_on_commit("k", lambda: calls.append("k"))
+    await tx.commit()
+    assert calls == ["k"]
+
+
 # Integration tests requiring a running SurrealDB instance
 
 
