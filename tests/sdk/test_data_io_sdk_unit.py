@@ -18,11 +18,15 @@ import stat
 import sys
 import weakref
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal, Self
+from uuid import UUID
 
+import cbor2
 import httpx
 import pytest
+from cbor2 import CBORTag, frozendict
 
 from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.connection.http import HTTPConnection
@@ -35,12 +39,13 @@ from surreal_sdk.exceptions import (
     TimeoutError,
 )
 from surreal_sdk.jsonl import ImportReport, _iter_batches, dumps_record, loads_record
-from surreal_sdk.protocol.cbor import RecordId
+from surreal_sdk.protocol import cbor
+from surreal_sdk.protocol.cbor import RecordId, _RecordIdRange
 from surreal_sdk.protocol.rpc import RPCRequest, RPCResponse
 from surreal_sdk.types import QueryResponse
 
 C1 = "SELECT * FROM t ORDER BY id LIMIT {n};"
-C2 = "SELECT * FROM t WHERE id > $_x_after ORDER BY id LIMIT {n};"
+C2 = "SELECT * FROM $_x_after ORDER BY id LIMIT {n};"
 
 
 class Row(dict[str, Any]):
@@ -81,11 +86,11 @@ def ok(records: list[Any]) -> list[dict[str, Any]]:
 
 
 def table_rows(count: int) -> Callable[[str, dict[str, Any]], Any]:
-    """A table ``t`` holding ids ``t:1`` .. ``t:<count>``, answered by keyset like the server."""
+    """A table ``t`` holding ids ``t:1`` .. ``t:<count>``, answered from the bound range like the server."""
 
     def answer(sql: str, vars: dict[str, Any]) -> Any:
         n = int(sql.rsplit("LIMIT ", 1)[1].rstrip(";"))
-        after = vars["_x_after"].id if "_x_after" in vars else 0
+        after = vars["_x_after"].after.id if "_x_after" in vars else 0
         ids = [i for i in range(1, count + 1) if i > after][:n]
         return ok([Row(id=RecordId("t", i), v=i) for i in ids])
 
@@ -108,8 +113,8 @@ async def test_first_batch_is_c1_then_c2_with_last_id_bound() -> None:
     assert [[r["v"] for r in b] for b in batches] == [[1, 2], [3, 4], [5]]
     assert [sql for sql, _ in conn.calls] == [C1.format(n=2), C2.format(n=2), C2.format(n=2)]
     assert conn.calls[0][1] == {}
-    assert conn.calls[1][1] == {"_x_after": RecordId("t", 2)}
-    assert conn.calls[2][1] == {"_x_after": RecordId("t", 4)}
+    assert conn.calls[1][1] == {"_x_after": _RecordIdRange(RecordId("t", 2))}
+    assert conn.calls[2][1] == {"_x_after": _RecordIdRange(RecordId("t", 4))}
 
 
 async def test_cursor_is_the_decoded_id_object_itself() -> None:
@@ -120,7 +125,49 @@ async def test_cursor_is_the_decoded_id_object_itself() -> None:
 
     conn = FakeConnection(answer)
     await collect(conn, batch_size=1)
-    assert conn.calls[1][1]["_x_after"] is last
+    assert conn.calls[1][1]["_x_after"].after is last
+
+
+def _wire(value: Any) -> Any:
+    """``value`` as the SDK encodes it, read back with no tag hook (raw ``CBORTag`` objects)."""
+    return cbor2.loads(cbor.encode(value))
+
+
+@pytest.mark.parametrize(
+    "key",
+    [5, -7, "alice", "42", UUID("0190f3b2-7c1e-7a4b-9f00-123456789abc"), (1, "a"), [2], frozendict({"a": 1}), {"b": 2}],
+    ids=["int", "negative-int", "string", "numeric-string", "uuid", "tuple", "list", "frozendict", "dict"],
+)
+def test_range_cursor_is_an_exclusive_start_record_id_range(key: Any) -> None:
+    # Tag 8 (record id) whose key is tag 49 (range): tag 51 (excluded) on the
+    # cursor's key, null (unbounded) at the end, i.e. ``t:<key>>..``.
+    expected = cbor2.dumps(CBORTag(8, ["t", CBORTag(49, [CBORTag(51, key), None])]))
+    assert cbor.encode(_RecordIdRange(RecordId("t", key))) == expected
+
+
+def test_range_cursor_key_goes_through_the_record_id_conversions() -> None:
+    # The key is converted like a RecordId's: a date becomes its UTC-midnight
+    # datetime (tag 12), an integer outside 64 bits is refused before sending.
+    with_date = _wire(_RecordIdRange(RecordId("t", [date(2026, 1, 2)])))
+    assert with_date == _wire(_RecordIdRange(RecordId("t", [datetime(2026, 1, 2, tzinfo=UTC)])))
+    with pytest.raises(ValueError, match="outside the 64-bit range"):
+        cbor.encode(_RecordIdRange(RecordId("t", [2**64])))
+
+
+def test_range_cursor_never_changes_the_callers_record_id() -> None:
+    key = [date(2026, 1, 2)]
+    cursor = RecordId("t", key)
+    cbor.encode(_RecordIdRange(cursor))
+    assert cursor.id is key
+    assert key == [date(2026, 1, 2)]
+
+
+def test_range_cursor_is_not_exported() -> None:
+    import surreal_sdk
+    import surreal_sdk.protocol
+
+    assert not any("Range" in name for name in dir(surreal_sdk))
+    assert not any("Range" in name for name in dir(surreal_sdk.protocol))
 
 
 async def test_batches_are_plain_dicts() -> None:
@@ -150,8 +197,8 @@ async def test_where_renders_c1w_and_c2w_and_binds_vars() -> None:
 
     assert conn.calls[0] == ("SELECT * FROM t WHERE (v >= $min OR x = 1) ORDER BY id LIMIT 2;", {"min": 0})
     assert conn.calls[1] == (
-        "SELECT * FROM t WHERE (v >= $min OR x = 1) AND id > $_x_after ORDER BY id LIMIT 2;",
-        {"min": 0, "_x_after": RecordId("t", 2)},
+        "SELECT * FROM $_x_after WHERE (v >= $min OR x = 1) ORDER BY id LIMIT 2;",
+        {"min": 0, "_x_after": _RecordIdRange(RecordId("t", 2))},
     )
 
 
@@ -314,8 +361,8 @@ async def test_prelude_renders_c1p_c2p_and_reads_the_last_result() -> None:
     )
     assert conn.calls[1] == (
         "LET $_sq0 = (SELECT VALUE id FROM sq ORDER BY v DESC LIMIT 4); "
-        "SELECT * FROM t WHERE id IN $_sq0 AND id > $_x_after ORDER BY id LIMIT 2;",
-        {"_f0": 1, "_x_after": RecordId("t", 2)},
+        "SELECT * FROM $_x_after WHERE id IN $_sq0 ORDER BY id LIMIT 2;",
+        {"_f0": 1, "_x_after": _RecordIdRange(RecordId("t", 2))},
     )
 
 
@@ -338,7 +385,7 @@ async def test_on_query_called_once_per_batch_with_the_sent_text() -> None:
 
     assert [(sql, variables) for sql, variables, _ in logged] == [
         (C1.format(n=2), {}),
-        (C2.format(n=2), {"_x_after": RecordId("t", 2)}),
+        (C2.format(n=2), {"_x_after": _RecordIdRange(RecordId("t", 2))}),
     ]
     assert all(isinstance(ms, float) and ms >= 0 for _, _, ms in logged)
 
@@ -543,7 +590,7 @@ async def test_export_passes_where_vars_limit_and_on_query() -> None:
     assert count == 3
     assert logged == [
         "SELECT * FROM t WHERE (v > $m) ORDER BY id LIMIT 2;",
-        "SELECT * FROM t WHERE (v > $m) AND id > $_x_after ORDER BY id LIMIT 1;",
+        "SELECT * FROM $_x_after WHERE (v > $m) ORDER BY id LIMIT 1;",
     ]
 
 

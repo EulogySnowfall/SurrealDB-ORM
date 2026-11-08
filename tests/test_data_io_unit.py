@@ -33,7 +33,7 @@ from src.surreal_orm.subquery import Subquery
 from src.surreal_orm.types import TableType
 from surreal_sdk.exceptions import DataImportError
 from surreal_sdk.jsonl import ImportReport, dumps_record
-from surreal_sdk.protocol.cbor import RecordId
+from surreal_sdk.protocol.cbor import RecordId, _RecordIdRange
 
 
 class DIOUPost(BaseSurrealModel):
@@ -98,8 +98,8 @@ class TestIterJsonlStatements:
         (sql1, vars1), (sql2, vars2) = _calls(client)
         assert sql1 == "SELECT * FROM diou_post ORDER BY id LIMIT 2;"
         assert vars1 == {}
-        assert sql2 == "SELECT * FROM diou_post WHERE id > $_x_after ORDER BY id LIMIT 2;"
-        assert vars2 == {"_x_after": RecordId("diou_post", 2)}
+        assert sql2 == "SELECT * FROM $_x_after ORDER BY id LIMIT 2;"
+        assert vars2 == {"_x_after": _RecordIdRange(RecordId("diou_post", 2))}
 
     async def test_keyword_filters_and_q_are_c1o_c2o(self) -> None:
         client = _client(_ok(_rows(1, 2)), _ok([]))
@@ -112,9 +112,9 @@ class TestIterJsonlStatements:
         assert match is not None, sql1
         q_part = match.group(1)
         assert "n > $_f1" in q_part and "n < $_f2" in q_part and " OR " in q_part
-        assert sql2 == f"SELECT * FROM diou_post WHERE published = $_f0 AND {q_part} AND id > $_x_after ORDER BY id LIMIT 2;"
+        assert sql2 == f"SELECT * FROM $_x_after WHERE published = $_f0 AND {q_part} ORDER BY id LIMIT 2;"
         assert vars1 == {"_f0": True, "_f1": 0, "_f2": -5}
-        assert vars2 == {"_f0": True, "_f1": 0, "_f2": -5, "_x_after": RecordId("diou_post", 2)}
+        assert vars2 == {"_f0": True, "_f1": 0, "_f2": -5, "_x_after": _RecordIdRange(RecordId("diou_post", 2))}
 
     async def test_declared_variables_are_merged(self) -> None:
         client = _client(_ok(_rows(1)))
@@ -132,7 +132,7 @@ class TestIterJsonlStatements:
         assert len(lines) == 3
         assert [sql for sql, _ in _calls(client)] == [
             "SELECT * FROM diou_post ORDER BY id LIMIT 2;",
-            "SELECT * FROM diou_post WHERE id > $_x_after ORDER BY id LIMIT 1;",
+            "SELECT * FROM $_x_after ORDER BY id LIMIT 1;",
         ]
 
     async def test_limit_zero_sends_nothing(self) -> None:
@@ -168,13 +168,13 @@ class TestIterJsonlSubquery:
         assert len(calls) == 2
         let = "LET $_sq0 = (SELECT VALUE id FROM diou_score WHERE v > $_f0 ORDER BY v DESC LIMIT 4);"
         assert calls[0][0] == f"{let} SELECT * FROM diou_post WHERE id IN $_sq0 ORDER BY id LIMIT 2;"
-        assert calls[1][0] == f"{let} SELECT * FROM diou_post WHERE id IN $_sq0 AND id > $_x_after ORDER BY id LIMIT 2;"
+        assert calls[1][0] == f"{let} SELECT * FROM $_x_after WHERE id IN $_sq0 ORDER BY id LIMIT 2;"
         for sql, variables in calls:
             select = sql.removeprefix(let)
             assert "id IN $_sq0" in select
             assert "(SELECT" not in select  # never the inline sub-SELECT of #147
             assert variables["_f0"] == 10
-        assert calls[1][1]["_x_after"] == RecordId("diou_post", 2)
+        assert calls[1][1]["_x_after"] == _RecordIdRange(RecordId("diou_post", 2))
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@ class TestJsonlLoggingAndExport:
                 await _lines(DIOUPost.objects().filter(published=True), batch_size=2)
         assert [q.sql for q in log.queries] == [sql for sql, _ in _calls(client)]
         assert log.queries[0].variables == {"_f0": True}
-        assert log.queries[1].variables == {"_f0": True, "_x_after": RecordId("diou_post", 2)}
+        assert log.queries[1].variables == {"_f0": True, "_x_after": _RecordIdRange(RecordId("diou_post", 2))}
 
     async def test_export_to_a_stream_returns_the_count(self) -> None:
         client = _client(_ok(_rows(1, 2)), _ok(_rows(3)))

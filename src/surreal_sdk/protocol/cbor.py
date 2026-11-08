@@ -22,6 +22,8 @@ Custom CBOR Tags used by SurrealDB:
   form every ``Duration`` is sent in and the only one SurrealDB sends; it rejects
   a string under this tag
 - TAG_FILE (55): File pointer as a [bucket, key] array (``FileRef``), both ways
+- Tags 49 (range) and 51 (excluded bound): sent only inside the private
+  record-id range of the JSON Lines export (``_RecordIdRange``), never decoded
 
 Tags 0 (ISO datetime string), 9 and 13 are never sent: SurrealDB 3.x reads them,
 4.0 refuses them, and every server since 1.5 reads tags 12 and 14.
@@ -56,6 +58,9 @@ TAG_DATETIME = 12
 TAG_STRING_DURATION = 13
 TAG_CUSTOM_DURATION = 14
 TAG_FILE = 55
+# Private: only ``_RecordIdRange`` sends them (an unbounded end is CBOR null).
+_TAG_RANGE = 49
+_TAG_BOUND_EXCLUDED = 51
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _NANOS_PER_SECOND = 1_000_000_000
@@ -126,6 +131,27 @@ class RecordId:
             table, id_part = value.split(":", 1)
             return cls(table=table, id=id_part)
         raise ValueError(f"Invalid record ID format: {value}")
+
+
+@dataclass(frozen=True)
+class _RecordIdRange:
+    """
+    The record ids of ``after.table`` that sort after ``after``, open at the end.
+
+    Bound as ``$_x_after`` by the JSON Lines export, it is the SurrealQL range
+    ``table:key>..`` sent as a value: tag 8 (record id) around tag 49 (range),
+    whose start is tag 51 (excluded bound) on the key and whose end is CBOR
+    null (unbounded). ``SELECT * FROM $_x_after ... ORDER BY id LIMIT n`` is a
+    ``RecordIdScan`` that starts at the key, where ``WHERE id > $after`` is a
+    ``TableScan`` from the first record (3.2.6 and 3.3.5). The key itself is
+    never written into the query text, so no literal renderer is needed for any
+    kind of key. Private: the SDK does not export it.
+
+    Attributes:
+        after: The last record id read; it need not exist any more.
+    """
+
+    after: RecordId
 
 
 @dataclass
@@ -229,6 +255,9 @@ def _preprocess_for_cbor(data: Any) -> Any:
     about with a ``RuntimeWarning`` (see :func:`_warn_naive_datetime`):
     :func:`encode` reads it as UTC, because SurrealDB only stores UTC instants.
 
+    A ``_RecordIdRange`` is tagged here (tags 8, 49 and 51, see the class); its
+    key goes through the same walk as a ``RecordId``'s id.
+
     A ``RecordId``'s id goes through its own walk (:func:`_convert_record_id`),
     which checks integers, turns a ``date`` into the UTC-midnight datetime and
     warns once about a naive ``datetime``, at any depth (lists, tuples, sets,
@@ -260,6 +289,10 @@ def _preprocess_for_cbor(data: Any) -> Any:
         return datetime(data.year, data.month, data.day, tzinfo=UTC)
     if isinstance(data, RecordId):
         return _convert_record_id(data)
+    if isinstance(data, _RecordIdRange):
+        after = _convert_record_id(data.after)
+        start = CBORTag(_TAG_BOUND_EXCLUDED, after.id)
+        return CBORTag(TAG_RECORDID, [after.table, CBORTag(_TAG_RANGE, [start, None])])
     if isinstance(data, dict):
         return {_check_key(k): _preprocess_for_cbor(v) for k, v in data.items()}
     if isinstance(data, (list, tuple, set, frozenset)):

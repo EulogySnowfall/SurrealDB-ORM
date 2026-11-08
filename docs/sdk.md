@@ -511,12 +511,13 @@ async with SurrealDB.http("http://localhost:8000", "ns", "db") as conn:
     print(f"{n} records written")
 ```
 
-- The table is read by **keyset on `id`** (`... WHERE id > $_x_after ORDER BY id LIMIT n`), one statement per
-  batch, so only one batch is held in memory. Lower `batch_size` for wide rows. The server does not seek to the
-  cursor: each batch scans the table from its start, so a whole-table export slows down as the table grows (on
-  3.3, about 6 ms per 1000-row batch at the start, about 200 ms at row 300,000). For a full copy of a large table,
-  use a dump (`export_database()` / `surreal-orm dump`). Over live data, rows written during
-  the export may or may not be included.
+- The table is read in **`id` order**, one statement per batch, so only one batch is held in memory. After the
+  first batch, each statement reads the **record-id range** that starts right after the previous batch's last id
+  (`SELECT * FROM $_x_after ... ORDER BY id LIMIT n`, the range bound as a value, never written into the text):
+  the server seeks to that id (a `RecordIdScan`) instead of scanning the table from its first record, so a batch
+  costs the same wherever it starts. Lower `batch_size` for wide rows. For a full copy of a database, schema
+  included, use a dump (`export_database()` / `surreal-orm dump`). Over live data, rows written during the export
+  may or may not be included.
 - `where` is written as `({where})` in the statement: it is SurrealQL, never user input. Put values in `vars`.
   Variable names starting with `_x_` are reserved.
 - A **new** file is created with mode `0o600` (readable by its owner only), as for a dump: an export holds the

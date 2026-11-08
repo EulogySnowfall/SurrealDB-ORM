@@ -3617,7 +3617,7 @@ class QuerySet(Generic[T]):
         """
         Refuse an export on a QuerySet carrying a clause it cannot honour.
 
-        An export reads the table in ``id`` order by keyset, so only
+        An export reads the table in ``id`` order by record-id range, so only
         ``filter()``, ``Q``, ``.variables()`` and ``limit()`` apply. Any other
         clause would be silently ignored (``traverse()`` is ignored by
         ``exec()`` too and would export the whole table); the first one found,
@@ -3704,11 +3704,11 @@ class QuerySet(Generic[T]):
         """
         Read the QuerySet's rows as JSON Lines, one line per record, in ``id`` order.
 
-        The rows are read in batches of ``batch_size``, one statement each,
-        paged by keyset on ``id``, so only one batch is held at a time. Each
-        batch scans the table from its start, so reading a whole large table
-        slows down as it grows; for a full copy, use a dump. The
-        filters (``filter()``, ``Q``, ``.variables()``) apply as in
+        The rows are read in batches of ``batch_size``, one statement each;
+        after the first, each reads the record-id range that starts right
+        after the previous batch's last id, so the server seeks to it instead
+        of scanning the table from its start, and only one batch is held at a
+        time. The filters (``filter()``, ``Q``, ``.variables()``) apply as in
         :meth:`exec`, and ``limit()`` caps the total. Each line is
         :func:`surreal_sdk.jsonl.dumps_record` of the raw database record:
         database column names (never Python aliases), extra SCHEMALESS fields

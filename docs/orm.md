@@ -945,9 +945,10 @@ await Post.objects().export_jsonl("posts_plain.jsonl", typed=False)
 ```
 
 - `filter()`, `Q` objects, `.variables()` and `Subquery` filters apply as in `exec()`; `limit()` caps the total.
-- Rows are read in **`id` order, by keyset**, `batch_size` rows per statement, so only one batch is in memory.
-  Lower `batch_size` for wide rows. Each batch scans the table from its start (the server does not seek to the
-  cursor), so a whole-table export slows down as the table grows; for a full copy of a large table, use a dump. A query that does not fit an id-ordered read is refused with `ValueError`
+- Rows are read in **`id` order**, `batch_size` rows per statement, so only one batch is in memory. After the
+  first batch, each statement reads the record-id range that starts right after the previous batch's last id, so
+  the server seeks to it instead of scanning the table from its start. Lower `batch_size` for wide rows. For a
+  full copy of a database, schema included, use a dump. A query that does not fit an id-ordered read is refused with `ValueError`
   before any request: `order_by()`, `offset()`, `select()`, `values()`, `annotate()`, `fetch()`,
   `select_related()`, `prefetch_related()`, `cache()`, `similar_to()`, `search()`, `nearby()`, `traverse()`,
   `reachable_from()`.

@@ -55,7 +55,7 @@ from uuid import UUID
 
 from .exceptions import DataFormatError, DataImportError, QueryError, SurrealDBError, TableNotFoundError
 from .files import FileRef
-from .protocol.cbor import Duration, RecordId, Table, _warn_naive_datetime
+from .protocol.cbor import Duration, RecordId, Table, _RecordIdRange, _warn_naive_datetime
 from .utils import _open_owner_only, format_record_id, require_int, validate_table_name
 
 if TYPE_CHECKING:
@@ -549,13 +549,19 @@ async def _iter_batches(
     on_query: QueryHook | None = None,
 ) -> AsyncGenerator[list[dict[str, Any]], None]:
     """
-    Read ``table`` in ``id`` order, one keyset batch per statement (C1/C2).
+    Read ``table`` in ``id`` order, one batch per statement (C1/C2).
 
-    The first statement has no cursor; each next one binds the last record's
-    decoded ``id`` as ``$_x_after``, which pages correctly for every kind of
-    record id. The loop ends on a batch shorter than requested (an empty one
-    included) or once ``limit`` records were read. Only the batch being
-    yielded is referenced here, so at most one batch is held.
+    The first statement reads ``FROM <table>``. Each next one reads
+    ``FROM $_x_after``, bound to the record-id range that starts right after
+    the previous batch's last ``id`` (:class:`~surreal_sdk.protocol.cbor._RecordIdRange`,
+    ``table:key>..``). The server seeks to that key instead of scanning the
+    table from its first record, so every batch costs the same wherever it
+    starts; the condition, ``ORDER BY id`` and ``LIMIT`` are unchanged. The
+    key is bound, never written into the text, so every kind of record id
+    pages the same way, and the cursor record need not exist any more. The
+    loop ends on a batch shorter than requested (an empty one included) or
+    once ``limit`` records were read. Only the batch being yielded is
+    referenced here, so at most one batch is held.
 
     Args:
         conn: The connection to query.
@@ -582,7 +588,6 @@ async def _iter_batches(
     _require_cbor(conn, method)
     head = " ".join(prelude) + " " if prelude else ""
     condition = f"WHERE {where_sql} " if where_sql is not None else ""
-    after_condition = f"WHERE {where_sql} AND id > $_x_after " if where_sql is not None else "WHERE id > $_x_after "
     last_id: Any = None
     written = 0
     while True:
@@ -593,8 +598,8 @@ async def _iter_batches(
             sql = f"{head}SELECT * FROM {table} {condition}ORDER BY id LIMIT {n};"
             variables = dict(vars)
         else:
-            sql = f"{head}SELECT * FROM {table} {after_condition}ORDER BY id LIMIT {n};"
-            variables = {**vars, "_x_after": last_id}
+            sql = f"{head}SELECT * FROM $_x_after {condition}ORDER BY id LIMIT {n};"
+            variables = {**vars, "_x_after": _RecordIdRange(last_id)}
         started = time.perf_counter()
         response = await conn.query(sql, variables)
         if on_query is not None:
