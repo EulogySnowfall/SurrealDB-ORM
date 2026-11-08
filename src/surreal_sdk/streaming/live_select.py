@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Self
 
-from ..connection.websocket import WebSocketConnection
+from ..connection.websocket import WebSocketConnection, _live_query_id
 from ..exceptions import LiveQueryError
 from ..protocol.rpc import _live_select_sql
 
@@ -189,48 +189,35 @@ class LiveSelectStream:
         sql = _live_select_sql(self.table, self.where, self.diff)
 
         try:
-            # The WHERE values are bound, never written into the SQL text:
-            # SurrealDB 3.x evaluates bound parameters in a LIVE SELECT, and a
-            # bound value compares exactly like it does in a plain SELECT.
-            response = await self.connection.query(sql, self.params or None)
+            # A notification that arrives in the same read as the reply is held
+            # by the connection until the handler is registered below.
+            with self.connection._hold_live_notifications():
+                # The WHERE values are bound, never written into the SQL text:
+                # SurrealDB 3.x evaluates bound parameters in a LIVE SELECT, and a
+                # bound value compares exactly like it does in a plain SELECT.
+                response = await self.connection.query(sql, self.params or None)
+                self._live_id = _live_query_id(response)
 
-            # Extract live query UUID
-            if response.results:
-                first_result = response.results[0]
-                if first_result.is_ok:
-                    result_data = first_result.result
-                    if isinstance(result_data, str):
-                        self._live_id = result_data
-                    elif isinstance(result_data, dict) and "result" in result_data:
-                        self._live_id = str(result_data["result"])
-                    elif hasattr(result_data, "__str__"):
-                        # Handle UUID objects from CBOR decoding
-                        self._live_id = str(result_data)
-                    else:
-                        raise LiveQueryError("Invalid live query response")
+                # Register callback with connection
+                self.connection._register_live_callback(self._live_id, self._handle_notification)
 
-                    # Register callback with connection
-                    self.connection._live_callbacks[self._live_id] = self._handle_notification
+                # Register for auto-resubscribe if enabled
+                if self.auto_resubscribe:
+                    subscription = LiveSubscriptionParams(
+                        table=self.table,
+                        where=self.where,
+                        params=self.params,
+                        diff=self.diff,
+                        callback=None,  # We use queue, not callback
+                        on_reconnect=self.on_reconnect,
+                    )
+                    # After a reconnect, the connection moves this stream to
+                    # the re-created live query (handler and id).
+                    subscription._on_resubscribed = self._update_live_id
+                    self.connection._register_live_subscription(self._live_id, subscription)
 
-                    # Register for auto-resubscribe if enabled
-                    if self.auto_resubscribe:
-                        subscription = LiveSubscriptionParams(
-                            table=self.table,
-                            where=self.where,
-                            params=self.params,
-                            diff=self.diff,
-                            callback=None,  # We use queue, not callback
-                            on_reconnect=self.on_reconnect,
-                        )
-                        # After a reconnect, the connection moves this stream to
-                        # the re-created live query (handler and id).
-                        subscription._on_resubscribed = self._update_live_id
-                        self.connection._register_live_subscription(self._live_id, subscription)
-
-                    self._active = True
-                    return self._live_id
-
-            raise LiveQueryError("No live query ID returned")
+                self._active = True
+                return self._live_id
 
         except Exception as e:
             raise LiveQueryError(f"Failed to start live select: {e}")
@@ -283,7 +270,7 @@ class LiveSelectStream:
         if self._closed:
             return False
         self._live_id = new_id
-        self.connection._live_callbacks[new_id] = self._handle_notification
+        self.connection._register_live_callback(new_id, self._handle_notification)
         return True
 
     # Async iterator protocol
@@ -359,7 +346,8 @@ class LiveSelectManager:
             on_reconnect: Callback when resubscribed
 
         Returns:
-            Live query UUID
+            Live query UUID. After a reconnect the stream follows the
+            re-created live query; ``stop()`` accepts this id or the new one.
         """
         stream = LiveSelectStream(
             self.connection,
@@ -388,11 +376,28 @@ class LiveSelectManager:
         except Exception:
             pass
 
-    async def stop(self, live_id: str) -> None:
-        """Stop a specific stream."""
+    def _key_for(self, live_id: str) -> str | None:
+        """The key of the stream with *live_id*: the id ``watch()`` returned or its current one."""
         if live_id in self._streams:
-            await self._streams[live_id].stop()
-            del self._streams[live_id]
+            return live_id
+        for key, stream in self._streams.items():
+            if stream.live_id == live_id:
+                return key
+        return None
+
+    async def stop(self, live_id: str) -> None:
+        """Stop a specific stream.
+
+        Args:
+            live_id: The id ``watch()`` returned, or the stream's current id
+                (``on_reconnect``'s ``new_id``, an entry of
+                :attr:`active_streams`) once a reconnect re-created its live
+                query. An unknown id does nothing.
+        """
+        key = self._key_for(live_id)
+        if key is not None:
+            await self._streams[key].stop()
+            del self._streams[key]
 
     async def stop_all(self) -> None:
         """Stop all streams."""
@@ -402,8 +407,8 @@ class LiveSelectManager:
 
     @property
     def active_streams(self) -> list[str]:
-        """Get list of active stream IDs."""
-        return list(self._streams.keys())
+        """The current live query id of each stream (after a reconnect, the re-created query's id)."""
+        return [stream.live_id or key for key, stream in self._streams.items()]
 
     @property
     def count(self) -> int:

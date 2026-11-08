@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from ..connection.websocket import WebSocketConnection
+from ..connection.websocket import WebSocketConnection, _live_query_id
 from ..exceptions import LiveQueryError
 from ..protocol.rpc import _live_select_sql
 
@@ -102,6 +102,9 @@ class LiveQuery:
         self._live_id: str | None = None
         self._callback: LiveCallback | None = None
         self._active = False
+        # Set by unsubscribe() before its first await: a resubscribe answered
+        # after that point must not move this query to the re-created id.
+        self._closed = False
 
     @property
     def is_active(self) -> bool:
@@ -117,6 +120,12 @@ class LiveQuery:
         """
         Start the live query subscription.
 
+        The subscription survives a reconnect: once the session is restored,
+        the connection re-creates the live query, :attr:`live_id` becomes the
+        new id and *callback* keeps receiving notifications. A re-creation that
+        fails is retried on the next reconnect. ``unsubscribe()`` ends it for
+        good.
+
         Args:
             callback: Async function to call on changes
 
@@ -126,53 +135,83 @@ class LiveQuery:
         Raises:
             LiveQueryError: If subscription fails
         """
+        from .live_select import LiveSubscriptionParams
+
         if self._active:
             raise LiveQueryError("Live query already active")
 
         self._callback = callback
+        self._closed = False
 
         # Build query
         sql = _live_select_sql(self.table, self.where, self.diff)
 
         try:
-            response = await self.connection.query(sql)
+            # A notification that arrives in the same read as the reply is held
+            # by the connection until the handler is registered below.
+            with self.connection._hold_live_notifications():
+                response = await self.connection.query(sql)
+                live_id = _live_query_id(response)
+                self._live_id = live_id
 
-            # Extract live query UUID
-            if response.results:
-                first_result = response.results[0]
-                if first_result.is_ok:
-                    result_data = first_result.result
-                    if isinstance(result_data, str):
-                        self._live_id = result_data
-                    elif isinstance(result_data, dict) and "result" in result_data:
-                        self._live_id = str(result_data["result"])
-                    elif hasattr(result_data, "__str__"):
-                        # Handle UUID objects from CBOR decoding
-                        self._live_id = str(result_data)
-                    else:
-                        raise LiveQueryError("Invalid live query response")
+                # Register callback with connection
+                self.connection._register_live_callback(live_id, self._handle_notification)
 
-                    # Register callback with connection
-                    self.connection._live_callbacks[self._live_id] = self._handle_notification
-                    self._active = True
-                    return self._live_id
+                # Re-created after a reconnect; the connection moves this query
+                # to the new id (handler and live_id) through the hook.
+                subscription = LiveSubscriptionParams(
+                    table=self.table,
+                    where=self.where,
+                    params={},
+                    diff=self.diff,
+                    callback=None,
+                    on_reconnect=None,
+                )
+                subscription._on_resubscribed = self._update_live_id
+                self.connection._register_live_subscription(live_id, subscription)
 
-            raise LiveQueryError("No live query ID returned")
+                self._active = True
+                return live_id
 
         except Exception as e:
             raise LiveQueryError(f"Failed to start live query: {e}")
 
     async def unsubscribe(self) -> None:
-        """Stop the live query subscription."""
-        if self._live_id:
+        """Stop the live query subscription.
+
+        The subscription is unregistered before the ``kill`` request, so it is
+        never re-created by a later reconnect, even if that request fails.
+        """
+        self._closed = True
+        live_id = self._live_id
+        if live_id:
             try:
-                await self.connection.kill(self._live_id)
+                self.connection._unregister_live_subscription(live_id)
+                await self.connection.kill(live_id)
             except Exception:
                 pass
             finally:
-                self.connection._live_callbacks.pop(self._live_id, None)
+                self.connection._live_callbacks.pop(live_id, None)
                 self._live_id = None
                 self._active = False
+
+    def _update_live_id(self, new_id: str) -> bool:
+        """
+        Adopt the live query the connection re-created after a reconnect.
+
+        Called by ``WebSocketConnection._resubscribe_one()`` as soon as the new
+        id is known, with no await in between (see
+        ``LiveSelectStream._update_live_id()``).
+
+        Returns:
+            False once ``unsubscribe()`` has begun: the query does not take the
+            new id, and the connection kills that live query instead.
+        """
+        if self._closed:
+            return False
+        self._live_id = new_id
+        self.connection._register_live_callback(new_id, self._handle_notification)
+        return True
 
     async def _handle_notification(self, data: dict[str, Any]) -> None:
         """Handle incoming live query notification."""
@@ -236,7 +275,8 @@ class LiveQueryManager:
             diff: If True, receive only changed fields
 
         Returns:
-            Live query UUID
+            Live query UUID. After a reconnect the query follows the
+            re-created live query; ``unwatch()`` accepts this id or the new one.
         """
         query = LiveQuery(self.connection, table, where, diff)
         live_id = await query.subscribe(callback)
@@ -248,11 +288,16 @@ class LiveQueryManager:
         Stop watching a specific live query.
 
         Args:
-            live_id: Live query UUID to stop
+            live_id: Live query UUID to stop: the one ``watch()`` returned, or
+                the query's current id once a reconnect re-created it. An
+                unknown id does nothing.
         """
-        if live_id in self._queries:
-            await self._queries[live_id].unsubscribe()
-            del self._queries[live_id]
+        key = live_id if live_id in self._queries else None
+        if key is None:
+            key = next((k for k, query in self._queries.items() if query.live_id == live_id), None)
+        if key is not None:
+            await self._queries[key].unsubscribe()
+            del self._queries[key]
 
     async def unwatch_all(self) -> None:
         """Stop all live queries."""
@@ -262,8 +307,8 @@ class LiveQueryManager:
 
     @property
     def active_queries(self) -> list[str]:
-        """Get list of active live query IDs."""
-        return list(self._queries.keys())
+        """The current live query id of each query (after a reconnect, the re-created query's id)."""
+        return [query.live_id or key for key, query in self._queries.items()]
 
     @property
     def count(self) -> int:

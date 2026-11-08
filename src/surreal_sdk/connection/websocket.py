@@ -5,10 +5,12 @@ Provides stateful WebSocket-based connection for real-time features.
 """
 
 import asyncio
+import contextlib
 import json
 import random
 import re
-from collections.abc import Callable, Coroutine
+from collections import deque
+from collections.abc import Callable, Coroutine, Iterator
 from typing import TYPE_CHECKING, Any, Self
 
 import aiohttp
@@ -30,6 +32,28 @@ _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
 # Type alias for live query callbacks
 LiveCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
+
+#: How many notifications for a live id not registered yet are kept while a
+#: ``LIVE SELECT`` is in flight (see ``WebSocketConnection._hold_live_notifications``).
+#: The oldest is dropped beyond it, so the read loop never grows memory without bound.
+_HELD_LIVE_NOTIFICATIONS_MAX = 128
+
+
+def _live_query_id(response: Any) -> str:
+    """The live query id in the reply to a ``LIVE SELECT``, or ``LiveQueryError``."""
+    if response.results:
+        first_result = response.results[0]
+        if first_result.is_ok:
+            result_data = first_result.result
+            if isinstance(result_data, str):
+                return result_data
+            if isinstance(result_data, dict) and "result" in result_data:
+                return str(result_data["result"])
+            if hasattr(result_data, "__str__"):
+                # Handle UUID objects from CBOR decoding
+                return str(result_data)
+            raise LiveQueryError("Invalid live query response")
+    raise LiveQueryError("No live query ID returned")
 
 
 class _ConnectionLost(ConnectionError):
@@ -138,10 +162,19 @@ class WebSocketConnection(BaseSurrealConnection):
         self._pending: dict[int, asyncio.Future[RPCResponse]] = {}
         self._live_callbacks: dict[str, LiveCallback] = {}
         self._live_subscriptions: dict[str, LiveSubscriptionParams] = {}
+        # The first id of a live query a reconnect re-created -> its current id,
+        # so a kill() with the id live() returned still ends it. One entry per
+        # subscription, removed when it is unregistered.
+        self._live_id_aliases: dict[str, str] = {}
         self._reader_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._closing = False
         self._callback_tasks: set[asyncio.Task[Any]] = set()  # Track fire-and-forget callback tasks
+        # LIVE SELECT requests whose reply has not been handled yet, and the
+        # notifications received meanwhile for an id with no handler (see
+        # _hold_live_notifications()).
+        self._live_selects_in_flight = 0
+        self._held_notifications: deque[tuple[str, dict[str, Any]]] = deque(maxlen=_HELD_LIVE_NOTIFICATIONS_MAX)
         # Cleared from the moment the socket drops until a reconnect has restored the
         # session on the new one (authenticate and use() succeeded); a request waits
         # on it. ``_connected`` stays True through a reconnect. Set initially: before
@@ -371,12 +404,57 @@ class WebSocketConnection(BaseSurrealConnection):
             # CBOR returns UUID objects; callbacks are keyed by str
             if live_id is not None:
                 live_id = str(live_id)
-            if live_id and live_id in self._live_callbacks:
-                callback = self._live_callbacks[live_id]
-                # Track task for proper cleanup on connection close
-                task = asyncio.create_task(callback(notification))
-                self._callback_tasks.add(task)
-                task.add_done_callback(self._callback_tasks.discard)
+            if not live_id:
+                return
+            callback = self._live_callbacks.get(live_id)
+            if callback is not None:
+                self._dispatch_live_notification(callback, notification)
+            elif self._live_selects_in_flight:
+                # Possibly the first event of a live query whose LIVE SELECT reply
+                # came in the same read: its handler is registered once the
+                # caller resumes, which replays it (_register_live_callback()).
+                self._held_notifications.append((live_id, notification))
+
+    def _dispatch_live_notification(self, callback: LiveCallback, notification: dict[str, Any]) -> None:
+        """Run *callback* on *notification* in a task tracked for cleanup on close."""
+        task = asyncio.create_task(callback(notification))
+        self._callback_tasks.add(task)
+        task.add_done_callback(self._callback_tasks.discard)
+
+    @contextlib.contextmanager
+    def _hold_live_notifications(self) -> Iterator[None]:
+        """Keep notifications for unknown live ids while a ``LIVE SELECT`` is in flight.
+
+        Wraps the ``LIVE SELECT`` request and the registration of its handler
+        (``LiveSelectStream.start()``, ``LiveQuery.subscribe()``, :meth:`live`
+        and the resubscribe after a reconnect). aiohttp hands the read loop a
+        message already buffered without yielding, so when the reply and the
+        first notification for the new id arrive in one read, the notification
+        is processed before the caller has the id. It is kept here (at most
+        ``_HELD_LIVE_NOTIFICATIONS_MAX``, oldest dropped first) and
+        :meth:`_register_live_callback` replays it. Once no ``LIVE SELECT`` is
+        in flight, what is left belongs to no live query and is dropped.
+        """
+        self._live_selects_in_flight += 1
+        try:
+            yield
+        finally:
+            self._live_selects_in_flight -= 1
+            if not self._live_selects_in_flight:
+                self._held_notifications.clear()
+
+    def _register_live_callback(self, live_id: str, callback: LiveCallback) -> None:
+        """Route notifications for *live_id* to *callback*, replaying any held for it."""
+        self._live_callbacks[live_id] = callback
+        if not any(held_id == live_id for held_id, _ in self._held_notifications):
+            return
+        held = list(self._held_notifications)
+        self._held_notifications.clear()
+        for held_id, notification in held:
+            if held_id == live_id:
+                self._dispatch_live_notification(callback, notification)
+            else:
+                self._held_notifications.append((held_id, notification))
 
     async def _reconnect(self) -> None:
         """Reopen the socket and restore the session after a disconnection.
@@ -496,97 +574,107 @@ class WebSocketConnection(BaseSurrealConnection):
     async def _resubscribe_all(self) -> None:
         """Re-establish all live subscriptions after reconnect.
 
-        Stops as soon as the session is lost again (the new socket ended): the
-        subscriptions not re-created yet, the one in flight included, stay
-        registered under their previous id so the next reconnect attempt
-        re-creates them, and that attempt starts at once instead of after one
-        timeout per remaining subscription.
+        Each subscription stays registered under its previous id until its
+        ``LIVE SELECT`` succeeds on the new socket; only then is it moved to the
+        new id. So a subscription whose resubscribe fails (an error from the
+        server, a timeout, a reply with no id, the session lost again) is
+        re-created by the next reconnect instead of being dropped. One stopped
+        meanwhile (``kill()``, ``LiveSelectStream.stop()``,
+        ``LiveQuery.unsubscribe()``) is unregistered and not re-created.
+
+        Stops as soon as the session is lost again (the new socket ended), so
+        the next reconnect attempt starts at once instead of after one timeout
+        per remaining subscription.
         """
-        old_subscriptions = list(self._live_subscriptions.items())
-        self._live_subscriptions.clear()
         self._live_callbacks.clear()
 
-        for index, (old_id, params) in enumerate(old_subscriptions):
+        for old_id, params in list(self._live_subscriptions.items()):
             if not self._session_ready.is_set():
-                self._keep_for_next_attempt(old_subscriptions[index:])
                 return
+            if self._live_subscriptions.get(old_id) is not params:
+                continue  # Stopped since the reconnect began
             try:
-                new_id = await self._resubscribe_one(params)
-
-                # Call reconnect callback if provided
-                if params.on_reconnect:
-                    task = asyncio.create_task(params.on_reconnect(old_id, new_id))
-                    self._callback_tasks.add(task)
-                    task.add_done_callback(self._callback_tasks.discard)
-
+                new_id = await self._resubscribe_one(params, old_id)
             except Exception:
-                if not self._session_ready.is_set():
-                    self._keep_for_next_attempt(old_subscriptions[index:])
-                    return
-                # Failed to resubscribe, skip this one
-                pass
+                # Still registered under old_id (unless it was stopped meanwhile):
+                # the next reconnect retries it.
+                continue
 
-    def _keep_for_next_attempt(self, subscriptions: list[tuple[str, "LiveSubscriptionParams"]]) -> None:
-        """Register *subscriptions* again under their previous id, for the next restore."""
-        for old_id, params in subscriptions:
-            self._live_subscriptions.setdefault(old_id, params)
+            # Call reconnect callback if provided
+            if params.on_reconnect:
+                task = asyncio.create_task(params.on_reconnect(old_id, new_id))
+                self._callback_tasks.add(task)
+                task.add_done_callback(self._callback_tasks.discard)
 
-    async def _resubscribe_one(self, params: "LiveSubscriptionParams") -> str:
-        """Resubscribe a single live query."""
+    async def _resubscribe_one(self, params: "LiveSubscriptionParams", old_id: str | None = None) -> str:
+        """Resubscribe a single live query.
+
+        With *old_id*, the subscription registered under that id is moved to
+        the new one, provided it is still registered when the reply arrives;
+        if it was unregistered meanwhile (stopped while its ``LIVE SELECT`` was
+        in flight), the re-created query is killed and ``LiveQueryError`` is
+        raised.
+        """
         if not _SAFE_TABLE_RE.fullmatch(params.table):
             raise ValueError(f"Invalid table name: {params.table!r}")
         # Same text as LiveSelectStream.start()
         sql = _live_select_sql(params.table, params.where, params.diff)
 
-        # Same bound values as the original subscription (see LiveSelectStream.start)
-        response = await self.query(sql, params.params or None)
+        with self._hold_live_notifications():
+            # Same bound values as the original subscription (see LiveSelectStream.start)
+            response = await self.query(sql, params.params or None)
+            new_id = _live_query_id(response)
 
-        if response.results:
-            first_result = response.results[0]
-            if first_result.is_ok:
-                result_data = first_result.result
-                if isinstance(result_data, str):
-                    new_id = result_data
-                elif isinstance(result_data, dict) and "result" in result_data:
-                    new_id = str(result_data["result"])
-                elif hasattr(result_data, "__str__"):
-                    # Handle UUID objects from CBOR decoding
-                    new_id = str(result_data)
-                else:
-                    raise LiveQueryError("Invalid live query response")
-
-                # A LiveSelectStream adopts the new id and re-registers its own
-                # handler right here, with no await in between, as start() does
-                # for the first id. From the on_reconnect task it would be too
-                # late: notifications would be dropped and a stop() would kill
-                # the old id meanwhile. A stream whose stop() began while this
-                # query was being re-created refuses it (even if that stop() is
-                # still waiting on its own kill), and the query is ended here.
-                if params._on_resubscribed is not None and not params._on_resubscribed(new_id):
-                    try:
-                        await self.kill(new_id)
-                    except Exception:
-                        pass  # The query ends with the session if the socket is gone again
-                    raise LiveQueryError("Live subscription was stopped while it was being re-created")
-
+            # The subscription adopts the new id and its handler is registered
+            # right here, with no await in between, as start() does for the
+            # first id. From the on_reconnect task it would be too late:
+            # notifications would be dropped and a stop() would kill the old id
+            # meanwhile. A subscription stopped while this query was being
+            # re-created (even with that stop() still waiting on its own kill)
+            # refuses it, and the query is ended below.
+            wanted = old_id is None or self._live_subscriptions.get(old_id) is params
+            if wanted and (params._on_resubscribed is None or params._on_resubscribed(new_id)):
+                if old_id is not None:
+                    del self._live_subscriptions[old_id]
+                    self._alias_live_id(old_id, new_id)
                 # Re-register callback if provided
                 if params.callback:
-                    self._live_callbacks[new_id] = params.callback  # type: ignore[assignment]
-
+                    self._register_live_callback(new_id, params.callback)  # type: ignore[arg-type]
                 # Store subscription params for future reconnects
                 self._live_subscriptions[new_id] = params
-
                 return new_id
+            if wanted and old_id is not None:
+                # Refused by its owner, already stopping: never retried.
+                self._unregister_live_subscription(old_id)
 
-        raise LiveQueryError("No live query ID returned")
+        try:
+            await self.kill(new_id)
+        except Exception:
+            pass  # The query ends with the session if the socket is gone again
+        raise LiveQueryError("Live subscription was stopped while it was being re-created")
 
     def _register_live_subscription(self, live_id: str, params: "LiveSubscriptionParams") -> None:
         """Register a live subscription for auto-resubscribe."""
         self._live_subscriptions[live_id] = params
 
     def _unregister_live_subscription(self, live_id: str) -> None:
-        """Unregister a live subscription."""
-        self._live_subscriptions.pop(live_id, None)
+        """Unregister a live subscription, by its current id or the id it was first created with."""
+        current = self._current_live_id(live_id)
+        self._live_subscriptions.pop(current, None)
+        self._live_id_aliases = {former: now for former, now in self._live_id_aliases.items() if now != current}
+
+    def _current_live_id(self, live_id: str) -> str:
+        """The current id of the live query first created as *live_id*, else *live_id*."""
+        return self._live_id_aliases.get(live_id, live_id)
+
+    def _alias_live_id(self, old_id: str, new_id: str) -> None:
+        """Record that the live query *old_id* was re-created as *new_id*.
+
+        Only the first id is kept as an alias (the one ``live()`` or
+        ``start()`` handed out); the ids in between are not.
+        """
+        first = next((former for former, current in self._live_id_aliases.items() if current == old_id), old_id)
+        self._live_id_aliases[first] = new_id
 
     async def _send_rpc(self, request: RPCRequest) -> RPCResponse:
         """
@@ -691,6 +779,13 @@ class WebSocketConnection(BaseSurrealConnection):
         """
         Start a live query subscription.
 
+        The subscription survives a reconnect: once the session is restored,
+        the connection re-creates the live query and *callback* receives its
+        notifications under the new id (:attr:`live_queries` lists the current
+        ids). ``kill()`` ends it, with the id returned here or the current one,
+        and it is not re-created after that. A re-creation that fails is
+        retried on the next reconnect.
+
         Args:
             table: Table to watch
             callback: Async callback for change notifications
@@ -702,33 +797,27 @@ class WebSocketConnection(BaseSurrealConnection):
         Raises:
             LiveQueryError: If live query fails to start
         """
+        from ..streaming.live_select import LiveSubscriptionParams
+
         if not _SAFE_TABLE_RE.fullmatch(table):
             raise ValueError(f"Invalid table name: {table!r}")
         sql = _live_select_sql(table, diff=diff)
 
         try:
-            response = await self.query(sql)
-
-            # Extract live query UUID from result
-            if response.results:
-                first_result = response.results[0]
-                if first_result.is_ok:
-                    # Result can be string UUID directly, dict with "result" key,
-                    # or UUID object from CBOR decoding
-                    if isinstance(first_result.result, str):
-                        live_id = first_result.result
-                    elif isinstance(first_result.result, dict) and "result" in first_result.result:
-                        live_id = str(first_result.result["result"])
-                    elif hasattr(first_result.result, "__str__"):
-                        # Handle UUID objects from CBOR decoding
-                        live_id = str(first_result.result)
-                    else:
-                        raise LiveQueryError("Invalid live query response")
-
-                    self._live_callbacks[live_id] = callback
-                    return live_id
-
-            raise LiveQueryError("No live query ID returned")
+            with self._hold_live_notifications():
+                response = await self.query(sql)
+                live_id = _live_query_id(response)
+                self._register_live_callback(live_id, callback)
+                subscription = LiveSubscriptionParams(
+                    table=table,
+                    where=None,
+                    params={},
+                    diff=diff,
+                    callback=callback,  # type: ignore[arg-type]
+                    on_reconnect=None,
+                )
+                self._register_live_subscription(live_id, subscription)
+                return live_id
 
         except Exception as e:
             raise LiveQueryError(f"Failed to start live query: {e}")
@@ -737,9 +826,17 @@ class WebSocketConnection(BaseSurrealConnection):
         """
         Stop a live query subscription.
 
+        The subscription is unregistered before the request is sent, so a live
+        query killed here is never re-created by a later reconnect, even if the
+        ``kill`` request itself fails (the socket dropped, or the id ended with
+        a previous socket).
+
         Args:
-            live_id: Live query UUID to stop
+            live_id: Live query UUID to stop: the current one, or the one it
+                was first created with (before a reconnect re-created it)
         """
+        live_id = self._current_live_id(live_id)
+        self._unregister_live_subscription(live_id)
         await self.rpc("kill", [live_id])
         self._live_callbacks.pop(live_id, None)
 
@@ -768,8 +865,8 @@ class WebSocketConnection(BaseSurrealConnection):
         return list(self._live_callbacks.keys())
 
     async def kill_all_live_queries(self) -> None:
-        """Stop all active live queries."""
-        for live_id in list(self._live_callbacks.keys()):
+        """Stop all active live queries, and those waiting to be re-created by a reconnect."""
+        for live_id in list(dict.fromkeys([*self._live_callbacks, *self._live_subscriptions])):
             try:
                 await self.kill(live_id)
             except Exception:
