@@ -41,6 +41,24 @@
 
 ---
 
+## What's New in 0.39.6
+
+**Patch release — relation writes drop the edge table's cached entries**
+([#465](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/465)). ORM only, no new public API, no query text change,
+SurrealDB pin unchanged (3.3.5):
+
+- `relate()`, `remove_relation()`, `remove_all_relations()` and a relation manager's `add()`, `remove()`, `set()` and
+  `clear()` now drop the `QuerySet.cache()` entries of the edge or through table they write, so a model mapped to that
+  table is read again instead of serving the rows from before the write until the TTL. With `tx=`, the entries are
+  dropped when the write is queued and again once the transaction commits.
+- **Behaviour change:** a relation write that raises after a statement was sent still drops the tables it targets (more
+  cache misses, never stale rows). A manual `QueryCache.invalidate(EdgeModel)` after relation writes is no longer
+  needed.
+- **Known limitation:** the server's own cascades (graph edges removed with a deleted record, `REFERENCE ... ON DELETE
+  CASCADE`) are not tracked; call `QueryCache.invalidate(EdgeModel)` after such a delete.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.39.5
 
 **Patch release — change-feed unit count under the JSON protocol**
