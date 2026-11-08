@@ -604,6 +604,20 @@ class TestWindowUnits:
         assert _window_units([{"versionstamp": 1, "changes": []}, {"versionstamp": 2}]) == 2
         assert _window_units([]) == 0
 
+    def test_escaped_json_ids_sharing_a_prefix_are_not_merged(self) -> None:
+        # Under the JSON protocol a record id is a string; 3.3.5 prints a table
+        # name holding ``:`` in backticks (`` `a:b`:1 ``). Splitting at the first
+        # ``:`` read both tables below as `` `a `` and merged them into one unit.
+        backticks = {"versionstamp": 5, "changes": [{"update": {"id": "`a:b`:1"}}, {"update": {"id": "`a:c`:1"}}]}
+        assert _window_units([backticks]) == 2
+        brackets = {"versionstamp": 6, "changes": [{"update": {"id": "⟨a:b⟩:1"}}, {"delete": {"id": "⟨a:c⟩:1"}}]}
+        assert _window_units([brackets]) == 2
+
+    def test_unescaped_string_ids_still_share_their_table(self) -> None:
+        # Only an escaped *table* is left unread; an escaped key keeps the split.
+        entry = {"versionstamp": 8, "changes": [{"update": {"id": "sa:`x:y`"}}, {"update": {"id": "sa:⟨1⟩"}}]}
+        assert _window_units([entry]) == 1
+
 
 class TestBusyWriter:
     """Writes on another table between reads used to keep the readers going forever."""
