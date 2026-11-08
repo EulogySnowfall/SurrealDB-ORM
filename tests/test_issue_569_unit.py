@@ -67,11 +67,13 @@ def isolated_registry() -> Iterator[None]:
     saved_clients = dict(Manager._clients)
     saved_ws = dict(Manager._ws_clients)
     saved_lock = Manager._connection_lock
+    saved_ws_lock = Manager._ws_connection_lock
     saved_legacy = {a: getattr(Manager, a) for a in _LEGACY_ATTRS}
     Manager._configs.clear()
     Manager._clients.clear()
     Manager._ws_clients.clear()
     Manager._connection_lock = None
+    Manager._ws_connection_lock = None
     try:
         yield
     finally:
@@ -82,6 +84,7 @@ def isolated_registry() -> Iterator[None]:
         Manager._ws_clients.clear()
         Manager._ws_clients.update(saved_ws)
         Manager._connection_lock = saved_lock
+        Manager._ws_connection_lock = saved_ws_lock
         for attr, value in saved_legacy.items():
             setattr(Manager, attr, value)
 
