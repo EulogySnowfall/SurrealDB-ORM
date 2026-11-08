@@ -334,6 +334,10 @@ class ConnectionPool:
         identity set by the caller is never handed to the next one. A
         connection whose reset fails is closed instead of being reused.
 
+        A new connection whose ``connect()`` or pool sign-in fails (or is
+        cancelled) is closed before the error propagates; the caller gets the
+        original exception, never one raised by that close.
+
         Yields:
             A SurrealDB connection
         """
@@ -341,6 +345,9 @@ class ConnectionPool:
             raise ConnectionError("Pool is closed")
 
         conn: BaseSurrealConnection | None = None
+        # A connection built by this call, until it is handed out: if its
+        # initialisation fails (or is cancelled), nobody else references it.
+        created: BaseSurrealConnection | None = None
 
         await self._semaphore.acquire()
         try:
@@ -361,7 +368,7 @@ class ConnectionPool:
                 # Create new connection if needed
                 if conn is None:
                     if len(self._in_use) < self.size:
-                        conn = self._create_connection()
+                        conn = created = self._create_connection()
                         await self._init_connection(conn)
                     else:
                         # Should not happen with semaphore, but just in case
@@ -369,7 +376,18 @@ class ConnectionPool:
 
                 self._in_use.add(conn)
         except BaseException:
-            self._semaphore.release()
+            try:
+                if created is not None and created not in self._in_use:
+                    # ``connect()`` may have opened it before the sign-in
+                    # failed, and on this branch ``WebSocketConnection.connect()``
+                    # releases nothing when it is cancelled. The close is
+                    # shielded and its errors ignored, so the original
+                    # exception (or cancellation) is what the caller gets.
+                    self._discard(created)
+                    await self._close_quietly(created)
+            finally:
+                # Released even when the close is cancelled.
+                self._semaphore.release()
             raise
 
         try:
