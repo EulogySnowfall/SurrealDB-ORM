@@ -6,6 +6,7 @@ requiring a running SurrealDB instance.
 """
 
 import asyncio
+import contextlib
 import inspect
 from decimal import Decimal
 from typing import Any
@@ -1030,6 +1031,12 @@ class _RecordingConnection:
 
     def _register_live_subscription(self, live_id: str, params: Any) -> None:
         self._live_subscriptions[live_id] = params
+
+    def _hold_live_notifications(self) -> contextlib.AbstractContextManager[None]:
+        return contextlib.nullcontext()
+
+    def _register_live_callback(self, live_id: str, callback: Any) -> None:
+        self._live_callbacks[live_id] = callback
 
     async def kill(self, live_id: str) -> None:
         pass
