@@ -367,6 +367,9 @@ class SurrealDBConnectionManager:
         :raises SurrealDbConnectionError: If the client cannot connect or
             authenticate. Nothing is registered and the partly built client
             is closed.
+        :raises asyncio.CancelledError: If the caller is cancelled while the
+            client connects or signs in. Nothing is registered and the partly
+            built client is closed first.
         """
         config = cls._configs.get(name)
         if config is None:
@@ -397,6 +400,18 @@ class SurrealDBConnectionManager:
                 cls.__ws_client = _ws_client
 
             return _ws_client
+        except asyncio.CancelledError:
+            # Cancelled while connecting or signing in (e.g. a caller's
+            # timeout): the client was never registered, so nothing else
+            # would ever close it. ``CancelledError`` is not an ``Exception``,
+            # so the handlers below never see it. The close is shielded so a
+            # second cancellation cannot interrupt it.
+            if _ws_client is not None:
+                try:
+                    await asyncio.shield(_ws_client.close())
+                except Exception:
+                    logger.debug("Closing the partly built WebSocket client of '%s' failed.", name, exc_info=True)
+            raise
         except SurrealDBError as e:
             logger.warning("Can't get WebSocket connection '%s': %s", name, e)
             if _ws_client is not None:  # pragma: no cover
