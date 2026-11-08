@@ -10,17 +10,25 @@ Custom CBOR Tags used by SurrealDB:
 - TAG_NONE (6): None/null value
 - TAG_TABLE (7): Table name
 - TAG_RECORDID (8): Record ID (table:id)
-- TAG_STRING_UUID (9): UUID as string
+- TAG_STRING_UUID (9): UUID as string, decoded only. A ``UUID`` (a subclass
+  included) is sent as the standard tag 37 (cbor2's native encoding);
+  SurrealDB 4.0 refuses tag 9.
 - TAG_STRING_DECIMAL (10): Decimal as string
-- TAG_DATETIME (12): DateTime, received as an ISO 8601 string or a [seconds, nanoseconds]
-  pair (a datetime is sent as the standard tag 0, which SurrealDB reads)
-- TAG_STRING_DURATION (13): Duration as a string ("1h30m")
+- TAG_DATETIME (12): DateTime as a compact [seconds, nanoseconds] pair, the form
+  every ``datetime`` and ``date`` is sent in; an ISO 8601 string under this tag
+  is still decoded
+- TAG_STRING_DURATION (13): Duration as a string ("1h30m"), decoded only
 - TAG_CUSTOM_DURATION (14): Duration as a compact [seconds, nanoseconds] array, the
-  only form SurrealDB sends; it rejects a string under this tag
+  form every ``Duration`` is sent in and the only one SurrealDB sends; it rejects
+  a string under this tag
+
+Tags 0 (ISO datetime string), 9 and 13 are never sent: SurrealDB 3.x reads them,
+4.0 refuses them, and every server since 1.5 reads tags 12 and 14.
 """
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -44,6 +52,31 @@ TAG_STRING_DECIMAL = 10
 TAG_DATETIME = 12
 TAG_STRING_DURATION = 13
 TAG_CUSTOM_DURATION = 14
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_NANOS_PER_SECOND = 1_000_000_000
+#: SurrealDB stores a duration's seconds as an unsigned 64-bit integer.
+_MAX_DURATION_SECONDS = 2**64 - 1
+#: The integers CBOR carries without a bignum tag (major types 0 and 1).
+_CBOR_INT_MIN = -(2**64)
+_CBOR_INT_MAX = 2**64 - 1
+
+#: Nanoseconds per SurrealDB duration unit (``y`` is 365 days, as on the server).
+_DURATION_UNITS = {
+    "ns": 1,
+    "us": 1_000,
+    "\u00b5s": 1_000,
+    "ms": 1_000_000,
+    "s": _NANOS_PER_SECOND,
+    "m": 60 * _NANOS_PER_SECOND,
+    "h": 3_600 * _NANOS_PER_SECOND,
+    "d": 86_400 * _NANOS_PER_SECOND,
+    "w": 604_800 * _NANOS_PER_SECOND,
+    "y": 31_536_000 * _NANOS_PER_SECOND,
+}
+#: One ``<digits><unit>`` part. Two-letter units come first so ``ms`` is not ``m`` + ``s``.
+_DURATION_PART = re.compile(r"([0-9]+)(ns|us|\u00b5s|ms|s|m|h|d|w|y)")
+_DURATION_TEXT = re.compile(r"(?:[0-9]+(?:ns|us|\u00b5s|ms|s|m|h|d|w|y))+")
 
 #: Shown for a naive ``datetime``. It names no value, so Python's default
 #: warning filter reports it once per call site rather than once per value.
@@ -106,9 +139,13 @@ class Duration:
     """
     Represents a SurrealDB duration.
 
-    ``value`` is either a duration string (``"1h30m"``), sent as CBOR tag 13,
-    or the compact form SurrealDB itself sends, a tuple of seconds and
-    nanoseconds (``(5400,)``, ``(5400, 1)``, ``()`` for zero), sent as tag 14.
+    ``value`` is either a SurrealQL duration text (``"1h30m"``) or the compact
+    form SurrealDB itself sends, a tuple of seconds and nanoseconds
+    (``(5400,)``, ``(5400, 1)``, ``()`` for zero). Both are sent as CBOR tag 14
+    ``[seconds, nanoseconds]``: a text value is parsed when it is encoded, and
+    an invalid one raises ``ValueError`` then, before any request. A value
+    the server returns is always the tuple form, so ``Duration("1h30m")``
+    comes back as ``Duration((5400,))``.
     """
 
     value: str | tuple[int, ...]
@@ -121,6 +158,41 @@ class Duration:
         nanoseconds = self.value[1] if len(self.value) > 1 else 0
         text = (f"{seconds}s" if seconds else "") + (f"{nanoseconds}ns" if nanoseconds else "")
         return text or "0ns"
+
+
+def _parse_duration_text(text: str) -> tuple[int, int]:
+    """Read a SurrealQL duration text (``"1h30m"``) as ``(seconds, nanoseconds)``.
+
+    Accepts what SurrealDB's duration literal accepts: one or more
+    ``<digits><unit>`` parts with no separator, in any order, repeated units
+    added up (``"30m1h"`` and ``"1h1h"`` are valid), units ``ns``, ``us``/``µs``,
+    ``ms``, ``s``, ``m``, ``h``, ``d``, ``w`` and ``y`` (365 days). Signs,
+    fractions, spaces, upper case and a seconds total above the unsigned
+    64-bit range are refused by the server, and raise ``ValueError`` here.
+    """
+    if not _DURATION_TEXT.fullmatch(text):
+        raise ValueError(f"Invalid SurrealDB duration text: {text!r}")
+    total = sum(int(amount) * _DURATION_UNITS[unit] for amount, unit in _DURATION_PART.findall(text))
+    seconds, nanoseconds = divmod(total, _NANOS_PER_SECOND)
+    if seconds > _MAX_DURATION_SECONDS:
+        raise ValueError(f"SurrealDB duration out of range: {text!r}")
+    return seconds, nanoseconds
+
+
+def _encode_datetime(encoder: Any, value: datetime) -> None:
+    """Write a ``datetime`` as tag 12 ``[seconds, nanoseconds]`` since the Unix epoch.
+
+    A naive value (no ``tzinfo``, or one whose ``utcoffset()`` is ``None``) is
+    read as UTC. ``timedelta`` normalisation keeps the nanoseconds in
+    ``[0, 10**9)`` and floors the seconds, so an instant before 1970 has
+    negative seconds and positive nanoseconds (``-0.5 s`` is ``[-1, 500000000]``),
+    the form SurrealDB reads and the decoder below reverses.
+    """
+    if value.utcoffset() is None:
+        value = value.replace(tzinfo=UTC)
+    delta = value - _EPOCH
+    seconds = delta.days * 86_400 + delta.seconds
+    encoder.encode(CBORTag(TAG_DATETIME, [seconds, delta.microseconds * 1_000]))
 
 
 def _preprocess_for_cbor(data: Any) -> Any:
@@ -146,17 +218,32 @@ def _preprocess_for_cbor(data: Any) -> Any:
     A ``date`` (not a ``datetime``) has the same problem: cbor2 encodes it
     natively as tag 1004, which SurrealDB rejects. SurrealDB has no date-only
     type — the literal ``d'YYYY-MM-DD'`` is a datetime at midnight UTC — so
-    the ``date`` becomes that datetime, and cbor2 then encodes it the way it
-    encodes every timezone-aware datetime (tag 0), which SurrealDB reads.
+    the ``date`` becomes that datetime, which :func:`encode` then sends as
+    tag 12 like any other.
 
     A naive ``datetime`` (subclasses included) is left as it is but warned
     about with a ``RuntimeWarning`` (see :func:`_warn_naive_datetime`):
     :func:`encode` reads it as UTC, because SurrealDB only stores UTC instants.
     A naive ``datetime`` inside a ``RecordId``'s id is converted the same way
     but not warned about, since this walk does not enter record ids.
+
+    An integer outside the 64-bit range CBOR carries natively (below
+    ``-2**64`` or above ``2**64 - 1``) raises ``ValueError``: cbor2 would send
+    it as a bignum tag, which SurrealDB rejects as a parse error (HTTP 400, no
+    reply over WebSocket). An integer inside that range but outside the
+    signed 64-bit range is sent unchanged, as before: SurrealDB 3.3 accepts it
+    and wraps it into a signed 64-bit integer, 4.0 refuses it. Integers
+    inside a ``RecordId``'s id are not checked, since this walk does not
+    enter record ids.
     """
     if data is None:
         return CBORTag(TAG_NONE, None)
+    if isinstance(data, int) and not isinstance(data, bool):
+        if not _CBOR_INT_MIN <= data <= _CBOR_INT_MAX:
+            raise ValueError(
+                f"Integer {data} is outside the 64-bit range: CBOR would send it as a bignum, which SurrealDB rejects"
+            )
+        return data
     if isinstance(data, Decimal) and data.is_finite():
         return CBORTag(TAG_STRING_DECIMAL, str(data))
     if isinstance(data, datetime):
@@ -183,16 +270,26 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
     to RecordId objects. The caller must use RecordId objects explicitly when
     needed (e.g., for record references in relation operations).
 
-    cbor2 encodes a plain ``datetime`` itself (tag 0, an ISO 8601 string,
-    which SurrealDB reads) and only sends a ``datetime`` *subclass* here, such
-    as ``pandas.Timestamp`` or ``pendulum.DateTime``, wherever it meets one,
-    record ids included. Such a value is rebuilt as a plain ``datetime`` (the
-    same fields, ``tzinfo`` and ``fold``) and encoded again, so it travels
-    exactly like one and a naive one is read as UTC. Digits below the
-    microsecond that a subclass carries (``pandas.Timestamp.nanosecond``) are
-    dropped, as they are for any Python ``datetime``. Tag 12 is never emitted
-    with a string here: SurrealDB reads tag 12 only as a
-    ``[seconds, nanoseconds]`` pair and rejects the request otherwise.
+    :func:`encode` gives cbor2 an encoder for a plain ``datetime``
+    (:func:`_encode_datetime`, tag 12), and cbor2 looks encoders up by exact
+    type, so only a ``datetime`` *subclass* reaches this hook, such as
+    ``pandas.Timestamp`` or ``pendulum.DateTime``, wherever it is met, record
+    ids included. Such a value is rebuilt as a plain ``datetime`` (the same
+    fields, ``tzinfo`` and ``fold``) and encoded again, so it travels exactly
+    like one and a naive one is read as UTC. Digits below the microsecond that
+    a subclass carries (``pandas.Timestamp.nanosecond``) are dropped, as they
+    are for any Python ``datetime``.
+
+    A ``Duration`` is always sent as tag 14 ``[seconds, nanoseconds]``, in the
+    compact form the server itself sends (trailing zeros dropped). A text
+    value is parsed first (:func:`_parse_duration_text`); an invalid one raises
+    ``ValueError`` before anything is sent.
+
+    A plain ``UUID`` never reaches this hook: cbor2 encodes it natively as
+    tag 37, which SurrealDB reads. A ``UUID`` *subclass* does (exact-type
+    lookup again), such as ``asyncpg``'s ``pgproto.UUID``; it is rebuilt as a
+    plain ``UUID`` from its 128-bit value and encoded again, so it goes out as
+    tag 37 too, never as tag 9.
     """
     if isinstance(value, RecordId):
         # Encode RecordId as tagged array [table, id]
@@ -215,13 +312,20 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
             )
         )
     elif isinstance(value, UUID):
-        # Encode UUID as tagged string
-        encoder.encode(CBORTag(TAG_STRING_UUID, str(value)))
+        encoder.encode(UUID(int=value.int))
     elif isinstance(value, Duration):
         # Tag 14 carries only the compact array: a string there is a parse
         # error for the whole request (HTTP 400, no reply over WebSocket).
+        # Tag 13 (the string form) is refused by SurrealDB 4.0.
         if isinstance(value.value, str):
-            encoder.encode(CBORTag(TAG_STRING_DURATION, value.value))
+            seconds, nanoseconds = _parse_duration_text(value.value)
+            if nanoseconds:
+                payload = [seconds, nanoseconds]
+            elif seconds:
+                payload = [seconds]
+            else:
+                payload = []
+            encoder.encode(CBORTag(TAG_CUSTOM_DURATION, payload))
         else:
             encoder.encode(CBORTag(TAG_CUSTOM_DURATION, list(value.value)))
     else:
@@ -298,11 +402,16 @@ def encode(data: Any) -> bytes:
     Pre-processes the data to convert Python ``None`` values to SurrealDB's
     ``NONE`` (CBORTag 6) instead of CBOR null (which maps to SurrealDB ``NULL``).
 
-    A naive ``datetime`` is read as UTC, at any depth, and a ``RuntimeWarning``
+    Every ``datetime`` and ``date`` is sent as tag 12 and every ``Duration``
+    as tag 14, both ``[seconds, nanoseconds]``, at any depth, record ids
+    included. A naive ``datetime`` is read as UTC and a ``RuntimeWarning``
     says so: SurrealDB only stores UTC instants, reads a date-only literal as
     midnight UTC and refuses a date-time with no offset. Attach a ``tzinfo``
-    (``datetime.now(UTC)``) to send a different instant. A timezone-aware
-    ``datetime`` is encoded unchanged.
+    (``datetime.now(UTC)``) to send a different instant.
+
+    Raises:
+        ValueError: for an invalid duration text or an integer outside the
+            64-bit range, before anything is sent.
 
     Args:
         data: Python object to encode
@@ -311,7 +420,7 @@ def encode(data: Any) -> bytes:
         CBOR-encoded bytes
     """
     processed = _preprocess_for_cbor(data)
-    result: bytes = cbor2.dumps(processed, default=_cbor_default_encoder, timezone=UTC)
+    result: bytes = cbor2.dumps(processed, default=_cbor_default_encoder, encoders={datetime: _encode_datetime})
     return result
 
 

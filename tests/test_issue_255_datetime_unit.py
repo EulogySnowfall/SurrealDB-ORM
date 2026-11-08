@@ -13,7 +13,7 @@ SurrealDB rejects as a parse error — aware or not.
 
 A naive datetime is now read as UTC on every path, as
 ``raw_query(inline_dicts=True)`` already did, and a ``RuntimeWarning`` with a
-constant message says so. Aware datetimes encode exactly as before.
+constant message says so. Aware datetimes are unchanged (since #578, every datetime is sent as tag 12).
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ class TestNaiveDatetimeEncodesAsUtc:
 
 
 class TestAwareDatetimeUnchanged:
-    """An aware datetime gives exactly the bytes cbor2 gave it before."""
+    """An aware datetime is sent as its instant: tag 12 ``[seconds, nanoseconds]`` (#578)."""
 
     @pytest.mark.parametrize(
         "value",
@@ -88,8 +88,12 @@ class TestAwareDatetimeUnchanged:
             pytest.param([datetime(2026, 2, 1, 12, 30, tzinfo=PLUS_TWO)], id="nested"),
         ],
     )
-    def test_same_bytes_as_plain_cbor2(self, value: object) -> None:
-        assert _no_warning_encode(value) == cbor2.dumps(value)
+    def test_sent_as_tag_12_and_decodes_to_the_same_instant(self, value: object) -> None:
+        encoded = _no_warning_encode(value)
+        raw = cbor2.loads(encoded)
+        first = raw[0] if isinstance(raw, list) else raw
+        assert isinstance(first, cbor2.CBORTag) and first.tag == 12
+        assert decode(encoded) == value
 
 
 class TestRuntimeWarning:
@@ -163,7 +167,7 @@ class TestDatetimeSubclass:
     def test_never_sent_as_tag_12_with_a_string(self) -> None:
         """Tag 12 is SurrealDB's ``[seconds, nanoseconds]`` pair; an ISO string in it is a parse error."""
         raw = cbor2.loads(_encode_quietly({"d": I255MyDT(2026, 2, 1, tzinfo=UTC)}))
-        assert raw == {"d": datetime(2026, 2, 1, tzinfo=UTC)}
+        assert raw == {"d": cbor2.CBORTag(12, (1769904000, 0))}
 
     def test_fold_is_kept(self) -> None:
         folded = I255MyDT(2026, 11, 1, 1, 30, tzinfo=PLUS_TWO, fold=1)

@@ -6,6 +6,123 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.38.5] - 2026-11-07
+
+**Fix release.** One fix: the CBOR encoder's datetime, date, duration and
+UUID forms, #578 via #607 (`surreal_sdk/protocol/cbor.py` only). It prepares
+the SDK for SurrealDB 4.0, which refuses the tags the encoder used to send;
+on 3.x servers the stored and compared values are the same as before. Read
+*Behaviour change* below if you build `Duration` values from text or bind
+very large integers. The SurrealDB pin is unchanged (tested against 3.3.5,
+supported range 3.2.x – 3.3.x). `v2`: not needed; it has the same encoder,
+but those forms only fail on SurrealDB 4.0, which `v2` never targets.
+
+### Fixed
+
+- **Bound `datetime` and `date` values are sent as CBOR tag 12
+  `[seconds, nanoseconds]`** instead of the standard tag 0 (an ISO 8601
+  string), and **text `Duration` values as tag 14 `[seconds, nanoseconds]`**
+  instead of tag 13 (a duration string), at any depth (#578). Datetimes and
+  durations inside a record id key are covered too. SurrealDB 4.0 refuses
+  tags 0, 9 and 13, while every 3.x server reads tags 12 and 14. On 3.2 and 3.3 the server stores and compares
+  the same values as before (checked on 3.2.6 and 3.3.5, over HTTP and
+  WebSocket). A naive `datetime` is still read as UTC and still warned
+  about; an instant before 1970 is sent with negative seconds and positive
+  nanoseconds. Update the ORM before the server.
+- **A `uuid.UUID` subclass** (for example asyncpg's `pgproto.UUID`) is sent
+  as the standard tag 37, like a plain `UUID`; tag 9 is no longer sent
+  (#578).
+- Tags 9 and 13, and an ISO string under tag 12, are still decoded.
+
+### Changed
+
+- **Behaviour change:** an invalid duration text (`Duration("1h 30m")`,
+  `"1.5h"`, `"1H"`, …) raises `ValueError` while the request is being
+  encoded, before anything is sent, instead of failing on the server. The
+  text is read as SurrealDB reads a duration literal: units `ns`, `us`/`µs`,
+  `ms`, `s`, `m`, `h`, `d`, `w`, `y` (365 days), compound and repeated parts
+  in any order, seconds within the unsigned 64-bit range. A text `Duration`
+  encoded and decoded locally comes back in the compact form the server
+  sends (`Duration("1h30m")` becomes `Duration((5400,))`) (#578).
+- **Behaviour change:** an integer outside the 64-bit range CBOR carries
+  without a bignum (below `-2**64` or above `2**64 - 1`) raises `ValueError`
+  before any request; SurrealDB rejected it with HTTP 400 (no reply at all
+  over WebSocket, so the request waited for its timeout). Integers within
+  64 bits are sent unchanged (#578).
+
+### Upgrading
+
+- No API, DDL or pin change. Check that no code builds a `Duration` from a
+  text the server would refuse (spaces, fractions, upper-case units, a
+  sign); it now raises `ValueError` before the request.
+
+### Known limitations
+
+- A `date` (not a `datetime`) inside a `RecordId` key is not converted: it
+  still goes out as cbor2's native date tag, which SurrealDB does not read,
+  as before this release. Use a UTC-midnight `datetime` there (found while
+  preparing this release).
+- The 64-bit range check does not run on an integer inside a `RecordId` key
+  or a dict key: there a bignum still goes out and is rejected by the server
+  as before (review suggestion on #607).
+- An integer between the signed and the unsigned 64-bit bounds is still sent
+  unchanged, as #578 asked: SurrealDB 3.3 wraps it into a signed 64-bit
+  integer with no error (`2**64 - 1` reads back as `-1`), and 4.0 refuses it
+  (review suggestion on #607).
+
+---
+
+## [0.38.4] - 2026-11-07
+
+**Fix release.** One fix: `ConnectionPool` keywords on HTTP connections,
+#566 via #603 (`surreal_sdk/connection/pool.py` only). Read *Behaviour
+change* below if you build an HTTP pool (the default `connection_type`) with
+extra keywords. The SurrealDB pin is unchanged (tested against 3.3.5,
+supported range 3.2.x – 3.3.x). `v2`: same defect, backport tracked in #604.
+
+### Fixed
+
+- **`ConnectionPool` now passes its extra keywords to `HTTPConnection` as
+  well as to `WebSocketConnection`** (#566). An HTTP pool (the default
+  `connection_type`) used to drop them, so `SurrealDB.pool(...,
+  protocol="json")` still spoke CBOR. The `**kwargs` docstring now names the
+  connection class that receives them for each `connection_type`.
+
+### Changed
+
+- **Behaviour change:** an HTTP pool given `protocol="json"` now really uses
+  JSON. A keyword `HTTPConnection` does not take (for example the
+  WebSocket-only `max_message_size`, or a typo) now raises `TypeError` when
+  the first connection is created (first `acquire()`), where it used to be
+  silently ignored. WebSocket pools are unchanged (#566).
+
+### Upgrading
+
+- Remove WebSocket-only or misspelled keywords from HTTP pool constructors,
+  and check that nothing relied on an HTTP pool staying on CBOR when given
+  `protocol="json"`. A pool built without extra keywords behaves as before.
+
+### Known limitations
+
+- An HTTP pool on `protocol="json"` was not possible before this release. The
+  pool's own authentication paths (pool sign-in, the reset on release) are
+  tested over CBOR only, not yet over JSON against a server (review
+  suggestion on #603).
+
+### Documentation
+
+- Release-note corrections: the `[0.38.3]` *Documentation* entry now also
+  names the `QuerySet.changes()` docstring (#575); the `[0.35.6]` entry no
+  longer reads as if every `::` / `$` string default is quoted, since the
+  legacy no-argument call and bare `$identifier` forms still render unquoted
+  with a `DeprecationWarning` (#421); the `[0.35.5]` entry says that any
+  caller `signin()`, even with the same arguments, makes a pending `401`
+  raise `QueryError` (#409). README: the 0.35.6 section says the same about
+  the legacy defaults (#421), and the 0.34.13 section no longer says a write
+  only invalidates the entries of the database it went to (#319).
+
+---
+
 ## [0.38.3] - 2026-11-05
 
 **Fix release.** Two fixes: the migration DEFINE parser, #273 via #564
@@ -65,7 +182,9 @@ both backports tracked, #568 (#564) and #569 (#567, the `changes()` part).
   the drain (`sql()`, `health()`, `status()` and `rest_*()` are not counted),
   and say to call `reconnect()` from the task that opened a transaction, not
   from a task that transaction awaits (`asyncio.gather()`, `TaskGroup`)
-  (#270).
+  (#270). The `QuerySet.changes()` docstring now says that a poll failing
+  because `reconnect()` or `close_connection()` closed the client is resumed
+  on the current client instead of raised (#270).
 - Release-note corrections: the `[0.34.7]` entry now says a transaction whose
   body calls `reconnect()` commits on its own client, and that `reconnect()`
   returns before the previous client is closed when the calling task has
@@ -717,8 +836,9 @@ by the SurrealDB version monitor; entry backfilled in 0.36.0.
 
 ## [0.35.6] - 2026-10-28
 
-**Fix release.** Two fixes: string `DEFAULT` values and `SearchHighlight`
-tags are always written as string literals (#401 via #407), and
+**Fix release.** Two fixes: string `DEFAULT` values (other than the
+deprecated legacy expression forms below) and `SearchHighlight` tags are
+always written as string literals (#401 via #407), and
 `validate_token()` / `authenticate_token()` accept only tokens issued by the
 model's own access definition (#393 via #408). Read *Behaviour change* and
 *Upgrading* below if a model or migration file uses a `str` as a server-side
@@ -729,8 +849,10 @@ against 3.3.4, supported range 3.2.x – 3.3.x).
 ### Fixed
 
 - **A plain `str` field `DEFAULT` containing `::` or starting with `$` is now
-  emitted as a quoted string literal and read back as the same text.**
-  Previously `AddField`, `AlterField.forwards()` / `backwards()` and
+  emitted as a quoted string literal and read back as the same text**, other
+  than the legacy no-argument call (`time::now()`) and bare `$identifier`
+  forms, which still render unquoted with a `DeprecationWarning` (see
+  *Behaviour change*). Previously `AddField`, `AlterField.forwards()` / `backwards()` and
   `AlterField.from_field_states()` emitted it unquoted, so a text such as
   `'fr::CA'` read back from the database did not round-trip (#401).
 - **`SearchHighlight` renders both tags with `surql_string()`**, so a tag
@@ -798,11 +920,11 @@ supported range 3.2.x – 3.3.x).
   installed only if the connection's auth state is unchanged since the
   rejected request was sent, and is discarded otherwise (#390).
 - **`HTTPConnection`: a `401` on a request whose credentials have since been
-  changed by another task** (`signin()` with other arguments,
+  changed by another task** (`signin()`, even with the same arguments,
   `authenticate()`, `signup()`, `invalidate()`, `close()`) is now raised as
   `QueryError` instead of being answered by a new signin; the request is
-  never resent under the new credentials. When another task only renewed the
-  token of the same `signin()`, the request is retried with that token
+  never resent under the new credentials. When another task's transient-`401`
+  re-mint only renewed the token, the request is retried with that token
   without signing in again (#390).
 
 ### Behaviour change
