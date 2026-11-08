@@ -6,27 +6,15 @@ Provides atomic transaction handling for both HTTP and WebSocket connections.
 
 import asyncio
 import logging
-import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
 from .exceptions import TransactionConflictError, TransactionError
-from .utils import _ESCAPED_ID_UNIT, _IDENTIFIER_RE, substitute_params, unescape_record_id
+from .utils import _IDENTIFIER_RE, _parse_record_reference, substitute_params
 
 logger = logging.getLogger(__name__)
-
-#: A record ID part that SurrealQL reads as an integer when written inline
-#: (``users:1``, ``users:-5``), provided it fits in a signed 64-bit integer;
-#: outside that range the server reads it as a string ID.
-_INTEGER_ID_RE = re.compile(r"-?(?:0|[1-9][0-9]*)")
-
-_I64_MIN = -(2**63)
-_I64_MAX = 2**63 - 1
-
-#: ID generators SurrealQL accepts after ``table:`` (``CREATE users:ulid()``).
-_ID_GENERATORS = frozenset({"rand()", "ulid()", "uuid()"})
 
 
 def _validate_identifier(name: str, context: str) -> None:
@@ -47,31 +35,13 @@ def _validate_keys(data: dict[str, Any], context: str = "data") -> None:
             raise ValueError(f"Invalid {context} key: {key!r} (expected an identifier)")
 
 
-def _raw_record_id(id_part: str, thing: str, context: str) -> str | None:
-    r"""Return the raw ID of a delimited ID part, ``None`` when it is not delimited.
-
-    Two delimited forms are read back: backticks, as ``format_thing()`` writes
-    them (``\\`` and ``\``` inside), and Unicode angle brackets without
-    escapes. A delimited form that is not closed, or that holds its own closing
-    delimiter without an escape, raises ``ValueError``.
-    """
-    if id_part.startswith("`"):
-        units = _ESCAPED_ID_UNIT.findall(id_part[1:-1]) if len(id_part) >= 2 and id_part.endswith("`") else ["`"]
-        if "`" in units:
-            raise ValueError(f"Invalid {context}: {thing!r} (malformed backtick-delimited ID)")
-        return unescape_record_id(id_part)
-    if id_part.startswith("\u27e8"):
-        body = id_part[1:-1]
-        if len(id_part) < 2 or not id_part.endswith("\u27e9") or "\u27e9" in body or "\\" in body:
-            raise ValueError(f"Invalid {context}: {thing!r} (malformed angle-bracket ID)")
-        return body
-    return None
-
-
 def _record_target(thing: str, context: str, binding: str, taken: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Render a ``table`` or ``table:id`` reference for a queued statement.
 
-    The table must be an identifier. An ID that is an identifier, an integer in
+    The reference is read by :func:`surreal_sdk.utils._parse_record_reference`,
+    the same reading the connections' RPC methods use, so the statement names
+    the record those methods would. The table must be an identifier. An ID that
+    is an identifier, an integer in
     the signed 64-bit range (``users:-5``, as SurrealQL reads it inline) or
     ``rand()``/``ulid()``/``uuid()`` is written as it is; any other ID is bound
     as a string parameter and rendered ``type::record('table', $binding)``, so
@@ -91,32 +61,17 @@ def _record_target(thing: str, context: str, binding: str, taken: dict[str, Any]
     Raises:
         ValueError: If the reference is malformed.
     """
-    if not isinstance(thing, str):
-        raise ValueError(f"Invalid {context}: {thing!r} (expected a 'table' or 'table:id' string)")
-    table, sep, id_part = thing.partition(":")
-    if not _IDENTIFIER_RE.fullmatch(table):
-        raise ValueError(f"Invalid {context}: {thing!r} (the table must be an identifier)")
-    if not sep:
-        return table, {}
-    if not id_part:
-        raise ValueError(f"Invalid {context}: {thing!r} (empty record ID)")
-    raw = _raw_record_id(id_part, thing, context)
-    if raw is None:
-        if id_part in _ID_GENERATORS or _IDENTIFIER_RE.fullmatch(id_part):
-            return f"{table}:{id_part}", {}
-        if len(id_part) <= 20 and _INTEGER_ID_RE.fullmatch(id_part) and _I64_MIN <= int(id_part) <= _I64_MAX:
-            return f"{table}:{int(id_part)}", {}
-        if id_part[0] in "[{":
-            raise ValueError(f"Invalid {context}: {thing!r} (array and object IDs are not supported; use query())")
-        raw = id_part
-    if not raw:
-        raise ValueError(f"Invalid {context}: {thing!r} (empty record ID)")
+    ref = _parse_record_reference(thing, context)
+    if ref.id is None:
+        return ref.table, {}
+    if isinstance(ref.id, int) or (not ref.delimited and (ref.generator or _IDENTIFIER_RE.fullmatch(ref.id))):
+        return f"{ref.table}:{ref.id}", {}
     name = binding
     suffix = 0
     while name in taken:
         suffix += 1
         name = f"{binding}{suffix}"
-    return f"type::record('{table}', ${name})", {name: raw}
+    return f"type::record('{ref.table}', ${name})", {name: ref.id}
 
 
 def _validate_thing(thing: str, context: str = "thing") -> None:
