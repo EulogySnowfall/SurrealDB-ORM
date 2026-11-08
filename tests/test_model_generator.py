@@ -219,7 +219,7 @@ class TestGenerateModelClass:
             changefeed="1h",
         )
         source, _ = self.gen._generate_model_class(table)
-        assert 'changefeed="1h"' in source
+        assert "changefeed='1h'" in source
 
 
 # ==================== Full Module Generation ====================

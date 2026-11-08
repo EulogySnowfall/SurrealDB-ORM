@@ -178,21 +178,21 @@ class TestModelGeneratorGeoTypes:
 
         gen = ModelCodeGenerator()
         result = gen._surreal_type_to_python("geometry<point>")
-        assert result == 'GeoField["point"]'
+        assert result == "GeoField['point']"
 
     def test_geometry_polygon_to_python(self) -> None:
         from surreal_orm.migrations.model_generator import ModelCodeGenerator
 
         gen = ModelCodeGenerator()
         result = gen._surreal_type_to_python("geometry<polygon>")
-        assert result == 'GeoField["polygon"]'
+        assert result == "GeoField['polygon']"
 
     def test_geometry_linestring_to_python(self) -> None:
         from surreal_orm.migrations.model_generator import ModelCodeGenerator
 
         gen = ModelCodeGenerator()
         result = gen._surreal_type_to_python("geometry<linestring>")
-        assert result == 'GeoField["linestring"]'
+        assert result == "GeoField['linestring']"
 
     def test_plain_geometry_to_dict(self) -> None:
         from surreal_orm.migrations.model_generator import ModelCodeGenerator
