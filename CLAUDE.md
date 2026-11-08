@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.6)
+> Context document for Claude AI - Last updated: November 2026 (0.39.7)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.6 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.7 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -21,6 +21,38 @@
 
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.7
+
+One fix, #324 via #649 (`surreal_sdk/utils.py`, `connection/http.py`,
+`connection/websocket.py`, `transaction.py`; `docs/sdk.md`). Pin unchanged
+(3.3.5). `v2`: not backported (the line ended at 0.21.62; its
+`_to_thing()` has the same split-at-the-first-`:` reading).
+
+- **One private parser for a `table:id` reference**,
+  `surreal_sdk.utils._parse_record_reference()`, serves `HTTPTransaction`
+  (whose `_record_target()` keeps only the rendering) and both connections'
+  `_to_thing()`. The connections used to split at the first `:` and strip
+  backticks, so `t:1` was the string ID `"1"` over RPC and the integer 1 in
+  an HTTP transaction. Under CBOR a `table:id` string becomes the
+  `RecordId` of that reading; a bare table, any reference under
+  `protocol="json"` and a non-string pass through.
+- **The RPC path accepts any table the server accepts** (`any_table=True`):
+  the ORM sends `format_thing()` output, which does not escape the table
+  (`user-profiles:abc`). The two transactions keep the identifier rule,
+  since `HTTPTransaction` writes the table into its statement.
+- **Integer IDs follow the server, not a regex.** `_integer_record_id()`:
+  optional `-`, ASCII digits, leading zeros dropped, at most 19 significant
+  digits, then the i64 range; linear in the ID length with no length cap
+  (`t:` + 100 zeros + `1` is the integer 1 on 3.3.5). Beyond i64 the digits
+  stay a string ID as written. Checked edge by edge against 3.3.5.
+- **Generators are refused on the RPC path** (`rand()` / `ulid()` /
+  `uuid()` were stored as literal text); `HTTPTransaction` still evaluates
+  them.
+- Resolves the 0.34.14 known gap (integer IDs through
+  `WebSocketTransaction`); the strict `xfail` is gone.
+- **Open (review suggestion on #649):** `RecordId.parse()` in
+  `protocol/cbor.py` keeps its own `split(":", 1)` reading.
 
 ### What's New in 0.39.6
 
