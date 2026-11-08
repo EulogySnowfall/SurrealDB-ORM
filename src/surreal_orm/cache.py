@@ -16,7 +16,11 @@ Writes made through the ORM drop the written table's entries:
 - ``atomic_append()``, ``atomic_remove()`` and ``atomic_set_add()``;
 - ``QuerySet.bulk_update()``, ``bulk_delete()``, ``upsert()``,
   ``bulk_upsert()``, ``delete_table()`` and ``import_jsonl()``
-  (``bulk_create()`` goes through ``save()``).
+  (``bulk_create()`` goes through ``save()``);
+- the relation writes, which drop the edge or through table they write:
+  ``relate()``, ``remove_relation()`` and ``remove_all_relations()`` on an
+  instance, and ``add()``, ``remove()``, ``set()`` and ``clear()`` on a
+  relation manager.
 
 A write the server rejects (the method raises) may leave the entries in place;
 a write that succeeds always drops them.  Anything else that writes behind the
@@ -234,11 +238,7 @@ class QueryCache:
         Returns:
             The number of entries removed.
         """
-        table = model.get_table_name()
-        removed = 0
-        for bucket in [b for b in cls._table_keys if b[1] == table]:
-            removed += cls._drop_bucket(bucket)
-        return removed
+        return cls._invalidate_table(model.get_table_name())
 
     @classmethod
     def clear(cls) -> None:
@@ -283,6 +283,31 @@ class QueryCache:
         if config is None:
             return (name, None, None, None)
         return (name, config.url, config.namespace, config.database)
+
+    @classmethod
+    def _invalidate_table(cls, table: str) -> int:
+        """Remove every cached entry of *table*, on every connection.
+
+        Keyed by table name rather than model, for writes to a table that may
+        have no model (a relation's edge table, a many-to-many through table).
+
+        Returns:
+            The number of entries removed.
+        """
+        removed = 0
+        for bucket in [b for b in cls._table_keys if b[1] == table]:
+            removed += cls._drop_bucket(bucket)
+        return removed
+
+    @classmethod
+    def _invalidate_table_for_write(cls, table: str, tx: Any = None) -> None:
+        """Drop *table*'s entries after a write to it, made directly or with ``tx=``.
+
+        The relation writes (``relate()``, ``remove_relation()``,
+        ``remove_all_relations()`` and the ``RelationManager`` writes) call it
+        once the statement is sent, or queued when *tx* is given.
+        """
+        cls._invalidate_table(table)
 
     @classmethod
     def _drop_bucket(cls, bucket: tuple[_Location, str]) -> int:

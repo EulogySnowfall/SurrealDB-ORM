@@ -898,7 +898,10 @@ A successful write through the ORM drops every cached entry of the written table
 
 - `save()`, `update()`, `merge()` and `delete()` on an instance (and `bulk_create()`, which calls `save()`);
 - `atomic_append()`, `atomic_remove()` and `atomic_set_add()`;
-- `bulk_update()`, `bulk_delete()`, `upsert()`, `bulk_upsert()`, `delete_table()` and `import_jsonl()`.
+- `bulk_update()`, `bulk_delete()`, `upsert()`, `bulk_upsert()`, `delete_table()` and `import_jsonl()`;
+- the relation writes, for the edge or through table they write (so a model mapped to that table is read again):
+  `relate()`, `remove_relation()` and `remove_all_relations()` on an instance, and `add()`, `remove()`, `set()` and
+  `clear()` on a relation manager. A relation write that raises after a statement was sent drops the table too.
 
 A write the server rejects (the method raises) may leave the entries in place. Writes the ORM does not see are not
 tracked: after `raw_query()`, `call_function()`, a `DEFINE EVENT` or a write from another process, call
