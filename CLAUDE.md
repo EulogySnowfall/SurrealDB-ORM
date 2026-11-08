@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.5)
+> Context document for Claude AI - Last updated: November 2026 (0.39.6)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.5 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.6 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -21,6 +21,31 @@
 
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.6
+
+One fix, #465 via #669 (`surreal_orm/cache.py`, `model_base.py`,
+`relations.py`). Pin unchanged (3.3.5). `v2`: not backported (the line ended
+at 0.21.62; the same relation methods there do not invalidate either).
+
+- **Relation writes had no cache entry point.** They send `RELATE` /
+  `DELETE` straight to the client or the transaction and fire no signal, and
+  `QueryCache.invalidate()` takes a model, which an edge table often lacks.
+  The private `QueryCache._invalidate_table(table)` (now behind
+  `invalidate(model)`) and `_invalidate_table_for_write(table, tx)` are keyed
+  by table. `relate()`, `remove_relation()` and `remove_all_relations()` go
+  through `_write_relation_tables()`; `RelationManager` drops the table it
+  actually wrote, default many-to-many names included.
+- **Drop in a `finally`, after the ORM's own checks.** A write that raises
+  after a statement was sent still drops its tables (over-invalidating only
+  costs a re-query); a call refused before reaching the client or the
+  transaction drops nothing. With `tx=`, the table is dropped when queued and
+  again at commit through #656's `_call_on_commit()`, keyed
+  `(QueryCache._COMMIT_KEY, table)`, so it shares one callback with a
+  `save(tx=)` on a model mapped to the same table.
+- **Open (review suggestion on #669):** the server's own cascades (edges
+  removed with a deleted record, `REFERENCE ... ON DELETE CASCADE`, both
+  checked on 3.3.5) are not tracked; `delete()` drops only its own table.
 
 ### What's New in 0.39.5
 
@@ -493,7 +518,8 @@ unchanged (3.3.5). `v2`: same defect, backport tracked in #463.
   `QueryCache.invalidate()` once its statement is accepted (after
   `_raise_on_statement_error()`, after the commit for `atomic=True`); a write
   that raises leaves the cache as it was.
-- **Open (review suggestions on #460):** relation writes (`relate()`,
+- **Open (review suggestions on #460; the relation half resolved in 0.39.6,
+  #465):** relation writes (`relate()`,
   `remove_relation()`, `remove_all_relations()`, relation managers) never
   invalidate the edge table; `save(tx=)` / `bulk_create(atomic=True)`
   invalidate when queued, not at the HTTP commit.

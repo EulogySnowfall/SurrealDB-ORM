@@ -6,6 +6,63 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.6] - 2026-11-08
+
+**Patch release — relation writes drop the edge table's cached entries.**
+One fix: #465 via #669 (`surreal_orm/cache.py`, `model_base.py`,
+`relations.py`). ORM only: no public API is added and the emitted SurrealQL
+is unchanged. The SurrealDB pin is unchanged (tested against 3.3.5,
+supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **Relation writes now drop the cached `QuerySet.cache()` entries of the
+  edge or through table**: `relate()`, `remove_relation()` (model instance,
+  `'table:id'` or bare id), `remove_all_relations()` (one name, a list, any
+  direction), and `add()`, `remove()`, `set()` and `clear()` on a relation
+  manager. Before, a model mapped to that table and read with `.cache()` kept
+  serving the rows from before the write until the TTL expired. Entries of
+  unrelated tables are kept (#465).
+- **With `tx=`, `relate()`, `remove_relation()` and `remove_all_relations()`
+  drop the table's entries when the write is queued and again once the
+  transaction commits** (one commit callback per table and transaction), as
+  the instance writes do since 0.39.3 (#656). A read cached by another task
+  before the commit is not served afterwards. A rollback or a failed commit
+  drops nothing more (#465).
+
+### Behaviour changes
+
+- A relation write that raises after a statement was sent (for example
+  `remove_all_relations()` over a list, or `add()` hitting an unsaved object
+  after the first edge) still drops the tables it targets: more cache misses,
+  never stale rows. Nothing is dropped for a call the ORM refuses before
+  calling the client or the transaction (invalid relation name, unsaved
+  instance, invalid direction) (#465).
+
+### Upgrading
+
+- No migration is required. A manual `QueryCache.invalidate(EdgeModel)` after
+  relation writes is no longer needed and can be removed.
+
+### Documentation
+
+- `docs/orm.md` and the `QueryCache` module docstring list the relation
+  writes among the writes that drop cached entries.
+- This resolves the first `[0.37.2]` known limitation (relation writes did
+  not invalidate the edge table).
+
+### Known limitations
+
+- The server's own cascades are not tracked: deleting a record also removes
+  its graph edges, and a `REFERENCE ... ON DELETE CASCADE` field deletes the
+  records that point at it, but `delete()` drops only the deleted record's
+  table. A `.cache()` read of a model mapped to the edge table (or to the
+  referencing table) keeps serving the removed rows until the TTL; call
+  `QueryCache.invalidate(EdgeModel)` after such a delete (review suggestion
+  on #669).
+
+---
+
 ## [0.39.5] - 2026-11-08
 
 **Patch release — change-feed unit count under the JSON protocol.** One
