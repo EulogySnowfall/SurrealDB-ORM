@@ -1,6 +1,6 @@
 [project]
 name = "surreal-sdk"
-version = "0.39.0"
+version = "0.39.1"
 description = "Custom Python SDK for SurrealDB with HTTP and WebSocket support. No dependency on official surrealdb package."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -24,7 +24,8 @@ classifiers = [
 
 dependencies = [
     "httpx>=0.28",
-    "aiohttp>=3.12",
+    # Floor covers GHSA-494j-54xm-rwp3, GHSA-2g87-pp6c-29x5 and GHSA-5wr8-gcqf-gqf3 (aiohttp <= 3.14.3)
+    "aiohttp>=3.14.4",
     "cbor2>=6.1.2",
 ]
 

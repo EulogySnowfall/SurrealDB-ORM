@@ -1797,7 +1797,7 @@ wheels = [
 
 [[package]]
 name = "surrealdb-orm"
-version = "0.39.0"
+version = "0.39.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -1833,7 +1833,7 @@ lint = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.12" },
+    { name = "aiohttp", specifier = ">=3.14.4" },
     { name = "cbor2", specifier = ">=6.1.2" },
     { name = "click", marker = "extra == 'all'", specifier = ">=8.1.8" },
     { name = "click", marker = "extra == 'cli'", specifier = ">=8.1.8" },
