@@ -41,6 +41,39 @@
 
 ---
 
+## What's New in 0.39.3
+
+**Patch release — change feed start-up, `Prefetch` variables, token refresh lookup, cache drops at commit, sign-up set
+warning, CBOR checks in record ids and dict keys.** Six fixes, no new public API, SurrealDB pin unchanged (3.3.5):
+
+- **Change feeds** ([#312](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/312)): the default start
+  (`since=None`, in `ChangeFeedStream`, `MultiTableChangeFeed` and `QuerySet.changes()`) is found with at most 130 small
+  `LIMIT 1` probes instead of reading the whole retained database feed; a `MultiTableChangeFeed` poll reads the database
+  feed once instead of once per table; a stream started from a datetime that misses a change written after it started
+  watching emits one `RuntimeWarning` (on SurrealDB 3.3.5, in-memory storage and SurrealKV select nothing from a
+  datetime start; RocksDB does). Prefer a versionstamp start (an `int` or `stream.cursor`) on those engines.
+- **`Prefetch` variables** ([#344](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/344)):
+  `Prefetch(queryset=...)` sends the variables its queryset declared with `.variables()`, which used to reach the server
+  unbound. **Behaviour change:** `.variables()` now refuses names starting with `_` (reserved for the ORM's own
+  bindings) with `ValueError`; rename such variables.
+- **Auth** ([#357](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/357)): `refresh_access_token()` resolves its
+  user from `$auth`, like `signin()`, `signup()` and `authenticate_token()`; `signup()` reports `Signup succeeded but
+  the session record could not be read: ...` instead of `Signup failed: ...` when the account exists but its session
+  record cannot be read.
+- **Query cache** ([#360](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/360)): a write with `tx=` drops the
+  table's cache entries again once the transaction commits, so a `.cache()` read taken before the commit is not served
+  afterwards.
+- **Sign-up set** ([#371](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/371)): building a USER model's access
+  definition (`define_access()`, `makemigrations`, `schema_diff`) emits one `UserWarning` naming every required field a
+  sign-up can never set. The `SIGNUP` clause and the DDL are unchanged; list a server-filled field in `server_fields`
+  to silence it.
+- **CBOR** ([#612](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/612)): an integer outside the 64-bit range
+  inside a `RecordId`'s id or used as a dict key now raises `ValueError` before the request (it used to fail at the
+  server, or time out over WebSocket), and a `date` inside a `RecordId`'s id is sent as the UTC-midnight `datetime`,
+  like a plain `date`.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes and known limitations.
+
 ## What's New in 0.39.2
 
 **Patch release — live queries across a WebSocket reconnect**
