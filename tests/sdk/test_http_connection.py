@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from typing import Any
 from unittest.mock import AsyncMock
 
 import httpx
@@ -662,3 +663,175 @@ class TestReauthDoesNotOverrideConcurrentAuthChange:
         assert conn.token == "root-token-2"
         assert conn._signin_args is not None
         assert fake.calls[-1] == ("/rpc", "query", "Bearer root-token-2")
+
+
+# ``asyncio.sleep`` itself, captured before the tests below patch it (through
+# ``http.asyncio``) to skip the re-mint backoff.
+_real_sleep = asyncio.sleep
+
+
+class _ConcurrentFakeHTTPClient(_GatedFakeHTTPClient):
+    """``_GatedFakeHTTPClient`` modelling requests in flight at the same time.
+
+    The first *concurrent* rejected ``/rpc`` posts are answered together, once
+    all of them were rejected, and every ``/signin`` takes one event-loop turn
+    like a round trip. ``held_task`` is the task whose ``/signin`` is held.
+    """
+
+    def __init__(self, concurrent: int) -> None:
+        super().__init__()
+        self.concurrent = concurrent
+        self.all_rejected = asyncio.Event()
+        self.held_task: asyncio.Task[Any] | None = None
+        self._rejected = 0
+
+    async def _wait_if_held(self, kind: str) -> None:
+        if self._hold == kind:
+            self.held_task = asyncio.current_task()
+        await super()._wait_if_held(kind)
+
+    async def post(
+        self, path: str, json: object = None, content: bytes | None = None, headers: dict[str, str] | None = None
+    ) -> httpx.Response:
+        if path == "/signin":
+            await _real_sleep(0)
+            return await super().post(path, json=json, content=content, headers=headers)
+        response = await super().post(path, json=json, content=content, headers=headers)
+        if response.status_code == 401 and not self.all_rejected.is_set():
+            self._rejected += 1
+            if self._rejected >= self.concurrent:
+                self.all_rejected.set()
+            await self.all_rejected.wait()
+        return response
+
+
+class TestConcurrent401sShareOneRemint:
+    """Issue #409: concurrent 401s on the same token share one re-mint.
+
+    The first request to get a 401 re-mints the token while holding a
+    per-connection lock. The requests that got a 401 on the same token wait for
+    it, then check the auth state again: same identity with a renewed token
+    -> retry without signing in; identity changed -> raise, never replayed.
+    """
+
+    N = 5
+
+    async def _conn(self, monkeypatch: pytest.MonkeyPatch) -> tuple[HTTPConnection, _ConcurrentFakeHTTPClient]:
+        fake = _ConcurrentFakeHTTPClient(self.N)
+        conn = HTTPConnection("http://localhost:8000", "ns", "db", protocol="json")
+        conn._connected = True
+        conn._client = fake  # type: ignore[assignment]
+        monkeypatch.setattr("src.surreal_sdk.connection.http.asyncio.sleep", AsyncMock())
+        await conn.signin("root", "root")  # root-token-1
+        fake.rejected_tokens.add("root-token-1")  # transient 401 for every request
+        return conn, fake
+
+    @staticmethod
+    def _queries_sent_with(fake: _GatedFakeHTTPClient, authorization: str | None) -> int:
+        return sum(1 for path, method, auth in fake.calls if path == "/rpc" and method == "query" and auth == authorization)
+
+    async def _start_rejected_queries(self, conn: HTTPConnection, fake: _ConcurrentFakeHTTPClient) -> list[asyncio.Task[Any]]:
+        """Send ``N`` queries at once on the rejected token, the first re-mint held.
+
+        Returns once every query got its 401 and the other tasks had time to
+        act on it (sign in themselves, or wait for the held re-mint).
+        """
+        fake.hold_next_signin()
+        tasks = [asyncio.create_task(conn.query(f"SELECT * FROM t{i}")) for i in range(self.N)]
+        await asyncio.wait_for(fake.held.wait(), timeout=5)
+        assert fake.all_rejected.is_set()
+        assert self._queries_sent_with(fake, "Bearer root-token-1") == self.N
+        for _ in range(10 * self.N):
+            await _real_sleep(0)
+        return tasks
+
+    @pytest.mark.asyncio
+    async def test_concurrent_401s_send_one_signin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        conn, fake = await self._conn(monkeypatch)
+        tasks = await self._start_rejected_queries(conn, fake)
+
+        fake.release.set()
+        responses = await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+
+        assert all(response.is_ok for response in responses)
+        assert fake.signin_count() == 2  # the first signin and one re-mint for all N requests
+        assert conn.token == "root-token-2"
+        assert conn._signin_args is not None
+        assert self._queries_sent_with(fake, "Bearer root-token-2") == self.N  # every retry uses it
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["authenticate", "invalidate", "close", "signin_other", "signin_same"])
+    async def test_waiters_raise_when_the_identity_changed(self, monkeypatch: pytest.MonkeyPatch, change: str) -> None:
+        conn, fake = await self._conn(monkeypatch)
+        changes: dict[str, Callable[[], Awaitable[object]]] = {
+            "authenticate": lambda: conn.authenticate("user-token"),
+            "invalidate": conn.invalidate,
+            "close": conn.close,
+            "signin_other": lambda: conn.signin("other", "pw"),
+            "signin_same": lambda: conn.signin("root", "root"),
+        }
+        tasks = await self._start_rejected_queries(conn, fake)
+        fake.rejected_tokens.discard("root-token-1")  # the skew window has passed for the change
+
+        await changes[change]()
+        fake.release.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+
+        assert all(isinstance(result, QueryError) and result.code == 401 for result in results)
+        assert fake.rpc_methods().count("query") == self.N  # no request was replayed
+        assert fake.signin_count() == 2 + change.startswith("signin")  # no waiter signed in
+
+    @pytest.mark.asyncio
+    async def test_failed_remint_is_not_retried_by_each_waiter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        conn, fake = await self._conn(monkeypatch)
+        fake.signin_status = 500
+        tasks = await self._start_rejected_queries(conn, fake)
+
+        fake.release.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5)
+
+        assert all(isinstance(result, QueryError) and result.code == 401 for result in results)
+        assert fake.signin_count() == 2  # the first signin and the one failed re-mint
+        # Each request: its 401, then one last retry with the current token.
+        assert self._queries_sent_with(fake, "Bearer root-token-1") == 2 * self.N
+        assert conn._signin_args is None
+
+    @pytest.mark.asyncio
+    async def test_cancelled_remint_releases_the_waiters(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        conn, fake = await self._conn(monkeypatch)
+        tasks = await self._start_rejected_queries(conn, fake)
+        remint_task = fake.held_task
+        assert remint_task in tasks
+        waiters = [task for task in tasks if task is not remint_task]
+
+        remint_task.cancel()
+        fake.rejected_tokens.discard("root-token-1")  # the skew window has passed
+        responses = await asyncio.wait_for(asyncio.gather(*waiters), timeout=5)
+
+        assert all(response.is_ok for response in responses)
+        with pytest.raises(asyncio.CancelledError):
+            await remint_task
+        assert fake.signin_count() == 1  # the cancelled re-mint never got its reply logged; no waiter signed in
+        assert conn.token == "root-token-1"
+        assert conn._signin_args is None  # dropped by the cancelled signin(), as before
+        # The cancelled request's 401, then each waiter's 401 and its last retry.
+        assert self._queries_sent_with(fake, "Bearer root-token-1") == 2 * self.N - 1
+
+    @pytest.mark.asyncio
+    async def test_same_argument_signin_during_a_pending_401_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Documented behaviour (0.35.5 notes): a caller ``signin()`` is a new identity, even with the same arguments."""
+        conn, fake = await self._conn(monkeypatch)
+        fake.concurrent = 1
+        fake.hold_next_signin()
+        task_a = asyncio.create_task(conn.query("SELECT * FROM a_only"))
+        await asyncio.wait_for(fake.held.wait(), timeout=5)
+        fake.rejected_tokens.discard("root-token-1")
+
+        await conn.signin("root", "root")  # root-token-2
+        fake.release.set()
+
+        with pytest.raises(QueryError, match="401"):
+            await asyncio.wait_for(task_a, timeout=5)
+        assert conn.token == "root-token-2"  # the caller's signin, not A's discarded re-mint
+        assert self._queries_sent_with(fake, "Bearer root-token-2") == 0  # A never replayed
+        assert conn._signin_args is not None and conn._signin_args["user"] == "root"
