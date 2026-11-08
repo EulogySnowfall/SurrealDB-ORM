@@ -35,7 +35,9 @@ One fix PR, #637 via #642 (`surreal_orm/migrations/model_generator.py`, backport
 - **Server text in generated source goes through two private helpers.** `_py_str()` writes one Python string literal
   with `repr()` (`Computed(...)`, changefeed, unknown table type, HNSW vector type), so `ast.literal_eval()` gives
   back the server text exactly; `_py_comment()` keeps event names and `WHEN` clauses on one comment line (control
-  characters and U+2028 / U+2029 as Python escapes). The other config values and `DEFAULT` already used `repr()`.
+  characters and U+2028 / U+2029 as Python escapes). The other config values except `table_name` (`permissions`,
+  `view_query`, `relation_in` / `relation_out`) and `DEFAULT` already used `repr()`; table and field names are
+  written as before.
   `main`'s `on_delete` sites have no counterpart here (no `REFERENCE` on 2.x).
 - **`_GEOMETRY_TYPE_RE.fullmatch()`** replaces the greedy `geometry<(.+)>` match: only 2.x geometry kinds, alone or
   as a `|` union, plus the trailing `| null` that `parse_define_field()` leaves in a nullable column's type; anything

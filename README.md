@@ -59,7 +59,7 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
   changefeed duration, an unknown table type and the HNSW vector type are written with `repr()`, so a `VALUE` clause
   holding a double quote or a backslash no longer produces a module that does not parse or that holds a different
   expression. Event names and `WHEN` clauses in the generated comments stay on one line, and a geometry type becomes
-  `GeoField[...]` only for known geometry kinds. **Behaviour change:** generated literals use single quotes
+  `GeoField[...]` only for known geometry kinds. **Behaviour change:** generated literals use Python `repr()` quoting
   (`changefeed='1h'`, `GeoField['point']`); re-run `inspectdb` to regenerate models. See the [CHANGELOG](CHANGELOG).
 
 ## What's New in 0.21.61
