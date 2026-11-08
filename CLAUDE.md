@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.1)
+> Context document for Claude AI - Last updated: November 2026 (0.39.2)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.1 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -21,6 +21,37 @@
 
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.2
+
+One fix, #279 via #648 (`surreal_sdk/connection/websocket.py`,
+`streaming/live_query.py`, `streaming/live_select.py`, `protocol/cbor.py`,
+`docs/sdk.md`). Pin unchanged (3.3.5). `v2`: not needed, the line ended at
+0.39.0 (the same `_resubscribe_all()` / `live()` defects are on 0.21.62).
+Resolves the three live-query items of the 0.34.8 *Known limitations*.
+
+- **Every live query is a `LiveSubscriptionParams`.** `conn.live()` and
+  `LiveQuery.subscribe()` used to fill only `_live_callbacks`, which a
+  reconnect clears, so the callback API went silent. They register params
+  now (`LiveQuery` with the same private `_on_resubscribed` hook as
+  `LiveSelectStream`); `kill()` / `unsubscribe()` unregister before their
+  first await, and `kill()` resolves the first id through
+  `_live_id_aliases` (one entry per subscription).
+- **A subscription moves to its new id only after its `LIVE SELECT`
+  succeeds.** `_resubscribe_all()` iterates over a snapshot and leaves a
+  failed one under its previous id for the next reconnect; one unregistered
+  while its `LIVE SELECT` is in flight is not adopted and the new query is
+  killed. The managers match the first id or the current `live_id`.
+- **aiohttp hands the reader a buffered message without yielding**, so a
+  notification in the same read as its `LIVE SELECT` reply ran before the id
+  was registered. While a `LIVE SELECT` is in flight, unknown-id
+  notifications go to a bounded `deque` (128) and are replayed in order.
+- **`_preprocess_for_cbor()` walks a `RecordId` read-only** to warn on a
+  naive `datetime` (cycle-safe, bytes unchanged).
+- **Open (review suggestions on #648):** a resubscribe that fails on a live
+  session is silent until the next drop (no log); `kill()` pops the callback
+  only after the RPC returns; `close()` keeps `_live_subscriptions`,
+  `_live_callbacks` and `_live_id_aliases`.
 
 ### What's New in 0.39.1
 
