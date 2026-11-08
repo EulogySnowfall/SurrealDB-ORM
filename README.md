@@ -41,6 +41,20 @@
 
 ---
 
+## What's New in 0.39.5
+
+**Patch release — change-feed unit count under the JSON protocol**
+([#364](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/364)). SDK only, no new public API, no query text change,
+SurrealDB pin unchanged (3.3.5). CBOR (the default) is not affected:
+
+- With `protocol="json"`, change feeds no longer merge the changes of two escaped table names sharing a prefix before
+  `:` (`` `a:b`:1 `` and `` `a:c`:1 ``) into one unit, so a window cut at the scan limit is never taken for the end of
+  the feed. This resolves the 0.34.19 known limitation.
+- **Behaviour change (JSON only):** a change on an escaped table name (one holding `:`, or a hyphenated name such as
+  `my-table`) counts as its own unit, so such a window can be re-read one extra time. No entry is skipped.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.39.4
 
 **Patch release — the relation detection helpers see optional relations**
