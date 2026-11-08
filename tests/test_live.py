@@ -530,7 +530,6 @@ class TestConnectionManagerWebSocket:
             SurrealDBConnectionManager._ws_clients.update(saved_ws)
 
 
-
 class _I626FakeWebSocket:
     """Stand-in for ``WebSocketConnection``.
 
