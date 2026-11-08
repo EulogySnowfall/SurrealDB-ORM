@@ -7,6 +7,7 @@ requiring a running SurrealDB instance.
 
 import asyncio
 import inspect
+import logging
 from typing import Any
 
 import pytest
@@ -787,6 +788,156 @@ class TestI626ConcurrentGetWsClient:
         assert _I626FakeWebSocket.instances == [clients[0]]
         assert clients[0].close_calls == 1
         assert "i626" not in manager._ws_clients
+
+
+class _I634FakeWebSocket:
+    """Stand-in for ``WebSocketConnection`` whose ``connect()`` or ``signin()`` blocks.
+
+    ``block_on`` names the step that sets ``entered`` and then waits on ``gate``
+    (never set by the tests, so only a cancellation ends the wait).
+    ``close_error`` makes ``close()`` raise after counting the call.
+    """
+
+    instances: list["_I634FakeWebSocket"] = []
+    block_on: str | None = None
+    entered: asyncio.Event | None = None
+    gate: asyncio.Event | None = None
+    close_error: Exception | None = None
+
+    def __init__(self, url: str, namespace: str, database: str, **kwargs: Any) -> None:
+        self.connected = False
+        self.signed_in = False
+        self.close_calls = 0
+        type(self).instances.append(self)
+
+    @property
+    def is_connected(self) -> bool:
+        return self.connected and self.close_calls == 0
+
+    async def _maybe_block(self, step: str) -> None:
+        cls = type(self)
+        if cls.block_on == step:
+            assert cls.entered is not None and cls.gate is not None
+            cls.entered.set()
+            await cls.gate.wait()
+
+    async def connect(self) -> None:
+        await self._maybe_block("connect")
+        self.connected = True
+
+    async def signin(self, user: str, password: str) -> None:
+        await self._maybe_block("signin")
+        self.signed_in = True
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        self.connected = False
+        error = type(self).close_error
+        if error is not None:
+            raise error
+
+
+class TestI634CancelledWsBuild:
+    """A ``get_ws_client()`` cancelled mid-build closes the client it built (#634)."""
+
+    @pytest.fixture
+    def manager(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from src.surreal_orm import connection_manager as cm
+        from src.surreal_orm.connection_config import ConnectionConfig
+
+        manager = cm.SurrealDBConnectionManager
+        monkeypatch.setattr(cm, "WebSocketConnection", _I634FakeWebSocket)
+        monkeypatch.setattr(_I634FakeWebSocket, "instances", [])
+        monkeypatch.setattr(_I634FakeWebSocket, "block_on", None)
+        monkeypatch.setattr(_I634FakeWebSocket, "entered", None)
+        monkeypatch.setattr(_I634FakeWebSocket, "gate", None)
+        monkeypatch.setattr(_I634FakeWebSocket, "close_error", None)
+        # Fresh registries and locks: a lock is bound to the loop of its first
+        # contended use, and each test runs its own loop.
+        monkeypatch.setattr(manager, "_configs", {})
+        monkeypatch.setattr(manager, "_clients", {})
+        monkeypatch.setattr(manager, "_ws_clients", {})
+        monkeypatch.setattr(manager, "_connection_lock", None)
+        monkeypatch.setattr(manager, "_ws_connection_lock", None)
+        monkeypatch.setattr(manager, "_SurrealDBConnectionManager__ws_client", None)
+        manager._configs["default"] = ConnectionConfig(
+            url="http://i634.invalid:8000",
+            user="root",
+            password="root",
+            namespace="i634",
+            database="i634",
+        )
+        return manager
+
+    @staticmethod
+    async def _cancel_blocked_build(manager: Any, step: str) -> tuple[bool, dict[str, Any], Any, bool]:
+        """Cancel a ``get_ws_client()`` blocked in *step*; return what it left behind."""
+        _I634FakeWebSocket.block_on = step
+        _I634FakeWebSocket.entered = asyncio.Event()
+        _I634FakeWebSocket.gate = asyncio.Event()
+        task = asyncio.create_task(manager.get_ws_client("default"))
+        await asyncio.wait_for(_I634FakeWebSocket.entered.wait(), timeout=5)
+        task.cancel()
+        cancelled = False
+        try:
+            await asyncio.wait_for(task, timeout=5)
+        except asyncio.CancelledError:
+            cancelled = True
+        return (
+            cancelled,
+            dict(manager._ws_clients),
+            manager._SurrealDBConnectionManager__ws_client,
+            manager._get_ws_connection_lock().locked(),
+        )
+
+    @pytest.mark.parametrize("step", ["connect", "signin"])
+    def test_cancelled_build_closes_client_and_registers_nothing(self, manager: Any, step: str) -> None:
+        """Cancelled in ``connect()`` or ``signin()``: client closed, nothing registered, cancellation raised."""
+        cancelled, registry, default_slot, locked = asyncio.run(self._cancel_blocked_build(manager, step))
+
+        assert cancelled
+        assert registry == {}
+        assert default_slot is None
+        assert not locked
+        assert len(_I634FakeWebSocket.instances) == 1
+        assert _I634FakeWebSocket.instances[0].close_calls == 1
+
+    def test_close_error_during_cleanup_is_logged_and_cancellation_raised(
+        self, manager: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A ``close()`` that raises is logged at debug level; the cancellation still propagates."""
+        from src.surreal_orm import connection_manager as cm
+
+        _I634FakeWebSocket.close_error = RuntimeError("i634 close failed")
+
+        with caplog.at_level(logging.DEBUG, logger=cm.logger.name):
+            cancelled, registry, default_slot, _ = asyncio.run(self._cancel_blocked_build(manager, "signin"))
+
+        assert cancelled
+        assert registry == {}
+        assert default_slot is None
+        assert _I634FakeWebSocket.instances[0].close_calls == 1
+        records = [r for r in caplog.records if r.exc_info and r.exc_info[1] is _I634FakeWebSocket.close_error]
+        assert len(records) == 1
+        assert records[0].levelno == logging.DEBUG
+
+    @pytest.mark.parametrize("step", ["connect", "signin"])
+    def test_next_call_builds_and_registers_a_new_client(self, manager: Any, step: str) -> None:
+        """After a cancelled build, the next ``get_ws_client()`` builds and registers a new client."""
+
+        async def scenario() -> Any:
+            await self._cancel_blocked_build(manager, step)
+            _I634FakeWebSocket.block_on = None
+            return await asyncio.wait_for(manager.get_ws_client("default"), timeout=5)
+
+        client = asyncio.run(scenario())
+
+        assert len(_I634FakeWebSocket.instances) == 2
+        assert client is _I634FakeWebSocket.instances[1]
+        assert client is not _I634FakeWebSocket.instances[0]
+        assert client.is_connected and client.signed_in
+        assert manager._ws_clients["default"] is client
+        assert manager._SurrealDBConnectionManager__ws_client is client
 
 
 # ==================== Version ====================
