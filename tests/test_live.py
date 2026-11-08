@@ -7,6 +7,7 @@ requiring a running SurrealDB instance.
 
 import asyncio
 import inspect
+from typing import Any
 
 import pytest
 
@@ -527,6 +528,265 @@ class TestConnectionManagerWebSocket:
             SurrealDBConnectionManager._configs.update(saved_configs)
             SurrealDBConnectionManager._clients.update(saved_clients)
             SurrealDBConnectionManager._ws_clients.update(saved_ws)
+
+
+class _I626FakeWebSocket:
+    """Stand-in for ``WebSocketConnection``.
+
+    ``connect()`` yields to the event loop several times, so concurrent callers
+    interleave inside a build. ``fail_on`` makes the next ``connect()`` or
+    ``signin()`` raise a ``SurrealDBError``.
+    """
+
+    instances: list["_I626FakeWebSocket"] = []
+    fail_on: str | None = None
+
+    def __init__(self, url: str, namespace: str, database: str, **kwargs: Any) -> None:
+        self.connected = False
+        self.close_calls = 0
+        type(self).instances.append(self)
+
+    @property
+    def is_connected(self) -> bool:
+        return self.connected and self.close_calls == 0
+
+    async def connect(self) -> None:
+        for _ in range(5):
+            await asyncio.sleep(0)
+        if type(self).fail_on == "connect":
+            raise _i626_sdk_error("connect refused")
+        self.connected = True
+
+    async def signin(self, user: str, password: str) -> None:
+        await asyncio.sleep(0)
+        if type(self).fail_on == "signin":
+            raise _i626_sdk_error("signin refused")
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class _I626FakeHTTP:
+    """Stand-in for ``HTTPConnection`` whose ``connect()`` waits for a gate."""
+
+    instances: list["_I626FakeHTTP"] = []
+    entered: asyncio.Event | None = None
+    gate: asyncio.Event | None = None
+
+    def __init__(self, url: str, namespace: str, database: str, **kwargs: Any) -> None:
+        self.connected = False
+        type(self).instances.append(self)
+
+    @property
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def connect(self) -> None:
+        cls = type(self)
+        if cls.entered is not None:
+            cls.entered.set()
+        if cls.gate is not None:
+            await cls.gate.wait()
+        self.connected = True
+
+    async def signin(self, user: str, password: str) -> None:
+        return None
+
+    async def close(self) -> None:
+        self.connected = False
+
+
+def _i626_sdk_error(message: str) -> Exception:
+    from src.surreal_orm import connection_manager as cm
+
+    return cm.SurrealDBError(message)
+
+
+class TestI626ConcurrentGetWsClient:
+    """Concurrent ``get_ws_client()`` calls share one WebSocket client (#626)."""
+
+    N = 8
+
+    @pytest.fixture
+    def manager(self, monkeypatch: pytest.MonkeyPatch) -> Any:
+        from src.surreal_orm import connection_manager as cm
+        from src.surreal_orm.connection_config import ConnectionConfig
+
+        manager = cm.SurrealDBConnectionManager
+        monkeypatch.setattr(cm, "WebSocketConnection", _I626FakeWebSocket)
+        monkeypatch.setattr(cm, "HTTPConnection", _I626FakeHTTP)
+        monkeypatch.setattr(_I626FakeWebSocket, "instances", [])
+        monkeypatch.setattr(_I626FakeWebSocket, "fail_on", None)
+        monkeypatch.setattr(_I626FakeHTTP, "instances", [])
+        monkeypatch.setattr(_I626FakeHTTP, "entered", None)
+        monkeypatch.setattr(_I626FakeHTTP, "gate", None)
+        # Fresh registries and locks: a lock is bound to the loop of its first
+        # contended use, and each test runs its own loop.
+        monkeypatch.setattr(manager, "_configs", {})
+        monkeypatch.setattr(manager, "_clients", {})
+        monkeypatch.setattr(manager, "_ws_clients", {})
+        monkeypatch.setattr(manager, "_connection_lock", None)
+        monkeypatch.setattr(manager, "_ws_connection_lock", None)
+        manager._configs["i626"] = ConnectionConfig(
+            url="http://i626.invalid:8000",
+            user="root",
+            password="root",
+            namespace="i626",
+            database="i626",
+        )
+        return manager
+
+    def test_concurrent_first_calls_build_one_client(self, manager: Any) -> None:
+        """N callers asking at once get one client, built once."""
+
+        async def scenario() -> list[Any]:
+            return list(await asyncio.gather(*(manager.get_ws_client("i626") for _ in range(self.N))))
+
+        clients = asyncio.run(scenario())
+
+        assert len(_I626FakeWebSocket.instances) == 1
+        assert all(client is clients[0] for client in clients)
+        assert manager._ws_clients["i626"] is clients[0]
+        assert clients[0].is_connected
+
+    def test_concurrent_default_calls_keep_legacy_alias(self, manager: Any) -> None:
+        """For ``"default"``, the legacy alias points at the one registered client."""
+        manager._configs["default"] = manager._configs["i626"]
+
+        async def scenario() -> list[Any]:
+            return list(await asyncio.gather(*(manager.get_ws_client("default") for _ in range(self.N))))
+
+        clients = asyncio.run(scenario())
+
+        assert len(_I626FakeWebSocket.instances) == 1
+        assert all(client is clients[0] for client in clients)
+        assert manager._ws_clients["default"] is clients[0]
+        assert manager._SurrealDBConnectionManager__ws_client is clients[0]
+
+    def test_in_progress_http_build_does_not_block_ws_build(self, manager: Any) -> None:
+        """A ``get_client()`` build still connecting does not hold up ``get_ws_client()``."""
+
+        async def scenario() -> tuple[Any, bool, Any]:
+            _I626FakeHTTP.entered = asyncio.Event()
+            _I626FakeHTTP.gate = asyncio.Event()
+            http_task = asyncio.create_task(manager.get_client("i626"))
+            await asyncio.wait_for(_I626FakeHTTP.entered.wait(), timeout=5)
+            ws_client = await asyncio.wait_for(manager.get_ws_client("i626"), timeout=5)
+            http_still_building = not http_task.done()
+            _I626FakeHTTP.gate.set()
+            http_client = await asyncio.wait_for(http_task, timeout=5)
+            return ws_client, http_still_building, http_client
+
+        ws_client, http_still_building, http_client = asyncio.run(scenario())
+
+        assert http_still_building
+        assert len(_I626FakeWebSocket.instances) == 1
+        assert manager._ws_clients["i626"] is ws_client
+        assert manager._clients["i626"] is http_client
+
+    def test_waiter_reuses_client_registered_while_it_waited(self, manager: Any) -> None:
+        """A caller queued on the lock re-reads the registry and builds nothing."""
+        registered = _I626FakeWebSocket("ws://i626.invalid:8000", "i626", "i626")
+        registered.connected = True
+
+        async def scenario() -> Any:
+            lock = manager._get_ws_connection_lock()
+            async with lock:
+                waiter = asyncio.create_task(manager.get_ws_client("i626"))
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                assert not waiter.done()
+                manager._ws_clients["i626"] = registered
+            return await asyncio.wait_for(waiter, timeout=5)
+
+        client = asyncio.run(scenario())
+
+        assert client is registered
+        assert _I626FakeWebSocket.instances == [registered]
+
+    def test_cancelled_waiter_leaves_lock_free_and_others_served(self, manager: Any) -> None:
+        """Cancelling a caller queued on the lock neither holds the lock nor registers anything."""
+
+        async def scenario() -> tuple[Any, bool, Any]:
+            lock = manager._get_ws_connection_lock()
+            async with lock:
+                cancelled = asyncio.create_task(manager.get_ws_client("i626"))
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                cancelled.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await cancelled
+                registry = dict(manager._ws_clients)
+            client = await asyncio.wait_for(manager.get_ws_client("i626"), timeout=5)
+            return registry, lock.locked(), client
+
+        registry, locked, client = asyncio.run(scenario())
+
+        assert registry == {}
+        assert not locked
+        assert _I626FakeWebSocket.instances == [client]
+        assert manager._ws_clients["i626"] is client
+
+    def test_stale_client_closed_and_replaced_once(self, manager: Any) -> None:
+        """A disconnected registered client is closed once and replaced by one client."""
+        stale = _I626FakeWebSocket("ws://i626.invalid:8000", "i626", "i626")
+        manager._ws_clients["i626"] = stale
+        assert not stale.is_connected
+
+        async def scenario() -> list[Any]:
+            return list(await asyncio.gather(*(manager.get_ws_client("i626") for _ in range(self.N))))
+
+        clients = asyncio.run(scenario())
+
+        assert stale.close_calls == 1
+        assert len(_I626FakeWebSocket.instances) == 2
+        fresh = _I626FakeWebSocket.instances[1]
+        assert all(client is fresh for client in clients)
+        assert manager._ws_clients["i626"] is fresh
+
+    @pytest.mark.parametrize("step", ["connect", "signin"])
+    def test_failed_build_registers_nothing_and_next_call_builds(self, manager: Any, step: str) -> None:
+        """A failed build releases the lock, registers nothing, and the next call builds."""
+        from src.surreal_orm.connection_manager import SurrealDbConnectionError
+
+        async def scenario() -> tuple[list[BaseException | Any], bool, dict[str, Any], Any]:
+            _I626FakeWebSocket.fail_on = step
+            results = await asyncio.gather(
+                *(manager.get_ws_client("i626") for _ in range(self.N)),
+                return_exceptions=True,
+            )
+            locked = manager._get_ws_connection_lock().locked()
+            registry = dict(manager._ws_clients)
+            _I626FakeWebSocket.fail_on = None
+            client = await asyncio.wait_for(manager.get_ws_client("i626"), timeout=5)
+            return list(results), locked, registry, client
+
+        results, locked, registry, client = asyncio.run(scenario())
+
+        assert all(isinstance(r, SurrealDbConnectionError) for r in results)
+        assert not locked
+        assert registry == {}
+        failed = _I626FakeWebSocket.instances[:-1]
+        assert len(failed) == self.N
+        assert all(f.close_calls == 1 for f in failed)
+        assert client is _I626FakeWebSocket.instances[-1]
+        assert manager._ws_clients["i626"] is client
+        assert client.is_connected
+
+    @pytest.mark.parametrize("via", ["close_connection", "remove_connection"])
+    def test_close_closes_the_single_registered_client(self, manager: Any, via: str) -> None:
+        """After concurrent first calls, closing the connection closes the one client built."""
+
+        async def scenario() -> list[Any]:
+            clients = list(await asyncio.gather(*(manager.get_ws_client("i626") for _ in range(self.N))))
+            await getattr(manager, via)("i626")
+            return clients
+
+        clients = asyncio.run(scenario())
+
+        assert _I626FakeWebSocket.instances == [clients[0]]
+        assert clients[0].close_calls == 1
+        assert "i626" not in manager._ws_clients
 
 
 # ==================== Version ====================
