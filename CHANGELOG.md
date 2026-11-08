@@ -6,6 +6,63 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.4] - 2026-11-08
+
+**Patch release — the relation detection helpers see optional relations.**
+One fix: #299 via #663 (`surreal_orm/fields/relation.py`). No public API is
+added and no DDL, migration or query text changes. The SurrealDB pin is
+unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`is_relation_field()`, `is_foreign_key()`, `is_many_to_many()`,
+  `is_graph_relation()` and `get_relation_info()` now find a relation marker
+  inside a union** (`ForeignKey("X") | None`, `Optional[ForeignKey("X")]`,
+  same for `ManyToMany` and `Relation`). They use the same lookup as the
+  record-link coercion and the migrations introspector, which have read union
+  members since 0.34.10 (#299).
+- **Chaining through `RelationQuerySet` attributes** (`user.following.<name>`)
+  now works when the relation on the target model is declared optional
+  (`Relation(...) | None`, `Optional[ForeignKey(...)]`) (#299).
+
+### Behaviour changes
+
+- The public detection helpers now report a union-wrapped relation marker as
+  a relation. They used to return `False` or `None` for
+  `ForeignKey("X") | None` and `Optional[ForeignKey("X")]`, and now return
+  `True` or the `RelationInfo`. Bare markers and unions with no marker
+  (`str | None`, `int | str`) give the same answers as before, and each
+  type-specific helper still matches only its own marker (#299).
+- This resolves the 0.34.10 known limitation on these helpers.
+
+### Tests
+
+- The Python-support guard (`tests/test_python_support.py`) now reads the
+  README `**Requirements:**` line and fails when its "tested on 3.X – 3.Y"
+  range differs from the `ci.yml` unit matrix. Its text now says that `cbor2`
+  needs a Rust toolchain, like `pydantic-core`, that the glibc 2.35 cap is
+  deliberate, and its no-wheel message points a pure-Python package shipped
+  only as an sdist to `SOURCE_BUILD_ALLOWED` (#292 via #662).
+
+### Removed
+
+- `tox.ini` (repository tooling only, not shipped). Nothing ran it, it listed
+  py312–py314, and it configured black and flake8, which the project does not
+  use (#292 via #662).
+
+### Documentation
+
+- Release-note corrections in the `[0.39.3]` entry: the *Added* bullet says
+  the warning is for a change written after the stream started watching; the
+  datetime-start *Behaviour changes* bullet describes the one-time search for
+  "now"; the first *Known limitations* bullet says which storage engines never
+  deliver the uncovered changes; the sign-up warning bullet lists `id` and
+  `created_at` among the fields it skips.
+- The README "What's New in 0.34.10" section no longer lists the detection
+  helpers as a known limitation (#299).
+
+---
+
 ## [0.39.3] - 2026-11-08
 
 **Patch release — change feed start-up, `Prefetch` variables, the user
@@ -69,8 +126,9 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
 - **Building a USER model's access definition warns about required fields
   that a sign-up can never set.** `define_access()`, `makemigrations` and
   `schema_diff` now emit one `UserWarning` naming every field with no default
-  that is not the identifier, the password, in `signup_fields`, computed, in
-  `server_fields`, or a `ManyToMany` / `Relation` attribute. Before, such a
+  that is not `id`, the identifier, the password, `created_at`, in
+  `signup_fields`, computed, in `server_fields`, or a `ManyToMany` /
+  `Relation` attribute. Before, such a
   field showed up only as a server error on the first sign-up (#371).
 - **An integer outside the 64-bit range inside a `RecordId`'s id or used as a
   dict key** (at any depth, tuple keys included) now raises `ValueError`
@@ -85,8 +143,8 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
 
 ### Added
 
-- **A datetime change feed start that misses a change emits one
-  `RuntimeWarning`** pointing to versionstamp cursors, instead of waiting
+- **A datetime change feed start that misses a change written after the
+  stream started watching emits one `RuntimeWarning`** pointing to versionstamp cursors, instead of waiting
   silently. Measured on SurrealDB 3.3.5: RocksDB selects the entries written
   from a `d'...'` start; in-memory storage and SurrealKV select nothing for any
   instant after the epoch. The stream does not raise and keeps polling; the
@@ -97,9 +155,10 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
 - The default change feed start sends small `LIMIT 1` probes (up to 130)
   instead of pages of 1000 full entries (#312).
 - A multi-table change feed round is a single request (#312).
-- A change feed with a datetime start whose window stays empty sends one
-  extra small probe per empty poll, until a change is written after the start
-  or it has warned (#312).
+- A change feed with a datetime start whose window stays empty searches once
+  for "now" (up to 130 small probes) at the first empty poll that comes at
+  least 5 seconds after the start, then sends one extra small probe per empty
+  poll, until a window is non-empty or it has warned (#312).
 - `QuerySet.variables()` raises `ValueError("Variable names starting with '_'
   are reserved for the ORM's own bindings: '<name>'")` for any name starting
   with `_`, before storing anything. This includes names such as `_x_after`,
@@ -142,7 +201,7 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
   started watching: the check finds "now" at the first empty poll that comes
   at least 5 seconds after the datetime start, and only a change written after
   that point is detected. Changes committed between the `since` instant and
-  that point are skipped without a warning, and on in-memory or SurrealKV
+  that point are not covered by the warning; on in-memory or SurrealKV
   storage they are never delivered (review suggestion on #650).
 - On a small feed, the probe search can take more round trips than the old
   scan, which needed one request below 1000 entries: about 10 probes for a

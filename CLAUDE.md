@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.3)
+> Context document for Claude AI - Last updated: November 2026 (0.39.4)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.3 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.4 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -21,6 +21,26 @@
 
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.4
+
+One fix, #299 via #663 (`surreal_orm/fields/relation.py` only). Pin
+unchanged (3.3.5). `v2`: not backported (the line ended at 0.21.62; the
+defect is there too). Also #292 via #662 (tests and tooling only).
+
+- **One marker lookup for every reader.** `is_relation_field()`,
+  `is_foreign_key()`, `is_many_to_many()`, `is_graph_relation()` and
+  `get_relation_info()` go through `_find_marker()` (union members first,
+  then the metadata), like the record-link coercion and the introspector
+  since 0.34.10. That release left them on their own top-level `Annotated`
+  loops on purpose, to keep a change to what a public API returns out of a
+  fix; this is that change. Each type-specific helper passes only its own
+  marker class, so they stay exclusive.
+- **`RelationQuerySet.__getattr__` was the only internal caller**: chaining
+  through an optional relation on the target model works now.
+- **The Python-support guard reads the README Requirements line** (#662),
+  and `tox.ini` is gone, so the tested Python range is checked in every
+  place it is stated.
 
 ### What's New in 0.39.3
 
@@ -77,7 +97,8 @@ and #612 via #659 (`surreal_sdk/protocol/cbor.py`). Pin unchanged (3.3.5).
   changed paths), the cycle guard stays. Dict keys are range-checked
   (`_check_key()`), never converted. The signed 64-bit question is #657.
 - **Open (review suggestions):** changes between the `since` instant and the
-  datetime check's marker are skipped without a warning, and a small feed
+  datetime check's marker are not covered by the warning (on in-memory or
+  SurrealKV storage they are never delivered), and a small feed
   costs more probes than the old one-request scan (#650); a `$auth` read
   failure after a rotated refresh still says `Token refresh failed` (#655);
   a `.cache()` read in flight across a drop stores stale rows (a per-table
@@ -935,7 +956,8 @@ on 3.2.6; unit 2,521 on 3.12/3.13/3.14/3.15.
   `is_foreign_key()`, `is_relation_field()`, `is_many_to_many()`,
   `is_graph_relation()` and `get_relation_info()` still look only at a
   top-level `Annotated` and report an optional FK as not a relation. Changing
-  them changes what a public API returns, so it is left to a follow-up.
+  them changes what a public API returns, so it was left to a follow-up:
+  0.39.4 moved them onto `_find_marker()` too (#299).
 - **The upgrade repair needs a guard on 3.2.6.** Strings written before the
   fix (`'table:id'` or a bare id, in SCHEMALESS or `any` columns) no longer
   match a filter. The repair `UPDATE` keeps an outer
@@ -959,11 +981,10 @@ passed, 1 skipped, 1 xfailed (#147 still XFAIL); unit 2,454 on
   matrix (the source of truth), the classifiers of both `pyproject.toml`
   files, the Makefile `test-all-python` helper, the ruff/mypy floor and the
   README Requirements line ("tested on 3.12 – 3.15").
-  `tests/test_python_support.py` ties the first five together: classifiers
-  equal to the matrix, the matrix starting at the `requires-python` floor with
-  no gap, ruff/mypy on the floor, the helper running every Python. It does not
-  read `README.md`, so the Requirements line is kept by hand. `tox.ini` still
-  says py312–py314; nothing runs it and the guard does not read it either.
+  `tests/test_python_support.py` ties them together: classifiers equal to the
+  matrix, the matrix starting at the `requires-python` floor with no gap,
+  ruff/mypy on the floor, the helper running every Python, and (since 0.39.4,
+  #662) the README "tested on" range equal to the matrix.
 - **A new CPython minor breaks the lock before the code.** A package locked
   before its maintainers shipped wheels for that Python is built from source
   by `uv sync --frozen` (Rust for pydantic-core and cbor2, a C compiler for
@@ -974,10 +995,9 @@ passed, 1 skipped, 1 xfailed (#147 still XFAIL); unit 2,454 on
   (`SOURCE_BUILD_ALLOWED`, pure-Python sdist fallback). Its manylinux check
   is capped at glibc 2.35, older than the ubuntu-24.04 runners. The fix is a
   targeted `uv lock --upgrade-package <name>`, never a blanket upgrade.
-- **Adding the next Python** = add it to the `ci.yml` unit matrix, let the
-  guard name the classifiers, the Makefile helper and every package to
-  refresh, and update the README Requirements line by hand: the guard stays
-  green while that line is stale.
+- **Adding the next Python** = add it to the `ci.yml` unit matrix and let the
+  guard name the classifiers, the Makefile helper, the README Requirements
+  line and every package to refresh.
 
 ### What's New in 0.34.8
 
