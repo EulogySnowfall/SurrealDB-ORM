@@ -396,6 +396,22 @@ def _own_token(record_id: str) -> str:
 class TestValidateTokenLocal:
     """Tests for validate_token_local() — local JWT decode."""
 
+    @staticmethod
+    def _model() -> type[AuthenticatedUserMixin]:
+        """A user model on the ``users`` table the tokens below belong to.
+
+        validate_token_local() checks that the ID claim is in the model's
+        table (#375), so it is called on a model, not on the bare mixin.
+        """
+
+        class F0142LocalUser(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(table_type=TableType.USER, table_name="users")
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        return F0142LocalUser
+
     def _make_jwt(self, claims: dict, expired: bool = False) -> str:
         """Build a fake JWT with the given claims."""
         header = base64.urlsafe_b64encode(json.dumps({"alg": "HS256"}).encode()).rstrip(b"=")
@@ -410,36 +426,36 @@ class TestValidateTokenLocal:
     def test_valid_token_with_id_claim(self) -> None:
         """Should extract record ID from 'ID' claim."""
         token = self._make_jwt({"ID": "users:alice123"})
-        result = AuthenticatedUserMixin.validate_token_local(token)
+        result = self._model().validate_token_local(token)
         assert result == "users:alice123"
 
     def test_valid_token_with_lowercase_id(self) -> None:
         """Should also accept lowercase 'id' claim."""
         token = self._make_jwt({"id": "users:bob456"})
-        result = AuthenticatedUserMixin.validate_token_local(token)
+        result = self._model().validate_token_local(token)
         assert result == "users:bob456"
 
     def test_expired_token(self) -> None:
         """Expired token should return None."""
         token = self._make_jwt({"ID": "users:alice123"}, expired=True)
-        result = AuthenticatedUserMixin.validate_token_local(token)
+        result = self._model().validate_token_local(token)
         assert result is None
 
     def test_no_id_claim(self) -> None:
         """Token without ID claim should return None."""
         token = self._make_jwt({"sub": "something_else"})
-        result = AuthenticatedUserMixin.validate_token_local(token)
+        result = self._model().validate_token_local(token)
         assert result is None
 
     def test_malformed_token(self) -> None:
         """Malformed token should return None."""
-        assert AuthenticatedUserMixin.validate_token_local("not.a.valid.jwt.token") is None
-        assert AuthenticatedUserMixin.validate_token_local("") is None
-        assert AuthenticatedUserMixin.validate_token_local("single_part") is None
+        assert self._model().validate_token_local("not.a.valid.jwt.token") is None
+        assert self._model().validate_token_local("") is None
+        assert self._model().validate_token_local("single_part") is None
 
     def test_invalid_base64(self) -> None:
         """Invalid base64 in payload should return None."""
-        result = AuthenticatedUserMixin.validate_token_local("header.!!!invalid!!!.signature")
+        result = self._model().validate_token_local("header.!!!invalid!!!.signature")
         assert result is None
 
     def test_token_without_exp(self) -> None:
@@ -449,7 +465,7 @@ class TestValidateTokenLocal:
         payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=")
         sig = base64.urlsafe_b64encode(b"sig").rstrip(b"=")
         token = f"{header.decode()}.{payload.decode()}.{sig.decode()}"
-        result = AuthenticatedUserMixin.validate_token_local(token)
+        result = self._model().validate_token_local(token)
         assert result == "users:no_exp"
 
 
