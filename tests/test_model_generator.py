@@ -12,6 +12,7 @@ import ast
 import pytest
 
 from src.surreal_orm import SurrealFunc
+from src.surreal_orm.migrations.define_parser import parse_define_field
 from src.surreal_orm.migrations.model_generator import ModelCodeGenerator
 from src.surreal_orm.migrations.state import (
     EventState,
@@ -561,6 +562,23 @@ class TestI635ServerTextInGeneratedSource:
         field = FieldState(name="g", field_type=field_type, nullable=False)
         line, imports = self.gen._generate_field(field)
         assert line == f"g: GeoField[{geo_type!r}]"
+        assert "from surreal_orm.fields import GeoField" in imports
+
+    @pytest.mark.parametrize(
+        ("definition", "geo_type"),
+        [
+            # INFO FOR TABLE (3.3.5) keeps ``| null`` in the reported type.
+            ("DEFINE FIELD g ON i635_places TYPE geometry<point> | null PERMISSIONS FULL", "point"),
+            ("DEFINE FIELD g ON i635_places TYPE geometry<point | polygon> | null PERMISSIONS FULL", "point | polygon"),
+            # ``option<geometry<point>>`` is reported as ``none | geometry<point>``.
+            ("DEFINE FIELD g ON i635_places TYPE none | geometry<point> PERMISSIONS FULL", "point"),
+        ],
+    )
+    def test_nullable_geometry_keeps_its_kind(self, definition: str, geo_type: str) -> None:
+        field = parse_define_field(definition)
+        assert field.nullable
+        line, imports = self.gen._generate_field(field)
+        assert line == f"g: GeoField[{geo_type!r}] | None = None"
         assert "from surreal_orm.fields import GeoField" in imports
 
     def test_ordinary_expression_round_trips(self) -> None:

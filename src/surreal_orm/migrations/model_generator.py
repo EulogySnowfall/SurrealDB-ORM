@@ -49,8 +49,14 @@ _IMPORT_MAP: dict[str, str] = {
 # Geometry kinds SurrealDB accepts in ``geometry<...>`` (``linestring`` and
 # ``feature`` are kept for states built by hand), alone or as a ``|`` union.
 # Anything else in the brackets is not a geometry type and maps to ``Any``.
+# A trailing ``| null`` is allowed: ``INFO FOR TABLE`` keeps it in the type
+# text of a nullable column (``parse_define_field()`` sets ``nullable`` and
+# leaves it there), and the ``| None`` comes from ``nullable``.
 _GEOMETRY_KIND = r"\s*(?:point|line|linestring|polygon|multipoint|multiline|multipolygon|collection|feature)\s*"
-_GEOMETRY_TYPE_RE = re.compile(rf"geometry<({_GEOMETRY_KIND}(?:\|{_GEOMETRY_KIND})*)>", re.IGNORECASE)
+_GEOMETRY_TYPE_RE = re.compile(
+    rf"geometry<({_GEOMETRY_KIND}(?:\|{_GEOMETRY_KIND})*)>(?:\s*\|\s*null)?",
+    re.IGNORECASE,
+)
 
 
 def _py_str(text: str) -> str:
