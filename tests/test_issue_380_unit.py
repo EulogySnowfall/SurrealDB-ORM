@@ -87,6 +87,19 @@ class TestLookupIsNamed:
         message = str(_compile_error(_hand_built("name", lookup)))
         assert message == f"Invalid lookup {lookup!r} on filter field 'name': expected a string. {_SUPPORTED}"
 
+    @pytest.mark.parametrize("text", ["exact", "gt", "isnull"])
+    def test_non_string_lookup_spelling_a_lookup_is_refused(self, text: str) -> None:
+        # The old check re-joined the lookup into a key as text, so an object
+        # whose str() is a lookup name passed it and was then rendered as an
+        # equality (`name = $_f0`) whatever lookup its text named.
+        class Spelled:
+            def __str__(self) -> str:
+                return text
+
+        lookup = Spelled()
+        message = str(_compile_error(_hand_built("name", lookup)))
+        assert message == f"Invalid lookup {lookup!r} on filter field 'name': expected a string. {_SUPPORTED}"
+
 
 class TestEveryRendererReportsTheChild:
     def test_inside_an_element_condition(self) -> None:
