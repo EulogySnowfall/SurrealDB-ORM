@@ -26,7 +26,7 @@ from uuid import UUID
 import cbor2
 import httpx
 import pytest
-from cbor2 import CBORTag, frozendict
+from cbor2 import CBORTag
 
 from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.connection.http import HTTPConnection
@@ -46,6 +46,17 @@ from surreal_sdk.types import QueryResponse
 
 C1 = "SELECT * FROM t ORDER BY id LIMIT {n};"
 C2 = "SELECT * FROM $_x_after ORDER BY id LIMIT {n};"
+
+
+def _frozen_mapping_type() -> type[Any]:
+    """The type cbor2 decodes an object record id key to: ``cbor2.frozendict``
+    up to Python 3.14, the built-in ``frozendict`` from 3.15 on (taken from a
+    decode rather than named, as in ``test_jsonl_codec_unit.py``)."""
+    decoded = cbor2.loads(bytes.fromhex("a1a1616b0101"))  # {{"k": 1}: 1}
+    return type(next(iter(decoded)))
+
+
+FROZENDICT = _frozen_mapping_type()
 
 
 class Row(dict[str, Any]):
@@ -135,7 +146,7 @@ def _wire(value: Any) -> Any:
 
 @pytest.mark.parametrize(
     "key",
-    [5, -7, "alice", "42", UUID("0190f3b2-7c1e-7a4b-9f00-123456789abc"), (1, "a"), [2], frozendict({"a": 1}), {"b": 2}],
+    [5, -7, "alice", "42", UUID("0190f3b2-7c1e-7a4b-9f00-123456789abc"), (1, "a"), [2], FROZENDICT({"a": 1}), {"b": 2}],
     ids=["int", "negative-int", "string", "numeric-string", "uuid", "tuple", "list", "frozendict", "dict"],
 )
 def test_range_cursor_is_an_exclusive_start_record_id_range(key: Any) -> None:

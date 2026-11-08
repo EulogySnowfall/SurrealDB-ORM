@@ -17,8 +17,8 @@ from collections.abc import AsyncGenerator
 from typing import Any
 from uuid import UUID
 
+import cbor2
 import pytest
-from cbor2 import frozendict
 
 from src.surreal_orm import SurrealDBConnectionManager
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
@@ -37,6 +37,17 @@ DB = "test_issue_454"
 MIXED = "i454_mixed"
 EDGE = "i454_edge"
 DOOMED = "i454_doomed"
+
+
+def _frozen_mapping_type() -> type[Any]:
+    """The type cbor2 decodes an object record id key to: ``cbor2.frozendict``
+    up to Python 3.14, the built-in ``frozendict`` from 3.15 on (taken from a
+    decode rather than named, as in ``test_jsonl_codec_unit.py``)."""
+    decoded = cbor2.loads(bytes.fromhex("a1a1616b0101"))  # {{"k": 1}: 1}
+    return type(next(iter(decoded)))
+
+
+FROZENDICT = _frozen_mapping_type()
 
 # Every kind of record id, in no particular order: numbers, strings (one that
 # looks like a number, one with a space), UUIDs, arrays and objects.
@@ -127,7 +138,7 @@ def _plain(value: Any) -> Any:
     ``frozendict``; both bind back to the same key."""
     if isinstance(value, RecordId):
         return ("record", value.table, _plain(value.id))
-    if isinstance(value, dict | frozendict):
+    if isinstance(value, dict | FROZENDICT):
         return {k: _plain(v) for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [_plain(v) for v in value]
@@ -172,7 +183,7 @@ async def _assert_range_scans(conn: BaseSurrealConnection, statements: list[tupl
 # ---------------------------------------------------------------------------
 
 
-ALL_KINDS = {int, str, UUID, tuple, frozendict}
+ALL_KINDS = {int, str, UUID, tuple, FROZENDICT}
 
 
 @pytest.mark.parametrize("where", [None, "v >= $min"], ids=["no-where", "where"])
