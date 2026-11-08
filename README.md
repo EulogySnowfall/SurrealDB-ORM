@@ -51,6 +51,15 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.61
+
+**Bug fix release (V2 LTS).** The 0.21.60 review follow-up (#634); pin unchanged (2.7.0).
+
+- **A cancelled `get_ws_client()` closes its half-built WebSocket client.** When the caller is cancelled while a new
+  WebSocket client connects or signs in (for example a `wait_for()` around `live()` that times out), that client is
+  now closed before the cancellation propagates, as the HTTP client build already did, instead of being left open.
+  Nothing is registered and the next call builds a new client. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.60
 
 **Bug fix release (V2 LTS).** Two backports from `main` (#622, #626); pin unchanged (2.7.0).

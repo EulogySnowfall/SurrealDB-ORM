@@ -6,6 +6,68 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.61] - 2026-11-07
+
+**Bug fix release (V2 LTS).** The 0.21.60 review follow-up (#634 via
+#636): a cancelled first call to `get_ws_client()` now closes the
+WebSocket client it was building. The SurrealDB pin is unchanged (tested
+against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **A cancelled `get_ws_client()` closes its half-built WebSocket client.**
+  When the caller of `SurrealDBConnectionManager.get_ws_client()` is
+  cancelled while the new `WebSocketConnection` connects or signs in (for
+  example a `wait_for()` around `live()` that times out), that client is
+  now closed before `CancelledError` is re-raised, as the HTTP client build
+  already did, instead of being left open (`aiohttp` session, socket and
+  reader task) with nothing referring to it. Nothing is registered, and the
+  next call builds a new client. A `close()` that fails during this cleanup
+  is logged at debug level and does not replace the cancellation (#634,
+  #636). This resolves the second known limitation listed under
+  `[0.21.60]`.
+
+### Behaviour change
+
+- Only on cancellation of a WebSocket client build: the half-built client
+  is closed (shielded close) instead of left open. No DDL, no SurrealQL
+  change, no public API change.
+
+### Known limitations
+
+- Still as in 0.21.60: `close_connection()`, `remove_connection()`,
+  `reconnect()` and `add_connection()` with a changed configuration do not
+  take the WebSocket lock, so a build already in progress still registers
+  its client once it has signed in.
+- If the cancelled caller is cancelled a second time while the shielded
+  close runs, the close still completes, but an error it then raises is
+  reported by asyncio as "Task exception was never retrieved" rather than
+  logged at debug level (review suggestion on #636).
+
+### Tests
+
+- `TestI634CancelledWsBuild` in `tests/test_live.py` (5 tests): a build
+  cancelled while blocked in `connect()` or in `signin()` closes the client
+  and registers nothing; a `close()` that raises during the cleanup is
+  logged while the cancellation still propagates; the next call builds and
+  registers a new client after either blocking point. The 3 tests on the
+  defect fail against the 0.21.60 `src/`; the other 2 pin behaviour that
+  must not change.
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, on the released tree (#636's validated head, base
+0.21.60): 4,083 unit tests pass on each of Python 3.12, 3.13 and 3.14 (1
+expected failure, the strict `xfail` from 0.21.51), and 833 integration
+tests pass (4 expected failures, the existing strict `xfail`s for integer
+record ids over WebSocket); `ruff` and `mypy` clean.
+
+---
+
 ## [0.21.60] - 2026-11-07
 
 **Bug fix release (V2 LTS).** Two backports from `main`: a pooled

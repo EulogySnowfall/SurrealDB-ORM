@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.60)
+> Context document for Claude AI - Last updated: November 2026 (0.21.61)
 
 <!-- -->
 
@@ -20,12 +20,26 @@
 
 ---
 
-## Current Version: 0.21.60 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.61 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.61
+
+One fix PR, #634 via #636 (`surreal_orm/connection_manager.py`), the 0.21.60 review follow-up. Pin unchanged
+(2.7.0).
+
+- **`_build_ws_client()` has an `except asyncio.CancelledError` branch** that closes the half-built client under
+  `asyncio.shield()`, logs a failing `close()` at debug level and re-raises, like `_build_client()` (HTTP).
+  `CancelledError` is a `BaseException`, so the `SurrealDBError` / `Exception` handlers never saw it. Registration is
+  the last step of the build, so a registered client is never closed by this path. This closes the first 0.21.60
+  open item.
+- **Open:** the lock-free unregistering paths (`close_connection()`, `remove_connection()`, `reconnect()`,
+  `add_connection()`) from 0.21.60; and no test cancels the builder a second time during the shielded close
+  (review suggestion on #636): if that orphaned close raises, asyncio reports "Task exception was never retrieved".
 
 ### What's New in 0.21.60
 
