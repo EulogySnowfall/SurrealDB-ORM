@@ -6,6 +6,60 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.8] - 2026-11-08
+
+**Patch release — `validate_token_local()` applies the model-table check.**
+One fix: #375 via #676 (`surreal_orm/auth/mixins.py`). ORM only; no public
+API is added. The SurrealDB pin is unchanged (tested against 3.3.5,
+supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`validate_token_local()` now applies the same model-table check as
+  `validate_token()` / `authenticate_token()`:** it returns `None` when the
+  token's `ID` claim is in another table, including a table whose name only
+  starts with the model's table (`staffer:a` is not a `staff` record). A
+  quoted table name (`` `t`:x `` and the angle-bracket form) is read as the
+  table it names (#375). It still does not verify the signature or the
+  `AC` / `NS` / `DB` claims (trusted backend only).
+
+### Behaviour change
+
+- `Model.validate_token_local(token)` returns `None` for a token whose `ID`
+  claim is not in `Model`'s table, where it used to return the id. Called
+  on the bare `AuthenticatedUserMixin` instead of a model, it now returns
+  `None` for every token, the same as `validate_token()`.
+
+### Upgrading
+
+- Call `validate_token_local()` on the user model whose table issued the
+  token, not on `AuthenticatedUserMixin` or another model.
+
+### Documentation
+
+- `[0.35.1]`: the known limitation "`validate_token_local()` does not apply
+  the table check" is marked resolved in 0.39.8, and `refresh_access_token()`
+  is added to the auth methods that honour `connection=` / `using()`.
+
+### Tests
+
+- `test_cached_validation_ends_at_token_expiry` uses a 5 s token lifetime
+  (was 2 s): with a 1 s `exp` resolution the token could have about 1 s
+  left when `signup()` returned, so a slow runner could fail the cache-hit
+  assertion before the expiry was tested.
+
+### Known limitations
+
+- For a string ID, the shared table check strips a quoted table name's
+  delimiters without reading back the escapes inside them, so a model whose
+  table name has to be escaped (one containing a backtick, for example)
+  gets `None` from `validate_token_local()` for its own tokens; before this
+  release the method returned the id. `validate_token()` reads such a
+  record id the same way when the protocol is JSON (review suggestion on
+  #676).
+
+---
+
 ## [0.39.7] - 2026-11-08
 
 **Patch release — one reading of a `table:id` reference on every SDK path.**
@@ -1967,7 +2021,8 @@ SurrealDB pin is unchanged (tested against 3.3.4, supported range
 - **Auth methods on `AuthenticatedUserMixin` models honour the model's
   `connection=` setting and `SurrealDBConnectionManager.using()`** —
   `signup`, `signin`, `authenticate_token`, `validate_token`,
-  `define_access` and the bearer-key methods. Before, with the documented
+  `refresh_access_token`, `define_access` and the bearer-key methods.
+  Before, with the documented
   `class User(AuthenticatedUserMixin, BaseSurrealModel)` order, the mixin's
   runtime `get_connection_name()` stub shadowed the model's and they always
   used the `default` connection (#331).
@@ -1994,9 +2049,10 @@ SurrealDB pin is unchanged (tested against 3.3.4, supported range
 
 ### Known limitation
 
-- `validate_token_local()` (local decode, no network call) does not apply
+- ~~`validate_token_local()` (local decode, no network call) does not apply
   the new model-table check: it still returns the record id whatever its
-  table. Use `validate_token()` when the table matters.
+  table.~~ Resolved in 0.39.8 (#375): it applies the same check as
+  `validate_token()`.
 
 ## [0.35.0] - 2026-10-28
 

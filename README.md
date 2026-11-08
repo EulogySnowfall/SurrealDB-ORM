@@ -41,6 +41,20 @@
 
 ---
 
+## What's New in 0.39.8
+
+**Patch release — `validate_token_local()` applies the model-table check**
+([#375](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/375)). ORM only, no new public API, SurrealDB pin
+unchanged (3.3.5):
+
+- `validate_token_local()` now returns `None` when the token's `ID` claim is in another table (including a table whose
+  name only starts with the model's), as `validate_token()` and `authenticate_token()` have done since 0.35.1. It still
+  does not verify the signature or the `AC` / `NS` / `DB` claims (trusted backend only).
+- **Behaviour change:** call it on the user model whose table issued the token. Called on another model it returns
+  `None` where it used to return the id; called on the bare `AuthenticatedUserMixin` it returns `None` for every token.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.39.7
 
 **Patch release — one reading of a `table:id` reference on every SDK path**
@@ -548,12 +562,11 @@ for the full notes.
   `$auth` record is not in the model's table, and the cache is keyed per connection (name, URL, namespace, database),
   model table and token. `invalidate_token_cache(token)` removes the token's entries everywhere.
 - **Auth methods follow connection routing.** With `class User(AuthenticatedUserMixin, BaseSurrealModel)`, `signup`,
-  `signin`, `authenticate_token`, `validate_token`, `define_access` and the bearer-key methods used to go to the
-  `default` connection; they now honour `connection=` and `SurrealDBConnectionManager.using()`.
+  `signin`, `authenticate_token`, `validate_token`, `refresh_access_token`, `define_access` and the bearer-key methods
+  used to go to the `default` connection; they now honour `connection=` and `SurrealDBConnectionManager.using()`.
 - **Upgrading:** validate a token through the model it belongs to. If the model is routed to another connection, make
   sure the access is defined on that database.
-- **Known limitation:** `validate_token_local()` does not apply the table check; use `validate_token()` when the table
-  matters.
+- **Known limitation (resolved in 0.39.8, #375):** `validate_token_local()` did not apply the table check.
 
 ## What's New in 0.35.0
 
