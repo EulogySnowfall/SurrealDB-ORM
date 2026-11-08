@@ -223,17 +223,22 @@ class TestIterJsonlRefusals:
         with pytest.raises(ValueError, match=r"cannot be combined with order_by\(\)$"):
             qs.iter_jsonl()
 
-    @pytest.mark.parametrize("method", ["iter_jsonl", "export_jsonl"])
-    async def test_e14_reserved_variable_name(self, method: str) -> None:
-        qs = DIOUPost.objects().variables(_x_after=1)
-        with _patch_client(_client()) as get_client:
-            with pytest.raises(ValueError) as excinfo:
-                if method == "iter_jsonl":
-                    qs.iter_jsonl()
-                else:
-                    await qs.export_jsonl(io.StringIO())
-            get_client.assert_not_awaited()
+    def test_e14_reserved_variable_name(self) -> None:
+        # Since #344, .variables() refuses every name starting with "_", so a
+        # QuerySet can no longer declare $_x_after before iter_jsonl() /
+        # export_jsonl() would see it.
+        with pytest.raises(ValueError) as excinfo:
+            DIOUPost.objects().variables(_x_after=1)
+        assert str(excinfo.value) == "Variable names starting with '_' are reserved for the ORM's own bindings: '_x_after'"
+
+    def test_e14_sdk_check_still_refuses_x_prefix(self) -> None:
+        # The SDK keeps its own check for direct iter_records() / export callers.
+        from surreal_sdk.jsonl import _check_reserved_vars
+
+        with pytest.raises(ValueError) as excinfo:
+            _check_reserved_vars({"_x_after": 1})
         assert str(excinfo.value) == "Variable names starting with '_x_' are reserved for data export/import: '_x_after'"
+        _check_reserved_vars({"_f0": 1, "x_after": 2})
 
     @pytest.mark.parametrize("value", [0, -1])
     def test_e1_batch_size_minimum(self, value: int) -> None:

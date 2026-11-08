@@ -900,6 +900,10 @@ A successful write through the ORM drops every cached entry of the written table
 - `atomic_append()`, `atomic_remove()` and `atomic_set_add()`;
 - `bulk_update()`, `bulk_delete()`, `upsert()`, `bulk_upsert()`, `delete_table()` and `import_jsonl()`.
 
+A write made inside a transaction (`save(tx=tx)`, `update(tx=tx)`, `merge(..., tx=tx)`, `delete(tx=tx)` and
+`bulk_create(atomic=True)`) drops the table's entries when it is issued and again once the transaction commits, so
+a read another task cached before the commit is not served afterwards; a rollback drops nothing more.
+
 A write the server rejects (the method raises) may leave the entries in place. Writes the ORM does not see are not
 tracked: after `raw_query()`, `call_function()`, a `DEFINE EVENT` or a write from another process, call
 `QueryCache.invalidate(Model)` yourself, or rely on the TTL.
@@ -1674,6 +1678,16 @@ is not declared, is bound as a parameter and compared as text:
 # Matches a user whose nickname is literally "$min_age"
 await User.objects().filter(nickname="$min_age").exec()
 ```
+
+Declared variables are sent with every query built from the QuerySet, including
+when it is the inner QuerySet of a `Subquery` or the `queryset` of a `Prefetch`:
+
+```python
+Prefetch("wrote", queryset=Post.objects().filter(tag="$t").variables(t="x"))
+```
+
+Names starting with `_` are reserved for the ORM's own bindings (`$_f0`, `$_sq0`,
+`$_knn_vec`, ...): `.variables(_f0=5)` raises `ValueError`.
 
 ### Raw SurrealQL
 
