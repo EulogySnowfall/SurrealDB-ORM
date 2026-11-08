@@ -41,6 +41,106 @@
 
 ---
 
+## What's New in 0.39.7
+
+**Patch release — one reading of a `table:id` reference on every SDK path**
+([#324](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/324)). SDK only, no new public API, SurrealDB pin
+unchanged (3.3.5):
+
+- The `HTTPConnection` / `WebSocketConnection` record methods (`select`, `create`, `update`, `upsert`, `merge`, `patch`,
+  `delete`, `relate`), and so `WebSocketTransaction`, now read a `table:id` reference as `HTTPTransaction` does: `t:1`
+  and `t:-5` are integer IDs (signed 64-bit range), `t:05` is the integer 5 (leading zeros dropped, as SurrealQL does),
+  and `t:⟨a b⟩` / ``t:`a b` `` are the string ID `"a b"`. A `RecordId` argument is now sent as is instead of raising
+  `TypeError`.
+- **Behaviour change (CBOR, the default):** `conn.select("t:1")` targets the integer ID 1, where it used to target the
+  string ID `"1"`; a malformed reference raises `ValueError` before any request; `t:rand()` / `t:ulid()` / `t:uuid()`
+  given to a connection method raises `ValueError` instead of storing the literal text as the ID. To address a
+  digit-only string ID, write it delimited (``t:`123` ``) or pass a `RecordId`; the ORM already does.
+- `docs/sdk.md` has a new "Record references" section.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+## What's New in 0.39.6
+
+**Patch release — relation writes drop the edge table's cached entries**
+([#465](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/465)). ORM only, no new public API, no query text change,
+SurrealDB pin unchanged (3.3.5):
+
+- `relate()`, `remove_relation()`, `remove_all_relations()` and a relation manager's `add()`, `remove()`, `set()` and
+  `clear()` now drop the `QuerySet.cache()` entries of the edge or through table they write, so a model mapped to that
+  table is read again instead of serving the rows from before the write until the TTL. With `tx=`, the entries are
+  dropped when the write is queued and again once the transaction commits.
+- **Behaviour change:** a relation write that raises after a statement was sent still drops the tables it targets (more
+  cache misses, never stale rows). A manual `QueryCache.invalidate(EdgeModel)` after relation writes is no longer
+  needed.
+- **Known limitation:** the server's own cascades (graph edges removed with a deleted record, `REFERENCE ... ON DELETE
+  CASCADE`) are not tracked; call `QueryCache.invalidate(EdgeModel)` after such a delete.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+## What's New in 0.39.5
+
+**Patch release — change-feed unit count under the JSON protocol**
+([#364](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/364)). SDK only, no new public API, no query text change,
+SurrealDB pin unchanged (3.3.5). CBOR (the default) is not affected:
+
+- With `protocol="json"`, change feeds no longer merge the changes of two escaped table names sharing a prefix before
+  `:` (`` `a:b`:1 `` and `` `a:c`:1 ``) into one unit, so a window cut at the scan limit is never taken for the end of
+  the feed. This resolves the 0.34.19 known limitation.
+- **Behaviour change (JSON only):** a change on an escaped table name (one holding `:`, or a hyphenated name such as
+  `my-table`) counts as its own unit, so such a window can be re-read one extra time. No entry is skipped.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+## What's New in 0.39.4
+
+**Patch release — the relation detection helpers see optional relations**
+([#299](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/299)). ORM only, no new public API, no DDL or query
+text change, SurrealDB pin unchanged (3.3.5):
+
+- `is_relation_field()`, `is_foreign_key()`, `is_many_to_many()`, `is_graph_relation()` and `get_relation_info()` now
+  find a relation marker inside a union (`ForeignKey("X") | None`, `Optional[ForeignKey("X")]`, same for `ManyToMany`
+  and `Relation`), with the same lookup the record-link coercion and the migrations introspector use.
+- Chaining through `RelationQuerySet` attributes (`user.following.<name>`) works when the relation on the target model
+  is declared optional.
+- **Behaviour change:** these helpers used to return `False` / `None` for a union-wrapped marker and now return `True` /
+  the `RelationInfo`. Bare markers and unions with no marker (`str | None`) give the same answers as before.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+## What's New in 0.39.3
+
+**Patch release — change feed start-up, `Prefetch` variables, token refresh lookup, cache drops at commit, sign-up set
+warning, CBOR checks in record ids and dict keys.** Six fixes, no new public API, SurrealDB pin unchanged (3.3.5):
+
+- **Change feeds** ([#312](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/312)): the default start
+  (`since=None`, in `ChangeFeedStream`, `MultiTableChangeFeed` and `QuerySet.changes()`) is found with at most 130 small
+  `LIMIT 1` probes instead of reading the whole retained database feed; a `MultiTableChangeFeed` poll reads the database
+  feed once instead of once per table; a stream started from a datetime that misses a change written after it started
+  watching emits one `RuntimeWarning` (on SurrealDB 3.3.5, in-memory storage and SurrealKV select nothing from a
+  datetime start; RocksDB does). Prefer a versionstamp start (an `int` or `stream.cursor`) on those engines.
+- **`Prefetch` variables** ([#344](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/344)):
+  `Prefetch(queryset=...)` sends the variables its queryset declared with `.variables()`, which used to reach the server
+  unbound. **Behaviour change:** `.variables()` now refuses names starting with `_` (reserved for the ORM's own
+  bindings) with `ValueError`; rename such variables.
+- **Auth** ([#357](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/357)): `refresh_access_token()` resolves its
+  user from `$auth`, like `signin()`, `signup()` and `authenticate_token()`; `signup()` reports `Signup succeeded but
+  the session record could not be read: ...` instead of `Signup failed: ...` when the account exists but its session
+  record cannot be read.
+- **Query cache** ([#360](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/360)): a write with `tx=` drops the
+  table's cache entries again once the transaction commits, so a `.cache()` read taken before the commit is not served
+  afterwards.
+- **Sign-up set** ([#371](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/371)): building a USER model's access
+  definition (`define_access()`, `makemigrations`, `schema_diff`) emits one `UserWarning` naming every required field a
+  sign-up can never set. The `SIGNUP` clause and the DDL are unchanged; list a server-filled field in `server_fields`
+  to silence it.
+- **CBOR** ([#612](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/612)): an integer outside the 64-bit range
+  inside a `RecordId`'s id or used as a dict key now raises `ValueError` before the request (it used to fail at the
+  server, or time out over WebSocket), and a `date` inside a `RecordId`'s id is sent as the UTC-midnight `datetime`,
+  like a plain `date`.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes and known limitations.
+
 ## What's New in 0.39.2
 
 **Patch release — live queries across a WebSocket reconnect**
@@ -618,8 +718,6 @@ before upgrading.
   `UPDATE <table> SET <field> = IF !type::is_string(<field>) THEN <field> ELSE IF string::contains(<field>, ':') THEN type::record(<field>) ELSE type::record('<target_table>', <field>) END WHERE type::is_string(<field>);`
   (keep the first `IF`: SurrealDB 3.2.6 needs it). A field declared `option<string>` now rejects the write: retype it
   `option<record<target_table>>`, then convert.
-- **Known limitation:** `is_foreign_key()`, `get_relation_info()` and the other exported detection helpers still
-  report `ForeignKey("X") | None` as not a relation, as in earlier releases.
 
 ## What's New in 0.34.9
 

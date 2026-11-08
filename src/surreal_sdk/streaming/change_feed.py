@@ -117,13 +117,19 @@ def _versionstamp(entry: dict[str, Any]) -> int:
 
 
 def _record_table(record: object) -> str | None:
-    """The table of a changed record, from its ``id``; ``None`` when unknown."""
+    """The table of a changed record, from its ``id``; ``None`` when unknown.
+
+    A string id (JSON protocol) is split at its first ``:``. An escaped table
+    name (`` `a:b`:1 ``, ``⟨a:b⟩:1``) may itself hold a ``:``, so splitting it
+    could give two tables the same prefix and merge their units; such an id
+    is left unread (``None``) and its change counts as a unit of its own.
+    """
     if not isinstance(record, dict):
         return None
     record_id = record.get("id")
     if isinstance(record_id, RecordId):
         return record_id.table if isinstance(record_id.table, str) else None
-    if isinstance(record_id, str) and ":" in record_id:
+    if isinstance(record_id, str) and ":" in record_id and not record_id.startswith(("`", "⟨")):
         return record_id.split(":", 1)[0]
     return None
 
@@ -156,8 +162,8 @@ def _window_units(window: list[dict[str, Any]]) -> int:
 
     Each entry counts the distinct tables among its changes, and at least one.
     The table comes from the ``id`` of an ``update``, ``delete`` or
-    ``current`` record (a decoded ``RecordId`` or a ``"table:id"`` string)
-    and from the ``name`` of a ``define_table``, which shares the unit of the
+    ``current`` record (a decoded ``RecordId`` or a ``"table:id"`` string
+    whose table is not escaped) and from the ``name`` of a ``define_table``, which shares the unit of the
     table's records. A change whose table cannot be told counts as a unit of
     its own, and two changes are only merged when their table names are equal,
     so the count errs upwards: a window wrongly counted as full costs one more

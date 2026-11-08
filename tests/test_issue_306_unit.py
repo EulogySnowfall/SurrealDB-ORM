@@ -43,7 +43,7 @@ RAW_IDS = [
     "9223372036854775808",  # above the i64 range: a string ID, as the server reads it inline
     "-9223372036854775809",  # below the i64 range
     "+5",
-    "05",
+    "05",  # only through format_thing(): inline, SurrealQL reads t:05 as the integer 5 (#324)
 ]
 #: IDs that may be written as they are (the queued SQL is unchanged for them).
 PLAIN_IDS = ["abc", "_x1", "A_b_9"]
@@ -82,7 +82,7 @@ def _references(sql: str) -> set[str]:
 
 class TestQueuedStatement:
     @pytest.mark.parametrize("op", OPS)
-    @pytest.mark.parametrize("raw", [r for r in RAW_IDS if r != "123"])
+    @pytest.mark.parametrize("raw", [r for r in RAW_IDS if r not in ("123", "05")])
     async def test_raw_id_is_bound_not_written(self, connection: MagicMock, op: str, raw: str) -> None:
         tx = await _open(connection)
         await OPS[op](tx, f"i306_nodes:{raw}")
@@ -127,6 +127,17 @@ class TestQueuedStatement:
         stmt = tx._statements[-1]
         assert f"i306_nodes:{integer}" in stmt.sql
         assert integer not in stmt.vars.values()
+        assert "type::record" not in stmt.sql
+
+    @pytest.mark.parametrize("op", OPS)
+    @pytest.mark.parametrize(("written", "integer"), [("05", "5"), ("-05", "-5"), ("00", "0"), ("007", "7")])
+    async def test_leading_zeros_are_the_integer(self, connection: MagicMock, op: str, written: str, integer: str) -> None:
+        """SurrealQL reads ``t:05`` inline as the integer 5 (#324), so the statement names that record."""
+        tx = await _open(connection)
+        await OPS[op](tx, f"i306_nodes:{written}")
+        stmt = tx._statements[-1]
+        assert re.search(rf"i306_nodes:{re.escape(integer)}\b", stmt.sql)
+        assert written not in stmt.vars.values()
         assert "type::record" not in stmt.sql
 
     async def test_table_only_reference_is_written_as_before(self, connection: MagicMock) -> None:

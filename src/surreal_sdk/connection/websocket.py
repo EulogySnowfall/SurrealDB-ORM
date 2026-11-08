@@ -26,7 +26,7 @@ import builtins
 from ..exceptions import ConnectionError, LiveQueryError, QueryError, TimeoutError
 from ..protocol import cbor as cbor_module
 from ..protocol.rpc import RPCRequest, RPCResponse, _live_select_sql
-from ..utils import require_int, unescape_record_id
+from ..utils import _rpc_record_id, require_int
 
 _SAFE_TABLE_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*\Z")
 
@@ -948,13 +948,27 @@ class WebSocketConnection(BaseSurrealConnection):
 
     # CBOR-aware CRUD overrides ────────────────────────────────────────
 
-    def _to_thing(self, thing: str) -> Any:
-        """Convert "table:id" to RecordId for CBOR protocol."""
-        if self.protocol == "cbor" and ":" in thing:
+    def _to_thing(self, thing: Any) -> Any:
+        """
+        Convert a thing reference to the value an RPC call takes.
+
+        Under CBOR, a ``table:id`` string becomes a ``RecordId`` read by
+        :func:`surreal_sdk.utils._parse_record_reference`, the reading
+        ``HTTPTransaction`` uses: ``t:1`` is the integer ID 1, ``t:`a b``` and
+        ``t:\u27e8a b\u27e9`` the string ID ``"a b"``. The table is data in
+        the ``RecordId``, so it need not be an identifier (``user-profiles:abc``).
+        A bare table, any reference under JSON, and a value that is not a string
+        (a ``RecordId``) are passed as they are.
+
+        Raises:
+            ValueError: Under CBOR, if the reference is malformed or its ID is
+                an ID generator (``t:ulid()``).
+        """
+        if self.protocol == "cbor" and isinstance(thing, str) and ":" in thing:
             from ..protocol.cbor import RecordId
 
-            table, id_part = thing.split(":", 1)
-            return RecordId(table=table, id=unescape_record_id(id_part))
+            table, record_id = _rpc_record_id(thing)
+            return RecordId(table=table, id=record_id)
         return thing
 
     async def select(self, thing: str) -> Any:

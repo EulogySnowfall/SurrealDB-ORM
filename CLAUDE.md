@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.2)
+> Context document for Claude AI - Last updated: November 2026 (0.39.7)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.7 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -21,6 +21,171 @@
 
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.7
+
+One fix, #324 via #649 (`surreal_sdk/utils.py`, `connection/http.py`,
+`connection/websocket.py`, `transaction.py`; `docs/sdk.md`). Pin unchanged
+(3.3.5). `v2`: not backported (the line ended at 0.21.62; its
+`_to_thing()` has the same split-at-the-first-`:` reading).
+
+- **One private parser for a `table:id` reference**,
+  `surreal_sdk.utils._parse_record_reference()`, serves `HTTPTransaction`
+  (whose `_record_target()` keeps only the rendering) and both connections'
+  `_to_thing()`. The connections used to split at the first `:` and strip
+  backticks, so `t:1` was the string ID `"1"` over RPC and the integer 1 in
+  an HTTP transaction. Under CBOR a `table:id` string becomes the
+  `RecordId` of that reading; a bare table, any reference under
+  `protocol="json"` and a non-string pass through.
+- **The RPC path accepts any table the server accepts** (`any_table=True`):
+  the ORM sends `format_thing()` output, which does not escape the table
+  (`user-profiles:abc`). The two transactions keep the identifier rule,
+  since `HTTPTransaction` writes the table into its statement.
+- **Integer IDs follow the server, not a regex.** `_integer_record_id()`:
+  optional `-`, ASCII digits, leading zeros dropped, at most 19 significant
+  digits, then the i64 range; linear in the ID length with no length cap
+  (`t:` + 100 zeros + `1` is the integer 1 on 3.3.5). Beyond i64 the digits
+  stay a string ID as written. Checked edge by edge against 3.3.5.
+- **Generators are refused on the RPC path** (`rand()` / `ulid()` /
+  `uuid()` were stored as literal text); `HTTPTransaction` still evaluates
+  them.
+- Resolves the 0.34.14 known gap (integer IDs through
+  `WebSocketTransaction`); the strict `xfail` is gone.
+- **Open (review suggestion on #649):** `RecordId.parse()` in
+  `protocol/cbor.py` keeps its own `split(":", 1)` reading.
+
+### What's New in 0.39.6
+
+One fix, #465 via #669 (`surreal_orm/cache.py`, `model_base.py`,
+`relations.py`). Pin unchanged (3.3.5). `v2`: not backported (the line ended
+at 0.21.62; the same relation methods there do not invalidate either).
+
+- **Relation writes had no cache entry point.** They send `RELATE` /
+  `DELETE` straight to the client or the transaction and fire no signal, and
+  `QueryCache.invalidate()` takes a model, which an edge table often lacks.
+  The private `QueryCache._invalidate_table(table)` (now behind
+  `invalidate(model)`) and `_invalidate_table_for_write(table, tx)` are keyed
+  by table. `relate()`, `remove_relation()` and `remove_all_relations()` go
+  through `_write_relation_tables()`; `RelationManager` drops the table it
+  actually wrote, default many-to-many names included.
+- **Drop in a `finally`, after the ORM's own checks.** A write that raises
+  after a statement was sent still drops its tables (over-invalidating only
+  costs a re-query); a call refused before reaching the client or the
+  transaction drops nothing. With `tx=`, the table is dropped when queued and
+  again at commit through #656's `_call_on_commit()`, keyed
+  `(QueryCache._COMMIT_KEY, table)`, so it shares one callback with a
+  `save(tx=)` on a model mapped to the same table.
+- **Open (review suggestion on #669):** the server's own cascades (edges
+  removed with a deleted record, `REFERENCE ... ON DELETE CASCADE`, both
+  checked on 3.3.5) are not tracked; `delete()` drops only its own table.
+
+### What's New in 0.39.5
+
+One fix, #364 via #667 (`surreal_sdk/streaming/change_feed.py` only). Pin
+unchanged (3.3.5). `v2`: not backported (the line ended at 0.21.62; `v2`
+counts entries and has no `_record_table()`).
+
+- **Under JSON, an escaped table name is left unread.** `_record_table()`
+  split a string id at the first `:`, so `` `a:b`:1 `` and `` `a:c`:1 ``
+  both read as `` `a `` and merged into one unit: the only way
+  `_window_units()` could count low. A string id whose table starts with a
+  backtick or `⟨` now returns `None` and counts as its own unit, so the
+  count only errs upwards. CBOR `RecordId`s and unescaped strings are read
+  as before. Resolves the 0.34.19 known limitation.
+- **Broader than the `:` case:** the server also escapes a hyphenated table
+  (`` `my-table`:1 ``), so under JSON each such change is its own unit (one
+  extra read at worst). Reading the escaped name up to its closing delimiter
+  would tighten it (review suggestion on #667).
+
+### What's New in 0.39.4
+
+One fix, #299 via #663 (`surreal_orm/fields/relation.py` only). Pin
+unchanged (3.3.5). `v2`: not backported (the line ended at 0.21.62; the
+defect is there too). Also #292 via #662 (tests and tooling only).
+
+- **One marker lookup for every reader.** `is_relation_field()`,
+  `is_foreign_key()`, `is_many_to_many()`, `is_graph_relation()` and
+  `get_relation_info()` go through `_find_marker()` (union members first,
+  then the metadata), like the record-link coercion and the introspector
+  since 0.34.10. That release left them on their own top-level `Annotated`
+  loops on purpose, to keep a change to what a public API returns out of a
+  fix; this is that change. Each type-specific helper passes only its own
+  marker class, so they stay exclusive.
+- **`RelationQuerySet.__getattr__` was the only internal caller**: chaining
+  through an optional relation on the target model works now.
+- **The Python-support guard reads the README Requirements line** (#662),
+  and `tox.ini` is gone, so the tested Python range is checked in every
+  place it is stated.
+
+### What's New in 0.39.3
+
+Six fixes: #312 via #650 (`surreal_sdk/streaming/change_feed.py`,
+`docs/sdk.md`), #344 via #653 (`query_set.py`, `prefetch.py`), #357 via #655
+(`auth/mixins.py`), #360 via #656 (`cache.py`, `surreal_sdk/transaction.py`),
+#371 via #658 (`auth/access.py`, `migrations/introspector.py`, `docs/auth.md`)
+and #612 via #659 (`surreal_sdk/protocol/cbor.py`). Pin unchanged (3.3.5).
+`v2`: not needed, the line ended at 0.39.0.
+
+- **"Now" is found with probes.** `_resolve_now()` delegates to `_find_now()`:
+  `SHOW CHANGES FOR DATABASE SINCE <n> LIMIT 1`, jumping past the
+  versionstamp each probe returns, exponential until a probe is empty, then
+  bisection. At most 130 requests (`_PROBE_BOUND`); retention gaps and an
+  empty feed need nothing special. The old scan read 1000 full entries per
+  request from versionstamp 0.
+- **One database read per multi-table round.** One transaction: one
+  `FOR TABLE` read per table and a single `FOR DATABASE` read from the
+  smallest cursor. Each table keeps entries at or after its own cursor and
+  before `_window_end()` (shared with the single-table read, so the 3.3 unit
+  counting is unchanged); a cursor never moves back.
+- **A versionstamp is the commit time in milliseconds shifted by 16 bits**
+  (3.3.5). RocksDB compares a `d'...'` start with it; in-memory storage and
+  SurrealKV select nothing for any instant after the epoch. An empty window
+  proves nothing (on RocksDB a start after the last entry is empty until a
+  write), so `_DatetimeStartCheck` finds "now" once the start is 5 s in the
+  past and a window is empty, then probes from there before each empty poll
+  and warns once when a probe finds a change the window missed.
+- **`Prefetch` sends its queryset's declared variables** (only declared names,
+  `setdefault`, so the compiled `$_fN` win; same rule as `Subquery`).
+  `.variables()` refuses every name starting with `_`: all of the ORM's own
+  bindings (`_fN`, `_sqN`, `_knn_vec`, `_g_*`, ...) start with `_`, so one rule
+  closes the collision for future names too.
+- **`refresh_access_token()` reads `$auth` on the temporary connection** and
+  fetches through `_fetch_record_by_id()`, like the other three auth entry
+  points; no local JWT decode. `signup()` reads `$auth` in its own `try`, so a
+  failure after the account exists is `Signup succeeded but the session
+  record could not be read: ...`, never `Signup failed`.
+- **The cache drops a table twice for a transactional write**: when the write
+  is issued (signal) and after the commit, through the private
+  `BaseTransaction._call_on_commit(key, callback)` hook (HTTP and WebSocket;
+  runs only once `is_committed` is set, once per key; a raising callback is
+  logged, never fails the commit). The callback holds the model class only.
+- **`build_signup_fields()` warns** (`_warn_unset_required_fields()`, one
+  `UserWarning` per build) about required fields outside the sign-up set:
+  not `id`, the identifier, the password, `signup_fields`, `created_at`, a
+  computed field, a `server_fields` entry or a `ManyToMany` / `Relation`
+  attribute. A warning, not an error: the server may fill the field through a
+  `VALUE` clause or an event the model does not declare.
+- **CBOR record ids get a converting walk** (`_convert_record_id()`, replacing
+  the read-only naive-datetime scan): integers range-checked, `date` →
+  UTC-midnight `datetime`, naive `datetime` warned once; nothing else in an id
+  is converted, the caller's `RecordId` is never modified (copy only on
+  changed paths), the cycle guard stays. Dict keys are range-checked
+  (`_check_key()`), never converted. The signed 64-bit question is #657.
+- **Open (review suggestions):** changes between the `since` instant and the
+  datetime check's marker are not covered by the warning (on in-memory or
+  SurrealKV storage they are never delivered), and a small feed
+  costs more probes than the old one-request scan (#650); a `$auth` read
+  failure after a rotated refresh still says `Token refresh failed` (#655);
+  a `.cache()` read in flight across a drop stores stale rows (a per-table
+  generation counter would close it), and an HTTP commit cancelled after the
+  server applied it skips the second drop (#656); the `iter_jsonl()`
+  docstring still lists the `_x_` variable case `.variables()` now refuses
+  first (#653); the sign-up warning's `signup_fields` hint is a dead end for
+  a read-only field (#658); the `encode()` docstring does not say a `date`
+  dict key keeps tag 1004 (#659). Filed: notebook 15's USER model now warns
+  (#660), a `NamedTuple` value fails with `TypeError` (#661).
+- Release-docs correction carried here: `[0.34.17]` "unique identifier"
+  sentence (#357 item 4).
 
 ### What's New in 0.39.2
 
@@ -385,7 +550,8 @@ unchanged (3.3.5). `v2`: same defect, backport tracked in #463.
   `QueryCache.invalidate()` once its statement is accepted (after
   `_raise_on_statement_error()`, after the commit for `atomic=True`); a write
   that raises leaves the cache as it was.
-- **Open (review suggestions on #460):** relation writes (`relate()`,
+- **Open (review suggestions on #460; the relation half resolved in 0.39.6,
+  #465):** relation writes (`relate()`,
   `remove_relation()`, `remove_all_relations()`, relation managers) never
   invalidate the edge table; `save(tx=)` / `bulk_create(atomic=True)`
   invalidate when queued, not at the HTTP commit.
@@ -678,8 +844,9 @@ correct (on 2.7.0 each (versionstamp, table) pair is its own entry).
   at least one, one per change whose table cannot be told). Only a window
   below the scan limit by that bound is caught up; a full window still
   re-reads its last versionstamp.
-- **Known limitation:** a JSON-protocol string id with an escaped table name
-  containing `:` is split at the first `:` and can be under-counted.
+- **Known limitation (resolved in 0.39.5, #364):** a JSON-protocol string id
+  with an escaped table name containing `:` was split at the first `:` and
+  could be under-counted.
 
 ### What's New in 0.34.18
 
@@ -866,7 +1033,8 @@ on 3.2.6; unit 2,521 on 3.12/3.13/3.14/3.15.
   `is_foreign_key()`, `is_relation_field()`, `is_many_to_many()`,
   `is_graph_relation()` and `get_relation_info()` still look only at a
   top-level `Annotated` and report an optional FK as not a relation. Changing
-  them changes what a public API returns, so it is left to a follow-up.
+  them changes what a public API returns, so it was left to a follow-up:
+  0.39.4 moved them onto `_find_marker()` too (#299).
 - **The upgrade repair needs a guard on 3.2.6.** Strings written before the
   fix (`'table:id'` or a bare id, in SCHEMALESS or `any` columns) no longer
   match a filter. The repair `UPDATE` keeps an outer
@@ -890,11 +1058,10 @@ passed, 1 skipped, 1 xfailed (#147 still XFAIL); unit 2,454 on
   matrix (the source of truth), the classifiers of both `pyproject.toml`
   files, the Makefile `test-all-python` helper, the ruff/mypy floor and the
   README Requirements line ("tested on 3.12 – 3.15").
-  `tests/test_python_support.py` ties the first five together: classifiers
-  equal to the matrix, the matrix starting at the `requires-python` floor with
-  no gap, ruff/mypy on the floor, the helper running every Python. It does not
-  read `README.md`, so the Requirements line is kept by hand. `tox.ini` still
-  says py312–py314; nothing runs it and the guard does not read it either.
+  `tests/test_python_support.py` ties them together: classifiers equal to the
+  matrix, the matrix starting at the `requires-python` floor with no gap,
+  ruff/mypy on the floor, the helper running every Python, and (since 0.39.4,
+  #662) the README "tested on" range equal to the matrix.
 - **A new CPython minor breaks the lock before the code.** A package locked
   before its maintainers shipped wheels for that Python is built from source
   by `uv sync --frozen` (Rust for pydantic-core and cbor2, a C compiler for
@@ -905,10 +1072,9 @@ passed, 1 skipped, 1 xfailed (#147 still XFAIL); unit 2,454 on
   (`SOURCE_BUILD_ALLOWED`, pure-Python sdist fallback). Its manylinux check
   is capped at glibc 2.35, older than the ubuntu-24.04 runners. The fix is a
   targeted `uv lock --upgrade-package <name>`, never a blanket upgrade.
-- **Adding the next Python** = add it to the `ci.yml` unit matrix, let the
-  guard name the classifiers, the Makefile helper and every package to
-  refresh, and update the README Requirements line by hand: the guard stays
-  green while that line is stale.
+- **Adding the next Python** = add it to the `ci.yml` unit matrix and let the
+  guard name the classifiers, the Makefile helper, the README Requirements
+  line and every package to refresh.
 
 ### What's New in 0.34.8
 

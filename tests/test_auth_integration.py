@@ -131,7 +131,7 @@ class TestAccessGenerator:
             id: str | None = None
             email: str
             password: Encrypted
-            name: str
+            name: str = ""
 
         access = AccessGenerator.from_model(TestUserModel)
 
@@ -163,7 +163,7 @@ class TestAccessGenerator:
             password: Encrypted
 
         class UserB(BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, identifier_field="username")
             id: str | None = None
             username: str
             password: Encrypted
@@ -963,7 +963,7 @@ class TestIssue331TokenCacheExpiryAndTable:
                 DEFINE ACCESS {table.lower()}_ac ON DATABASE TYPE RECORD
                     SIGNUP (CREATE {table} SET email = $email, password = crypto::argon2::generate($password))
                     SIGNIN (SELECT * FROM {table} WHERE email = $email AND crypto::argon2::compare(password, $password))
-                    DURATION FOR TOKEN 2s, FOR SESSION 1h;
+                    DURATION FOR TOKEN 5s, FOR SESSION 1h;
             """)
         yield
         AuthenticatedUserMixin.invalidate_token_cache()
@@ -996,7 +996,7 @@ class TestIssue331TokenCacheExpiryAndTable:
         assert record_id is not None and record_id.startswith("I331Member:")
         assert await member.validate_token(token) == record_id  # served from the cache
 
-        await asyncio.sleep(3.5)  # DURATION FOR TOKEN 2s (exp has 1 s resolution)
+        await asyncio.sleep(6.5)  # DURATION FOR TOKEN 5s; exp has 1 s resolution, plus margin
 
         assert await member.validate_token(token, use_cache=False) is None  # the server agrees
         assert await member.validate_token(token) is None
@@ -1012,6 +1012,11 @@ class TestIssue331TokenCacheExpiryAndTable:
         assert await staff.validate_token(token) is None
         assert await staff.validate_token(token, use_cache=False) is None
         assert await staff.authenticate_token(token) is None
+
+        # The local decode applies the same table check (#375).
+        local = member.validate_token_local(token)
+        assert local is not None and local.startswith("I331Member:")
+        assert staff.validate_token_local(token) is None
 
         result = await member.authenticate_token(token)
         assert result is not None and result[1] == own

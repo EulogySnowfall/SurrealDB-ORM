@@ -297,7 +297,7 @@ class TestAccessGenerator:
             password: Encrypted
 
         class UserB(BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, identifier_field="username")
             id: str | None = None
             username: str
             password: Encrypted
@@ -1639,6 +1639,28 @@ class TestIssue331TokenCacheExpiryAndTable:
             assert await staff.validate_token(token) is None
         assert AuthenticatedUserMixin._token_cache == {}
         client.close.assert_awaited_once()
+
+    @pytest.mark.parametrize(
+        "record_id",
+        ["i331_member:a", "i331_staffer:a", "`i331_staff_x`:a"],
+        ids=["other-table", "table-name-prefix", "quoted-table-name-prefix"],
+    )
+    def test_validate_token_local_other_table_returns_none(self, record_id: str) -> None:
+        """#375 — validate_token_local() applies the same table check as validate_token()."""
+        _, staff = self._models()
+        token = _i331_jwt({"ID": record_id, "exp": int(time.time()) + 600})
+        assert staff.validate_token_local(token) is None
+
+    @pytest.mark.parametrize(
+        "record_id",
+        ["i331_staff:a", "`i331_staff`:a", "⟨i331_staff⟩:a"],
+        ids=["plain", "backticks", "angle-brackets"],
+    )
+    def test_validate_token_local_own_table_returns_id(self, record_id: str) -> None:
+        """#375 — a token of the model's own table still yields its ID claim."""
+        _, staff = self._models()
+        token = _i331_jwt({"ID": record_id, "exp": int(time.time()) + 600})
+        assert staff.validate_token_local(token) == record_id
 
     async def test_other_table_record_id_object_returns_none(self) -> None:
         """The table check reads the decoded RecordId, not a string prefix."""

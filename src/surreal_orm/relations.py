@@ -17,8 +17,10 @@ Example:
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Literal
 
+from .cache import QueryCache
 from .connection_manager import SurrealDBConnectionManager
 from .fields.relation import RelationInfo
 from .utils import format_thing, parse_filter_key
@@ -361,50 +363,53 @@ class RelationManager:
         source_id = self._instance.get_id()
         assert source_id is not None  # guarded above
 
-        for obj in objects:
-            if not obj.get_id():
-                raise ValueError("Cannot relate to unsaved instance")
+        written: set[str] = set()
+        try:
+            for obj in objects:
+                if not obj.get_id():
+                    raise ValueError("Cannot relate to unsaved instance")
 
-            target_table = obj.get_table_name()
-            target_id = obj.get_id()
-            assert target_id is not None  # guarded above
+                target_table = obj.get_table_name()
+                target_id = obj.get_id()
+                assert target_id is not None  # guarded above
 
-            source_thing = format_thing(source_table, source_id)
-            target_thing = format_thing(target_table, target_id)
+                source_thing = format_thing(source_table, source_id)
+                target_thing = format_thing(target_table, target_id)
 
-            if self._relation_info.relation_type == "relation":
-                # Use RELATE for graph relations
-                edge = self._relation_info.edge_table
-                if edge is None:
-                    raise ValueError("Relation edge_table is required for graph relations")
-                if self._relation_info.reverse:
-                    # Reverse relation: target -> edge -> source
+                if self._relation_info.relation_type == "relation":
+                    # Use RELATE for graph relations
+                    edge = self._relation_info.edge_table
+                    if edge is None:
+                        raise ValueError("Relation edge_table is required for graph relations")
+                    written.add(edge)
+                    if self._relation_info.reverse:
+                        # Reverse relation: target -> edge -> source
+                        await client.relate(
+                            target_thing,
+                            edge,
+                            source_thing,
+                            edge_data if edge_data else None,
+                        )
+                    else:
+                        # Forward relation: source -> edge -> target
+                        await client.relate(
+                            source_thing,
+                            edge,
+                            target_thing,
+                            edge_data if edge_data else None,
+                        )
+                elif self._relation_info.relation_type == "many_to_many":
+                    # Use intermediate table for many-to-many
+                    through = self._relation_info.through or f"{source_table}_{target_table}"
+                    written.add(through)
                     await client.relate(
-                        target_thing,
-                        edge,
                         source_thing,
+                        through,
+                        target_thing,
                         edge_data if edge_data else None,
                     )
-                else:
-                    # Forward relation: source -> edge -> target
-                    await client.relate(
-                        source_thing,
-                        edge,
-                        target_thing,
-                        edge_data if edge_data else None,
-                    )
-            elif self._relation_info.relation_type == "many_to_many":
-                # Use intermediate table for many-to-many
-                through = self._relation_info.through or f"{source_table}_{target_table}"
-                await client.relate(
-                    source_thing,
-                    through,
-                    target_thing,
-                    edge_data if edge_data else None,
-                )
-
-        # Invalidate cache
-        self._cache = None
+        finally:
+            self._invalidate_written(written)
 
     async def remove(self, *objects: BaseSurrealModel) -> None:
         """
@@ -426,32 +431,35 @@ class RelationManager:
         source_id = self._instance.get_id()
         assert source_id is not None  # guarded above
 
-        for obj in objects:
-            if not obj.get_id():
-                continue
+        written: set[str] = set()
+        try:
+            for obj in objects:
+                if not obj.get_id():
+                    continue
 
-            target_table = obj.get_table_name()
-            target_id = obj.get_id()
-            assert target_id is not None  # guarded above
-            source_thing = format_thing(source_table, source_id)
-            target_thing = format_thing(target_table, target_id)
+                target_table = obj.get_table_name()
+                target_id = obj.get_id()
+                assert target_id is not None  # guarded above
+                source_thing = format_thing(source_table, source_id)
+                target_thing = format_thing(target_table, target_id)
 
-            if self._relation_info.relation_type == "relation":
-                edge = self._relation_info.edge_table
-                if self._relation_info.reverse:
-                    # Delete edges where target -> edge -> source
-                    query = f"DELETE {edge} WHERE in = {target_thing} AND out = {source_thing};"
-                else:
-                    # Delete edges where source -> edge -> target
-                    query = f"DELETE {edge} WHERE in = {source_thing} AND out = {target_thing};"
-                await client.query(query)
-            elif self._relation_info.relation_type == "many_to_many":
-                through = self._relation_info.through or f"{source_table}_{target_table}"
-                query = f"DELETE {through} WHERE in = {source_thing} AND out = {target_thing};"
-                await client.query(query)
-
-        # Invalidate cache
-        self._cache = None
+                if self._relation_info.relation_type == "relation":
+                    edge = self._relation_info.edge_table
+                    if self._relation_info.reverse:
+                        # Delete edges where target -> edge -> source
+                        query = f"DELETE {edge} WHERE in = {target_thing} AND out = {source_thing};"
+                    else:
+                        # Delete edges where source -> edge -> target
+                        query = f"DELETE {edge} WHERE in = {source_thing} AND out = {target_thing};"
+                    written.add(str(edge))
+                    await client.query(query)
+                elif self._relation_info.relation_type == "many_to_many":
+                    through = self._relation_info.through or f"{source_table}_{target_table}"
+                    query = f"DELETE {through} WHERE in = {source_thing} AND out = {target_thing};"
+                    written.add(through)
+                    await client.query(query)
+        finally:
+            self._invalidate_written(written)
 
     async def set(self, objects: list[BaseSurrealModel]) -> None:
         """
@@ -486,22 +494,35 @@ class RelationManager:
 
         source_thing = format_thing(source_table, source_id)
 
-        if self._relation_info.relation_type == "relation":
-            edge = self._relation_info.edge_table
-            if self._relation_info.reverse:
-                # Delete all edges pointing to this record
-                query = f"DELETE {edge} WHERE out = {source_thing};"
-            else:
-                # Delete all edges from this record
-                query = f"DELETE {edge} WHERE in = {source_thing};"
-            await client.query(query)
-        elif self._relation_info.relation_type == "many_to_many":
-            through = self._relation_info.through or f"{source_table}_"
-            query = f"DELETE {through} WHERE in = {source_thing};"
-            await client.query(query)
+        written: set[str] = set()
+        try:
+            if self._relation_info.relation_type == "relation":
+                edge = self._relation_info.edge_table
+                if self._relation_info.reverse:
+                    # Delete all edges pointing to this record
+                    query = f"DELETE {edge} WHERE out = {source_thing};"
+                else:
+                    # Delete all edges from this record
+                    query = f"DELETE {edge} WHERE in = {source_thing};"
+                written.add(str(edge))
+                await client.query(query)
+            elif self._relation_info.relation_type == "many_to_many":
+                through = self._relation_info.through or f"{source_table}_"
+                query = f"DELETE {through} WHERE in = {source_thing};"
+                written.add(through)
+                await client.query(query)
+        finally:
+            self._invalidate_written(written)
 
-        # Invalidate cache
+    def _invalidate_written(self, written: Iterable[str]) -> None:
+        """Forget the loaded objects and drop the cached entries of every table written.
+
+        Called in a ``finally``: when a later write raises, the earlier ones
+        were already sent, and dropping too much only costs a re-query.
+        """
         self._cache = None
+        for table in written:
+            QueryCache._invalidate_table_for_write(table)
 
     # ==================== Queries ====================
 

@@ -245,19 +245,23 @@ class AuthenticatedUserMixin:
 
         This performs **no network call** and **no cryptographic signature
         verification**.  It simply base64-decodes the JWT payload, extracts
-        the record ID (``ID`` claim), and checks the ``exp`` claim for
-        expiry.
+        the record ID (``ID`` claim), checks the ``exp`` claim for expiry,
+        and applies the same table check as :meth:`validate_token`: a record
+        ID outside this model's table yields ``None``.
 
-        Use this in **trusted backend** scenarios where the token was already
-        validated at the edge (e.g., API gateway) and you only need the
-        record ID for routing/context.
+        It does **not** check the ``AC`` / ``NS`` / ``DB`` claims (the access
+        definition, namespace and database the token was issued for), which
+        :meth:`validate_token` does.  Use this only in **trusted backend**
+        scenarios where the token was already validated at the edge (e.g.,
+        API gateway) and you only need the record ID for routing/context.
 
         Args:
             token: JWT token string (header.payload.signature)
 
         Returns:
             Record ID string (e.g., ``"users:abc123"``) or ``None`` if the
-            token is malformed or expired.
+            token is malformed or expired, or its record ID is not in this
+            model's table.
         """
         claims = cls._decode_jwt_claims(token)
         if claims is None:
@@ -271,6 +275,12 @@ class AuthenticatedUserMixin:
             # Extract record ID — SurrealDB uses "ID" claim
             record_id = claims.get("ID") or claims.get("id")
             if record_id is None:
+                return None
+
+            # Same table check as validate_token() / authenticate_token():
+            # a token signed in through another table's access is not a
+            # record of this model.
+            if not cls._is_own_record(str(record_id)):
                 return None
 
             return str(record_id)

@@ -194,21 +194,10 @@ async def test_transaction_integer_reference_targets_the_inline_record(http: HTT
     assert (await http.query(f"SELECT * FROM {NODES}:{written};")).all_records == []
 
 
-#: The RPC calls ``WebSocketTransaction`` makes convert ``table:id`` with the
-#: connection's ``_to_thing()``, which keeps every ID a string — ``t:1`` included,
-#: before this change as after it. Only the out-of-range ID, a string on both
-#: paths, agrees with ``HTTPTransaction``.
-_RPC_STRING_IDS = pytest.mark.xfail(
-    strict=True, reason="WebSocketConnection._to_thing() binds integer IDs as strings (connection-level, pre-existing)"
-)
-
-
 @pytest.mark.integration
-@pytest.mark.parametrize(
-    "written",
-    [pytest.param(w, marks=_RPC_STRING_IDS) if isinstance(v, int) else w for w, v in INTEGER_IDS.items()],
-)
+@pytest.mark.parametrize("written", INTEGER_IDS)
 async def test_websocket_transaction_integer_record_references_round_trip(ws: WebSocketConnection, written: str) -> None:
+    """The RPC calls read ``t:-5`` as the integer ID too, like ``HTTPTransaction`` (#324)."""
     await _round_trip(ws, INTEGER_IDS[written], f"{NODES}:{written}")
 
 
