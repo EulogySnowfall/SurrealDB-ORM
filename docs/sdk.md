@@ -218,6 +218,24 @@ print(f"Token: {response.token}")
 
 ## CRUD Operations
 
+### Record references
+
+A `table:id` string is read the way SurrealQL reads it inline, by the connection methods below and by both transaction
+types alike, so one string names one record on every path (CBOR protocol; under `protocol="json"` the string is sent
+as it is):
+
+| Reference | Record ID |
+| --- | --- |
+| `"users:alice"` | the string `"alice"` |
+| `"users:1"`, `"users:-5"` | the integers `1` and `-5` (signed 64-bit range; beyond it, the digits as a string) |
+| ``"users:`1`"``, `"users:⟨1⟩"` | the string `"1"` (read back once; `format_thing()` writes the backtick form) |
+| `"users"` | the whole table |
+
+The table must be an identifier. A malformed reference (unclosed delimiter, empty ID, array or object ID) raises
+`ValueError` before any request. `rand()`, `ulid()` and `uuid()` are SurrealQL, not record IDs: `HTTPTransaction`
+writes them into its statement, while the connection methods (and so `WebSocketTransaction`) refuse them with
+`ValueError`; pass the table name for a random ID. A `RecordId` value is passed through unchanged.
+
 ### Create
 
 ```python

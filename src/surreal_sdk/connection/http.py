@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from ..exceptions import ConnectionError, DataImportError, PayloadTooLargeError, QueryError
 from ..protocol.rpc import RPCMethod, RPCRequest, RPCResponse
 from ..types import AuthResponse
-from ..utils import _open_owner_only, require_int, unescape_record_id, validate_table_name
+from ..utils import _open_owner_only, _rpc_record_id, require_int, validate_table_name
 
 logger = logging.getLogger(__name__)
 
@@ -1233,28 +1233,26 @@ class HTTPConnection(BaseSurrealConnection):
 
         return HTTPTransaction(self)
 
-    def _to_thing(self, thing: str) -> Any:
+    def _to_thing(self, thing: Any) -> Any:
         """
-        Convert a thing string to the appropriate type for the protocol.
+        Convert a thing reference to the value an RPC call takes.
 
-        For CBOR protocol, converts "table:id" strings to RecordId objects.
-        For JSON protocol, returns the string as-is.
+        Under CBOR, a ``table:id`` string becomes a ``RecordId`` read by
+        :func:`surreal_sdk.utils._parse_record_reference`, the reading
+        ``HTTPTransaction`` uses: ``t:1`` is the integer ID 1, ``t:`a b``` and
+        ``t:\u27e8a b\u27e9`` the string ID ``"a b"``. A bare table, any
+        reference under JSON, and a value that is not a string (a ``RecordId``)
+        are passed as they are.
 
-        Handles backtick-escaped IDs (e.g., "table:`7abc`" -> RecordId(table, "7abc")).
-
-        Args:
-            thing: Thing reference (table name or "table:id")
-
-        Returns:
-            RecordId object for CBOR if thing contains ":", else string
+        Raises:
+            ValueError: Under CBOR, if the reference is malformed or its ID is
+                an ID generator (``t:ulid()``).
         """
-        if self.protocol == "cbor" and ":" in thing:
+        if self.protocol == "cbor" and isinstance(thing, str) and ":" in thing:
             from ..protocol.cbor import RecordId
 
-            table, id_part = thing.split(":", 1)
-
-            # Handle backtick-escaped IDs (e.g., "`7abc`" -> "7abc")
-            return RecordId(table=table, id=unescape_record_id(id_part))
+            table, record_id = _rpc_record_id(thing)
+            return RecordId(table=table, id=record_id)
         return thing
 
     async def select(self, thing: str) -> Any:
@@ -1278,13 +1276,7 @@ class HTTPConnection(BaseSurrealConnection):
         """Upsert a record with CBOR-aware thing conversion."""
         from ..types import RecordsResponse
 
-        # Handle both string and RecordId objects
-        if isinstance(thing, str):
-            thing_param = self._to_thing(thing)
-        else:
-            thing_param = thing
-
-        params: list[Any] = [thing_param]
+        params: list[Any] = [self._to_thing(thing)]
         if data:
             params.append(data)
         result = await self.rpc("upsert", params)
