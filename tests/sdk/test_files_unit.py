@@ -39,7 +39,9 @@ from surreal_sdk.protocol.cbor import TAG_FILE, RecordId, decode, encode
 from surreal_sdk.protocol.rpc import RPCError, RPCRequest, RPCResponse, SurrealJSONEncoder
 
 E2 = "Invalid bucket name {bucket!r}: expected a non-empty string without ':', '/', whitespace or control characters"
-E4 = "Invalid file key {key!r}: it must name a file below the bucket root (no empty path, no '.' or '..' segment, no NUL)"
+E4 = (
+    "Invalid file key {key!r}: it must name a file below the bucket root (no empty path, no empty, '.' or '..' segment, no NUL)"
+)
 E5 = "Invalid file pointer {text!r}: expected 'bucket:/key'"
 E10 = "FileRef cannot be sent with protocol='json'; use protocol='cbor'"
 
@@ -58,7 +60,7 @@ def _raw(value: object) -> object:
 class TestFileRefNormalisation:
     @pytest.mark.parametrize(
         ("key", "expected"),
-        [("bin.dat", "/bin.dat"), ("/bin.dat", "/bin.dat"), ("a//b", "/a//b"), ("/a/b/c.txt", "/a/b/c.txt")],
+        [("bin.dat", "/bin.dat"), ("/bin.dat", "/bin.dat"), ("a/b", "/a/b"), ("/a/b/c.txt", "/a/b/c.txt")],
     )
     def test_leading_slash_added_like_the_server(self, key: str, expected: str) -> None:
         assert FileRef("av", key).key == expected
@@ -115,7 +117,7 @@ class TestFileRefNormalisation:
     def test_str_is_bucket_colon_key(self) -> None:
         assert str(FileRef("av", "x.png")) == "av:/x.png"
 
-    @pytest.mark.parametrize("ref", [FileRef("av", "/x.png"), FileRef("my-b", "/a//b"), FileRef("b", "/d/é ü.txt")])
+    @pytest.mark.parametrize("ref", [FileRef("av", "/x.png"), FileRef("my-b", "/a/b"), FileRef("b", "/d/é ü.txt")])
     def test_parse_round_trip(self, ref: FileRef) -> None:
         assert FileRef.parse(str(ref)) == ref
 
@@ -160,7 +162,14 @@ class TestFileRefValidation:
             FileRef("av", key)  # type: ignore[arg-type]
         assert str(info.value) == f"File key must be a str, got {type(key).__name__}"
 
-    @pytest.mark.parametrize("key", ["", "/", "/a/../b", "/./a", "..", "/..", "a/..", "/a/.", "/a\x00b", "../../etc/passwd"])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            *("", "/", "/a/../b", "/./a", "..", "/..", "a/..", "/a/.", "/a\x00b", "../../etc/passwd"),
+            # An empty segment: memory stores "/a//b" and "/a/" apart from "/a/b" and "/a" (3.3.5).
+            *("//", "//a", "a//b", "/a//b", "/a/", "a/", "/a/b//"),
+        ],
+    )
     def test_invalid_key(self, key: str) -> None:
         with pytest.raises(ValueError) as info:
             FileRef("av", key)
@@ -219,7 +228,7 @@ class TestFileRefCbor:
         assert decode(cbor2.dumps(CBORTag(55, ["av", "/bin.dat"]))) == FileRef("av", "/bin.dat")
 
     def test_round_trip(self) -> None:
-        ref = FileRef("my-b", "/a//b")
+        ref = FileRef("my-b", "/a/b%2Fc")
         decoded = decode(encode(ref))
         assert isinstance(decoded, FileRef)
         assert decoded == ref

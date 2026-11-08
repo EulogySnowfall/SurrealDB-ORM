@@ -1785,14 +1785,36 @@ class TestUploadFile:
         clients.manager.get_client.assert_not_awaited()
         assert doc.doc is None
 
-    @pytest.mark.asyncio
-    async def test_id_with_a_dot_dot_segment_is_refused(self) -> None:
-        # The id lands in the default key; FileRef refuses a ".." segment, so
-        # a crafted id can never point the upload at another record's file.
+    @staticmethod
+    async def _default_key(record_id: str) -> str:
         with _Clients() as clients:
-            with pytest.raises(ValueError, match=r"Invalid file key '/fsu_helpers/\.\./doc'"):
-                await FSUHelpers(id="..").upload_file("doc", b"x")
-        clients.manager.get_client.assert_not_awaited()
+            ref = await FSUHelpers(id=record_id).upload_file("doc", b"x")
+        clients.http.file_put.assert_awaited_once_with(ref, b"x", overwrite=True)
+        return ref.key
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [("a/b", "ab"), ("a/b", "a//b"), ("x", "x/"), ("x", "/x"), ("a/b", "a%2Fb"), ("h1/doc", "h1")],
+    )
+    async def test_ids_differing_by_a_slash_never_share_a_key(self, first: str, second: str) -> None:
+        """The id is one percent-encoded segment: /<table>/<id>/<column> never reads another way."""
+        from urllib.parse import unquote
+
+        keys = [await self._default_key(first), await self._default_key(second)]
+        assert keys[0] != keys[1]
+        for record_id, key in zip((first, second), keys, strict=True):
+            parts = key.split("/")
+            assert len(parts) == 4
+            assert parts[:2] == ["", "fsu_helpers"]
+            assert parts[3] == "doc"
+            assert unquote(parts[2]) == record_id
+        assert await self._default_key("a/b") == "/fsu_helpers/a%2Fb/doc"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("record_id", "segment"), [("..", "%2E%2E"), (".", "%2E"), ("...", "..."), ("../x", "..%2Fx")])
+    async def test_dot_ids_stay_under_the_table(self, record_id: str, segment: str) -> None:
+        assert await self._default_key(record_id) == f"/fsu_helpers/{segment}/doc"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("data", [PNG, JPEG, GIF87, GIF89, WEBP], ids=["png", "jpeg", "gif87a", "gif89a", "webp"])

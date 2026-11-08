@@ -703,6 +703,26 @@ async def test_helpers_upload_download_info_delete(files_conn: HTTPConnection, i
     assert await loaded.file_info("doc") is None
 
 
+async def test_helpers_default_keys_of_slash_ids_are_distinct(files_conn: HTTPConnection, i6_table: None) -> None:
+    """I6: the id is one percent-encoded key segment, so "x/y" and "x%2Fy" keep separate files."""
+    base = f"s{uuid.uuid4().hex[:10]}"
+    first = FSII6Doc(id=f"{base}/y", title="a")
+    second = FSII6Doc(id=f"{base}%2Fy", title="b")
+    await first.save()
+    await second.save()
+    refs: list[FileRef] = []
+    try:
+        refs.append(await first.upload_file("doc", b"one"))
+        refs.append(await second.upload_file("doc", b"two"))
+        assert [ref.key for ref in refs] == [f"/{I6_TABLE}/{base}%2Fy/doc", f"/{I6_TABLE}/{base}%252Fy/doc"]
+        assert [await files_conn.file_get(ref) for ref in refs] == [b"one", b"two"]
+        assert await (await FSII6Doc.objects().get(f"{base}/y")).download_file("doc") == b"one"
+        assert await (await FSII6Doc.objects().get(f"{base}%2Fy")).download_file("doc") == b"two"
+    finally:
+        for ref in refs:
+            await files_conn.file_delete(ref)
+
+
 async def test_helpers_explicit_key_and_alias_column(files_conn: HTTPConnection, i6_table: None) -> None:
     """I6: an explicit key; an aliased field is written under its column."""
     doc = await _i6_doc()

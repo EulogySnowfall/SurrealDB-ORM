@@ -31,9 +31,7 @@ def _bucket_error(bucket: object) -> str:
 
 
 def _key_error(key: str) -> str:
-    return (
-        f"Invalid file key {key!r}: it must name a file below the bucket root (no empty path, no '.' or '..' segment, no NUL)"
-    )
+    return f"Invalid file key {key!r}: it must name a file below the bucket root (no empty path, no empty, '.' or '..' segment, no NUL)"
 
 
 def _pointer_error(text: object) -> str:
@@ -52,14 +50,17 @@ def _check_bucket(bucket: object) -> str:
 def _normalise_key(key: object) -> str:
     """Return *key* with a leading ``/`` (as the server writes it), or raise.
 
-    The ``.`` / ``..`` / NUL rule is the same for every backend: the ``memory``
-    backend stores ``/../x`` as a plain key while ``file:`` refuses it, so a
-    key accepted here keeps its meaning when a bucket moves to another backend.
+    The empty / ``.`` / ``..`` segment and NUL rule is the same for every
+    backend. The ``memory`` backend stores ``/../x`` as a plain key while
+    ``file:`` refuses it, and stores ``/a//b`` and ``/a/`` as keys distinct
+    from ``/a/b`` and ``/a`` (measured on 3.3.5), spellings a path would
+    not tell apart. A key accepted here has one spelling and keeps its
+    meaning when a bucket moves to another backend.
     """
     if not isinstance(key, str):
         raise TypeError(f"File key must be a str, got {type(key).__name__}")
     normalised = key if key.startswith("/") else "/" + key
-    if normalised == "/" or "\x00" in normalised or any(part in (".", "..") for part in normalised.split("/")):
+    if "\x00" in normalised or any(part in ("", ".", "..") for part in normalised.split("/")[1:]):
         raise ValueError(_key_error(key))
     return normalised
 
@@ -76,7 +77,8 @@ class FileRef:
     characters; it is always bound, so it need not be an identifier
     (``my-b`` is fine). ``key`` gets a leading ``/`` if it has none, as the
     server does (``FileRef("av", "x.png").key == "/x.png"``); it must not be
-    ``/`` alone, contain NUL or have a ``.`` / ``..`` segment. Two spellings
+    ``/`` alone, contain NUL or have an empty (``//``, a trailing ``/``),
+    ``.`` or ``..`` segment. Two spellings
     of one key compare (and hash) equal. Instances are immutable.
 
     As a Pydantic field type (``avatar: FileRef | None = None``) it accepts

@@ -11,6 +11,7 @@ from typing import (
     get_origin,
     overload,
 )
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
@@ -61,6 +62,18 @@ def _has_image_signature(data: bytes | bytearray | memoryview) -> bool:
     return head.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a")) or (
         head[:4] == b"RIFF" and head[8:12] == b"WEBP"
     )
+
+
+def _key_segment(text: str) -> str:
+    """Write *text* as exactly one segment of a file key.
+
+    Every character but letters, digits and ``_.-~`` is percent-encoded
+    (``/`` → ``%2F``, ``%`` → ``%25``), and a segment that would read ``.`` or
+    ``..`` has its dots encoded too, so two different texts never give the
+    same segment and no text gives a segment that ``FileRef`` refuses.
+    """
+    segment = quote(text, safe="")
+    return segment.replace(".", "%2E") if segment in (".", "..") else segment
 
 
 def _raise_on_statement_error(response: QueryResponse, query: str) -> None:
@@ -1886,7 +1899,9 @@ class BaseSurrealModel(BaseModel):
 
         The file goes to *bucket*, or to the field's first bucket, under
         *key*, or under ``/<table>/<id>/<column>`` by default (the column is
-        the field's alias when it has one). Then the record's column is set
+        the field's alias when it has one; the id is percent-encoded into one
+        segment, so ``a/b`` gives ``/<table>/a%2Fb/<column>`` and two records
+        never share a default key). Then the record's column is set
         to the new pointer, through the same path as :meth:`merge` (update
         signals, ``QueryCache`` invalidation, ``QueryLogger``), without a
         refresh, and the local field is set. An ``ImageField`` accepts PNG,
@@ -1929,9 +1944,8 @@ class BaseSurrealModel(BaseModel):
             TypeError: The model is a materialized view, or *data* is not
                 bytes, ``bytearray`` or ``memoryview``.
             ValueError: *field* is not a file field, the instance has no id,
-                *bucket* is not one of the field's, the key is invalid (an id
-                with a ``..`` segment included), or an ``ImageField`` got data
-                without an image signature.
+                *bucket* is not one of the field's, *key* is invalid, or an
+                ``ImageField`` got data without an image signature.
             FileExistsError: ``overwrite=False`` and a file exists under the
                 key.
             PayloadTooLargeError: The upload is over the WebSocket client's
@@ -1950,7 +1964,8 @@ class BaseSurrealModel(BaseModel):
             raise TypeError(f"File data must be bytes, bytearray or memoryview, got {type(data).__name__}")
 
         ref = FileRef(
-            bucket if bucket is not None else marker.buckets[0], key or f"/{self.get_table_name()}/{record_id}/{column}"
+            bucket if bucket is not None else marker.buckets[0],
+            key or f"/{self.get_table_name()}/{_key_segment(record_id)}/{column}",
         )
         if ref.bucket not in marker.buckets:
             raise ValueError(_bucket_not_allowed(ref, marker.buckets))
