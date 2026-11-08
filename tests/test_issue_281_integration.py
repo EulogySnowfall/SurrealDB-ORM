@@ -316,19 +316,39 @@ class TestStartWithoutReadingTheFeed:
     async def test_a_datetime_start_delivers_a_later_change_or_warns(self) -> None:
         """Measured on 3.3.5: RocksDB selects the change; memory and SurrealKV select nothing."""
         await _write("CREATE i281_items:before SET name = 'before';")
-        feed = ChangeFeedStream(await _client(), "i281_items", poll_interval=0.05)
+        counting = _CountingConnection(await _client())
+        feed = ChangeFeedStream(counting, "i281_items", poll_interval=0.05)  # type: ignore[arg-type]
         stream = feed.stream(since=datetime.now(UTC) - timedelta(minutes=1))
         delivered: list[str] = []
+        batches: list[Any] = []
 
         async def consume() -> None:
             async for entry in stream:
+                batches.append(entry)
                 delivered.extend(_updated_ids([entry]))
+
+        def marker_set() -> bool:
+            """A window read after a probe: the check found "now" after an empty first window."""
+            probed = False
+            for query in counting.queries:
+                if query.endswith(" LIMIT 1;"):
+                    probed = True
+                elif probed and query.startswith("BEGIN;"):
+                    return True
+            return False
+
+        async def armed() -> None:
+            # Either the window from the start selected entries (the check is
+            # over and a later change is delivered), or the check holds its
+            # marker and a later change is delivered or reported.
+            while not batches and not marker_set():
+                await asyncio.sleep(0.01)
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             task = asyncio.ensure_future(consume())
             try:
-                await asyncio.sleep(0.5)  # the first empty polls find "now"
+                await asyncio.wait_for(armed(), START_TIMEOUT)
                 await _write("CREATE i281_items:later SET name = 'later';")
 
                 async def settled() -> None:
