@@ -24,9 +24,10 @@ bug and security fixes only) is cut from `main` right after 0.39.0.
 
 ### What's New in 0.39.3
 
-One fix, #312 via #650 (`surreal_sdk/streaming/change_feed.py`, the
-`QuerySet.changes()` docstring, `docs/sdk.md`). Pin unchanged (3.3.5).
-`v2`: not needed, the line ended at 0.39.0.
+Four fixes: #312 via #650 (`surreal_sdk/streaming/change_feed.py`,
+`docs/sdk.md`), #344 via #653 (`query_set.py`, `prefetch.py`), #357 via #655
+(`auth/mixins.py`) and #360 via #656 (`cache.py`, `surreal_sdk/transaction.py`).
+Pin unchanged (3.3.5). `v2`: not needed, the line ended at 0.39.0.
 
 - **"Now" is found with probes.** `_resolve_now()` delegates to `_find_now()`:
   `SHOW CHANGES FOR DATABASE SINCE <n> LIMIT 1`, jumping past the
@@ -46,10 +47,32 @@ One fix, #312 via #650 (`surreal_sdk/streaming/change_feed.py`, the
   write), so `_DatetimeStartCheck` finds "now" once the start is 5 s in the
   past and a window is empty, then probes from there before each empty poll
   and warns once when a probe finds a change the window missed.
-- **Open (review suggestions on #650):** changes between the `since` instant
-  and the check's marker are skipped without a warning; a small feed costs
-  more probes than the old one-request scan (starting the step at `1 << 16`,
-  or a far-ahead first probe, would cut that).
+- **`Prefetch` sends its queryset's declared variables** (only declared names,
+  `setdefault`, so the compiled `$_fN` win; same rule as `Subquery`).
+  `.variables()` refuses every name starting with `_`: all of the ORM's own
+  bindings (`_fN`, `_sqN`, `_knn_vec`, `_g_*`, ...) start with `_`, so one rule
+  closes the collision for future names too.
+- **`refresh_access_token()` reads `$auth` on the temporary connection** and
+  fetches through `_fetch_record_by_id()`, like the other three auth entry
+  points; no local JWT decode. `signup()` reads `$auth` in its own `try`, so a
+  failure after the account exists is `Signup succeeded but the session
+  record could not be read: ...`, never `Signup failed`.
+- **The cache drops a table twice for a transactional write**: when the write
+  is issued (signal) and after the commit, through the private
+  `BaseTransaction._call_on_commit(key, callback)` hook (HTTP and WebSocket;
+  runs only once `is_committed` is set, once per key; a raising callback is
+  logged, never fails the commit). The callback holds the model class only.
+- **Open (review suggestions):** changes between the `since` instant and the
+  datetime check's marker are skipped without a warning, and a small feed
+  costs more probes than the old one-request scan (#650); a `$auth` read
+  failure after a rotated refresh still says `Token refresh failed` (#655);
+  a `.cache()` read in flight across a drop stores stale rows (a per-table
+  generation counter would close it), and an HTTP commit cancelled after the
+  server applied it skips the second drop (#656); the `iter_jsonl()`
+  docstring still lists the `_x_` variable case `.variables()` now refuses
+  first (#653).
+- Release-docs correction carried here: `[0.34.17]` "unique identifier"
+  sentence (#357 item 4).
 
 ### What's New in 0.39.2
 

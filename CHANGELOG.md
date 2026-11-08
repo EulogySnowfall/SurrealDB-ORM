@@ -8,17 +8,18 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ## [0.39.3] - 2026-11-08
 
-**Patch release — change feed start-up and multi-table polls (#312 via
-#650).** SDK only (`surreal_sdk/streaming/change_feed.py`, plus the
-`QuerySet.changes()` docstring): the default start of a change feed no longer
-reads the whole retained database feed, a multi-table poll reads the database
-feed once instead of once per table, and a datetime start that misses a
-change now warns. No public API is added and no DDL is emitted. The SurrealDB
-pin is unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x).
+**Patch release — change feed start-up, `Prefetch` variables, the user
+returned by a token refresh, and cache drops at commit.** Four fixes: #312
+via #650 (`surreal_sdk/streaming/change_feed.py`), #344 via #653
+(`surreal_orm/query_set.py`, `prefetch.py`), #357 via #655
+(`surreal_orm/auth/mixins.py`) and #360 via #656 (`surreal_orm/cache.py`,
+`surreal_sdk/transaction.py`). No public API is added and no DDL is emitted.
+The SurrealDB pin is unchanged (tested against 3.3.5, supported range
+3.2.x – 3.3.x).
 
 ### Fixed
 
-- **The default start (`since=None`) is found with probes.**
+- **The default change feed start (`since=None`) is found with probes.**
   `ChangeFeedStream.stream()` / `stream_batch()`,
   `MultiTableChangeFeed.stream()` and `QuerySet.changes()` used to find "now"
   by reading the database feed from versionstamp 0, 1000 full entries per
@@ -31,42 +32,109 @@ pin is unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x).
   transaction: one `SHOW CHANGES FOR TABLE` per table and a single
   `SHOW CHANGES FOR DATABASE`, from the smallest cursor. A table's cursor never
   moves back, and each `stream.cursor` keeps its meaning (#312).
+- **`Prefetch(queryset=...)` sends the variables its queryset declared with
+  `.variables()`.** `Prefetch("wrote", queryset=Post.objects().filter(tag="$t").variables(t="x"))`
+  now filters the edges on `tag = "x"`; the variable used to reach the server
+  unbound, so the filter compared against `NONE` and no related record
+  matched. The rule is the one `Subquery` follows: only declared names are
+  sent, and the ORM's compiled `$_fN` bindings are never replaced (#344).
+- **A variable declared with `.variables()` can no longer be overwritten by a
+  binding the ORM writes while compiling.**
+  `filter(name="x", age="$_f0").variables(_f0=5)` used to compare `age` with
+  `"x"` (#344).
+- **`refresh_access_token()` returns the record the new token was issued
+  for.** It reads `$auth` on the temporary connection before closing it and
+  fetches that record by its decoded record ID, as `signin()`, `signup()` and
+  `authenticate_token()` have done since 0.34.17. The record ID is no longer
+  decoded locally from the JWT or bound as a string. On SurrealDB 3.3.5 the
+  old lookup already found numeric-looking keys such as `⟨000000⟩`, so this
+  aligns the four entry points on one lookup. Cost: one extra `RETURN $auth`
+  query on the temporary refresh connection (#357).
+- **`signup()` no longer reports `Signup failed: ...` once the account
+  exists.** When the account was created but its `$auth` record could not be
+  read, it raises `SurrealDbError("Signup succeeded but the session record
+  could not be read: ...")`, so a caller does not retry and create a second
+  record or hit a uniqueness error (#357).
+- **A `.cache()` read taken between a transactional write and its commit is
+  no longer served after the commit.** A write with `tx=` (`save(tx=)`,
+  `update(tx=)`, `merge(tx=)`, `delete(tx=)`, and `bulk_create(atomic=True)`,
+  which goes through `save(tx=)`) fires its signal when the write is issued,
+  and the cache dropped the table's entries only then. A read cached by
+  another task before the commit kept serving the pre-commit rows until the
+  TTL ran out. The table's entries are now dropped again once the transaction
+  commits, over HTTP and WebSocket (#360).
 
 ### Added
 
-- **A datetime start that misses a change emits one `RuntimeWarning`**
-  pointing to versionstamp cursors, instead of waiting silently. Measured on
-  SurrealDB 3.3.5: RocksDB selects the entries written from a `d'...'` start;
-  in-memory storage and SurrealKV select nothing for any instant after the
-  epoch. The stream does not raise and keeps polling; the first non-empty
-  window ends the check (#312).
+- **A datetime change feed start that misses a change emits one
+  `RuntimeWarning`** pointing to versionstamp cursors, instead of waiting
+  silently. Measured on SurrealDB 3.3.5: RocksDB selects the entries written
+  from a `d'...'` start; in-memory storage and SurrealKV select nothing for any
+  instant after the epoch. The stream does not raise and keeps polling; the
+  first non-empty window ends the check (#312).
 
 ### Behaviour changes
 
-- The default start sends small `LIMIT 1` probes (up to 130) instead of pages
-  of 1000 full entries.
-- A multi-table round is a single request.
-- A stream with a datetime start whose window stays empty sends one extra
-  small probe per empty poll, until a change is written after the start or it
-  has warned.
+- The default change feed start sends small `LIMIT 1` probes (up to 130)
+  instead of pages of 1000 full entries (#312).
+- A multi-table change feed round is a single request (#312).
+- A change feed with a datetime start whose window stays empty sends one
+  extra small probe per empty poll, until a change is written after the start
+  or it has warned (#312).
+- `QuerySet.variables()` raises `ValueError("Variable names starting with '_'
+  are reserved for the ORM's own bindings: '<name>'")` for any name starting
+  with `_`, before storing anything. This includes names such as `_x_after`,
+  which `iter_jsonl()` / `export_jsonl()` used to reject later with their own
+  message. Names that do not start with `_` are unchanged (#344).
+- `signup()` raises with the message prefix `Signup succeeded but the session
+  record could not be read:` when the account was created but its `$auth`
+  record could not be read. The other `Signup failed` paths (duplicate
+  identifier, rejected signup, no token) are unchanged (#357).
+- `refresh_access_token()` raises `SurrealDbError` when `$auth` is empty
+  (instead of `could not extract record ID from JWT`), and `DoesNotExist` with
+  the record ID in the message when the record no longer exists (#357).
+- A transaction that commits drops the cache entries of each table written
+  with `tx=` a second time. A rollback or a failed commit drops nothing more.
+  Non-transactional writes are unchanged (#360).
 
 ### Upgrading
 
 - On in-memory or SurrealKV servers, start a change feed from a versionstamp
-  (an `int`, or a saved `stream.cursor`) rather than a datetime.
+  (an `int`, or a saved `stream.cursor`) rather than a datetime (#312).
+- Rename any variable declared with a leading underscore:
+  `.variables(_min=18)` with `filter(age__gte="$_min")` becomes
+  `.variables(min_age=18)` with `filter(age__gte="$min_age")` (#344).
 
 ### Known limitations
 
-- The warning only covers changes written after the stream started watching:
-  the check finds "now" at the first empty poll that comes at least 5 seconds
-  after the datetime start, and only a change written after that point is
-  detected. Changes committed between the `since` instant and that point are
-  skipped without a warning, and on in-memory or SurrealKV storage they are
-  never delivered (review suggestion on #650).
+- The datetime-start warning only covers changes written after the stream
+  started watching: the check finds "now" at the first empty poll that comes
+  at least 5 seconds after the datetime start, and only a change written after
+  that point is detected. Changes committed between the `since` instant and
+  that point are skipped without a warning, and on in-memory or SurrealKV
+  storage they are never delivered (review suggestion on #650).
 - On a small feed, the probe search can take more round trips than the old
   scan, which needed one request below 1000 entries: about 10 probes for a
   few entries written over a second, about 40 for twenty entries over a
   minute. Each probe is one sequential request (review suggestion on #650).
+- `refresh_access_token()`: if reading `$auth` fails after the server has
+  accepted the refresh, the error still reads `Token refresh failed: ...`,
+  although the refresh token passed in has already been rotated and the new
+  pair is dropped. Sign in again rather than retrying with the same refresh
+  token (review suggestion on #655).
+- The cache: a `.cache()` read whose query was sent before a write and whose
+  reply arrives after the entries were dropped still stores its result, which
+  is then served until the TTL runs out (transactional or not). An HTTP commit
+  cancelled after the server applied the batch skips the drop at commit
+  (review suggestion on #656).
+
+### Internal
+
+- `BaseTransaction` has a private post-commit hook (`_call_on_commit`). The
+  callbacks run once per key, in registration order, only after a successful
+  commit; a callback that raises is logged as a warning by
+  `surreal_sdk.transaction` and never fails the commit. No public API change
+  (#360).
 
 ### Tests
 
@@ -76,6 +144,17 @@ pin is unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x).
   one ending in a backslash, and both (#312).
 - A change behind more than 1000 entries of another table is delivered once
   (#312).
+- Reserved `_` variable names (including inside a `Subquery` and a
+  `Prefetch`), declared variables on a `Prefetch` queryset, and an
+  integration test that the edge filter is bound (#344).
+- `signup()` after a failed `$auth` read, `refresh_access_token()` resolving
+  the session record (empty `$auth`, missing record), and integration tests
+  of `authenticate_token()` and `refresh_access_token()` for a `⟨000000⟩`
+  user (#357).
+- A read cached between the write and the commit is not served afterwards,
+  for `save`, `update`, `merge` and `delete` over HTTP and WebSocket and for
+  `bulk_create(atomic=True)`; rollback, failed commit, rejected batch,
+  raising callback and deduplication of the commit hook (#360).
 
 ### Documentation
 
@@ -83,6 +162,17 @@ pin is unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x).
   `examples/12_realtime.ipynb` (markdown only) describe the probe search, the
   per-engine datetime behaviour and the single read per multi-table poll
   (#312).
+- `docs/orm.md` and the `Prefetch` / `QuerySet.variables()` docstrings state
+  the declared-variables rule and the reserved `_` names (#344); the cache
+  section of `docs/orm.md` states the two drops of a transactional write
+  (#360).
+- The `QueryCache.set(connection=)` docstring now says that the connection
+  identity only scopes reads, and that a write through any connection drops
+  every entry of the table (#360).
+- Release-note correction: the `[0.34.17]` entry now says "Applications whose
+  identifier values are unique get the same user record back as before."
+  instead of "Nothing changes for applications whose identifier values are
+  unique." (#357).
 
 ---
 
@@ -1793,7 +1883,8 @@ range 3.2.x – 3.3.x).
   credentials; the `DEFINE ACCESS` definition validates them.
 - `change_password()` raises `SurrealDbError` when the update does not affect
   exactly the signed-in record, instead of returning `True`.
-- Nothing changes for applications whose identifier values are unique.
+- Applications whose identifier values are unique get the same user record
+  back as before.
 
 ## [0.34.16] - 2026-10-28
 
