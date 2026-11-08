@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.38.5)
+> Context document for Claude AI - Last updated: November 2026 (0.38.6)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.38.5 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.38.6 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,26 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.38.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.38.6
+
+One fix, #614 via #621 (`surreal_sdk/connection/pool.py` only). Pin unchanged
+(3.3.5). `v2`: same defect, backport tracked in #622.
+
+- **`acquire()` remembers the connection it built (`created`).** If
+  `_init_connection()` (`connect()` then `_sign_in_as_pool()`) raises or is
+  cancelled before the connection reaches `_in_use`, the handler calls
+  `_discard()` and `_close_quietly()` (shielded, `Exception` ignored), then
+  re-raises the original error; the semaphore release sits in a `finally`, so
+  a cancelled close still frees the slot. The old handler only released the
+  slot: `WebSocketConnection.connect()` cleans up on `aiohttp.ClientError`
+  alone, so a failed `use()` or sign-in left the session and reader task
+  running.
+- **The error now waits for the close.** A WebSocket `_cleanup()` awaits
+  `ws.close()` (`ws_close=self.timeout`), so against a silent server the
+  caller can see the error up to `timeout` later (review suggestion on #621,
+  written into the release notes).
+- A connection reused from `_pool` never goes through this path.
 
 ### What's New in 0.38.5
 
