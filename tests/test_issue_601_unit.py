@@ -52,3 +52,8 @@ async def test_changes_stopped_during_the_first_client_build_end_without_polling
 
     assert server.feed.queries == [], "a stream stopped during its first client build polled the change feed"
     assert stream.cursor is None
+    # The trade-off the module docstring describes: the client is resolved
+    # (one built, registered as the default connection), then left unused.
+    assert len(server.built) == 1
+    assert stream._connection is server.built[0]
+    assert Manager._clients.get("default") is server.built[0]
