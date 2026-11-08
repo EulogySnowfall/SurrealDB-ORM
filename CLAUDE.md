@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.57)
+> Context document for Claude AI - Last updated: November 2026 (0.21.58)
 
 <!-- -->
 
@@ -20,12 +20,23 @@
 
 ---
 
-## Current Version: 0.21.57 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.58 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.58
+
+One fix PR, #610 via #617 (`surreal_orm/live.py`): the 0.21.56 review follow-up. Pin unchanged (2.7.0).
+
+- **`_stream_events()` wraps the first `_ensure_feed()` in `try` / `except Exception`.** On a stopped stream the
+  exception ends the generator (no change-feed query); on a running one it is re-raised. `CancelledError` and other
+  non-`Exception` `BaseException`s are never caught. This closes the 0.21.56 open item.
+- **Open (review suggestion on #617):** `_replacement_feed()` does not guard its own `get_client()`: a stream stopped
+  while a resume's build is pending still raises if that build fails. The comment in `_stream_events()` claims parity
+  with `_replacement_feed()`, which holds only when `get_client()` returns.
 
 ### What's New in 0.21.57
 

@@ -6,6 +6,62 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.58] - 2026-11-07
+
+**Bug fix release (V2 LTS).** The 0.21.56 review follow-up (#610 via
+#617): a `changes()` stream stopped while its first client build is still
+running now ends quietly when that build raises. The SurrealDB pin is
+unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **A stopped `changes()` stream ends when its first client build raises.**
+  When `stop()` is called while the first `get_client()` of a
+  `ChangeModelStream` is still running and that call then raises (for
+  example `SurrealDbConnectionError` when the server cannot be reached), the
+  stream now ends (`StopAsyncIteration`, no change-feed query) instead of
+  raising out of a stream the caller had already stopped (#610, #617). This
+  resolves the known limitation listed under `[0.21.56]`.
+
+### Behaviour change
+
+- None for a running stream: a stream that was not stopped still gets the
+  error of a failing first `get_client()`. `CancelledError` and any other
+  `BaseException` that is not an `Exception` still propagate, stopped or
+  not.
+
+### Known limitations
+
+- The same window on a resume is not covered: if `stop()` arrives while the
+  `get_client()` that moves a stream to a new client after `reconnect()` is
+  pending, and that call raises, the error still reaches the caller of the
+  stopped stream (review suggestion on #617).
+
+### Tests
+
+- `tests/test_issue_610_unit.py` (5 tests): a stream stopped during a first
+  build that raises ends quietly; a stream that was not stopped still gets
+  the error, also when the build is held; cancellation and other
+  non-`Exception` errors still propagate from a stream stopped during its
+  first build. One of them fails against the 0.21.57 `src/`; the other four
+  pin behaviour that must not change.
+- The #601 test now also checks that exactly one client is resolved, then
+  left unused, when the stream is stopped during its first build.
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, on #617's validated head (the released tree):
+4,044 unit tests pass on each of Python 3.12, 3.13 and 3.14 (1 expected
+failure, the strict `xfail` from 0.21.51), and 833 integration tests pass
+(4 expected failures, the existing strict `xfail`s for integer record ids
+over WebSocket); `ruff` and `mypy` clean.
+
+---
+
 ## [0.21.57] - 2026-11-07
 
 **Bug fix release (V2 LTS).** One backport from `main`: `ConnectionPool`
