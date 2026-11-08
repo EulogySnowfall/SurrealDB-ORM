@@ -5,13 +5,17 @@ Provides atomic transaction handling for both HTTP and WebSocket connections.
 """
 
 import asyncio
+import logging
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Self
 
 from .exceptions import TransactionConflictError, TransactionError
 from .utils import _ESCAPED_ID_UNIT, _IDENTIFIER_RE, substitute_params, unescape_record_id
+
+logger = logging.getLogger(__name__)
 
 #: A record ID part that SurrealQL reads as an integer when written inline
 #: (``users:1``, ``users:-5``), provided it fits in a signed 64-bit integer;
@@ -193,6 +197,8 @@ class BaseTransaction(ABC):
         self._committed = False
         self._rolled_back = False
         self._active = False
+        # Run once the transaction has committed (see ``_call_on_commit``).
+        self._commit_callbacks: dict[Hashable, Callable[[], object]] = {}
 
     @property
     def is_active(self) -> bool:
@@ -244,6 +250,38 @@ class BaseTransaction(ABC):
             return False  # Re-raise exception
         await self.commit()
         return False
+
+    def _call_on_commit(self, key: Hashable, callback: Callable[[], object]) -> bool:
+        """Run *callback* once this transaction has committed successfully.
+
+        Private hook for the ORM layer (the query cache drops a table's entries
+        again at commit). One callback per *key*: a second registration under the
+        same key is ignored. The callbacks run in registration order, after
+        ``is_committed`` is set, and never on a rollback or a commit that raises;
+        either way they are dropped when the transaction ends, so nothing they
+        reference outlives it. A callback that raises is logged and does not fail
+        the commit. Keep them short and synchronous, and do not let them hold the
+        transaction.
+
+        Returns:
+            ``False`` (and nothing is registered) when the transaction is not
+            active, ``True`` otherwise.
+        """
+        if not self.is_active:
+            return False
+        self._commit_callbacks.setdefault(key, callback)
+        return True
+
+    def _end_commit_callbacks(self) -> None:
+        """Run the commit callbacks if the transaction committed, then drop them all."""
+        callbacks, self._commit_callbacks = self._commit_callbacks, {}
+        if not self._committed:
+            return
+        for callback in callbacks.values():
+            try:
+                callback()
+            except Exception:
+                logger.warning("A post-commit callback raised; the commit itself succeeded", exc_info=True)
 
     @abstractmethod
     async def _begin(self) -> None:
@@ -390,6 +428,8 @@ class HTTPTransaction(BaseTransaction):
         try:
             return await self._send_statements()
         finally:
+            # Synchronous, before the await below: nothing can cancel it in between.
+            self._end_commit_callbacks()
             await self._release_connection()
 
     async def _send_statements(self) -> "QueryResponse":
@@ -448,6 +488,7 @@ class HTTPTransaction(BaseTransaction):
         self._statements = []
         self._rolled_back = True
         self._active = False
+        self._end_commit_callbacks()
         await self._release_connection()
 
     def _queue_statement(self, sql: str, vars: dict[str, Any] | None = None) -> None:
@@ -601,6 +642,8 @@ class WebSocketTransaction(BaseTransaction):
         except Exception as e:
             self._active = False
             raise TransactionError(f"Commit failed: {e}")
+        finally:
+            self._end_commit_callbacks()
 
     async def rollback(self) -> None:
         """Send ROLLBACK to server."""
@@ -614,6 +657,7 @@ class WebSocketTransaction(BaseTransaction):
         finally:
             self._rolled_back = True
             self._active = False
+            self._end_commit_callbacks()
 
     async def query(self, sql: str, vars: dict[str, Any] | None = None) -> "QueryResponse":
         """Execute query immediately within transaction."""

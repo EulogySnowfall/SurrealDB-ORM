@@ -40,7 +40,10 @@ class Prefetch:
         queryset: An optional ``QuerySet`` whose **filters** are appended as
             extra AND conditions on the edge table query.  The filters should
             reference fields that exist on the **edge record** (not the target
-            model).  If ``None``, all related objects are fetched.
+            model).  Variables it declared with ``.variables()`` are sent
+            with the prefetch query, so ``filter(tag="$t").variables(t="x")``
+            works; the filters' own ``$_fN`` bindings are never replaced.
+            If ``None``, all related objects are fetched.
         to_attr: The attribute name on each parent instance where the
             prefetched list is stored.  Defaults to ``relation_name``.
 
