@@ -158,6 +158,9 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
   is then served until the TTL runs out (transactional or not). An HTTP commit
   cancelled after the server applied the batch skips the drop at commit
   (review suggestion on #656).
+- The `iter_jsonl()` / `export_jsonl()` docstring still lists a
+  `.variables()` name starting with `_x_` under `ValueError`; `.variables()`
+  now refuses any name starting with `_` first (review suggestion on #653).
 - The sign-up warning suggests `signup_fields` for every field it names, but a
   read-only field (`Field(frozen=True)` or `readonly`) cannot be a sign-up
   field: `signup_fields` refuses it with `ValueError`. Give such a field a
