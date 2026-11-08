@@ -113,6 +113,77 @@ class TableNotFoundError(QueryError):
         return any(p in msg for p in TableNotFoundError._PATTERNS)
 
 
+class FilesNotEnabledError(QueryError):
+    """Raised when the server was started without file storage.
+
+    Experimental: follows SurrealDB's experimental ``files`` capability.
+    SurrealDB 3.2 and 3.3 keep file storage behind ``--allow-experimental=files``
+    (or ``SURREAL_CAPS_ALLOW_EXPERIMENTAL=files``), which the official image
+    does not enable. Without it a ``file::*`` call is a statement error and a
+    ``DEFINE BUCKET`` is a parse error, returned as an RPC error; both reach
+    the caller as this exception, whose message names the flag and ends with
+    the server's own text. It is a ``QueryError``, so existing handlers keep
+    catching it.
+    """
+
+    # What the server says when the capability is off (case-sensitive,
+    # measured on 3.2.6 and 3.3.5): a ``file::*`` call, a ``type::file()``
+    # cast on 3.3, and the parse error of ``DEFINE BUCKET``.
+    _TEXTS = (
+        "Experimental capability `files` is not enabled",
+        "Experimental feature files is not enabled",
+        "expected the experimental files feature to be enabled",
+    )
+
+    @staticmethod
+    def is_files_not_enabled(message: str) -> bool:
+        """Check if a server error message says the ``files`` capability is off."""
+        return any(text in message for text in FilesNotEnabledError._TEXTS)
+
+    @classmethod
+    def _from_server_text(cls, text: str, *, query: str | None = None, code: int | None = None) -> FilesNotEnabledError:
+        """Build the error for the server's message *text*."""
+        return cls(
+            "File storage is not enabled on this SurrealDB server: start it with --allow-experimental=files "
+            f"(server said: {text})",
+            query=query,
+            code=code,
+        )
+
+
+class PayloadTooLargeError(QueryError):
+    """Raised when a request is over the size limit of its transport.
+
+    Experimental: follows SurrealDB's experimental ``files`` capability.
+    File uploads need a server started with ``--allow-experimental=files``.
+    Raised by ``file_put()`` before anything is sent, when its estimate of
+    the request exceeds the connection's ``max_request_size``, and by the HTTP
+    transport when the server answers ``413`` (its body limit,
+    ``SURREAL_HTTP_MAX_RPC_BODY_SIZE``, 4 MiB by default), whatever the
+    request. It is a ``QueryError`` with ``code`` 413, so existing handlers
+    keep catching it.
+
+    Attributes:
+        size: The estimated size of the refused request in bytes (the data,
+            the file pointer and 512 bytes for the request envelope), or
+            ``None`` when the server refused it.
+        limit: The connection's ``max_request_size``, or ``None`` when the
+            server refused the request.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        size: int | None = None,
+        limit: int | None = None,
+        query: str | None = None,
+    ):
+        self.size = size
+        self.limit = limit
+        super().__init__(message, query=query, code=413)
+
+
 class TimeoutError(SurrealDBError):
     """Raised when an operation times out."""
 

@@ -11,10 +11,12 @@ from typing import (
     get_origin,
     overload,
 )
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
-from surreal_sdk.exceptions import QueryError, TransactionConflictError
+from surreal_sdk.exceptions import PayloadTooLargeError, QueryError, TransactionConflictError
+from surreal_sdk.files import FileInfo, FileRef
 from surreal_sdk.protocol.cbor import RecordId
 from surreal_sdk.types import QueryResponse
 
@@ -28,8 +30,10 @@ from .utils import SAFE_IDENTIFIER_RE as _SAFE_IDENTIFIER_RE
 from .utils import format_thing, parse_record_id
 
 if TYPE_CHECKING:
+    from surreal_sdk.connection.base import BaseSurrealConnection
     from surreal_sdk.transaction import BaseTransaction, HTTPTransaction
 
+    from .fields.file import _FileMarker
     from .graph import GraphDirection
     from .q import Q
     from .query_set import QuerySet
@@ -50,6 +54,26 @@ logger = logging.getLogger(__name__)
 _UPDATE_NO_RECORD_MSG = (
     "Can't update data, no record affected for {thing} (record may not exist or the write was denied by permissions)."
 )
+
+
+def _has_image_signature(data: bytes | bytearray | memoryview) -> bool:
+    """Whether *data* starts with a PNG, JPEG, GIF or WebP signature (what ``ImageField`` accepts)."""
+    head = bytes(memoryview(data)[:12])
+    return head.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a")) or (
+        head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+    )
+
+
+def _key_segment(text: str) -> str:
+    """Write *text* as exactly one segment of a file key.
+
+    Every character but letters, digits and ``_.-~`` is percent-encoded
+    (``/`` → ``%2F``, ``%`` → ``%25``), and a segment that would read ``.`` or
+    ``..`` has its dots encoded too, so two different texts never give the
+    same segment and no text gives a segment that ``FileRef`` refuses.
+    """
+    segment = quote(text, safe="")
+    return segment.replace(".", "%2E") if segment in (".", "..") else segment
 
 
 def _raise_on_statement_error(response: QueryResponse, query: str) -> None:
@@ -306,6 +330,34 @@ def _to_record_link(value: Any, table: str | None) -> Any:
             return RecordId(table=table, id=id_part)
 
     return to_record_id(value)
+
+
+def _to_file_ref(value: Any) -> Any:
+    """
+    Convert a file-column value given as text into a ``FileRef``.
+
+    SurrealDB never equates a bound string with a file pointer, so a filter,
+    a ``QuerySet`` write or a :meth:`BaseSurrealModel.merge` given the
+    ``"bucket:/key"`` text a model accepts would match nothing or be rejected
+    (``merge()`` takes its keywords without Pydantic validation; it converts
+    them in ``_coerce_foreign_keys()``).  The text is read with
+    :meth:`FileRef.parse`, the one reader of that form; anything else (a
+    ``FileRef``, ``None``) is returned unchanged.  No bucket check: a pointer
+    to another bucket simply matches no row, and a typed column's own check
+    rejects it on write.
+
+    Args:
+        value: The file-column value
+
+    Returns:
+        A ``FileRef``, or the original value
+
+    Raises:
+        ValueError: *value* is a string that is not a valid pointer.
+    """
+    if isinstance(value, str):
+        return FileRef.parse(value)
+    return value
 
 
 def _resolve_target_table(model_name: str) -> str | None:
@@ -888,6 +940,42 @@ class BaseSurrealModel(BaseModel):
                 columns[alias] = table
         return columns
 
+    @classmethod
+    def get_file_columns(cls) -> dict[str, tuple[str, ...] | None]:
+        """
+        Map each file-pointer *column* name to the buckets it accepts.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+
+        Covers :class:`~surreal_orm.fields.FileField` /
+        :class:`~surreal_orm.fields.ImageField` (also inside ``| None``) and a
+        bare ``FileRef`` annotation.  Like :meth:`get_foreign_key_columns`,
+        each field is listed under its name and, when declared, its alias, so
+        filters and bulk writes can coerce ``"bucket:/key"`` text.
+
+        Returns:
+            Dict mapping column name to the field's bucket names, or ``None``
+            for a bare ``FileRef`` annotation (any bucket).
+        """
+        # Local import: fields.relation imports record_link_to_str from this
+        # module at load time, so importing it at the top would be circular.
+        from .fields.file import _FileMarker
+        from .fields.relation import _find_marker, _unwrap_union
+
+        columns: dict[str, tuple[str, ...] | None] = {}
+        for name, field_info in cls.model_fields.items():
+            marker = _find_marker(field_info.annotation, field_info.metadata, _FileMarker)
+            if marker is not None:
+                buckets: tuple[str, ...] | None = marker.buckets
+            elif FileRef in _unwrap_union(field_info.annotation):
+                buckets = None
+            else:
+                continue
+            columns[name] = buckets
+            if field_info.alias:
+                columns[field_info.alias] = buckets
+        return columns
+
     def get_id(self) -> str | None:
         """
         Get the ID of the model instance.
@@ -1093,20 +1181,30 @@ class BaseSurrealModel(BaseModel):
         return data
 
     def _coerce_foreign_keys(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Wrap foreign-key values into record links before writing.
+        """Wrap foreign-key and file-pointer values before writing.
 
         ``model_dump()`` renders a :func:`ForeignKey` as a ``"table:id"``
         string, which a ``record<...>`` column rejects.  A bare ID is qualified
         with the target model's table.
 
+        A file column (:meth:`get_file_columns`) given as ``"bucket:/key"``
+        text becomes a ``FileRef`` through :func:`_to_file_ref`.  ``save()``
+        and ``update()`` already hold a ``FileRef`` (Pydantic validated the
+        field), but :meth:`merge` takes its keywords as they are: without this
+        step the text was stored as a string, which a ``file<...>`` column
+        rejects and no file filter matches.  Invalid text raises
+        ``ValueError`` here, before any request.
+
         Handles aliased fields: when ``model_dump(by_alias=True)`` is used,
         dict keys may be aliases rather than Python field names.
 
         Returns:
-            A new dict with foreign-key values converted.
+            A new dict with foreign-key and file values converted (*data*
+            itself when the model has neither).
         """
         fk_targets = self.__class__.get_foreign_key_targets()
-        if not fk_targets:
+        file_columns = self.__class__.get_file_columns()
+        if not fk_targets and not file_columns:
             return data
 
         coerced = dict(data)
@@ -1115,6 +1213,9 @@ class BaseSurrealModel(BaseModel):
             key = alias if alias and alias in coerced else field_name
             if key in coerced:
                 coerced[key] = _to_record_link(coerced[key], table)
+        for column in file_columns:
+            if column in coerced:
+                coerced[column] = _to_file_ref(coerced[column])
         return coerced
 
     async def save(
@@ -1573,7 +1674,39 @@ class BaseSurrealModel(BaseModel):
                 Use this when data contains :class:`SurrealFunc` expressions
                 that reference bound parameters.
             **data: Fields to update. Values may be :class:`SurrealFunc` instances
-                for server-side expressions.
+                for server-side expressions. They skip Pydantic validation, so
+                a foreign key is wrapped into a record link and a file column
+                given as ``"bucket:/key"`` text into a ``FileRef`` before the
+                request (invalid text raises ``ValueError`` first).
+
+        Returns:
+            Self: The updated model instance.
+        """
+        return await self._merge_columns(data, tx=tx, refresh=refresh, extra_vars=extra_vars)
+
+    async def _merge_columns(
+        self,
+        data: dict[str, Any],
+        *,
+        tx: "BaseTransaction | None" = None,
+        refresh: bool = True,
+        extra_vars: dict[str, Any] | None = None,
+    ) -> Self:
+        """
+        Merge ``data`` into the record: the body of :meth:`merge`.
+
+        The columns come as a dict rather than as keywords, so a column named
+        ``tx``, ``refresh`` or ``extra_vars`` is written like any other (the
+        file helpers write one column whose name is the caller's field).
+        Signals, ``QueryLogger`` entries, foreign-key and file coercion and the
+        no-record-affected check are those of :meth:`merge`.
+
+        Args:
+            data: Columns to update. Not modified.
+            tx: Optional transaction to use for this operation.
+            refresh: Refresh the instance from the database after the update.
+            extra_vars: Additional query variables for :class:`SurrealFunc`
+                expressions.
 
         Returns:
             Self: The updated model instance.
@@ -1718,6 +1851,242 @@ class BaseSurrealModel(BaseModel):
             instance=self,
             tx=tx,
         )
+
+    # ------------------------------------------------------------------
+    # File storage helpers (experimental ``files`` capability)
+    # ------------------------------------------------------------------
+
+    def _file_field(self, field: str) -> "tuple[_FileMarker, str]":
+        """The file marker and the column of the Python field *field*.
+
+        Raises:
+            ValueError: *field* is not a model field carrying a
+                ``FileField`` / ``ImageField`` marker.
+        """
+        from .fields.file import _FileMarker
+        from .fields.relation import _find_marker
+
+        info = type(self).model_fields.get(field)
+        marker = _find_marker(info.annotation, info.metadata, _FileMarker) if info is not None else None
+        if info is None or marker is None:
+            raise ValueError(f"{type(self).__name__}.{field} is not a FileField or ImageField")
+        return marker, info.alias or field
+
+    def _require_id_for(self, method: str) -> str:
+        """The record id, or ``ValueError`` naming the helper that needs it."""
+        record_id = self.get_id()
+        if not record_id:
+            raise ValueError(f"{type(self).__name__} instance has no id: save it before {method}()")
+        return record_id
+
+    async def upload_file(
+        self,
+        field: str,
+        data: bytes | bytearray | memoryview,
+        *,
+        key: str | None = None,
+        bucket: str | None = None,
+        overwrite: bool = True,
+    ) -> FileRef:
+        """
+        Store *data* as a file and point the file field *field* at it.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``
+        (``SURREAL_CAPS_ALLOW_EXPERIMENTAL=files``). A bucket defined without
+        ``PERMISSIONS`` is ``FULL``: every record user can read and write
+        every file in it.
+
+        The file goes to *bucket*, or to the field's first bucket, under
+        *key*, or under ``/<table>/<id>/<column>`` by default (the column is
+        the field's alias when it has one; the id is percent-encoded into one
+        segment, so ``a/b`` gives ``/<table>/a%2Fb/<column>`` and two records
+        never share a default key). Then the record's column is set
+        to the new pointer, through the same path as :meth:`merge` (update
+        signals, ``QueryCache`` invalidation, ``QueryLogger``), without a
+        refresh, and the local field is set. An ``ImageField`` accepts PNG,
+        JPEG, GIF or WebP data only (checked on the first bytes).
+
+        The upload uses the model's connection; when it is over that HTTP
+        client's ``max_request_size`` (4 MiB by default), it goes over the
+        WebSocket client of the same named connection (128 MiB by default)
+        instead. The whole payload is held in memory. ``QueryLogger``
+        records the file statement with the data replaced by ``"<N bytes>"``.
+
+        **Not transactional.** File writes are not undone by a transaction,
+        so the helper takes no ``tx=``. If the record update fails after the
+        file was written (record deleted, permission denied), the error is
+        raised and the file stays: it is not deleted, since the key may be
+        the one the record already points to.
+
+        **overwrite=False.** The helper first asks whether a file exists
+        under the key, on the client it will upload with, and raises
+        ``FileExistsError`` if one does: nothing is written, the record and
+        the local field are unchanged and no signal is sent. Otherwise the
+        file is written with ``file::put_if_not_exists``. Another writer that
+        creates the file between the check and the put wins:
+        ``put_if_not_exists`` keeps that writer's content, no error is
+        raised, and the record then points at that writer's content. Use a
+        unique ``key=`` when this matters.
+
+        Args:
+            field: The Python name of a ``FileField`` / ``ImageField``.
+            data: The content.
+            key: The file key (a leading ``/`` is added); default
+                ``/<table>/<id>/<column>``.
+            bucket: One of the field's buckets; default the first one.
+            overwrite: ``True`` (default) replaces an existing file.
+
+        Returns:
+            The pointer now stored in the field.
+
+        Raises:
+            TypeError: The model is a materialized view, or *data* is not
+                bytes, ``bytearray`` or ``memoryview``.
+            ValueError: *field* is not a file field, the instance has no id,
+                *bucket* is not one of the field's, *key* is invalid, or an
+                ``ImageField`` got data without an image signature.
+            FileExistsError: ``overwrite=False`` and a file exists under the
+                key.
+            PayloadTooLargeError: The upload is over the WebSocket client's
+                ``max_request_size`` too.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the write (missing or read-only
+                bucket, permission denied).
+            SurrealDbError: The record update affected no record.
+        """
+        from .fields.file import _bucket_not_allowed
+
+        self._check_not_view()
+        marker, column = self._file_field(field)
+        record_id = self._require_id_for("upload_file")
+        if not isinstance(data, (bytes, bytearray, memoryview)):
+            raise TypeError(f"File data must be bytes, bytearray or memoryview, got {type(data).__name__}")
+
+        ref = FileRef(
+            bucket if bucket is not None else marker.buckets[0],
+            key or f"/{self.get_table_name()}/{_key_segment(record_id)}/{column}",
+        )
+        if ref.bucket not in marker.buckets:
+            raise ValueError(_bucket_not_allowed(ref, marker.buckets))
+        if marker.image and not _has_image_signature(data):
+            raise ValueError(f"{type(self).__name__}.{field} accepts PNG, JPEG, GIF or WebP data only")
+
+        name = self.get_connection_name()
+        client: BaseSurrealConnection = await SurrealDBConnectionManager.get_client(name)
+        try:
+            client._check_request_size(ref, data)
+        except PayloadTooLargeError:
+            client = await SurrealDBConnectionManager.get_ws_client(name)
+
+        if not overwrite:
+            sql = "RETURN file::exists($_file);"
+            start = _start_timer()
+            exists = await client.file_exists(ref)
+            _log_query(sql, {"_file": ref}, _elapsed_ms(start))
+            if exists:
+                raise FileExistsError(f"{ref} already exists: pass overwrite=True or another key=")
+
+        sql = "file::put($_file, $_data);" if overwrite else "file::put_if_not_exists($_file, $_data);"
+        start = _start_timer()
+        await client.file_put(ref, data, overwrite=overwrite)
+        _log_query(sql, {"_file": ref, "_data": f"<{memoryview(data).nbytes} bytes>"}, _elapsed_ms(start))
+
+        await self._merge_columns({column: ref}, refresh=False)
+        setattr(self, field, ref)
+        return ref
+
+    async def download_file(self, field: str) -> bytes:
+        """
+        Read the content of the file the field *field* points to.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``.
+
+        Reads the local value of the field (no refresh) over the model's
+        HTTP connection, which caps no download size; the whole file is
+        held in memory.
+
+        Raises:
+            ValueError: *field* is not a file field, or it holds no pointer.
+            FileNotFoundError: No file exists under the pointer.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the read (missing bucket,
+                permission denied).
+        """
+        self._file_field(field)
+        ref: FileRef | None = getattr(self, field)
+        if ref is None:
+            raise ValueError(f"{type(self).__name__}.{field} has no file")
+        client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
+        start = _start_timer()
+        content = await client.file_get(ref)
+        _log_query("RETURN file::get($_file);", {"_file": ref}, _elapsed_ms(start))
+        if content is None:
+            raise FileNotFoundError(f"{ref} does not exist")
+        return content
+
+    async def delete_file(self, field: str) -> None:
+        """
+        Delete the file the field *field* points to, then clear the field.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``.
+
+        The file is deleted first (deleting a missing file succeeds), then
+        the record's column is removed (``NONE``) through the same path as
+        :meth:`merge` (update signals, ``QueryCache`` invalidation,
+        ``QueryLogger``) and the local field is set to ``None``. A field
+        holding no pointer is a no-op. Not transactional: the helper takes
+        no ``tx=``, and a failed record update leaves the file deleted.
+
+        Raises:
+            TypeError: The model is a materialized view.
+            ValueError: *field* is not a file field, or the instance has no
+                id while the field holds a pointer.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the delete (missing or read-only
+                bucket, permission denied).
+            SurrealDbError: The record update affected no record.
+        """
+        self._check_not_view()
+        _, column = self._file_field(field)
+        ref: FileRef | None = getattr(self, field)
+        if ref is None:
+            return
+        self._require_id_for("delete_file")
+        client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
+        start = _start_timer()
+        await client.file_delete(ref)
+        _log_query("file::delete($_file);", {"_file": ref}, _elapsed_ms(start))
+        await self._merge_columns({column: None}, refresh=False)
+        setattr(self, field, None)
+
+    async def file_info(self, field: str) -> FileInfo | None:
+        """
+        Read the metadata (size, last write) of the file the field *field* points to.
+
+        Experimental: follows SurrealDB's experimental ``files`` capability.
+        The server must be started with ``--allow-experimental=files``.
+
+        Returns:
+            The file's ``FileInfo``, or ``None`` when the field holds no
+            pointer or no file exists under it.
+
+        Raises:
+            ValueError: *field* is not a file field.
+            FilesNotEnabledError: The server's ``files`` capability is off.
+            QueryError: The server rejected the call.
+        """
+        self._file_field(field)
+        ref: FileRef | None = getattr(self, field)
+        if ref is None:
+            return None
+        client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
+        start = _start_timer()
+        info = await client.file_head(ref)
+        _log_query("RETURN file::head($_file);", {"_file": ref}, _elapsed_ms(start))
+        return info
 
     @model_validator(mode="after")
     def check_config(self) -> Self:

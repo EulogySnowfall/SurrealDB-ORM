@@ -126,6 +126,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      # --allow-experimental=files: the file storage tests need it (experimental
+      # on 3.2 and 3.3) and SORM_REQUIRE_FILES makes them fail without it. Once
+      # SurrealDB ships file storage as stable the flag value may be refused and
+      # the server will not start: this job then fails loudly, by design.
       - name: Start SurrealDB ${{ needs.check-prerelease.outputs.docker-tag }}
         env:
           DOCKER_TAG: ${{ needs.check-prerelease.outputs.docker-tag }}
@@ -134,7 +138,7 @@ jobs:
             --name surrealdb-canary \
             -p 8000:8000 \
             "surrealdb/surrealdb:${DOCKER_TAG}" \
-            start --log error --user root --pass root memory
+            start --log error --user root --pass root --allow-experimental=files memory
 
           ./devops/wait-for-healthy.sh localhost 8000 60
 
@@ -152,6 +156,7 @@ jobs:
       - name: Run integration tests
         env:
           SURREALDB_SKIP_CONTAINER: "true"
+          SORM_REQUIRE_FILES: "1"
         run: uv run pytest tests/ -m integration --no-cov --junitxml=junit-integration.xml -v
 
       - name: Stop SurrealDB

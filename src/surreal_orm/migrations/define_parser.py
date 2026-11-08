@@ -12,9 +12,11 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
+from surreal_sdk.utils import unescape_record_id
+
 from ..surreal_function import SurrealFunc
 from ..utils import parse_surql_string
-from .state import ApiState, EventState, FieldState, GraphQLConfigState, IndexState
+from .state import ApiState, BucketState, EventState, FieldState, GraphQLConfigState, IndexState
 
 # Keywords that delimit clauses in a DEFINE FIELD statement.
 # Order matters: longer keywords first to avoid partial matches.
@@ -1087,6 +1089,151 @@ def parse_define_analyzer(statement: str) -> dict[str, Any]:
         "tokenizers": tokenizers,
         "filters": filters,
     }
+
+
+# ``DEFINE BUCKET`` and its optional modifier; the name follows.
+_BUCKET_HEAD = re.compile(r"DEFINE\s+BUCKET\s+(?:IF\s+NOT\s+EXISTS\s+|OVERWRITE\s+)?", re.IGNORECASE)
+
+# A bare bucket name: anything up to whitespace (a name that is not an
+# identifier comes in backticks).
+_BUCKET_BARE_NAME = re.compile(r"[^\s`'\"]+")
+
+# A clause keyword of DEFINE BUCKET, as a whole word.
+_BUCKET_KEYWORD = re.compile(r"(READONLY|BACKEND|PERMISSIONS|COMMENT)(?=\s|$)", re.IGNORECASE)
+
+# Where a bucket's permission expression ends: a top-level COMMENT followed by
+# its string. ``$file.comment`` or ``'COMMENT x'`` is not one.
+_BUCKET_COMMENT_START = re.compile(r"COMMENT\s+['\"]", re.IGNORECASE)
+
+
+def _bucket_string(text: str, statement: str) -> tuple[str, str]:
+    """Read the quoted string at the start of *text* (a BACKEND or COMMENT value).
+
+    Returns:
+        (value, remaining text)
+
+    Raises:
+        ValueError: *text* does not start with a closed string (E22)
+    """
+    if not text or text[0] not in "'\"":
+        raise ValueError(f"Not a DEFINE BUCKET statement: {statement!r}")
+    end = _quoted_end(text, 0)
+    literal = text[:end]
+    if len(literal) < 2 or literal[-1] != literal[0]:
+        raise ValueError(f"Not a DEFINE BUCKET statement: {statement!r}")
+    return parse_surql_string(literal), text[end:]
+
+
+def _bucket_permission_rule(text: str, statement: str) -> tuple[str, str]:
+    """Read ``FULL``, ``NONE`` or ``WHERE <expr>`` at the start of *text*.
+
+    The expression runs to a top-level ``COMMENT '…'`` or the end; quotes,
+    brackets and regex literals are skipped (:func:`_top_level`), so a
+    ``COMMENT`` inside a string does not cut it.
+
+    Returns:
+        (``"FULL"`` / ``"NONE"`` / the expression without ``WHERE``, remaining text)
+
+    Raises:
+        ValueError: no rule, or an empty expression (E22)
+    """
+    keyword = re.match(r"(FULL|NONE)(?=\s|$)", text, re.IGNORECASE)
+    if keyword:
+        return keyword.group(1).upper(), text[keyword.end() :]
+    where = re.match(r"WHERE(?=\s|$)", text, re.IGNORECASE)
+    if not where:
+        raise ValueError(f"Not a DEFINE BUCKET statement: {statement!r}")
+    expression = text[where.end() :]
+    cut = len(expression)
+    for i in _top_level(expression):
+        if i > 0 and expression[i - 1].isspace() and _BUCKET_COMMENT_START.match(expression, i):
+            cut = i
+            break
+    rule = expression[:cut].strip()
+    if not rule:
+        raise ValueError(f"Not a DEFINE BUCKET statement: {statement!r}")
+    return rule, expression[cut:]
+
+
+def parse_define_bucket(statement: str) -> BucketState:
+    """Parse a DEFINE BUCKET statement into a BucketState.
+
+    Experimental: follows SurrealDB's experimental ``files`` capability.
+    Buckets exist only on a server started with ``--allow-experimental=files``.
+
+    Reads what ``INFO FOR DB`` reports under ``buckets`` — clauses in the
+    order ``READONLY BACKEND PERMISSIONS COMMENT``, ``PERMISSIONS FULL`` when
+    none was given, a comment holding ``'`` in double quotes — and what
+    :class:`~surreal_orm.migrations.operations.DefineBucket` writes. Also
+    accepted: ``OVERWRITE`` / ``IF NOT EXISTS``, the clauses in any order, a
+    bare or backticked name (unescaped), either quote style. No
+    ``PERMISSIONS`` clause reads as ``"FULL"``; a ``WHERE`` rule is kept as
+    written, without the keyword.
+
+    Examples::
+
+        parse_define_bucket(
+            "DEFINE BUCKET avatars BACKEND 'memory' "
+            "PERMISSIONS WHERE $action INSIDE ['get', 'head'] COMMENT \"it's\""
+        )
+        # → BucketState(name="avatars", backend="memory", readonly=False,
+        #               permissions="$action INSIDE ['get', 'head']", comment="it's")
+
+    Args:
+        statement: Full DEFINE BUCKET statement string.
+
+    Returns:
+        Populated BucketState instance.
+
+    Raises:
+        ValueError: *statement* is not a DEFINE BUCKET statement, or holds text
+            this parser does not know
+    """
+    stmt = statement.strip()
+    if stmt.endswith(";"):
+        stmt = stmt[:-1].rstrip()
+    head = _BUCKET_HEAD.match(stmt)
+    if not head:
+        raise ValueError(f"Not a DEFINE BUCKET statement: {statement!r}")
+    rest = stmt[head.end() :]
+    if rest.startswith("`"):
+        end = _quoted_end(rest, 0)
+        if end < 2 or rest[end - 1] != "`":
+            raise ValueError(f"Not a DEFINE BUCKET statement: {statement!r}")
+        name = unescape_record_id(rest[:end])
+    else:
+        bare = _BUCKET_BARE_NAME.match(rest)
+        if not bare:
+            raise ValueError(f"Not a DEFINE BUCKET statement: {statement!r}")
+        end = bare.end()
+        name = bare.group(0)
+    rest = rest[end:]
+    if rest and not rest[0].isspace():
+        raise ValueError(f"Not a DEFINE BUCKET statement: {statement!r}")
+
+    state = BucketState(name=name)
+    rest = rest.strip()
+    while rest:
+        clause = _BUCKET_KEYWORD.match(rest)
+        if not clause:
+            raise ValueError(f"Not a DEFINE BUCKET statement: {statement!r}")
+        keyword = clause.group(1).upper()
+        rest = rest[clause.end() :].lstrip()
+        if keyword == "READONLY":
+            state.readonly = True
+        elif keyword == "PERMISSIONS":
+            # The rule ends at whitespace or at the end, by construction
+            state.permissions, rest = _bucket_permission_rule(rest, statement)
+        else:
+            value, rest = _bucket_string(rest, statement)
+            if rest and not rest[0].isspace():
+                raise ValueError(f"Not a DEFINE BUCKET statement: {statement!r}")
+            if keyword == "BACKEND":
+                state.backend = value
+            else:
+                state.comment = value
+        rest = rest.strip()
+    return state
 
 
 def parse_define_event(statement: str) -> EventState:

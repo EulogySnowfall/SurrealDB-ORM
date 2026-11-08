@@ -16,6 +16,8 @@ exactly one key:
                           (a string, or the compact ``[s, ns]`` array)
 ``{"$bytes": "…"}``       ``bytes`` (standard base64)
 ``{"$float": "NaN"}``     ``nan``, ``Infinity``, ``-Infinity``
+``{"$file": [b, key]}``   :class:`~surreal_sdk.files.FileRef` (a file
+                          pointer, ``f"b:/key"``)
 ``{"$object": {…}}``      a one-key object whose key starts with ``$``
 ========================  =============================================
 
@@ -27,8 +29,9 @@ geometry, a range or an out-of-range datetime), a ``set``, a non-finite
 way, so a typo in a tag never silently becomes data.
 
 ``typed=False`` writes plain JSON for external tools (record ids as
-``table:id`` text, datetimes as ISO strings, …); such a file reads back as
-plain JSON, strings staying strings.
+``table:id`` text, file pointers as ``bucket:/key`` text, datetimes as ISO
+strings, …); such a file reads back as plain JSON, strings staying strings
+(:meth:`~surreal_sdk.files.FileRef.parse` reads the pointer text).
 """
 
 from __future__ import annotations
@@ -51,6 +54,7 @@ from typing import IO, TYPE_CHECKING, Any, Final, Literal, Protocol, TextIO
 from uuid import UUID
 
 from .exceptions import DataFormatError, DataImportError, QueryError, SurrealDBError, TableNotFoundError
+from .files import FileRef
 from .protocol.cbor import Duration, RecordId, Table, _warn_naive_datetime
 from .utils import _open_owner_only, format_record_id, require_int, validate_table_name
 
@@ -71,7 +75,7 @@ __all__ = [
 
 #: Every tag the codec writes and reads.
 JSONL_TAGS: Final[frozenset[str]] = frozenset(
-    {"$record", "$table", "$datetime", "$decimal", "$uuid", "$duration", "$bytes", "$float", "$object"}
+    {"$record", "$table", "$datetime", "$decimal", "$uuid", "$duration", "$bytes", "$float", "$object", "$file"}
 )
 
 #: SurrealDB's duration literal (M48): one or more ``<digits><unit>`` parts.
@@ -198,6 +202,8 @@ def _encode(value: Any, typed: bool, path: str, record: Any, *, in_id: bool) -> 
         if not isinstance(value.name, str):
             raise _unsupported(value, path, record)
         return {"$table": value.name} if typed else value.name
+    if isinstance(value, FileRef):
+        return _encode_file(value, typed, path, record)
     if isinstance(value, Mapping):
         encoded: dict[str, Any] = {}
         for key, item in value.items():
@@ -242,6 +248,26 @@ def _encode_record_id(value: RecordId, typed: bool, path: str, record: Any) -> A
     if isinstance(key, (str, UUID)) or (isinstance(key, int) and not isinstance(key, bool)):
         return format_record_id(value)
     return f"{value.table}:{_compact_json(_encode(key, False, path, record, in_id=True))}"
+
+
+def _encode_file(value: FileRef, typed: bool, path: str, record: Any) -> Any:
+    """Encode a file pointer: tagged ``[bucket, key]`` or ``bucket:/key`` text.
+
+    The decoder builds a pointer the server sent without validation (a
+    ``memory`` bucket stores ``/../x`` as a plain key). Such a pointer is
+    refused here, because the import reads ``$file`` through the validating
+    constructor and would reject the line.
+    """
+    try:
+        valid = FileRef(value.bucket, value.key) == value
+    except (TypeError, ValueError):
+        valid = False
+    if not valid:
+        raise DataFormatError(
+            f"Cannot write {_where(path, record)} as JSON Lines: invalid file pointer {str(value)!r}",
+            path=path or None,
+        )
+    return {"$file": [value.bucket, value.key]} if typed else str(value)
 
 
 def _relaxed_key_json(key: Any) -> str:
@@ -412,6 +438,12 @@ def _decode_tag(tag: str, payload: Any, line: int | None) -> Any:
     elif tag == "$float":
         if isinstance(payload, str) and payload in _FLOAT_TAGS:
             return _FLOAT_TAGS[payload]
+    elif tag == "$file":
+        if isinstance(payload, list) and len(payload) == 2:
+            try:
+                return FileRef(payload[0], payload[1])
+            except (TypeError, ValueError):
+                pass
     raise _format_error(f"invalid {tag} value: {payload!r}", line)
 
 

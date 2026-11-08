@@ -21,6 +21,7 @@ Custom CBOR Tags used by SurrealDB:
 - TAG_CUSTOM_DURATION (14): Duration as a compact [seconds, nanoseconds] array, the
   form every ``Duration`` is sent in and the only one SurrealDB sends; it rejects
   a string under this tag
+- TAG_FILE (55): File pointer as a [bucket, key] array (``FileRef``), both ways
 
 Tags 0 (ISO datetime string), 9 and 13 are never sent: SurrealDB 3.x reads them,
 4.0 refuses them, and every server since 1.5 reads tags 12 and 14.
@@ -39,6 +40,8 @@ from uuid import UUID
 import cbor2
 from cbor2 import CBORTag
 
+from ..files import FileRef
+
 # CBOR is always available (required dependency)
 CBOR_AVAILABLE = True
 
@@ -52,6 +55,7 @@ TAG_STRING_DECIMAL = 10
 TAG_DATETIME = 12
 TAG_STRING_DURATION = 13
 TAG_CUSTOM_DURATION = 14
+TAG_FILE = 55
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _NANOS_PER_SECOND = 1_000_000_000
@@ -297,6 +301,10 @@ def _cbor_default_encoder(encoder: Any, value: Any) -> None:
     elif isinstance(value, Table):
         # Encode Table as tagged string
         encoder.encode(CBORTag(TAG_TABLE, value.name))
+    elif isinstance(value, FileRef):
+        # A dataclass is not native to cbor2, so it reaches this hook (a
+        # NamedTuple would have gone out as a plain array).
+        encoder.encode(CBORTag(TAG_FILE, [value.bucket, value.key]))
     elif isinstance(value, datetime):
         encoder.encode(
             datetime(
@@ -390,6 +398,15 @@ def _cbor_tag_decoder(tag: Any, immutable: bool) -> Any:
         if isinstance(tag.value, (list, tuple)):
             return Duration(value=tuple(tag.value))
         return Duration(value=tag.value)
+    elif tag.tag == TAG_FILE:
+        # A file pointer is [bucket, key]. It is built without validation so a
+        # key written by other means (``/../x`` on a memory bucket) still
+        # decodes; anything else is returned raw rather than raising, which
+        # would fail the decode of the whole response.
+        value = tag.value
+        if isinstance(value, (list, tuple)) and len(value) == 2 and all(isinstance(part, str) for part in value):
+            return FileRef._from_wire(value[0], value[1])
+        return value
     else:
         # Return raw tagged value for unknown tags
         return tag.value

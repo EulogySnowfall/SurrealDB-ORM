@@ -26,6 +26,8 @@ from .exceptions import (
     ConnectionError,
     DataFormatError,
     DataImportError,
+    FilesNotEnabledError,
+    PayloadTooLargeError,
     QueryError,
     SurrealDBError,
     TableNotFoundError,
@@ -33,6 +35,7 @@ from .exceptions import (
     TransactionConflictError,
     TransactionError,
 )
+from .files import FileInfo, FileRef
 from .functions import (
     ArrayFunctions,
     CryptoFunctions,
@@ -109,6 +112,9 @@ __all__ = [
     "Table",
     "Duration",
     "cbor_is_available",
+    # File storage (experimental, --allow-experimental=files)
+    "FileRef",
+    "FileInfo",
     # Response Types
     "ResponseStatus",
     "QueryResult",
@@ -143,6 +149,8 @@ __all__ = [
     "TransactionConflictError",
     "DataFormatError",
     "DataImportError",
+    "FilesNotEnabledError",
+    "PayloadTooLargeError",
     # JSON Lines import/export
     "ImportReport",
     "jsonl",

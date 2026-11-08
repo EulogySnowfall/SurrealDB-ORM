@@ -9,8 +9,15 @@ This package provides:
 - CLI tools for schema management
 """
 
-# Re-export LiveAction, TableNotFoundError and the data I/O names from SDK for convenience
-from surreal_sdk.exceptions import DataFormatError, DataImportError, TableNotFoundError
+# Re-export LiveAction, TableNotFoundError, the data I/O and the file storage names from SDK for convenience
+from surreal_sdk.exceptions import (
+    DataFormatError,
+    DataImportError,
+    FilesNotEnabledError,
+    PayloadTooLargeError,
+    TableNotFoundError,
+)
+from surreal_sdk.files import FileInfo, FileRef
 from surreal_sdk.jsonl import ImportReport
 from surreal_sdk.streaming.live_select import LiveAction
 
@@ -24,8 +31,10 @@ from .enum import OrderBy
 from .fields import (
     Computed,
     Encrypted,
+    FileField,
     ForeignKey,
     GeoField,
+    ImageField,
     LineStringField,
     ManyToMany,
     MultiPointField,
@@ -47,13 +56,16 @@ from .graph import MAX_GRAPH_DEPTH, MAX_PATH_DEPTH, GraphDirection
 from .introspection import generate_models_from_db, schema_diff
 from .live import ChangeModelStream, LiveModelStream, ModelChangeEvent
 from .migrations.operations import (
+    AlterBucket,
     DefineAnalyzer,
     DefineApi,
     DefineBearerAccess,
+    DefineBucket,
     DefineEvent,
     DefineGraphQLConfig,
     RebuildIndex,
     RemoveApi,
+    RemoveBucket,
     RemoveEvent,
     RemoveGraphQLConfig,
 )
@@ -127,6 +139,13 @@ __all__ = [
     "Encrypted",
     "VectorField",
     "ReferencesField",
+    # File storage (experimental: SurrealDB files capability)
+    "FileField",
+    "ImageField",
+    "FileRef",
+    "FileInfo",
+    "FilesNotEnabledError",
+    "PayloadTooLargeError",
     # Geometry
     "GeoField",
     "PointField",
@@ -190,13 +209,16 @@ __all__ = [
     "generate_models_from_db",
     "schema_diff",
     # Migrations
+    "AlterBucket",
     "DefineAnalyzer",
     "DefineApi",
     "DefineBearerAccess",
+    "DefineBucket",
     "DefineEvent",
     "DefineGraphQLConfig",
     "RebuildIndex",
     "RemoveApi",
+    "RemoveBucket",
     "RemoveEvent",
     "RemoveGraphQLConfig",
     # Debug
