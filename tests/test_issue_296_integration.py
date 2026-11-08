@@ -178,3 +178,31 @@ async def test_record_ids_with_special_characters_round_trip(rid: str) -> None:
     assert await _target_ids() == []
 
     assert await _snapshot() == before
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("rid", SPECIAL_IDS)
+async def test_record_ids_with_special_characters_in_a_transaction(rid: str) -> None:
+    """``save(tx=)``, ``merge(tx=)`` and ``delete(tx=)`` write ``format_thing()`` into the statements (#312).
+
+    Over HTTP a transaction buffers its statements until the commit, so the
+    writes are split in two blocks: one block creating nothing and deleting
+    the same record would leave nothing to check in between.
+    """
+    before = await _snapshot()
+
+    async with await SurrealDBConnectionManager.transaction() as tx:
+        node = I296Node(id=rid, name="target", tags=[])
+        await node.save(tx=tx)
+        await node.merge(tx=tx, refresh=False, tags=["merged"])
+        await node.merge(tx=tx, refresh=False, stamp=SurrealFunc("time::now()"))
+    assert await _target_ids() == [rid]
+    rows = await _query(f"SELECT tags, stamp != NONE AS stamped FROM {NODES} WHERE name = 'target';")
+    assert rows == [{"tags": ["merged"], "stamped": True}]
+
+    async with await SurrealDBConnectionManager.transaction() as tx:
+        await node.merge(tx=tx, refresh=False, tags=["deleted"])
+        await node.delete(tx=tx)
+    assert await _target_ids() == []
+
+    assert await _snapshot() == before
