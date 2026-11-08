@@ -525,6 +525,55 @@ async def test_file_field_model_round_trip_and_filters(i5_table: TableState) -> 
     assert await FSII5Doc.objects().filter(Q(avatar=str(ref))).count() == 1
 
 
+async def test_merge_with_pointer_text_writes_a_file_pointer(files_conn: HTTPConnection, i5_table: TableState) -> None:
+    """merge() takes its keywords unvalidated: "bucket:/key" text must still reach a typed column as a pointer."""
+    ref = FileRef("fsi_files", f"{_area()}/merged.png")
+    doc = FSII5Doc(id="merged", title="a")
+    await doc.save()
+
+    await doc.merge(avatar=str(ref))
+
+    assert doc.avatar == ref
+    response = await files_conn.query(f"SELECT VALUE type::of(avatar) FROM {I5_TABLE}:merged;")
+    assert _statement_error(response) is None
+    assert response.first_result is not None
+    assert response.first_result.result == ["file"]
+    assert [d.id for d in await FSII5Doc.objects().filter(avatar=ref).exec()] == ["merged"]
+
+    other = FileRef("fsi_files", f"{_area()}/in_tx.png")
+    async with await SurrealDBConnectionManager.transaction() as tx:
+        await doc.merge(tx=tx, avatar=str(other))
+    assert [d.id for d in await FSII5Doc.objects().filter(avatar=other).exec()] == ["merged"]
+
+
+I5_LOOSE_TABLE = "fsi_i5_loose"
+
+
+class FSII5Loose(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name=I5_LOOSE_TABLE)
+
+    id: str | None = None
+    avatar: FileField["fsi_files"]  # noqa: F821, UP037
+
+
+async def test_merge_with_pointer_text_on_a_schemaless_table(files_conn: HTTPConnection, i5_table: TableState) -> None:
+    """On a SCHEMALESS table the text used to be stored as a string, which no file filter matches."""
+    ref = FileRef("fsi_files", f"{_area()}/loose.png")
+    try:
+        doc = FSII5Loose(id="loose")
+        await doc.save()
+        await doc.merge(avatar=str(ref))
+
+        response = await files_conn.query(f"SELECT VALUE type::of(avatar) FROM {I5_LOOSE_TABLE}:loose;")
+        assert _statement_error(response) is None
+        assert response.first_result is not None
+        assert response.first_result.result == ["file"]
+        assert [d.id for d in await FSII5Loose.objects().filter(avatar=ref).exec()] == ["loose"]
+        assert [d.id for d in await FSII5Loose.objects().filter(avatar=str(ref)).exec()] == ["loose"]
+    finally:
+        await files_conn.query(f"REMOVE TABLE IF EXISTS {I5_LOOSE_TABLE};")
+
+
 async def test_file_field_rejects_another_bucket_before_any_query(i5_table: TableState) -> None:
     """I5: a pointer outside the field's buckets fails validation, so nothing reaches the server."""
     other = FileRef("fsi_ro", "/elsewhere.png")

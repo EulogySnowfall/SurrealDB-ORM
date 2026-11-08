@@ -101,7 +101,11 @@ class FileField:
     ``"bucket:/key"`` text (read with :meth:`FileRef.parse`), refuses a
     pointer to another bucket, and keeps the ``FileRef`` in a Python-mode
     dump so the CBOR protocol sends it as a file pointer; a JSON-mode dump
-    gives the text.
+    gives the text. The text and the ``FileRef`` are interchangeable on the
+    paths that skip model validation too: filters and ``Q``, ``live()``,
+    ``merge()`` (``tx=`` included), ``bulk_update()``, ``upsert()`` and
+    ``bulk_upsert()`` convert it before the request, and invalid text raises
+    ``ValueError`` there.
 
     **Default.** The bare form (``avatar: FileField["avatars"]``) is optional
     and defaults to ``None``: the default sits in the field metadata, so

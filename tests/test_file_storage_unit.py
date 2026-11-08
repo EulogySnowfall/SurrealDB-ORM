@@ -589,6 +589,128 @@ class TestFileWriteCoercion:
         assert variables["_oc0_att"] == FileRef("fsu_b", "/c")
 
 
+# merge(**data) skips Pydantic validation, so "bucket:/key" text given there
+# reached the wire as a string: a typed column rejected it and no file filter
+# matched it on a SCHEMALESS table (review of the 0.39.0 feature PR).
+
+
+def _merge_patch(client: Any) -> Any:
+    return patch(
+        "surreal_orm.model_base.SurrealDBConnectionManager",
+        new=MagicMock(get_client=AsyncMock(return_value=client)),
+    )
+
+
+def _filtered_merge_client() -> Any:
+    client = AsyncMock()
+    client.merge = AsyncMock(return_value=MagicMock(is_empty=False, records=[{"id": "fsu_filtered:1"}]))
+    client.query = AsyncMock(return_value=MagicMock(is_empty=False, all_records=[{"id": "fsu_filtered:1"}]))
+    return client
+
+
+class TestFileMergeCoercion:
+    @pytest.mark.asyncio
+    async def test_merge_sends_file_ref_for_text(self) -> None:
+        doc = FSUFiltered(id="d1")
+        client = _filtered_merge_client()
+        with _merge_patch(client):
+            await doc.merge(refresh=False, att="fsu_b:/k", title="t")
+
+        thing, data = client.merge.call_args[0]
+        assert thing == "fsu_filtered:d1"
+        assert data == {"att": FileRef("fsu_b", "/k"), "title": "t"}
+        assert isinstance(data["att"], FileRef)
+
+    @pytest.mark.asyncio
+    async def test_merge_sends_file_ref_under_alias(self) -> None:
+        doc = FSUFiltered(id="d1")
+        client = _filtered_merge_client()
+        with _merge_patch(client):
+            await doc.merge(refresh=False, att_col="fsu_b:/c")
+
+        _thing, data = client.merge.call_args[0]
+        assert data == {"att_col": FileRef("fsu_b", "/c")}
+        assert isinstance(data["att_col"], FileRef)
+
+    @pytest.mark.asyncio
+    async def test_merge_sends_file_ref_for_bare_annotation(self) -> None:
+        doc = FSUFiltered(id="d1")
+        client = _filtered_merge_client()
+        with _merge_patch(client):
+            await doc.merge(refresh=False, loose="other:/x")
+
+        _thing, data = client.merge.call_args[0]
+        assert isinstance(data["loose"], FileRef)
+        assert data["loose"] == FileRef("other", "/x")
+
+    @pytest.mark.asyncio
+    async def test_merge_keeps_file_ref_and_none(self) -> None:
+        doc = FSUFiltered(id="d1")
+        client = _filtered_merge_client()
+        ref = FileRef("fsu_b", "/k")
+        with _merge_patch(client):
+            await doc.merge(refresh=False, att=ref, att_col=None)
+
+        _thing, data = client.merge.call_args[0]
+        assert data["att"] is ref
+        assert data["att_col"] is None
+
+    @pytest.mark.asyncio
+    async def test_merge_unparsable_text_raises_before_any_request(self) -> None:
+        doc = FSUFiltered(id="d1")
+        client = _filtered_merge_client()
+        with _merge_patch(client):
+            with pytest.raises(ValueError, match="Invalid file pointer"):
+                await doc.merge(att="nope")
+        client.merge.assert_not_called()
+        client.query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_merge_in_transaction_sends_file_ref(self) -> None:
+        doc = FSUFiltered(id="d1")
+        tx = AsyncMock()
+        tx.merge = AsyncMock(return_value=MagicMock(is_empty=False, records=[{"id": "fsu_filtered:1"}]))
+        await doc.merge(tx=tx, att="fsu_b:/k")
+
+        _thing, data = tx.merge.call_args[0]
+        assert isinstance(data["att"], FileRef)
+        assert data["att"] == FileRef("fsu_b", "/k")
+        assert doc.att == FileRef("fsu_b", "/k")
+
+    @pytest.mark.asyncio
+    async def test_merge_with_surreal_func_binds_file_ref(self) -> None:
+        from surreal_orm import SurrealFunc
+
+        doc = FSUFiltered(id="d1")
+        client = _filtered_merge_client()
+        with _merge_patch(client):
+            await doc.merge(refresh=False, att="fsu_b:/k", title=SurrealFunc("'t'"))
+
+        _query, variables = client.query.call_args[0]
+        bound = [value for value in variables.values() if isinstance(value, FileRef)]
+        assert bound == [FileRef("fsu_b", "/k")]
+
+    @pytest.mark.asyncio
+    async def test_merge_signals_keep_the_callers_values(self) -> None:
+        from surreal_orm import pre_update
+
+        doc = FSUFiltered(id="d1")
+        client = _filtered_merge_client()
+        seen: list[dict[str, Any]] = []
+
+        async def on_pre(sender: Any, instance: Any, update_fields: dict[str, Any], **kwargs: Any) -> None:
+            seen.append(dict(update_fields))
+
+        pre_update.connect(FSUFiltered)(on_pre)
+        try:
+            with _merge_patch(client):
+                await doc.merge(refresh=False, att="fsu_b:/k")
+        finally:
+            pre_update.disconnect(on_pre, sender=FSUFiltered)
+
+        assert seen == [{"att": "fsu_b:/k"}]
+
+
 # ---------------------------------------------------------------------------
 # U22 — ModelIntrospector maps file columns to file<bucket> (AC10)
 # ---------------------------------------------------------------------------

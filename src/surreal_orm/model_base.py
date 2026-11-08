@@ -323,9 +323,11 @@ def _to_file_ref(value: Any) -> Any:
     """
     Convert a file-column value given as text into a ``FileRef``.
 
-    SurrealDB never equates a bound string with a file pointer, so a filter or
-    a ``QuerySet`` write given the ``"bucket:/key"`` text a model accepts would
-    match nothing or be rejected.  The text is read with
+    SurrealDB never equates a bound string with a file pointer, so a filter,
+    a ``QuerySet`` write or a :meth:`BaseSurrealModel.merge` given the
+    ``"bucket:/key"`` text a model accepts would match nothing or be rejected
+    (``merge()`` takes its keywords without Pydantic validation; it converts
+    them in ``_coerce_foreign_keys()``).  The text is read with
     :meth:`FileRef.parse`, the one reader of that form; anything else (a
     ``FileRef``, ``None``) is returned unchanged.  No bucket check: a pointer
     to another bucket simply matches no row, and a typed column's own check
@@ -1166,20 +1168,30 @@ class BaseSurrealModel(BaseModel):
         return data
 
     def _coerce_foreign_keys(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Wrap foreign-key values into record links before writing.
+        """Wrap foreign-key and file-pointer values before writing.
 
         ``model_dump()`` renders a :func:`ForeignKey` as a ``"table:id"``
         string, which a ``record<...>`` column rejects.  A bare ID is qualified
         with the target model's table.
 
+        A file column (:meth:`get_file_columns`) given as ``"bucket:/key"``
+        text becomes a ``FileRef`` through :func:`_to_file_ref`.  ``save()``
+        and ``update()`` already hold a ``FileRef`` (Pydantic validated the
+        field), but :meth:`merge` takes its keywords as they are: without this
+        step the text was stored as a string, which a ``file<...>`` column
+        rejects and no file filter matches.  Invalid text raises
+        ``ValueError`` here, before any request.
+
         Handles aliased fields: when ``model_dump(by_alias=True)`` is used,
         dict keys may be aliases rather than Python field names.
 
         Returns:
-            A new dict with foreign-key values converted.
+            A new dict with foreign-key and file values converted (*data*
+            itself when the model has neither).
         """
         fk_targets = self.__class__.get_foreign_key_targets()
-        if not fk_targets:
+        file_columns = self.__class__.get_file_columns()
+        if not fk_targets and not file_columns:
             return data
 
         coerced = dict(data)
@@ -1188,6 +1200,9 @@ class BaseSurrealModel(BaseModel):
             key = alias if alias and alias in coerced else field_name
             if key in coerced:
                 coerced[key] = _to_record_link(coerced[key], table)
+        for column in file_columns:
+            if column in coerced:
+                coerced[column] = _to_file_ref(coerced[column])
         return coerced
 
     async def save(
@@ -1646,7 +1661,10 @@ class BaseSurrealModel(BaseModel):
                 Use this when data contains :class:`SurrealFunc` expressions
                 that reference bound parameters.
             **data: Fields to update. Values may be :class:`SurrealFunc` instances
-                for server-side expressions.
+                for server-side expressions. They skip Pydantic validation, so
+                a foreign key is wrapped into a record link and a file column
+                given as ``"bucket:/key"`` text into a ``FileRef`` before the
+                request (invalid text raises ``ValueError`` first).
 
         Returns:
             Self: The updated model instance.
@@ -1667,7 +1685,7 @@ class BaseSurrealModel(BaseModel):
         The columns come as a dict rather than as keywords, so a column named
         ``tx``, ``refresh`` or ``extra_vars`` is written like any other (the
         file helpers write one column whose name is the caller's field).
-        Signals, ``QueryLogger`` entries, foreign-key coercion and the
+        Signals, ``QueryLogger`` entries, foreign-key and file coercion and the
         no-record-affected check are those of :meth:`merge`.
 
         Args:
