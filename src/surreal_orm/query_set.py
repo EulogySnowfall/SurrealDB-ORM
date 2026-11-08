@@ -45,6 +45,7 @@ from .utils import (
     remove_quotes_for_variables,
     require_int,
     validate_field_path,
+    validate_filter_condition,
     validate_identifier,
 )
 
@@ -1936,7 +1937,9 @@ class QuerySet(Generic[T]):
 
         # The field part is written into the query, so it is checked here as
         # well as when the key is parsed: Q children can be built by hand.
-        parse_filter_key(f"{field_name}__{lookup_name}")
+        # Field and lookup are checked apart, never re-joined into a key, so
+        # the error names the part the caller actually wrote (#380).
+        validate_filter_condition(field_name, lookup_name)
 
         # ── Element lookups (__any / __all / __none) ─────────────────
         # Checked again here: a Q's children can be set by hand. The
