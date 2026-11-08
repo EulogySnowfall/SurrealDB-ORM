@@ -131,7 +131,7 @@ class TestAccessGenerator:
             id: str | None = None
             email: str
             password: Encrypted
-            name: str
+            name: str = ""
 
         access = AccessGenerator.from_model(TestUserModel)
 
@@ -163,7 +163,7 @@ class TestAccessGenerator:
             password: Encrypted
 
         class UserB(BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, identifier_field="username")
             id: str | None = None
             username: str
             password: Encrypted
