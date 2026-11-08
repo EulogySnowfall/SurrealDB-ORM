@@ -418,12 +418,22 @@ class ChangeModelStream(Generic[T]):
 
         A stream stopped before its first iteration ends here, before any
         client is resolved or any poll is sent. One stopped while its first
-        client is being resolved ends once it is, before the first poll:
-        ``stop()`` found no feed to stop then.
+        client is being resolved ends once that build is over, before the
+        first poll, whether the build returned or raised an ``Exception``:
+        ``stop()`` found no feed to stop then. A stream that was not stopped
+        gets the build's exception, and a ``BaseException`` that is not an
+        ``Exception`` (``CancelledError`` included) always propagates.
         """
         if self._stopped:
             return
-        feed = await self._ensure_feed()
+        try:
+            feed = await self._ensure_feed()
+        except Exception:
+            # The caller stopped the stream while the build was pending: the
+            # error is no longer theirs to handle, as in _replacement_feed().
+            if self._stopped:
+                return
+            raise
         if self._stopped:
             return
         since = self._since
