@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import warnings
 from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
@@ -613,7 +614,8 @@ class TestBusyWriter:
             server.write("other" if i % 2 else "orders", {"id": f"x:{i}"})
         now = await asyncio.wait_for(_feed(server)._resolve_now(), 2.0)
         assert now >= 1030
-        assert server.show_queries == 1
+        assert server.queries == _probes(server)
+        assert server.show_queries <= _PROBE_BOUND
 
     async def test_get_changes_returns_the_table_entries(self) -> None:
         server = BusyChangeFeedServer()
@@ -692,8 +694,8 @@ class TestBusyWriter:
 
         monkeypatch.setattr(change_feed_module.asyncio, "sleep", fake_sleep)
         assert [item async for item in feed.stream(since=0)] == []
-        # One read per table before each sleep.
-        assert sleeps == [(0.5, 2), (0.5, 4), (0.5, 6)]
+        # One read of the database per round, whatever the number of tables (#312).
+        assert sleeps == [(0.5, 1), (0.5, 2), (0.5, 3)]
 
 
 class TestWindowCutMidVersion:
@@ -731,6 +733,242 @@ class TestWindowCutMidVersion:
         monkeypatch.setattr(change_feed_module, "_SCAN_LIMIT", 3)
         monkeypatch.setattr(change_feed_module, "_window_units", len)
         assert await _feed(self._server()).get_changes(since=0) == []
+
+
+# ==================== Follow-ups of the 0.34.12 reviews (#312) ====================
+
+#: The first probe, then at most 65 exponential and 64 binary steps over 64-bit versionstamps.
+_PROBE_BOUND = 1 + 65 + 64
+_PROBE_RE = re.compile(r"SHOW CHANGES FOR DATABASE SINCE \d+ LIMIT 1;")
+
+
+class PersistentChangeFeedServer(FakeChangeFeedServer):
+    """A server whose ``d'…'`` start selects what was written at or after it (RocksDB, measured on 3.3.5)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.written_at: dict[int, datetime] = {}
+
+    def write(self, table: str, *records: dict[str, Any], vs: int | None = None) -> int:
+        vs = super().write(table, *records, vs=vs)
+        self.written_at.setdefault(vs, datetime.now(UTC))
+        return vs
+
+    def show(self, table: str | None, since: str, limit: int | None) -> list[dict[str, Any]]:
+        if since.startswith("d'"):
+            moment = datetime.fromisoformat(since[2:-1])
+            later = [vs for vs, at in self.written_at.items() if at >= moment]
+            since = str(min(later) if later else self.next_vs)
+        return super().show(table, since, limit)
+
+
+def _probes(server: FakeChangeFeedServer) -> list[str]:
+    return [query for query in server.queries if _PROBE_RE.fullmatch(query)]
+
+
+def _reads(server: FakeChangeFeedServer) -> list[str]:
+    return [query for query in server.queries if query.startswith("BEGIN;")]
+
+
+class TestResolveNowProbes:
+    """ "Now" is found with ``LIMIT 1`` probes, not by reading the retained feed (#312, item 3)."""
+
+    @pytest.mark.parametrize("size", [1, 2, 2500, 200_000])
+    async def test_a_dense_feed_is_resolved_with_a_bounded_number_of_probes(self, size: int) -> None:
+        server = FakeChangeFeedServer()
+        # Appended in versionstamp order: ``write()`` sorts the whole feed each time.
+        for i in range(size):
+            server.keys.append((server.next_vs, "other" if i % 3 else "orders", [{"update": {"id": f"x:{i}"}}]))
+            server.next_vs += 1
+        now = await asyncio.wait_for(_feed(server)._resolve_now(), 5.0)
+        assert now == server.next_vs
+        assert server.queries == _probes(server)
+        assert len(server.queries) <= _PROBE_BOUND
+
+    async def test_an_empty_feed_is_zero_after_one_probe(self) -> None:
+        server = FakeChangeFeedServer()
+        assert await _feed(server)._resolve_now() == 0
+        assert server.queries == ["SHOW CHANGES FOR DATABASE SINCE 0 LIMIT 1;"]
+
+    async def test_sparse_versionstamps_with_retention_gaps(self) -> None:
+        """Versionstamps as 3.3.5 writes them (milliseconds shifted by 16 bits), oldest trimmed."""
+        server = FakeChangeFeedServer()
+        base = 117_579_673_848_446_976
+        stamps = [base + i * 13_500_000 + (i % 7) for i in range(3000)]
+        for i, vs in enumerate(stamps):
+            if i % 10 == 0 or i > 2900:  # retention left only some of the older entries
+                server.write("other", {"id": f"other:{i}"}, vs=vs)
+        now = await asyncio.wait_for(_feed(server)._resolve_now(), 5.0)
+        assert now == stamps[-1] + 1
+        assert server.queries == _probes(server)
+        assert len(server.queries) <= _PROBE_BOUND
+
+    async def test_the_last_versionstamp_holding_several_tables(self) -> None:
+        """``LIMIT 1`` can return part of a multi-table versionstamp; its versionstamp is enough."""
+        server = FakeChangeFeedServer()
+        server.write("aaa", {"id": "aaa:1"}, vs=40)
+        server.write("aaa", {"id": "aaa:2"}, vs=41)
+        server.write("bbb", {"id": "bbb:2"}, vs=41)
+        assert await _feed(server)._resolve_now() == 42
+
+    async def test_a_versionstamp_start_sends_no_probe(self) -> None:
+        server = FakeChangeFeedServer()
+        server.write("orders", {"id": "orders:1"})
+        assert _ids(await _feed(server).get_changes(since=0)) == ["orders:1"]
+        assert _probes(server) == []
+
+
+class TestMultiTableSharedRead:
+    """One ``SHOW CHANGES FOR DATABASE`` per round, every cursor advanced from it (#312, item 5)."""
+
+    async def test_one_database_read_per_round(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        server = FakeChangeFeedServer()
+        for i in range(4):
+            server.write("users", {"id": f"users:{i}"})
+            server.write("orders", {"id": f"orders:{i}"})
+            server.write("noise", {"id": f"noise:{i}"})
+        feed = MultiTableChangeFeed(server, ["users", "orders", "products"], poll_interval=0.5)  # type: ignore[arg-type]
+
+        async def fake_sleep(delay: float) -> None:
+            feed.stop()
+
+        monkeypatch.setattr(change_feed_module.asyncio, "sleep", fake_sleep)
+        got = [(table, _ids([entry])[0]) async for table, entry in feed.stream(since=0)]
+        assert sorted(got) == sorted(
+            [("users", f"users:{i}") for i in range(4)] + [("orders", f"orders:{i}") for i in range(4)]
+        )
+        # The delivering round, then the caught-up round before the sleep.
+        assert len(server.queries) == 2
+        assert all(query.count("SHOW CHANGES FOR DATABASE") == 1 for query in server.queries)
+        assert all(query.count("SHOW CHANGES FOR TABLE") == 3 for query in server.queries)
+
+    async def test_cursors_keep_their_meaning(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each cursor is one past its last entry, then past the window (as with one table per read)."""
+        server = FakeChangeFeedServer()
+        u = server.write("users", {"id": "users:1"})
+        server.write("orders", {"id": "orders:1"})
+        last = server.write("noise", {"id": "noise:1"})
+        feed = MultiTableChangeFeed(server, ["users", "orders"], poll_interval=0.5)  # type: ignore[arg-type]
+        stream = feed.stream(since=0)
+        table, entry = await anext(stream)
+        assert (table, _ids([entry])) == ("users", ["users:1"])
+        assert feed.streams["users"].cursor == str(u + 1)
+        table, entry = await anext(stream)
+        assert (table, _ids([entry])) == ("orders", ["orders:1"])
+        await stream.aclose()
+        assert feed.streams["users"].cursor == str(last + 1)
+
+    async def test_a_table_cut_by_batch_size_delivers_everything_once(self) -> None:
+        server = FakeChangeFeedServer()
+        expected: dict[str, list[str]] = {"users": [], "orders": []}
+        for i in range(12):
+            table = "users" if i % 4 else "orders"
+            server.write(table, {"id": f"{table}:{i}"})
+            expected[table].append(f"{table}:{i}")
+        feed = MultiTableChangeFeed(server, ["users", "orders"], poll_interval=0.01, batch_size=2)  # type: ignore[arg-type]
+        stream = feed.stream(since=0)
+        got = await _take(stream, 12)
+        await stream.aclose()
+        per_table: dict[str, list[str]] = {"users": [], "orders": []}
+        for table, entry in got:
+            per_table[table].extend(_ids([entry]))
+        assert per_table == expected
+
+    async def test_a_window_cut_inside_a_versionstamp(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(change_feed_module, "_SCAN_LIMIT", 3)
+        server = TestWindowCutMidVersion._server()
+        server.write("orders", {"id": "orders:12"}, vs=12)
+        feed = MultiTableChangeFeed(server, ["orders", "aaa"], poll_interval=0.01)  # type: ignore[arg-type]
+        stream = feed.stream(since=0)
+        got = await _take(stream, 4)
+        await stream.aclose()
+        assert sorted((table, _ids([entry])[0]) for table, entry in got) == [
+            ("aaa", "aaa:0"),
+            ("aaa", "aaa:1"),
+            ("orders", "orders:11"),
+            ("orders", "orders:12"),
+        ]
+
+
+async def _until(condition: Any, timeout: float = 2.0) -> None:
+    async def wait() -> None:
+        while not condition():
+            await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(wait(), timeout)
+
+
+class TestDatetimeStartWarning:
+    """A datetime start that misses a later change warns once instead of waiting silently (#312, item 4)."""
+
+    PAST = datetime(2020, 1, 1, tzinfo=UTC)
+
+    async def _run(self, server: FakeChangeFeedServer, since: Any, *, multi: bool = False) -> tuple[list[Any], list[Any]]:
+        """Start a stream, write two changes once it polls, and return (delivered, RuntimeWarnings)."""
+        feed: Any = (
+            MultiTableChangeFeed(server, ["orders", "users"], poll_interval=0.01)  # type: ignore[arg-type]
+            if multi
+            else _feed(server, poll_interval=0.01)
+        )
+        delivered: list[Any] = []
+        stream = feed.stream(since=since)
+
+        async def consume() -> None:
+            async for item in stream:
+                delivered.append(item)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            task = asyncio.ensure_future(consume())
+            try:
+                await _until(lambda: len(_reads(server)) >= 3)
+                server.write("orders", {"id": "orders:later"})
+                reads = len(_reads(server))
+                await _until(lambda: len(_reads(server)) >= reads + 3)
+                server.write("orders", {"id": "orders:again"})
+                reads = len(_reads(server))
+                await _until(lambda: len(_reads(server)) >= reads + 3)
+            finally:
+                feed.stop()
+                await asyncio.wait_for(task, 2.0)
+        return delivered, [w for w in caught if issubclass(w.category, RuntimeWarning)]
+
+    async def test_a_start_the_server_cannot_compare_warns_once(self) -> None:
+        server = FakeChangeFeedServer()
+        server.write("orders", {"id": "orders:old"})
+        delivered, caught = await self._run(server, self.PAST)
+        assert delivered == []
+        assert len(caught) == 1
+        message = str(caught[0].message)
+        assert "versionstamp" in message and "cursor" in message
+
+    async def test_the_multi_table_feed_warns_once(self) -> None:
+        server = FakeChangeFeedServer()
+        server.write("users", {"id": "users:old"})
+        delivered, caught = await self._run(server, "2020-01-01", multi=True)
+        assert delivered == []
+        assert len(caught) == 1
+
+    async def test_no_warning_where_datetime_starts_work(self) -> None:
+        server = PersistentChangeFeedServer()
+        server.write("orders", {"id": "orders:old"})
+        delivered, caught = await self._run(server, datetime.now(UTC) - timedelta(minutes=1))
+        assert _ids(delivered) == ["orders:old", "orders:later", "orders:again"]
+        assert caught == []
+
+    async def test_no_warning_for_a_start_in_the_future(self) -> None:
+        server = FakeChangeFeedServer()
+        server.write("orders", {"id": "orders:old"})
+        delivered, caught = await self._run(server, datetime.now(UTC) + timedelta(hours=1))
+        assert delivered == []
+        assert caught == []
+        assert _probes(server) == []
+
+    async def test_no_probe_once_the_window_is_not_empty(self) -> None:
+        server = PersistentChangeFeedServer()
+        server.write("orders", {"id": "orders:old"})
+        await self._run(server, self.PAST)
+        assert _probes(server) == []
 
 
 class TestStreamingIntegration:

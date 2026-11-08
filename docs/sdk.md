@@ -949,15 +949,19 @@ the change feed records a **create as an update**. On a table defined with
 
 | `since` | Meaning |
 | --- | --- |
-| `None` (default) | after the last entry already in the feed: only new changes |
+| `None` (default) | after the last entry already in the feed: only new changes (found with at most 130 `SHOW CHANGES … LIMIT 1` probes, whatever the size of the retained feed) |
 | `int` or decimal string (`"117515092609728513"`) | a versionstamp, inclusive; `stream.cursor` is one |
 | `datetime` | that instant; a naive one is read as UTC (with a `RuntimeWarning`) |
 | ISO 8601 string (`"2026-01-01"`, `"2026-10-27T12:00:00Z"`) | that instant, UTC when it has no offset |
 
 Anything else raises `ValueError` before a query is sent. A failed request or a
 statement the server rejects raises `ChangeFeedError` from the iteration; it is not
-retried. On SurrealDB 3.3 with in-memory storage a datetime start selects nothing,
-so prefer a versionstamp (`since=0` reads the whole retained feed).
+retried. Whether a datetime start selects anything depends on the storage engine
+(measured on SurrealDB 3.3.5): RocksDB selects the entries written from that instant,
+in-memory storage and SurrealKV select nothing for any instant after the epoch. A
+stream started from a datetime there emits one `RuntimeWarning` when it misses a
+change written after its start, and keeps polling. Prefer a versionstamp
+(`since=0` reads the whole retained feed).
 
 An entry holds every change one transaction made to the table. `QuerySet.changes()`
 yields one event per change, so its `cursor` stays on the entry until the entry's
@@ -974,7 +978,9 @@ async for table, change in feed.stream():  # one entry at a time
     print(f"Table {table}: {change['changes']}")
 ```
 
-Each table keeps its own cursor; `since` applies to every table.
+Each table keeps its own cursor; `since` applies to every table. Each poll is one
+request that reads the database feed once, from the smallest cursor, and advances
+every table's cursor from that window.
 
 ---
 

@@ -10,8 +10,10 @@ change with a bounded timeout rather than a sleep.
 from __future__ import annotations
 
 import asyncio
+import re
+import warnings
 from collections.abc import AsyncGenerator, AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -19,8 +21,9 @@ from pydantic import Field
 
 from src.surreal_orm import BaseSurrealModel, SurrealConfigDict, SurrealDBConnectionManager
 from surreal_sdk.connection.http import HTTPConnection
-from surreal_sdk.streaming.change_feed import ChangeFeedStream, MultiTableChangeFeed
+from surreal_sdk.streaming.change_feed import _PROBE_BOUND, ChangeFeedStream, MultiTableChangeFeed
 from surreal_sdk.streaming.live_query import LiveAction
+from surreal_sdk.types import QueryResponse
 from tests.conftest import SURREALDB_NAMESPACE, SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER
 
 pytestmark = pytest.mark.integration
@@ -199,6 +202,27 @@ class TestQuerySetChanges:
             stream.stop()
         assert event.record_id == "i281_items:late"
 
+    async def test_a_change_behind_more_than_a_scan_limit_of_other_tables_is_delivered_once(self) -> None:
+        """More entries of another table than one ``SHOW CHANGES`` scans (1000) before the change (#312).
+
+        Each ``CREATE`` is its own statement, hence its own transaction and
+        entry: a ``FOR`` loop is one transaction, one entry, whatever it creates.
+        """
+        stream = I281Item.objects().changes(poll_interval=0.05)
+        first = asyncio.ensure_future(_next(stream))
+        try:
+            await _wait_started(lambda: stream.cursor)
+            await _write(" ".join(f"CREATE i281_other:s{i};" for i in range(1100)))
+            await I281Item(id="behind", name="behind").save()
+            event = await first
+            await I281Item(id="after", name="after").save()
+            following = await _next(stream)
+        finally:
+            first.cancel()
+            stream.stop()
+        assert event.record_id == "i281_items:behind"
+        assert following.record_id == "i281_items:after"
+
     async def test_include_original_update_is_delivered(self) -> None:
         """There an update arrives as ``{current, update: [patch]}``."""
         await I281Orig(id="x", name="before").save()
@@ -250,3 +274,77 @@ class TestSdkStreams:
             await stream.aclose()
         assert sorted(got[:2]) == [("i281_items", "i281_items:a"), ("i281_other", "i281_other:a")]
         assert got[2] == ("i281_other", "i281_other:b")
+
+
+class _CountingConnection:
+    """Forwards to the ORM's client and keeps the text of every query."""
+
+    def __init__(self, client: HTTPConnection) -> None:
+        self.client = client
+        self.queries: list[str] = []
+
+    async def query(self, sql: str, vars: dict[str, Any] | None = None) -> QueryResponse:
+        self.queries.append(sql)
+        return await self.client.query(sql, vars)
+
+
+class TestStartWithoutReadingTheFeed:
+    """#312: "now" is found with ``LIMIT 1`` probes, and a datetime start that misses a change says so."""
+
+    async def test_default_start_probes_and_delivers_only_later_changes_once(self) -> None:
+        await _write(" ".join(f"CREATE i281_other:p{i};" for i in range(1100)))
+        await _write("CREATE i281_items:before SET name = 'before';")
+        counting = _CountingConnection(await _client())
+        feed = ChangeFeedStream(counting, "i281_items", poll_interval=0.05)  # type: ignore[arg-type]
+        stream = feed.stream()
+        first = asyncio.ensure_future(_next(stream))
+        try:
+            await _wait_started(lambda: feed.cursor)
+            start_queries = [query for query in counting.queries if not query.startswith("BEGIN;")]
+            await _write("CREATE i281_items:after1 SET name = 'after1';")
+            seen = _updated_ids([await first])
+            await _write("CREATE i281_items:after2 SET name = 'after2';")
+            seen += _updated_ids([await _next(stream)])
+        finally:
+            first.cancel()
+            await stream.aclose()
+        assert seen == ["i281_items:after1", "i281_items:after2"]
+        assert start_queries
+        assert all(re.fullmatch(r"SHOW CHANGES FOR DATABASE SINCE \d+ LIMIT 1;", query) for query in start_queries)
+        assert len(start_queries) <= _PROBE_BOUND
+
+    async def test_a_datetime_start_delivers_a_later_change_or_warns(self) -> None:
+        """Measured on 3.3.5: RocksDB selects the change; memory and SurrealKV select nothing."""
+        await _write("CREATE i281_items:before SET name = 'before';")
+        feed = ChangeFeedStream(await _client(), "i281_items", poll_interval=0.05)
+        stream = feed.stream(since=datetime.now(UTC) - timedelta(minutes=1))
+        delivered: list[str] = []
+
+        async def consume() -> None:
+            async for entry in stream:
+                delivered.extend(_updated_ids([entry]))
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            task = asyncio.ensure_future(consume())
+            try:
+                await asyncio.sleep(0.5)  # the first empty polls find "now"
+                await _write("CREATE i281_items:later SET name = 'later';")
+
+                async def settled() -> None:
+                    while "i281_items:later" not in delivered and not any(
+                        issubclass(w.category, RuntimeWarning) for w in caught
+                    ):
+                        await asyncio.sleep(0.02)
+
+                await asyncio.wait_for(settled(), EVENT_TIMEOUT)
+            finally:
+                feed.stop()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        warned = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+        if "i281_items:later" in delivered:
+            assert warned == []
+        else:
+            assert len(warned) == 1
+            assert "versionstamp" in str(warned[0].message)
