@@ -161,12 +161,22 @@ def _get_file_marker(field_type: Any) -> _FileMarker | None:
 
 
 def is_file_field(field_type: Any) -> bool:
-    """Whether *field_type* is a :class:`FileField` or :class:`ImageField` (also inside ``| None``)."""
+    """
+    Whether *field_type* is a :class:`FileField` or :class:`ImageField` (also inside ``| None``).
+
+    Experimental: follows SurrealDB's experimental ``files`` capability; the
+    server needs ``--allow-experimental=files`` for the files themselves.
+    """
     return _get_file_marker(field_type) is not None
 
 
 def is_image_field(field_type: Any) -> bool:
-    """Whether *field_type* is an :class:`ImageField` (also inside ``| None``)."""
+    """
+    Whether *field_type* is an :class:`ImageField` (also inside ``| None``).
+
+    Experimental: follows SurrealDB's experimental ``files`` capability; the
+    server needs ``--allow-experimental=files`` for the files themselves.
+    """
     marker = _get_file_marker(field_type)
     return marker is not None and marker.image
 
@@ -174,6 +184,9 @@ def is_image_field(field_type: Any) -> bool:
 def get_file_buckets(field_type: Any) -> tuple[str, ...] | None:
     """
     The bucket names a file field accepts, in the order written.
+
+    Experimental: follows SurrealDB's experimental ``files`` capability; the
+    server needs ``--allow-experimental=files`` for the files themselves.
 
     Returns:
         ``("avatars",)`` for ``FileField["avatars"]``, or ``None`` when

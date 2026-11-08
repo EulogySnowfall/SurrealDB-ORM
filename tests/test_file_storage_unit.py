@@ -1416,3 +1416,508 @@ class TestMergeColumns:
             post_update.disconnect(on_post, sender=FSUMerge)
 
         assert seen == [("pre", {"refresh": "a"}), ("post", {"refresh": "a"})]
+
+
+# ---------------------------------------------------------------------------
+# U28 — model file helpers (§3.5, P2, P7, P10, P14, P16)
+# ---------------------------------------------------------------------------
+
+
+class FSUHelpers(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="fsu_helpers")
+
+    id: str | None = None
+    title: str = ""
+    doc: FileField["fsu_a", "fsu_b"]  # noqa: F821, UP037
+    photo: ImageField["fsu_img"]  # noqa: F821, UP037
+    aliased: FileField["fsu_a"] = Field(default=None, alias="doc_col")  # noqa: F821, UP037
+
+
+class FSUHelpersView(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="fsu_helpers_view", view_query="SELECT * FROM fsu_helpers")
+
+    id: str | None = None
+    doc: FileField["fsu_a"]  # noqa: F821, UP037
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 8
+GIF87 = b"GIF87a" + b"\x00" * 8
+GIF89 = b"GIF89a" + b"\x00" * 8
+WEBP = b"RIFF\x10\x00\x00\x00WEBPVP8 "
+
+
+def _file_client(kind: type[Any], limit: int | None = None) -> Any:
+    """A real, unconnected connection whose file methods and merge are mocks."""
+    from surreal_sdk import HTTPConnection
+
+    url = "http://localhost:8000" if kind is HTTPConnection else "ws://localhost:8000"
+    client = kind(url, "ns", "db")
+    if limit is not None:
+        client.max_request_size = limit
+    client.file_put = AsyncMock(return_value=None)
+    client.file_exists = AsyncMock(return_value=False)
+    client.file_get = AsyncMock(return_value=b"content")
+    client.file_head = AsyncMock(return_value=None)
+    client.file_delete = AsyncMock(return_value=None)
+    client.merge = AsyncMock(return_value=MagicMock(is_empty=False, records=[{"id": "fsu_helpers:h1"}]))
+    return client
+
+
+class _Clients:
+    """The manager patched with one HTTP and one WebSocket fake client."""
+
+    def __init__(self, http_limit: int | None = None) -> None:
+        from surreal_sdk import HTTPConnection, WebSocketConnection
+
+        self.http = _file_client(HTTPConnection, http_limit)
+        self.ws = _file_client(WebSocketConnection)
+        self.manager = MagicMock(
+            get_client=AsyncMock(return_value=self.http),
+            get_ws_client=AsyncMock(return_value=self.ws),
+            # No using() override: get_connection_name() falls back to the model's.
+            get_active_connection_name=MagicMock(return_value=None),
+        )
+        self._patch = patch("surreal_orm.model_base.SurrealDBConnectionManager", new=self.manager)
+
+    def __enter__(self) -> _Clients:
+        self._patch.__enter__()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self._patch.__exit__(*exc)
+
+
+class _UpdateSignals:
+    """Record the update signals FSUHelpers sends while active."""
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def _pre(self, sender: Any, instance: Any, update_fields: dict[str, Any], **kwargs: Any) -> None:
+        self.seen.append(("pre", dict(update_fields)))
+
+    async def _post(self, sender: Any, instance: Any, update_fields: dict[str, Any], **kwargs: Any) -> None:
+        self.seen.append(("post", dict(update_fields)))
+
+    def __enter__(self) -> _UpdateSignals:
+        from surreal_orm import post_update, pre_update
+
+        pre_update.connect(FSUHelpers)(self._pre)
+        post_update.connect(FSUHelpers)(self._post)
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        from surreal_orm import post_update, pre_update
+
+        pre_update.disconnect(self._pre, sender=FSUHelpers)
+        post_update.disconnect(self._post, sender=FSUHelpers)
+
+
+HELPER_CALLS: list[tuple[str, tuple[Any, ...]]] = [
+    ("upload_file", (b"x",)),
+    ("download_file", ()),
+    ("delete_file", ()),
+    ("file_info", ()),
+]
+
+
+class TestFileHelperChecks:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("method", "args"), HELPER_CALLS, ids=[m for m, _ in HELPER_CALLS])
+    @pytest.mark.parametrize("field", ["title", "nope", "doc_col"])
+    async def test_not_a_file_field(self, method: str, args: tuple[Any, ...], field: str) -> None:
+        # E15; the alias is a column name, not the Python field name the helpers take.
+        doc = FSUHelpers(id="h1")
+        with _Clients() as clients:
+            with pytest.raises(ValueError) as info:
+                await getattr(doc, method)(field, *args)
+        assert str(info.value) == f"FSUHelpers.{field} is not a FileField or ImageField"
+        clients.manager.get_client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upload_without_id(self) -> None:
+        with _Clients() as clients:
+            with pytest.raises(ValueError) as info:
+                await FSUHelpers().upload_file("doc", b"x")
+        assert str(info.value) == "FSUHelpers instance has no id: save it before upload_file()"
+        clients.http.file_put.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_without_id(self) -> None:
+        doc = FSUHelpers(doc="fsu_a:/x")
+        with _Clients() as clients:
+            with pytest.raises(ValueError) as info:
+                await doc.delete_file("doc")
+        assert str(info.value) == "FSUHelpers instance has no id: save it before delete_file()"
+        clients.http.file_delete.assert_not_awaited()
+        assert doc.doc == FileRef("fsu_a", "/x")
+
+    @pytest.mark.asyncio
+    async def test_reads_need_no_id(self) -> None:
+        doc = FSUHelpers(doc="fsu_a:/x")
+        with _Clients() as clients:
+            assert await doc.download_file("doc") == b"content"
+            assert await doc.file_info("doc") is None
+        clients.http.file_get.assert_awaited_once_with(FileRef("fsu_a", "/x"))
+        clients.http.file_head.assert_awaited_once_with(FileRef("fsu_a", "/x"))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method", ["upload_file", "delete_file"])
+    async def test_view_refuses_writes(self, method: str) -> None:
+        doc = FSUHelpersView(id="v1", doc="fsu_a:/x")
+        args: tuple[Any, ...] = (b"x",) if method == "upload_file" else ()
+        with _Clients() as clients:
+            with pytest.raises(TypeError, match="Cannot modify materialized view 'fsu_helpers_view'"):
+                await getattr(doc, method)("doc", *args)
+        clients.manager.get_client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upload_data_must_be_bytes(self) -> None:
+        with _Clients() as clients:
+            with pytest.raises(TypeError) as info:
+                await FSUHelpers(id="h1").upload_file("photo", "text")  # type: ignore[arg-type]
+        assert str(info.value) == "File data must be bytes, bytearray or memoryview, got str"
+        clients.manager.get_client.assert_not_awaited()
+
+
+class TestUploadFile:
+    @pytest.mark.asyncio
+    async def test_default_key_first_bucket(self) -> None:
+        doc = FSUHelpers(id="h1")
+        with _Clients() as clients, _UpdateSignals() as signals:
+            ref = await doc.upload_file("doc", b"hello")
+
+        assert ref == FileRef("fsu_a", "/fsu_helpers/h1/doc")
+        clients.http.file_put.assert_awaited_once_with(ref, b"hello", overwrite=True)
+        clients.http.file_exists.assert_not_awaited()
+        clients.manager.get_ws_client.assert_not_awaited()
+        thing, data = clients.http.merge.call_args[0]
+        assert (thing, data) == ("fsu_helpers:h1", {"doc": ref})
+        assert doc.doc == ref
+        assert signals.seen == [("pre", {"doc": ref}), ("post", {"doc": ref})]
+
+    @pytest.mark.asyncio
+    async def test_merge_is_column_keyed_without_refresh(self) -> None:
+        doc = FSUHelpers(id="h1")
+        with _Clients(), patch.object(FSUHelpers, "_merge_columns", new=AsyncMock(return_value=doc)) as merge:
+            ref = await doc.upload_file("aliased", b"hello")
+
+        assert ref == FileRef("fsu_a", "/fsu_helpers/h1/doc_col")
+        merge.assert_awaited_once_with({"doc_col": ref}, refresh=False)
+        assert doc.aliased == ref
+
+    @pytest.mark.asyncio
+    async def test_explicit_key_and_bucket(self) -> None:
+        doc = FSUHelpers(id="h1")
+        with _Clients() as clients:
+            ref = await doc.upload_file("doc", bytearray(b"hi"), key="reports/q1.pdf", bucket="fsu_b")
+
+        assert ref == FileRef("fsu_b", "/reports/q1.pdf")
+        clients.http.file_put.assert_awaited_once_with(ref, bytearray(b"hi"), overwrite=True)
+        assert doc.doc == ref
+
+    @pytest.mark.asyncio
+    async def test_bucket_not_allowed(self) -> None:
+        doc = FSUHelpers(id="h1")
+        with _Clients() as clients:
+            with pytest.raises(ValueError) as info:
+                await doc.upload_file("doc", b"x", bucket="fsu_img")
+        assert str(info.value) == "File pointer fsu_img:/fsu_helpers/h1/doc is not in the allowed bucket(s) fsu_a, fsu_b"
+        clients.manager.get_client.assert_not_awaited()
+        assert doc.doc is None
+
+    @pytest.mark.asyncio
+    async def test_id_with_a_dot_dot_segment_is_refused(self) -> None:
+        # The id lands in the default key; FileRef refuses a ".." segment, so
+        # a crafted id can never point the upload at another record's file.
+        with _Clients() as clients:
+            with pytest.raises(ValueError, match=r"Invalid file key '/fsu_helpers/\.\./doc'"):
+                await FSUHelpers(id="..").upload_file("doc", b"x")
+        clients.manager.get_client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("data", [PNG, JPEG, GIF87, GIF89, WEBP], ids=["png", "jpeg", "gif87a", "gif89a", "webp"])
+    async def test_image_signatures_accepted(self, data: bytes) -> None:
+        doc = FSUHelpers(id="h1")
+        with _Clients() as clients:
+            ref = await doc.upload_file("photo", memoryview(data))
+        assert ref == FileRef("fsu_img", "/fsu_helpers/h1/photo")
+        clients.http.file_put.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "data",
+        [b"plain text", b"RIFF\x10\x00\x00\x00WAVEfmt ", b"\x89PNG", b""],
+        ids=["text", "riff-wave", "short-png", "empty"],
+    )
+    async def test_image_signature_rejected(self, data: bytes) -> None:
+        doc = FSUHelpers(id="h1")
+        with _Clients() as clients:
+            with pytest.raises(ValueError) as info:
+                await doc.upload_file("photo", data)
+        assert str(info.value) == "FSUHelpers.photo accepts PNG, JPEG, GIF or WebP data only"
+        clients.manager.get_client.assert_not_awaited()
+        assert doc.photo is None
+
+    @pytest.mark.asyncio
+    async def test_upload_within_the_http_limit_uses_http(self) -> None:
+        # Estimate = data + bucket + key + 512: 100 + 5 + 19 + 512 = 636.
+        doc = FSUHelpers(id="h1")
+        with _Clients(http_limit=636) as clients:
+            ref = await doc.upload_file("doc", b"x" * 100)
+        clients.http.file_put.assert_awaited_once_with(ref, b"x" * 100, overwrite=True)
+        clients.manager.get_ws_client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upload_over_the_http_limit_uses_websocket(self) -> None:
+        doc = FSUHelpers(id="h1")
+        with _Clients(http_limit=635) as clients:
+            ref = await doc.upload_file("doc", b"x" * 100)
+        clients.manager.get_client.assert_awaited_with("default")
+        clients.manager.get_ws_client.assert_awaited_once_with("default")
+        clients.ws.file_put.assert_awaited_once_with(ref, b"x" * 100, overwrite=True)
+        clients.http.file_put.assert_not_awaited()
+        # The record update goes through the model's usual (HTTP) client.
+        clients.http.merge.assert_awaited_once()
+        assert doc.doc == ref
+
+    @pytest.mark.asyncio
+    async def test_websocket_uses_the_model_connection_name(self) -> None:
+        class FSUHelpersRouted(BaseSurrealModel):
+            model_config = SurrealConfigDict(table_name="fsu_helpers_routed", connection="files_conn")
+
+            id: str | None = None
+            doc: FileField["fsu_a"]  # noqa: F821, UP037
+
+        with _Clients(http_limit=1) as clients:
+            await FSUHelpersRouted(id="r1").upload_file("doc", b"x")
+        clients.manager.get_ws_client.assert_awaited_once_with("files_conn")
+
+    @pytest.mark.asyncio
+    async def test_failed_record_update_keeps_the_file(self) -> None:
+        # File writes are not transactional: the helper does not delete what
+        # it wrote, since the key may be the one the record already points to.
+        from surreal_orm.model_base import SurrealDbError
+
+        old = FileRef("fsu_a", "/old")
+        doc = FSUHelpers(id="h1", doc=old)
+        with _Clients() as clients:
+            clients.http.merge.return_value = MagicMock(is_empty=True)
+            with pytest.raises(SurrealDbError, match="no record affected"):
+                await doc.upload_file("doc", b"x")
+        clients.http.file_put.assert_awaited_once()
+        clients.http.file_delete.assert_not_awaited()
+        assert doc.doc == old
+
+    @pytest.mark.asyncio
+    async def test_logger_redacts_the_data(self) -> None:
+        from surreal_orm.debug import QueryLogger
+
+        doc = FSUHelpers(id="h1")
+        with _Clients():
+            async with QueryLogger() as logger:
+                ref = await doc.upload_file("doc", b"x" * 1000)
+
+        assert [(q.sql, q.variables) for q in logger.queries] == [
+            ("file::put($_file, $_data);", {"_file": ref, "_data": "<1000 bytes>"}),
+            ("MERGE fsu_helpers:h1", {"doc": ref}),
+        ]
+
+
+class TestUploadFileOverwriteFalse:
+    @pytest.mark.asyncio
+    async def test_existing_file_raises_before_any_write(self) -> None:
+        old = FileRef("fsu_a", "/old")
+        doc = FSUHelpers(id="h1", doc=old)
+        with _Clients() as clients, _UpdateSignals() as signals:
+            clients.http.file_exists.return_value = True
+            with patch.object(FSUHelpers, "_merge_columns", new=AsyncMock()) as merge:
+                with pytest.raises(FileExistsError) as info:
+                    await doc.upload_file("doc", b"x", overwrite=False)
+
+        assert str(info.value) == "fsu_a:/fsu_helpers/h1/doc already exists: pass overwrite=True or another key="
+        clients.http.file_exists.assert_awaited_once_with(FileRef("fsu_a", "/fsu_helpers/h1/doc"))
+        clients.http.file_put.assert_not_awaited()
+        merge.assert_not_awaited()
+        assert signals.seen == []
+        assert doc.doc == old
+
+    @pytest.mark.asyncio
+    async def test_missing_file_is_put_if_not_exists_then_merged(self) -> None:
+        from surreal_orm.debug import QueryLogger
+
+        doc = FSUHelpers(id="h1")
+        with _Clients() as clients:
+            order = MagicMock()
+            order.attach_mock(clients.http.file_exists, "file_exists")
+            order.attach_mock(clients.http.file_put, "file_put")
+            order.attach_mock(clients.http.merge, "merge")
+            async with QueryLogger() as logger:
+                ref = await doc.upload_file("doc", b"abc", overwrite=False)
+
+        assert [c[0] for c in order.mock_calls] == ["file_exists", "file_put", "merge"]
+        clients.http.file_put.assert_awaited_once_with(ref, b"abc", overwrite=False)
+        assert [(q.sql, q.variables) for q in logger.queries] == [
+            ("RETURN file::exists($_file);", {"_file": ref}),
+            ("file::put_if_not_exists($_file, $_data);", {"_file": ref, "_data": "<3 bytes>"}),
+            ("MERGE fsu_helpers:h1", {"doc": ref}),
+        ]
+        assert doc.doc == ref
+
+    @pytest.mark.asyncio
+    async def test_exists_check_runs_on_the_websocket_client_too(self) -> None:
+        doc = FSUHelpers(id="h1")
+        with _Clients(http_limit=1) as clients:
+            clients.ws.file_exists.return_value = True
+            with pytest.raises(FileExistsError):
+                await doc.upload_file("doc", b"x", overwrite=False)
+        clients.ws.file_exists.assert_awaited_once()
+        clients.http.file_exists.assert_not_awaited()
+        clients.ws.file_put.assert_not_awaited()
+
+
+class TestDownloadAndInfo:
+    @pytest.mark.asyncio
+    async def test_download_without_a_pointer(self) -> None:
+        with _Clients() as clients:
+            with pytest.raises(ValueError) as info:
+                await FSUHelpers(id="h1").download_file("doc")
+        assert str(info.value) == "FSUHelpers.doc has no file"
+        clients.manager.get_client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_download_of_a_missing_file(self) -> None:
+        with _Clients() as clients:
+            clients.http.file_get.return_value = None
+            with pytest.raises(FileNotFoundError) as info:
+                await FSUHelpers(id="h1", doc="fsu_b:/gone.txt").download_file("doc")
+        assert str(info.value) == "fsu_b:/gone.txt does not exist"
+
+    @pytest.mark.asyncio
+    async def test_download_returns_the_bytes_and_logs(self) -> None:
+        from surreal_orm.debug import QueryLogger
+
+        ref = FileRef("fsu_a", "/a.txt")
+        with _Clients() as clients:
+            async with QueryLogger() as logger:
+                assert await FSUHelpers(id="h1", aliased=ref).download_file("aliased") == b"content"
+        clients.http.file_get.assert_awaited_once_with(ref)
+        assert [(q.sql, q.variables) for q in logger.queries] == [("RETURN file::get($_file);", {"_file": ref})]
+
+    @pytest.mark.asyncio
+    async def test_file_info_without_a_pointer(self) -> None:
+        with _Clients() as clients:
+            assert await FSUHelpers(id="h1").file_info("doc") is None
+        clients.manager.get_client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_file_info_returns_the_head(self) -> None:
+        from datetime import UTC, datetime
+
+        from surreal_orm.debug import QueryLogger
+
+        ref = FileRef("fsu_a", "/a.txt")
+        head = FileInfo(file=ref, size=7, updated=datetime(2026, 11, 7, tzinfo=UTC))
+        with _Clients() as clients:
+            clients.http.file_head.return_value = head
+            async with QueryLogger() as logger:
+                assert await FSUHelpers(id="h1", doc=ref).file_info("doc") == head
+        assert [(q.sql, q.variables) for q in logger.queries] == [("RETURN file::head($_file);", {"_file": ref})]
+
+
+class TestDeleteFile:
+    @pytest.mark.asyncio
+    async def test_no_pointer_is_a_no_op(self) -> None:
+        with _Clients() as clients, _UpdateSignals() as signals:
+            await FSUHelpers().delete_file("doc")
+        clients.manager.get_client.assert_not_awaited()
+        assert signals.seen == []
+
+    @pytest.mark.asyncio
+    async def test_file_first_then_field(self) -> None:
+        from surreal_orm.debug import QueryLogger
+
+        ref = FileRef("fsu_a", "/x")
+        doc = FSUHelpers(id="h1", aliased=ref)
+        with _Clients() as clients, _UpdateSignals() as signals:
+            order = MagicMock()
+            order.attach_mock(clients.http.file_delete, "file_delete")
+            order.attach_mock(clients.http.merge, "merge")
+            async with QueryLogger() as logger:
+                await doc.delete_file("aliased")
+
+        assert [c[0] for c in order.mock_calls] == ["file_delete", "merge"]
+        clients.http.file_delete.assert_awaited_once_with(ref)
+        assert clients.http.merge.call_args[0] == ("fsu_helpers:h1", {"doc_col": None})
+        assert signals.seen == [("pre", {"doc_col": None}), ("post", {"doc_col": None})]
+        assert [q.sql for q in logger.queries] == ["file::delete($_file);", "MERGE fsu_helpers:h1"]
+        assert doc.aliased is None
+
+
+# ---------------------------------------------------------------------------
+# U34 — experimental label on the public API (P1, AC15)
+# ---------------------------------------------------------------------------
+
+
+def _experimental_objects() -> list[tuple[str, Any]]:
+    from surreal_orm.migrations.define_parser import parse_define_bucket
+    from surreal_orm.migrations.operations import AlterBucket, DefineBucket, RemoveBucket
+    from surreal_orm.migrations.state import BucketState
+    from surreal_sdk import FilesNotEnabledError, HTTPConnection, PayloadTooLargeError, WebSocketConnection
+    from surreal_sdk.connection.base import BaseSurrealConnection
+
+    objects: list[tuple[str, Any]] = [
+        ("FileRef", FileRef),
+        ("FileInfo", FileInfo),
+        ("FilesNotEnabledError", FilesNotEnabledError),
+        ("PayloadTooLargeError", PayloadTooLargeError),
+        ("HTTPConnection.__init__ (max_request_size)", HTTPConnection.__init__),
+        ("WebSocketConnection.__init__ (max_request_size)", WebSocketConnection.__init__),
+        ("FileField", FileField),
+        ("ImageField", ImageField),
+        ("is_file_field", is_file_field),
+        ("is_image_field", is_image_field),
+        ("get_file_buckets", get_file_buckets),
+        ("DefineBucket", DefineBucket),
+        ("AlterBucket", AlterBucket),
+        ("RemoveBucket", RemoveBucket),
+        ("BucketState", BucketState),
+        ("parse_define_bucket", parse_define_bucket),
+    ]
+    for name in (
+        "file_put",
+        "file_get",
+        "file_head",
+        "file_exists",
+        "file_delete",
+        "file_copy",
+        "file_rename",
+        "file_list",
+        "iter_files",
+    ):
+        objects.append((f"BaseSurrealConnection.{name}", getattr(BaseSurrealConnection, name)))
+    for name in ("upload_file", "download_file", "delete_file", "file_info"):
+        objects.append((f"BaseSurrealModel.{name}", getattr(BaseSurrealModel, name, None)))
+    return objects
+
+
+EXPERIMENTAL_OBJECTS = _experimental_objects()
+
+
+class TestExperimentalLabel:
+    @pytest.mark.parametrize("obj", [obj for _, obj in EXPERIMENTAL_OBJECTS], ids=[n for n, _ in EXPERIMENTAL_OBJECTS])
+    def test_docstring_says_experimental_files(self, obj: Any) -> None:
+        doc = getattr(obj, "__doc__", None) or ""
+        assert "experimental" in doc.lower()
+        assert "files" in doc
+        # L1: the flag the server needs.
+        assert "--allow-experimental=files" in doc
+
+    def test_define_bucket_warns_about_full_first(self) -> None:
+        # §9 / P3: the FULL default is the first warning of DefineBucket.
+        from surreal_orm.migrations.operations import DefineBucket
+
+        doc = DefineBucket.__doc__ or ""
+        first_warning = doc.split("Warning:", 1)[1].strip()
+        assert first_warning.startswith("Without ``permissions`` the bucket is ``FULL``")

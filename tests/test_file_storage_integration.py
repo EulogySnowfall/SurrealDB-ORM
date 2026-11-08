@@ -18,16 +18,18 @@ import asyncio
 import os
 import uuid
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 
 from surreal_orm import (
     BaseSurrealModel,
     FileField,
+    ImageField,
     LiveAction,
     Q,
     SurrealConfigDict,
@@ -564,6 +566,155 @@ async def test_file_field_live_filter_with_pointer_text(i5_table: TableState) ->
         assert deleted.action == LiveAction.DELETE
         assert deleted.record_id == f"{I5_TABLE}:hit"
         assert deleted.instance.avatar == ref
+
+
+# ---------------------------------------------------------------------------
+# I6 - model file helpers (AC6)
+# ---------------------------------------------------------------------------
+
+I6_TABLE = "fsi_i6_docs"
+
+PNG_HEADER = b"\x89PNG\r\n\x1a\n"
+
+
+class FSII6Doc(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name=I6_TABLE, schema_mode="SCHEMAFULL")
+
+    id: str | None = None
+    title: str = ""
+    doc: FileField["fsi_files"]  # noqa: F821, UP037
+    photo: ImageField["fsi_files"]  # noqa: F821, UP037
+    aliased: FileField["fsi_files"] = Field(default=None, alias="doc_col")  # noqa: F821, UP037
+
+
+@pytest.fixture
+async def i6_table(files_conn: HTTPConnection, fsi_buckets: tuple[str, ...]) -> AsyncGenerator[None, None]:
+    """The model's table, its columns created by AddField from the model introspector; the ORM pointed at it.
+
+    The introspector names a column after the Python field, not its alias, so
+    the aliased field's column is renamed here to what the model writes.
+    """
+    state = ModelIntrospector([FSII6Doc]).introspect().tables[I6_TABLE]
+    fields = [replace(field, name="doc_col") if field.name == "aliased" else field for field in state.fields.values()]
+    sql = f"REMOVE TABLE IF EXISTS {I6_TABLE}; DEFINE TABLE {I6_TABLE} SCHEMAFULL; " + " ".join(
+        AddField.from_field_state(I6_TABLE, field).forwards() for field in fields
+    )
+    SurrealDBConnectionManager.set_connection(
+        SURREALDB_URL, SURREALDB_USER, SURREALDB_PASS, SURREALDB_NAMESPACE, SURREALDB_DATABASE
+    )
+    try:
+        error = _statement_error(await files_conn.query(sql))
+        if error is not None:
+            raise QueryError(error, query=sql)
+        yield
+    finally:
+        await files_conn.query(f"REMOVE TABLE IF EXISTS {I6_TABLE};")
+        await SurrealDBConnectionManager.close_connection()
+        await SurrealDBConnectionManager.unset_connection()
+
+
+async def _i6_doc() -> FSII6Doc:
+    """A saved record with an id of its own, so runs never share a default key."""
+    doc = FSII6Doc(id=f"d{uuid.uuid4().hex[:12]}", title="a")
+    await doc.save()
+    return doc
+
+
+async def _i6_row(files_conn: HTTPConnection, record_id: str) -> dict[str, Any]:
+    """The record as the database holds it (column names, not field names)."""
+    response = await files_conn.query("SELECT * FROM type::record($t, $id);", {"t": I6_TABLE, "id": record_id})
+    assert _statement_error(response) is None
+    rows = response.all_records
+    assert len(rows) == 1
+    row: dict[str, Any] = rows[0]
+    return row
+
+
+async def test_helpers_upload_download_info_delete(files_conn: HTTPConnection, i6_table: None) -> None:
+    """I6: the default key, the record update, then download, file_info and delete_file."""
+    doc = await _i6_doc()
+    assert doc.id is not None
+    ref = await doc.upload_file("doc", b"hello")
+    assert ref == FileRef("fsi_files", f"/{I6_TABLE}/{doc.id}/doc")
+    assert doc.doc == ref
+    assert await files_conn.file_get(ref) == b"hello"
+
+    loaded = await FSII6Doc.objects().get(doc.id)
+    assert loaded.doc == ref
+    assert await loaded.download_file("doc") == b"hello"
+    info = await loaded.file_info("doc")
+    assert info is not None
+    assert (info.file, info.size) == (ref, 5)
+
+    await loaded.delete_file("doc")
+    assert loaded.doc is None
+    assert await files_conn.file_exists(ref) is False
+    assert "doc" not in await _i6_row(files_conn, doc.id)
+    assert (await FSII6Doc.objects().get(doc.id)).doc is None
+    assert await loaded.file_info("doc") is None
+
+
+async def test_helpers_explicit_key_and_alias_column(files_conn: HTTPConnection, i6_table: None) -> None:
+    """I6: an explicit key; an aliased field is written under its column."""
+    doc = await _i6_doc()
+    assert doc.id is not None
+    key = f"{_area()}/report.txt"
+    ref = await doc.upload_file("aliased", b"report", key=key)
+    try:
+        assert ref == FileRef("fsi_files", key)
+        assert (await _i6_row(files_conn, doc.id))["doc_col"] == ref
+        assert (await FSII6Doc.objects().get(doc.id)).aliased == ref
+        assert await doc.download_file("aliased") == b"report"
+    finally:
+        await files_conn.file_delete(ref)
+
+
+async def test_helpers_image_field(files_conn: HTTPConnection, i6_table: None) -> None:
+    """I6: an ImageField takes an image and refuses text before any request."""
+    doc = await _i6_doc()
+    async with QueryLogger() as logger:
+        with pytest.raises(ValueError, match="accepts PNG, JPEG, GIF or WebP data only"):
+            await doc.upload_file("photo", b"just some text")
+    assert logger.total_queries == 0
+    assert doc.photo is None
+
+    ref = await doc.upload_file("photo", PNG_HEADER + b"pixels")
+    try:
+        assert await files_conn.file_get(ref) == PNG_HEADER + b"pixels"
+    finally:
+        await files_conn.file_delete(ref)
+
+
+async def test_helpers_large_upload_goes_over_websocket(files_conn: HTTPConnection, i6_table: None) -> None:
+    """I6: 5 MiB is over the HTTP request limit, so the upload uses the connection's WebSocket."""
+    doc = await _i6_doc()
+    data = os.urandom(5 * MiB)
+    assert "default" not in SurrealDBConnectionManager._ws_clients
+    ref = await doc.upload_file("doc", data)
+    try:
+        assert "default" in SurrealDBConnectionManager._ws_clients
+        assert await doc.download_file("doc") == data
+        info = await doc.file_info("doc")
+        assert info is not None
+        assert info.size == 5 * MiB
+    finally:
+        await files_conn.file_delete(ref)
+
+
+async def test_helpers_overwrite_false_onto_an_existing_file(files_conn: HTTPConnection, i6_table: None) -> None:
+    """I6: a second overwrite=False upload onto the default key raises and changes nothing."""
+    doc = await _i6_doc()
+    assert doc.id is not None
+    ref = await doc.upload_file("doc", b"first", overwrite=False)
+    try:
+        with pytest.raises(FileExistsError) as info:
+            await doc.upload_file("doc", b"second", overwrite=False)
+        assert str(info.value) == f"{ref} already exists: pass overwrite=True or another key="
+        assert await files_conn.file_get(ref) == b"first"
+        assert (await FSII6Doc.objects().get(doc.id)).doc == ref
+        assert doc.doc == ref
+    finally:
+        await files_conn.file_delete(ref)
 
 
 # ---------------------------------------------------------------------------
