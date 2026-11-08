@@ -22,9 +22,10 @@ Writes made through the ORM drop the written table's entries:
   instance, and ``add()``, ``remove()``, ``set()`` and ``clear()`` on a
   relation manager.
 
-A write made with ``tx=`` (and ``bulk_create(atomic=True)``) drops them when it
-is issued and again once the transaction commits, so a read cached by another
-task before the commit is not served afterwards; a rollback drops nothing more.
+A write made with ``tx=`` (the instance writes, the relation writes and
+``bulk_create(atomic=True)``) drops them when it is issued and again once the
+transaction commits, so a read cached by another task before the commit is not
+served afterwards; a rollback drops nothing more.
 
 A write the server rejects (the method raises) may leave the entries in place;
 a write that succeeds always drops them.  Anything else that writes behind the
