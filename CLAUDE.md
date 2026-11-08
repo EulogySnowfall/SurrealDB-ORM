@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.0)
+> Context document for Claude AI - Last updated: November 2026 (0.39.1)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.1 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -22,6 +22,27 @@
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
 
+### What's New in 0.39.1
+
+One dependency fix, #291 via #646 (both `pyproject.toml` files, `uv.lock`
+`requires-dist` only, plus `tests/test_issue_291_unit.py`). No library code
+change. Pin unchanged (3.3.5). `v2`: not needed, it already declares
+`aiohttp>=3.14.4` (and the line ended at 0.39.0).
+
+- **The lock is not the floor.** `uv.lock` had resolved aiohttp 3.14.4
+  since 0.34.3, but downstream installs follow the declared `aiohttp>=3.12`,
+  so `pip install -U surrealdb-orm` and existing downstream lock files could
+  keep 3.12 – 3.14.3 (GHSA-494j-54xm-rwp3, GHSA-2g87-pp6c-29x5,
+  GHSA-5wr8-gcqf-gqf3). The floor is `>= 3.14.4` in the package and the
+  bundled SDK; a Dependabot lock bump on a runtime dependency needs the same
+  floor check.
+- **`tests/test_issue_291_unit.py` keeps the floors honest:** the package
+  and the SDK declare the same specifier for every shared runtime
+  dependency, the aiohttp floor rejects 3.14.3, and the locked aiohttp
+  satisfies it.
+- Release docs carried here: the 0.39.0 `v2` wording and the roadmap's
+  "original plan" reference (#645 item 4).
+
 ### What's New in 0.39.0
 
 File Storage, roadmap v0.39.0 (#562 via #632): `surreal_sdk/files.py` and
@@ -29,8 +50,8 @@ File Storage, roadmap v0.39.0 (#562 via #632): `surreal_sdk/files.py` and
 `websocket.py`, `protocol/cbor.py`, `protocol/rpc.py`, `exceptions.py`,
 `jsonl.py`; ORM `model_base.py`, `query_set.py`, `types.py`, `migrations/`.
 Plus one fix, #635 via #639 (`migrations/model_generator.py` only). Pin
-unchanged (3.3.5). Last release with a maintained `v2` (0.21.62 is its last
-release; #474); `main` moves to SurrealDB 4.x with 0.40.0 (#581) and 3.x
+unchanged (3.3.5). `v2` is unmaintained from this release (0.21.62 is its
+last release; #474); `main` moves to SurrealDB 4.x with 0.40.0 (#581) and 3.x
 continues on a permanent `v3` branch cut right after this release (#579).
 
 - **Experimental, behind a server flag.** Every file call needs
@@ -2923,11 +2944,11 @@ surreal-orm rollback 0001_initial
 
 **Runtime:**
 
-- `pydantic >= 2.10.5` - Model validation
-- `httpx >= 0.27.0` - HTTP client
-- `aiohttp >= 3.9.0` - WebSocket client
-- `cbor2 >= 5.6.0` - CBOR protocol (required, default for WebSocket)
-- `click >= 8.1.0` - CLI (optional, with `[cli]`)
+- `pydantic >= 2.11` - Model validation
+- `httpx >= 0.28` - HTTP client
+- `aiohttp >= 3.14.4` - WebSocket client (floor raised in 0.39.1 for three advisories)
+- `cbor2 >= 6.1.2` - CBOR protocol (required, default for WebSocket)
+- `click >= 8.1.8` - CLI (optional, with `[cli]`)
 
 **No dependency on the official `surrealdb` package!**
 

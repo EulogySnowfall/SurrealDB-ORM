@@ -1329,7 +1329,7 @@ Shipped in 0.39.0 (#562). **Experimental:** it follows SurrealDB's experimental 
 started with `--allow-experimental=files` (3.2.x and 3.3.x), otherwise every file call raises `FilesNotEnabledError`.
 Files are not transactional, and a bucket defined without `PERMISSIONS` is readable and writable by every record user.
 
-The design changed from the plan below in two places: the SDK methods are named `file_*`, not `bucket_*`, and there
+The design changed from the original plan in two places: the SDK methods are named `file_*`, not `bucket_*`, and there
 is no `BucketBackend` enum (`backend` is a plain string passed to the server, e.g. `'memory'` or `'file:/dir'`).
 
 **SurrealDB syntax (3.2.x – 3.3.x):**
