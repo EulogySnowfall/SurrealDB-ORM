@@ -285,7 +285,9 @@ class ModelCodeGenerator:
         its bucket names into DDL and so accepts only identifiers; a bucket the
         server reports backticked (``file<`my-b`>``) would make the generated
         module fail at import, so that column falls back to an untyped
-        ``FileRef | None`` with a comment carrying the original type.  A bare
+        ``FileRef | None`` with a comment carrying the original type, written
+        through ``repr`` so that no character of the server's text (a carriage
+        return, a form feed) can end the comment.  A bare
         ``file`` column needs nothing here: it maps to ``FileRef`` like any
         simple type.
         """
@@ -298,7 +300,7 @@ class ModelCodeGenerator:
             subscript = ", ".join(f'"{bucket}"' for bucket in buckets)
             return f"{field.name}: FileField[{subscript}]"
         extra_imports.add("from surreal_orm import FileRef")
-        return f"{field.name}: FileRef | None = None  # {field.field_type}: bucket name is not an identifier"
+        return f"{field.name}: FileRef | None = None  # {field.field_type!r}: bucket name is not an identifier"
 
     @staticmethod
     def _extract_record_table(field_type: str) -> str | None:

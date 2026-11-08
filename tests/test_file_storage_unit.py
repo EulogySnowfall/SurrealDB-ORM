@@ -884,12 +884,48 @@ class TestFileColumnCodeGeneration:
         field = FieldState(name="att", field_type=field_type, nullable=True)
         state = SchemaState(tables={"fsu_odd_docs": TableState(name="fsu_odd_docs", fields={"att": field})})
         source = self._source(state)
-        assert f"    att: FileRef | None = None  # {field_type}: bucket name is not an identifier\n" in source
+        assert f"    att: FileRef | None = None  # {field_type!r}: bucket name is not an identifier\n" in source
         assert "FileField" not in source
 
         module = _import_generated(source, tmp_path, monkeypatch, f"fsu_odd_models_{len(field_type)}")
         doc = module.FsuOddDoc(att="my-b:/k")
         assert doc.att == FileRef("my-b", "/k")
+
+    @pytest.mark.parametrize(
+        "field_type",
+        [
+            "file<`a\rimport os #`>",
+            "file<`a\x0cimport os #`>",
+            "file<`a\x00import os #`>",
+            "file<`a\r\x0c\x00import os #`>",
+        ],
+    )
+    def test_server_type_text_stays_inside_the_comment(self, field_type: str) -> None:
+        """The fallback comment is the only place server text reaches: it must not end the line."""
+        import ast
+
+        from surreal_orm.migrations.state import FieldState, SchemaState, TableState
+
+        field = FieldState(name="att", field_type=field_type, nullable=True)
+        state = SchemaState(tables={"fsu_ctl_docs": TableState(name="fsu_ctl_docs", fields={"att": field})})
+        source = self._source(state)
+        assert not any(ch in source for ch in "\r\x0c\x00")
+        assert f"    att: FileRef | None = None  # {field_type!r}: bucket name is not an identifier\n" in source
+
+        module = ast.parse(source)
+        assert ast.get_docstring(module) is not None
+        body = module.body[1:]
+        assert all(isinstance(node, (ast.ImportFrom, ast.ClassDef)) for node in body)
+        assert all(node.module != "os" for node in body if isinstance(node, ast.ImportFrom))
+        (cls,) = [node for node in body if isinstance(node, ast.ClassDef)]
+        assert cls.name == "FsuCtlDoc"
+        targets: list[str] = []
+        for node in cls.body:
+            assert isinstance(node, (ast.Assign, ast.AnnAssign))
+            targets.append(ast.unparse(node.targets[0] if isinstance(node, ast.Assign) else node.target))
+        assert targets == ["model_config", "id", "att"]
+        assert isinstance(cls.body[-1], ast.AnnAssign)
+        assert ast.unparse(cls.body[-1]) == "att: FileRef | None = None"
 
 
 class TestFileFieldLiveEvents:
