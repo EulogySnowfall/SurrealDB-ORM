@@ -92,12 +92,20 @@ if TYPE_CHECKING:
 
 #: Errors SurrealDB reports for the statements a failed transaction cancelled,
 #: rather than for the statement that failed it.
+# Once a statement fails, SurrealDB 3.2 and 3.3 report the statements before it as
+# "not executed due to a failed transaction", the statements after it as "not
+# executed due to a cancelled transaction", and the COMMIT as "Cannot COMMIT: the
+# transaction was aborted ...". The cause is found whatever order they come in.
 # A "Cannot COMMIT" that reports a conflict is the cause, not part of the cascade:
 # SurrealDB 3.3 reports a commit-time conflict on the COMMIT statement itself
 # ("Cannot COMMIT: Transaction conflict: ... This transaction can be retried").
 # Shared with the change-feed reader (``streaming/change_feed.py``), which reads
 # its BEGIN/COMMIT batch the same way.
-_CANCELLED_STATEMENT_ERRORS = ("not executed due to a failed transaction", "Cannot COMMIT: the transaction was")
+_CANCELLED_STATEMENT_ERRORS = (
+    "not executed due to a failed transaction",
+    "not executed due to a cancelled transaction",
+    "Cannot COMMIT: the transaction was",
+)
 
 
 def _is_cancelled_statement_error(error: str) -> bool:
