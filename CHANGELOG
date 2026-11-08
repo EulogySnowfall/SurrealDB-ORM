@@ -6,6 +6,69 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.59] - 2026-11-07
+
+**Bug fix release (V2 LTS).** The 0.21.58 review follow-up (#619 via
+#624): a `changes()` stream stopped while a resume after `reconnect()` is
+resolving its new client now ends quietly when that call raises. Plus a
+`ConnectionPool` docstring correction (#616 via #620). The SurrealDB pin is
+unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **A stopped `changes()` stream ends when its resume's client build
+  raises.** After `reconnect()` or `close_connection()` closes the client a
+  `ChangeModelStream` was polling, the stream resolves a new one through
+  `SurrealDBConnectionManager.get_client()`. When `stop()` is called while
+  that call is pending and it then raises an `Exception` (for example
+  `SurrealDbConnectionError` when the server cannot be reached), the stream
+  now ends (`StopAsyncIteration`, no new poll, no new feed, still on its
+  previous client) instead of raising out of a stream the caller had
+  already stopped (#619, #624). This resolves the known limitation listed
+  under `[0.21.58]`.
+
+### Behaviour change
+
+- None for a running stream: a stream that was not stopped still gets the
+  error of a failing resume `get_client()`. `CancelledError` and any other
+  `BaseException` that is not an `Exception` still propagate, stopped or
+  not.
+
+### Documentation
+
+- The `ConnectionPool` docstring (`**kwargs` entry) now says that an
+  invalid value for a keyword the connection class accepts (for example an
+  unknown `protocol`) raises `ValueError` at the first `acquire()`,
+  alongside the `TypeError` for a keyword it does not accept (#616, #620).
+  No runtime change.
+
+### Tests
+
+- `tests/test_issue_619_unit.py` (6 tests): a stream stopped during a
+  resume whose `get_client()` raises ends quietly (no poll, no client
+  built, same feed, same connection); a running stream still gets the
+  error; cancellation and a non-`Exception` `BaseException` still
+  propagate, each for a stopped and a running stream. One of them fails
+  against the 0.21.58 `src/`; the other five pin behaviour that must not
+  change.
+- `tests/sdk/test_issue_604_v2_unit.py`: an HTTP pool built with
+  `protocol="msgpack"` raises `ValueError` naming the value at the first
+  `acquire()`, opens no connection and gives its slot back (#620).
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, on #624's validated head (the released tree):
+4,051 unit tests pass on each of Python 3.12, 3.13 and 3.14 (1 expected
+failure, the strict `xfail` from 0.21.51), and 833 integration tests pass
+(4 expected failures, the existing strict `xfail`s for integer record ids
+over WebSocket); `ruff` and `mypy` clean.
+
+---
+
 ## [0.21.58] - 2026-11-07
 
 **Bug fix release (V2 LTS).** The 0.21.56 review follow-up (#610 via

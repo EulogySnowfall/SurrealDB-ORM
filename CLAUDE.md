@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.58)
+> Context document for Claude AI - Last updated: November 2026 (0.21.59)
 
 <!-- -->
 
@@ -20,12 +20,25 @@
 
 ---
 
-## Current Version: 0.21.58 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.59 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.59
+
+Two PRs: #619 via #624 (`surreal_orm/live.py`), the 0.21.58 review follow-up, and #616 via #620
+(`surreal_sdk/connection/pool.py`, docstring only). Pin unchanged (2.7.0).
+
+- **`_replacement_feed()` wraps its `get_client()` in `try` / `except Exception`**, like the first build in
+  `_stream_events()`: on a stopped stream it returns `None` and the generator ends (no new poll, no new feed,
+  `_connection` unchanged); on a running one the error is re-raised. `CancelledError` and other non-`Exception`
+  `BaseException`s are never caught. This closes the 0.21.58 open item, and the parity comment in `_stream_events()`
+  is accurate now.
+- **`ConnectionPool` `**kwargs` docstring** names both errors raised at the first `acquire()`: `TypeError` for a
+  keyword the connection class does not take, `ValueError` for an invalid value of one it does (unknown `protocol`).
 
 ### What's New in 0.21.58
 
