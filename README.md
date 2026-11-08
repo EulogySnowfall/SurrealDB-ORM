@@ -41,6 +41,22 @@
 
 ---
 
+## What's New in 0.39.4
+
+**Patch release — the relation detection helpers see optional relations**
+([#299](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/299)). ORM only, no new public API, no DDL or query
+text change, SurrealDB pin unchanged (3.3.5):
+
+- `is_relation_field()`, `is_foreign_key()`, `is_many_to_many()`, `is_graph_relation()` and `get_relation_info()` now
+  find a relation marker inside a union (`ForeignKey("X") | None`, `Optional[ForeignKey("X")]`, same for `ManyToMany`
+  and `Relation`), with the same lookup the record-link coercion and the migrations introspector use.
+- Chaining through `RelationQuerySet` attributes (`user.following.<name>`) works when the relation on the target model
+  is declared optional.
+- **Behaviour change:** these helpers used to return `False` / `None` for a union-wrapped marker and now return `True` /
+  the `RelationInfo`. Bare markers and unions with no marker (`str | None`) give the same answers as before.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.39.3
 
 **Patch release — change feed start-up, `Prefetch` variables, token refresh lookup, cache drops at commit, sign-up set
@@ -651,8 +667,6 @@ before upgrading.
   `UPDATE <table> SET <field> = IF !type::is_string(<field>) THEN <field> ELSE IF string::contains(<field>, ':') THEN type::record(<field>) ELSE type::record('<target_table>', <field>) END WHERE type::is_string(<field>);`
   (keep the first `IF`: SurrealDB 3.2.6 needs it). A field declared `option<string>` now rejects the write: retype it
   `option<record<target_table>>`, then convert.
-- **Known limitation:** `is_foreign_key()`, `get_relation_info()` and the other exported detection helpers still
-  report `ForeignKey("X") | None` as not a relation, as in earlier releases.
 
 ## What's New in 0.34.9
 
