@@ -338,14 +338,24 @@ class ChangeModelStream(Generic[T]):
         returns another one. The new client comes from the connection name the
         first one was resolved under, not from the context the consumer
         iterates in. Any other failure is the caller's to raise. A stream
-        stopped before or during ``get_client()`` gets ``None`` and no new feed.
+        stopped before or during ``get_client()`` gets ``None`` and no new feed,
+        whether that call returned or raised an ``Exception``. A stream that
+        was not stopped gets the call's exception, and a ``BaseException`` that
+        is not an ``Exception`` (``CancelledError`` included) always propagates.
         """
         if not self._resolves_connection or self._stopped or failed.connection.is_connected:
             return None
         from .connection_manager import SurrealDBConnectionManager
 
         name = self._connection_name if self._connection_name is not None else self._model.get_connection_name()
-        client = await SurrealDBConnectionManager.get_client(name)
+        try:
+            client = await SurrealDBConnectionManager.get_client(name)
+        except Exception:
+            # The caller stopped the stream while the call was pending: the
+            # error is no longer theirs to handle, as in _stream_events().
+            if self._stopped:
+                return None
+            raise
         if self._stopped or client is failed.connection:
             return None
         logger.debug("Change feed on %r resumes on a new HTTP client at %s.", self._table, failed.cursor)
