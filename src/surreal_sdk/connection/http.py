@@ -1240,9 +1240,10 @@ class HTTPConnection(BaseSurrealConnection):
         Under CBOR, a ``table:id`` string becomes a ``RecordId`` read by
         :func:`surreal_sdk.utils._parse_record_reference`, the reading
         ``HTTPTransaction`` uses: ``t:1`` is the integer ID 1, ``t:`a b``` and
-        ``t:\u27e8a b\u27e9`` the string ID ``"a b"``. A bare table, any
-        reference under JSON, and a value that is not a string (a ``RecordId``)
-        are passed as they are.
+        ``t:\u27e8a b\u27e9`` the string ID ``"a b"``. The table is data in
+        the ``RecordId``, so it need not be an identifier (``user-profiles:abc``).
+        A bare table, any reference under JSON, and a value that is not a string
+        (a ``RecordId``) are passed as they are.
 
         Raises:
             ValueError: Under CBOR, if the reference is malformed or its ID is

@@ -227,14 +227,19 @@ as it is):
 | Reference | Record ID |
 | --- | --- |
 | `"users:alice"` | the string `"alice"` |
-| `"users:1"`, `"users:-5"` | the integers `1` and `-5` (signed 64-bit range; beyond it, the digits as a string) |
+| `"users:1"`, `"users:-5"` | the integers `1` and `-5` (signed 64-bit range) |
+| `"users:05"`, `"users:-05"` | the integers `5` and `-5`: leading zeros are dropped, as SurrealQL drops them |
+| `"users:9223372036854775808"` | the string `"9223372036854775808"`: beyond the 64-bit range the digits are kept as written |
 | ``"users:`1`"``, `"users:⟨1⟩"` | the string `"1"` (read back once; `format_thing()` writes the backtick form) |
 | `"users"` | the whole table |
 
-The table must be an identifier. A malformed reference (unclosed delimiter, empty ID, array or object ID) raises
-`ValueError` before any request. `rand()`, `ulid()` and `uuid()` are SurrealQL, not record IDs: `HTTPTransaction`
-writes them into its statement, while the connection methods (and so `WebSocketTransaction`) refuse them with
-`ValueError`; pass the table name for a random ID. A `RecordId` value is passed through unchanged.
+A malformed reference (unclosed delimiter, empty ID, array or object ID) raises `ValueError` before any request.
+`HTTPTransaction` writes the table into its statement, so there (and in `WebSocketTransaction`, which checks the same
+way) the table must be an identifier. The connection methods send the table as data in the `RecordId`: any non-empty
+name is accepted (`"user-profiles:abc"`), and a delimited one (``"`user-profiles`:abc"``, `"⟨user-profiles⟩:abc"`) is
+read back once. `rand()`, `ulid()` and `uuid()` are SurrealQL, not record IDs: `HTTPTransaction` writes them into its
+statement, while the connection methods (and so `WebSocketTransaction`) refuse them with `ValueError`; pass the table
+name for a random ID. A `RecordId` value is passed through unchanged.
 
 ### Create
 

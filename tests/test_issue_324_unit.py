@@ -39,8 +39,19 @@ REFERENCES: list[tuple[str, int | str]] = [
     # Outside the i64 range the server reads the digits as a string ID.
     (f"{T}:9223372036854775808", "9223372036854775808"),
     (f"{T}:-9223372036854775809", "-9223372036854775809"),
-    # Not the canonical spelling of an integer: a string ID.
-    (f"{T}:05", "05"),
+    # Leading zeros: SurrealQL reads t:05 / t:007 / t:-05 as the integers 5 / 7 / -5
+    # (checked on 3.3.5 and 3.2.6), and the i64 range applies to the value.
+    (f"{T}:05", 5),
+    (f"{T}:007", 7),
+    (f"{T}:-05", -5),
+    (f"{T}:-0", 0),
+    (f"{T}:00", 0),
+    (f"{T}:{'0' * 30}1", 1),
+    (f"{T}:09223372036854775807", 2**63 - 1),
+    (f"{T}:-009223372036854775808", -(2**63)),
+    # Out of range with leading zeros: the server keeps the digits as written.
+    (f"{T}:09223372036854775808", "09223372036854775808"),
+    # Not valid inline SurrealQL (a parse error): sent as a string ID.
     (f"{T}:+5", "+5"),
     (f"{T}:⟨a b⟩", "a b"),
     (f"{T}:`a b`", "a b"),
@@ -52,13 +63,18 @@ REFERENCES: list[tuple[str, int | str]] = [
     (format_thing(T, "-5"), "-5"),
     (format_thing(T, "a`b"), "a`b"),
     (format_thing(T, "dir\\"), "dir\\"),
+    (format_thing(T, "05"), "05"),
+    (format_thing(T, "123"), "123"),
 ]
 
+#: Malformed on every path.
 MALFORMED = [
     f"{T}:",
     ":x",
-    "a b:c",
-    "`t`:x",
+    "``:x",
+    "⟨⟩:x",
+    "`t:x",
+    "⟨t:x",
     f"{T}:`a b",
     f"{T}:`a`b`",
     f"{T}:⟨a b",
@@ -67,6 +83,19 @@ MALFORMED = [
     f"{T}:⟨⟩",
     f"{T}:[1, 2]",
     f"{T}:{{a: 1}}",
+]
+
+#: Tables that are not identifiers: refused where the table is written into the
+#: query text (``HTTPTransaction``), data in the ``RecordId`` of an RPC call,
+#: with a delimited table read back once as SurrealQL reads it.
+NON_IDENTIFIER_TABLES: list[tuple[str, str, int | str]] = [
+    ("user-profiles:abc", "user-profiles", "abc"),
+    ("user-profiles:1", "user-profiles", 1),
+    ("a b:c", "a b", "c"),
+    ("`t`:x", "t", "x"),
+    ("`user-profiles`:abc", "user-profiles", "abc"),
+    ("⟨user-profiles⟩:abc", "user-profiles", "abc"),
+    ("`a\\`b`:x", "a`b", "x"),
 ]
 
 GENERATORS = [f"{T}:rand()", f"{T}:ulid()", f"{T}:uuid()"]
@@ -83,6 +112,12 @@ class TestParser:
         assert (ref.table, ref.id) == (T, record_id)
         assert type(ref.id) is type(record_id)
 
+    def test_long_digit_runs(self) -> None:
+        """Only significant digits are converted: no large-integer parsing (and no ``int()`` digit limit)."""
+        assert _parse_record_reference(f"{T}:{'0' * 5000}1", "thing").id == 1
+        assert _parse_record_reference(f"{T}:-{'0' * 5000}", "thing").id == 0
+        assert _parse_record_reference(f"{T}:{'1' * 5000}", "thing").id == "1" * 5000
+
     def test_bare_table(self) -> None:
         ref = _parse_record_reference(T, "thing")
         assert (ref.table, ref.id) == (T, None)
@@ -91,6 +126,16 @@ class TestParser:
     def test_malformed_reference_raises(self, thing: str) -> None:
         with pytest.raises(ValueError, match="Invalid thing"):
             _parse_record_reference(thing, "thing")
+
+    @pytest.mark.parametrize("thing", [t for t, _, _ in NON_IDENTIFIER_TABLES])
+    def test_table_must_be_an_identifier_by_default(self, thing: str) -> None:
+        with pytest.raises(ValueError, match="the table must be an identifier"):
+            _parse_record_reference(thing, "thing")
+
+    @pytest.mark.parametrize(("thing", "table", "record_id"), NON_IDENTIFIER_TABLES)
+    def test_any_table_reads_a_non_identifier_table(self, thing: str, table: str, record_id: int | str) -> None:
+        ref = _parse_record_reference(thing, "thing", any_table=True)
+        assert (ref.table, ref.id) == (table, record_id)
 
     @pytest.mark.parametrize("thing", GENERATORS)
     def test_generator_is_flagged(self, thing: str) -> None:
@@ -118,6 +163,14 @@ class TestToThing:
     def test_malformed_reference_raises(self, cls: type, thing: str) -> None:
         with pytest.raises(ValueError, match="Invalid thing"):
             _conn(cls)._to_thing(thing)
+
+    @pytest.mark.parametrize("cls", CONNECTIONS)
+    @pytest.mark.parametrize(("thing", "table", "record_id"), NON_IDENTIFIER_TABLES)
+    def test_non_identifier_table_is_data(self, cls: type, thing: str, table: str, record_id: int | str) -> None:
+        """``format_thing()`` does not escape the table: ``user-profiles:abc`` reached the server before #324."""
+        result = _conn(cls)._to_thing(thing)
+        assert result == RecordId(table=table, id=record_id)
+        assert type(result.id) is type(record_id)
 
     @pytest.mark.parametrize("cls", CONNECTIONS)
     @pytest.mark.parametrize("thing", GENERATORS)

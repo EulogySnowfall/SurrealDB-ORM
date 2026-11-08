@@ -35,6 +35,8 @@ SURREALDB_DATABASE = "test_issue_324"
 
 NODES = "i324_nodes"
 ITEMS = "i324_items"
+#: A table name that is not an identifier: ``format_thing()`` does not escape it.
+PROFILES = "i324-profiles"
 
 #: (reference, ID the server reads from it inline).
 REFERENCES: dict[str, int | str] = {
@@ -42,6 +44,10 @@ REFERENCES: dict[str, int | str] = {
     f"{NODES}:-5": -5,
     f"{NODES}:9223372036854775807": 2**63 - 1,
     f"{NODES}:9223372036854775808": "9223372036854775808",
+    # Leading zeros: the server drops them inline, and so does the SDK.
+    f"{NODES}:05": 5,
+    f"{NODES}:-05": -5,
+    f"{NODES}:09223372036854775808": "09223372036854775808",
     f"{NODES}:⟨a b⟩": "a b",
     f"{NODES}:`a b`": "a b",
     f"{NODES}:`1`": "1",
@@ -49,6 +55,13 @@ REFERENCES: dict[str, int | str] = {
 }
 
 Conn = HTTPConnection | WebSocketConnection
+
+
+class I324Profile(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name=PROFILES)
+
+    id: str | None = None
+    amount: int | None = None
 
 
 class I324Item(BaseSurrealModel):
@@ -68,13 +81,16 @@ async def _prepare(conn: Conn) -> Conn:
     return conn
 
 
+_DROP = f"REMOVE TABLE IF EXISTS {NODES}; REMOVE TABLE IF EXISTS {ITEMS}; REMOVE TABLE IF EXISTS `{PROFILES}`;"
+
+
 @pytest.fixture
 async def http() -> AsyncGenerator[HTTPConnection, None]:
     conn = await _prepare(HTTPConnection(SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE))
     assert isinstance(conn, HTTPConnection)
-    await conn.query(f"REMOVE TABLE IF EXISTS {NODES}; REMOVE TABLE IF EXISTS {ITEMS};")
+    await conn.query(_DROP)
     yield conn
-    await conn.query(f"REMOVE TABLE IF EXISTS {NODES}; REMOVE TABLE IF EXISTS {ITEMS};")
+    await conn.query(_DROP)
     await conn.close()
 
 
@@ -153,6 +169,47 @@ async def test_rpc_refuses_an_id_generator(
     assert await _rows(http) == []
 
 
+async def _profile_rows(conn: HTTPConnection) -> list[dict[str, Any]]:
+    return sorted((await conn.query(f"SELECT * FROM `{PROFILES}`;")).all_records, key=repr)
+
+
+@pytest.mark.parametrize("conn_name", ["http", "ws"])
+@pytest.mark.parametrize(
+    ("ref", "record_id"),
+    [
+        (f"{PROFILES}:abc", "abc"),
+        (f"{PROFILES}:1", 1),
+        (f"`{PROFILES}`:abc", "abc"),
+        (f"\u27e8{PROFILES}\u27e9:abc", "abc"),
+    ],
+)
+async def test_rpc_accepts_a_table_that_is_not_an_identifier(
+    http: HTTPConnection, ws: WebSocketConnection, conn_name: str, ref: str, record_id: int | str
+) -> None:
+    """The table is data in the ``RecordId``: ``user-profiles:abc`` reached the server before #324 and still does."""
+    conn: Conn = http if conn_name == "http" else ws
+    target = RecordId(table=PROFILES, id=record_id)
+    inline = f"`{PROFILES}`:{'abc' if record_id == 'abc' else record_id}"
+    await http.query(f"CREATE `{PROFILES}`:keep SET v = 0; CREATE {inline} SET v = 0;")
+    keep = {"id": RecordId(table=PROFILES, id="keep"), "v": 0}
+
+    await conn.upsert(ref, {"v": 1})
+    await conn.merge(ref, {"m": 2})
+    assert (await conn.select(ref)).records == [{"id": target, "v": 1, "m": 2}]
+    assert await _profile_rows(http) == sorted([keep, {"id": target, "v": 1, "m": 2}], key=repr)
+
+    await conn.delete(ref)
+    assert await _profile_rows(http) == [keep]
+
+
+async def test_http_transaction_still_requires_an_identifier_table(http: HTTPConnection) -> None:
+    """``HTTPTransaction`` writes the table into its statement: a name that is not an identifier is refused."""
+    with pytest.raises(ValueError, match="the table must be an identifier"):
+        async with http.transaction() as tx:
+            await tx.update(f"{PROFILES}:abc", {"v": 1})
+    assert await _profile_rows(http) == []
+
+
 # --- the ORM ---------------------------------------------------------------------
 
 
@@ -208,3 +265,21 @@ async def test_orm_merge_and_save_of_a_saved_record_in_an_http_transaction(orm: 
         {"id": RecordId(table=ITEMS, id="other"), "amount": 1, "label": "a"},
         {"id": RecordId(table=ITEMS, id="tx"), "amount": 5, "label": "b"},
     ]
+
+
+async def test_orm_model_on_a_table_that_is_not_an_identifier(orm: HTTPConnection) -> None:
+    """``format_thing()`` leaves the table as is, so the model API sends ``i324-profiles:<id>`` to the RPC methods."""
+    profile = I324Profile(id="p1", amount=1)
+    await profile.save()
+    target = RecordId(table=PROFILES, id="p1")
+    assert await _profile_rows(orm) == [{"id": target, "amount": 1}]
+
+    profile.amount = 2
+    await profile.save()
+    await profile.merge(amount=3)
+    await profile.refresh()
+    assert profile.amount == 3
+    assert await _profile_rows(orm) == [{"id": target, "amount": 3}]
+
+    await profile.delete()
+    assert await _profile_rows(orm) == []

@@ -195,9 +195,14 @@ def unescape_record_id(id_part: str) -> str:
 
 
 #: A record ID part that SurrealQL reads as an integer when written inline
-#: (``users:1``, ``users:-5``), provided it fits in a signed 64-bit integer;
-#: outside that range the server reads it as a string ID.
-_INTEGER_ID_RE = re.compile(r"-?(?:0|[1-9][0-9]*)")
+#: (``users:1``, ``users:-5``, ``users:05`` = 5), provided its value fits in a
+#: signed 64-bit integer; outside that range the server keeps the digits, as
+#: written, as a string ID. Groups: the sign, then the digits without their
+#: leading zeros (``"0"`` for zero).
+_INTEGER_ID_RE = re.compile(r"(-?)0*([0-9]+)")
+
+#: Digits of the largest magnitude in the signed 64-bit range (``2**63``).
+_I64_DIGITS = 19
 
 _I64_MIN = -(2**63)
 _I64_MAX = 2**63 - 1
@@ -209,7 +214,7 @@ _ID_GENERATORS = frozenset({"rand()", "ulid()", "uuid()"})
 class _RecordReference(NamedTuple):
     """A ``table`` or ``table:id`` reference, as :func:`_parse_record_reference` reads it."""
 
-    #: The table, an identifier.
+    #: The table: an identifier, or any non-empty name with ``any_table=True``.
     table: str
     #: The record ID: an ``int`` in the signed 64-bit range, a ``str`` otherwise,
     #: ``None`` for a bare table.
@@ -223,39 +228,66 @@ class _RecordReference(NamedTuple):
         return not self.delimited and self.id in _ID_GENERATORS
 
 
-def _delimited_record_id(id_part: str, thing: str, context: str) -> str | None:
-    r"""Return the raw ID of a delimited ID part, ``None`` when it is not delimited.
+def _delimited_record_id(id_part: str, thing: str, context: str, what: str = "ID") -> str | None:
+    r"""Return the raw text of a delimited part, ``None`` when it is not delimited.
 
     Two delimited forms are read back: backticks, as ``format_thing()`` writes
     them (``\\`` and ``\``` inside), and Unicode angle brackets without
     escapes. A delimited form that is not closed, or that holds its own closing
-    delimiter without an escape, raises ``ValueError``.
+    delimiter without an escape, raises ``ValueError``. ``what`` names the part
+    (``"ID"`` or ``"table"``) in the message; SurrealQL delimits both the same way.
     """
     if id_part.startswith("`"):
         units = _ESCAPED_ID_UNIT.findall(id_part[1:-1]) if len(id_part) >= 2 and id_part.endswith("`") else ["`"]
         if "`" in units:
-            raise ValueError(f"Invalid {context}: {thing!r} (malformed backtick-delimited ID)")
+            raise ValueError(f"Invalid {context}: {thing!r} (malformed backtick-delimited {what})")
         return unescape_record_id(id_part)
     if id_part.startswith("\u27e8"):
         body = id_part[1:-1]
         if len(id_part) < 2 or not id_part.endswith("\u27e9") or "\u27e9" in body or "\\" in body:
-            raise ValueError(f"Invalid {context}: {thing!r} (malformed angle-bracket ID)")
+            raise ValueError(f"Invalid {context}: {thing!r} (malformed angle-bracket {what})")
         return body
     return None
 
 
-def _parse_record_reference(thing: object, context: str) -> _RecordReference:
+def _integer_record_id(id_part: str) -> int | None:
+    """Return the integer SurrealQL reads from an inline ID part, ``None`` when it reads a string.
+
+    An optional ``-``, then digits; leading zeros are dropped (``05`` is 5,
+    ``-05`` is -5, as the server reads them). The value must be in the signed
+    64-bit range. Only the significant digits are converted, so a long run of
+    zeros or digits costs no large-integer parsing.
+    """
+    match = _INTEGER_ID_RE.fullmatch(id_part)
+    if match is None or len(match.group(2)) > _I64_DIGITS:
+        return None
+    value = int(match.group(1) + match.group(2))
+    return value if _I64_MIN <= value <= _I64_MAX else None
+
+
+def _parse_record_reference(thing: object, context: str, *, any_table: bool = False) -> _RecordReference:
     """Read a ``table`` or ``table:id`` reference the way SurrealQL reads it inline.
 
     The single reading of a record reference in the SDK: ``HTTPTransaction``
     renders its statements from it and both connections build the ``RecordId``
     of their RPC calls from it, so one string names one record on every path.
 
-    The table must be an identifier. The ID, after the first ``:``, is read as:
+    The table, before the first ``:``, must be an identifier, because
+    ``HTTPTransaction`` writes it into its statement. With ``any_table=True``
+    (the RPC methods, where the table is data in a ``RecordId``) any non-empty
+    table is accepted: a backtick- or angle-bracket-delimited one is read back
+    once (``\u27e8user-profiles\u27e9`` is ``user-profiles``, as SurrealQL reads
+    it), any other is kept as written (``user-profiles``, which
+    ``format_thing()`` does not escape).
 
-    * an ``int`` when it is an integer in canonical form within the signed
-      64-bit range (``users:1``, ``users:-5``); outside that range, or with a
-      leading ``+`` or ``0``, the server reads the digits as a string ID;
+    The ID, after the first ``:``, is read as:
+
+    * an ``int`` when it is an optional ``-`` followed by digits whose value is
+      within the signed 64-bit range; leading zeros are dropped, as the server
+      drops them (``users:05`` is 5, ``users:-05`` is -5). Outside that range
+      the server keeps the digits, as written, as a string ID, and so does this
+      reading. ``users:+5`` is not valid inline SurrealQL; it is read as the
+      string ID ``"+5"``;
     * the raw string of a backtick-delimited ID (as ``format_thing()`` writes
       it, read back once) or of a Unicode angle-bracket-delimited ID
       (``users:\u27e8a b\u27e9``), never itself an integer;
@@ -267,19 +299,26 @@ def _parse_record_reference(thing: object, context: str) -> _RecordReference:
     Args:
         thing: The reference.
         context: The argument name, for the error message.
+        any_table: Accept a table that is not an identifier.
 
     Returns:
         The table, the ID (``None`` for a bare table) and whether it was delimited.
 
     Raises:
         ValueError: If the reference is not a string, the table is not an
-            identifier, the ID is empty, a delimiter is not closed, or the ID is
-            an array or an object.
+            identifier (or, with ``any_table``, is empty or wrongly delimited),
+            the ID is empty, a delimiter is not closed, or the ID is an array or
+            an object.
     """
     if not isinstance(thing, str):
         raise ValueError(f"Invalid {context}: {thing!r} (expected a 'table' or 'table:id' string)")
     table, sep, id_part = thing.partition(":")
-    if not _IDENTIFIER_RE.fullmatch(table):
+    if any_table:
+        raw_table = _delimited_record_id(table, thing, context, "table")
+        table = table if raw_table is None else raw_table
+        if not table:
+            raise ValueError(f"Invalid {context}: {thing!r} (empty table)")
+    elif not _IDENTIFIER_RE.fullmatch(table):
         raise ValueError(f"Invalid {context}: {thing!r} (the table must be an identifier)")
     if not sep:
         return _RecordReference(table, None)
@@ -290,8 +329,9 @@ def _parse_record_reference(thing: object, context: str) -> _RecordReference:
         if not raw:
             raise ValueError(f"Invalid {context}: {thing!r} (empty record ID)")
         return _RecordReference(table, raw, delimited=True)
-    if len(id_part) <= 20 and _INTEGER_ID_RE.fullmatch(id_part) and _I64_MIN <= int(id_part) <= _I64_MAX:
-        return _RecordReference(table, int(id_part))
+    integer = _integer_record_id(id_part)
+    if integer is not None:
+        return _RecordReference(table, integer)
     if id_part[0] in "[{":
         raise ValueError(f"Invalid {context}: {thing!r} (array and object IDs are not supported; use query())")
     return _RecordReference(table, id_part)
@@ -300,14 +340,16 @@ def _parse_record_reference(thing: object, context: str) -> _RecordReference:
 def _rpc_record_id(thing: str) -> tuple[str, int | str]:
     """Return the ``(table, id)`` of a ``table:id`` reference passed to an RPC method.
 
-    Reads ``thing`` with :func:`_parse_record_reference`. An RPC method takes a
-    record ID, not SurrealQL, so an ID generator is refused: the server would
+    Reads ``thing`` with :func:`_parse_record_reference` and ``any_table=True``:
+    the table is data in the ``RecordId``, so a name that is not an identifier
+    (``user-profiles``) reaches the server as it did before. An RPC method takes
+    a record ID, not SurrealQL, so an ID generator is refused: the server would
     store the text ``"ulid()"`` as the ID instead of generating one.
 
     Raises:
         ValueError: If the reference is malformed, has no ID, or its ID is a generator.
     """
-    ref = _parse_record_reference(thing, "thing")
+    ref = _parse_record_reference(thing, "thing", any_table=True)
     if ref.id is None:
         raise ValueError(f"Invalid thing: {thing!r} (expected a 'table:id' reference)")
     if ref.generator:
