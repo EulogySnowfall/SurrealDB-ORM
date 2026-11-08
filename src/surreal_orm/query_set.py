@@ -192,17 +192,32 @@ class QuerySet(Generic[T]):
         declared here. Any other value, including ``$name`` for a name that is not
         declared, is bound as a parameter and compared as data.
 
+        The declared variables are sent with every query built from this
+        QuerySet, including when it is the inner QuerySet of a ``Subquery`` or
+        the ``queryset`` of a ``Prefetch``.
+
+        Names starting with ``_`` are reserved: every binding the ORM writes
+        while compiling a query starts with ``_`` (``$_f0``, ``$_sq0``,
+        ``$_knn_vec``, ...), and a declared variable of the same name would be
+        overwritten by it.
+
         Args:
             **kwargs (Any): Arbitrary keyword arguments representing variable names and their corresponding values.
 
         Returns:
             Self: The current instance of QuerySet to allow method chaining.
 
+        Raises:
+            ValueError: If a name starts with ``_``. Nothing is stored then.
+
         Example:
             ```python
             queryset.filter(status='$status').variables(status='active')
             ```
         """
+        for key in kwargs:
+            if key.startswith("_"):
+                raise ValueError(f"Variable names starting with '_' are reserved for the ORM's own bindings: {key!r}")
         self._variables = {key: value for key, value in kwargs.items()}
         self._declared_variables = frozenset(kwargs)
         return self
@@ -1779,7 +1794,14 @@ class QuerySet(Generic[T]):
                 parts, fvars = custom_qs._build_where_parts()
                 if parts:
                     extra_where = " AND " + " AND ".join(parts)
-                    extra_vars = fvars
+                extra_vars = fvars
+                # Send the variables the custom QuerySet declared, as Subquery
+                # does, or a "$name" filter reaches the server unbound and
+                # compares against NONE. Declared names only (its _variables
+                # also hold the bindings of any earlier compile), and the
+                # compiled $_fN bindings are never replaced.
+                for name in custom_qs._declared_variables:
+                    extra_vars.setdefault(name, custom_qs._variables[name])
                 query = f"SELECT in, out.* FROM {relation_name} WHERE in IN [{id_list}]{extra_where};"
 
             sent = remove_quotes_for_variables(query)

@@ -1675,6 +1675,16 @@ is not declared, is bound as a parameter and compared as text:
 await User.objects().filter(nickname="$min_age").exec()
 ```
 
+Declared variables are sent with every query built from the QuerySet, including
+when it is the inner QuerySet of a `Subquery` or the `queryset` of a `Prefetch`:
+
+```python
+Prefetch("wrote", queryset=Post.objects().filter(tag="$t").variables(t="x"))
+```
+
+Names starting with `_` are reserved for the ORM's own bindings (`$_f0`, `$_sq0`,
+`$_knn_vec`, ...): `.variables(_f0=5)` raises `ValueError`.
+
 ### Raw SurrealQL
 
 ```python
