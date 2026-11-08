@@ -41,6 +41,16 @@
 
 ---
 
+## What's New in 0.39.1
+
+**Patch release — dependency floor.** The declared `aiohttp` floor is now `>= 3.14.4` (was `>= 3.12`) in both
+`surrealdb-orm` and the bundled SDK ([#291](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/291)), so a
+downstream install picks up the fixes for GHSA-494j-54xm-rwp3, GHSA-2g87-pp6c-29x5 and GHSA-5wr8-gcqf-gqf3 (all aiohttp
+<= 3.14.3). The project's lock file has used 3.14.4 since 0.34.3, but it does not reach installed users. Behaviour
+change: installing or upgrading `surrealdb-orm` now requires aiohttp >= 3.14.4 (pip moves an older one forward); a
+downstream lock file pinning aiohttp below 3.14.4 must be updated. No library code change. SurrealDB pin unchanged
+(3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.39.0
 
 **Minor release — File Storage** ([#562](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/562)). Store files in
