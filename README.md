@@ -41,6 +41,18 @@
 
 ---
 
+## What's New in 0.39.2
+
+**Patch release — live queries across a WebSocket reconnect**
+([#279](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/279)). SDK only. Callback-API live queries
+(`conn.live(table, callback)`, `LiveQuery`, `LiveQueryManager`) are now re-created after a reconnect instead of going
+silent; `LiveSelectManager.stop()` / `LiveQueryManager.unwatch()` accept the new live id as well as the first one, and
+`active_streams` / `active_queries` list current ids; a subscription whose `LIVE SELECT` fails during the resubscribe is
+retried on the next reconnect instead of being dropped; a notification arriving in the same read as its `LIVE SELECT`
+reply is delivered. A naive `datetime` inside a record id now emits the same `RuntimeWarning` as anywhere else (bytes
+unchanged), so code under a warnings-as-errors filter raises there too: attach a `tzinfo`. SurrealDB pin unchanged
+(3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full notes and known limitations.
+
 ## What's New in 0.39.1
 
 **Patch release — dependency floor.** The declared `aiohttp` floor is now `>= 3.14.4` (was `>= 3.12`) in both

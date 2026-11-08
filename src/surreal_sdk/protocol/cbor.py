@@ -228,8 +228,9 @@ def _preprocess_for_cbor(data: Any) -> Any:
     A naive ``datetime`` (subclasses included) is left as it is but warned
     about with a ``RuntimeWarning`` (see :func:`_warn_naive_datetime`):
     :func:`encode` reads it as UTC, because SurrealDB only stores UTC instants.
-    A naive ``datetime`` inside a ``RecordId``'s id is converted the same way
-    but not warned about, since this walk does not enter record ids.
+    A ``RecordId`` is returned unchanged, but its id is walked read-only for
+    naive datetimes (:func:`_warn_naive_in_record_id`), which are warned about
+    the same way: nothing else inside a record id is converted here.
 
     An integer outside the 64-bit range CBOR carries natively (below
     ``-2**64`` or above ``2**64 - 1``) raises ``ValueError``: cbor2 would send
@@ -256,12 +257,49 @@ def _preprocess_for_cbor(data: Any) -> Any:
         return data
     if isinstance(data, date):
         return datetime(data.year, data.month, data.day, tzinfo=UTC)
+    if isinstance(data, RecordId):
+        _warn_naive_in_record_id(data.id)
+        return data
     if isinstance(data, dict):
         return {k: _preprocess_for_cbor(v) for k, v in data.items()}
     if isinstance(data, (list, tuple, set, frozenset)):
         converted = [_preprocess_for_cbor(item) for item in data]
         return type(data)(converted)
     return data
+
+
+def _warn_naive_in_record_id(value: Any) -> None:
+    """Warn once if a record id's *value* holds a naive ``datetime``, at any depth.
+
+    Read-only: the record id is encoded exactly as before (its datetimes are
+    read as UTC by :func:`encode`); this walk only adds the warning
+    :func:`_preprocess_for_cbor` gives for a naive ``datetime`` elsewhere. It
+    enters lists, tuples, sets, dict values and nested ``RecordId`` ids.
+
+    Each container is entered once (tracked by ``id()``), so a cyclic id ends
+    the walk and reaches cbor2, which refuses it with ``CBOREncodeValueError``
+    as it did before this walk existed.
+    """
+    pending = [value]
+    seen: set[int] = set()
+    while pending:
+        item = pending.pop()
+        if isinstance(item, datetime):
+            if item.tzinfo is None:
+                _warn_naive_datetime()
+                return
+            continue
+        if not isinstance(item, (RecordId, dict, list, tuple, set, frozenset)):
+            continue
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, RecordId):
+            pending.append(item.id)
+        elif isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            pending.extend(item)
 
 
 def _cbor_default_encoder(encoder: Any, value: Any) -> None:

@@ -6,6 +6,82 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.2] - 2026-11-08
+
+**Patch release — live queries across a WebSocket reconnect (#279 via
+#648).** SDK only (`surreal_sdk`): live queries on a WebSocket connection now
+stay alive and reachable across a reconnect, whichever API created them, and
+a naive `datetime` inside a record id gets the same warning as anywhere else.
+The `LIVE SELECT` text is unchanged and no DDL is emitted. This resolves the
+three live-query items listed under the `[0.34.8]` *Known limitations*. The
+SurrealDB pin is unchanged (tested against 3.3.5, supported range 3.2.x –
+3.3.x).
+
+### Fixed
+
+- **`LiveSelectManager.stop()` works with the new live id after a reconnect**
+  (the id passed to `on_reconnect`), as well as with the id `watch()`
+  returned; before, `stop(new_id)` found nothing and the stream and its live
+  query kept running. `active_streams` lists current ids.
+  `LiveQueryManager.unwatch()` / `active_queries` behave the same way (#279).
+- **`WebSocketConnection.live(table, callback)` and `LiveQuery.subscribe()`
+  subscriptions are re-created after a reconnect**; before, their callback
+  silently stopped receiving events. `kill()` accepts the id `live()`
+  returned or the current one; `kill()` and `unsubscribe()` unregister the
+  subscription before their request, so a killed query is never re-created
+  (#279).
+- **A live subscription whose `LIVE SELECT` fails during the resubscribe**
+  (server error, timeout, socket lost again) stays registered and is retried
+  on the next reconnect instead of being dropped for good (#279).
+- **A naive `datetime` inside a `RecordId` id** (array, object, nested) now
+  emits the same `RuntimeWarning` as anywhere else, so the documented
+  `warnings.filterwarnings("error", message="A naive datetime was sent to SurrealDB", category=RuntimeWarning)`
+  recipe also catches it. The encoded bytes are unchanged, and a cyclic id
+  still raises cbor2's `CBOREncodeValueError` (#279).
+- **A live notification that arrives in the same WebSocket read as its
+  `LIVE SELECT` reply** (first `start()` / `subscribe()` / `live()`, or a
+  resubscribe) is delivered instead of dropped. Notifications for unknown ids
+  are held in a bounded buffer (128, oldest dropped) only while a
+  `LIVE SELECT` is in flight (#279).
+
+### Behaviour changes
+
+- Callback-API live queries (`conn.live()`, `LiveQuery`, `LiveQueryManager`)
+  now survive a reconnect, and their callback keeps being invoked under a new
+  live id (`conn.live_queries` / `LiveQuery.live_id` report it). Code that
+  relied on a `conn.live()` subscription going quiet after a reconnect should
+  call `conn.kill(live_id)` explicitly.
+- `LiveSelectManager.active_streams` and `LiveQueryManager.active_queries`
+  return each query's current live id rather than the first one.
+- `kill_all_live_queries()` also ends subscriptions waiting to be re-created.
+
+### Upgrading
+
+- Code under a warnings-as-errors filter that encodes naive datetimes inside
+  record ids now raises, as it already did for naive datetimes elsewhere:
+  attach a `tzinfo`.
+
+### Known limitations
+
+- A subscription whose `LIVE SELECT` fails on a live session stays
+  registered under its previous id until the next socket drop, which may
+  never come. Nothing reports it meanwhile: `conn.live_queries` does not list
+  it, `stream.live_id` keeps the previous id and `on_reconnect` is not called.
+- `WebSocketConnection.kill()` removes the callback only after the `kill`
+  request returns. If that request fails or times out while the server-side
+  query survives, the callback keeps receiving notifications and
+  `conn.live_queries` keeps listing the id (this predates 0.39.2).
+- `close()` keeps the registered live subscriptions. Reusing the same
+  connection object after `close()` and `connect()` re-creates the
+  pre-close queries on the next reconnect.
+
+### Documentation
+
+- `docs/sdk.md`: *Callback-Based Live Queries*, *Live Select Manager* and
+  *Auto-Resubscribe* describe the behaviour after a reconnect (#279).
+
+---
+
 ## [0.39.1] - 2026-11-08
 
 **Patch release — dependency floor.** The declared `aiohttp` floor moves to

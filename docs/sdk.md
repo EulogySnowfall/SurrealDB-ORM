@@ -735,6 +735,13 @@ async with WebSocketConnection("ws://localhost:8000", "ns", "db") as conn:
     await conn.kill(live_id)
 ```
 
+The subscription survives a reconnect: once the session is restored, the
+connection re-creates the live query and `handle_change` keeps receiving its
+notifications, now under a new id (`conn.live_queries` lists the current ids).
+`conn.kill()` accepts the id `live()` returned or the current one, and a killed
+query is never re-created. `LiveQuery.subscribe()` behaves the same way; its
+`live_id` follows the re-created query, and `unsubscribe()` ends it.
+
 ### Live Select Stream (v0.5.0)
 
 The async iterator pattern provides a more Pythonic way to consume live changes:
@@ -816,6 +823,11 @@ await manager.stop(live_id)
 await manager.stop_all()
 ```
 
+After a reconnect each stream follows its re-created live query:
+`active_streams` lists the current ids, and `stop()` accepts either the id
+`watch()` returned or the current one (the `new_id` passed to `on_reconnect`).
+`LiveQueryManager.unwatch()` and `active_queries` work the same way.
+
 ### Auto-Resubscribe
 
 Automatically resubscribe to Live Queries after WebSocket reconnection (network issues, K8s pod restarts):
@@ -840,10 +852,19 @@ async with db.live_select(
 **How it works:**
 
 1. When `auto_resubscribe=True`, the connection stores subscription parameters
+   (`conn.live()` and `LiveQuery.subscribe()` always do)
 2. On WebSocket disconnect, the connection attempts to reconnect
 3. After reconnect, all stored subscriptions are recreated
 4. `on_reconnect` callback is invoked with old and new subscription IDs
 5. The async iterator continues seamlessly
+
+A subscription whose `LIVE SELECT` fails during the resubscribe (an error from
+the server, a timeout, the socket lost again) stays registered under its
+previous id and is retried by the next reconnect; until then it receives
+nothing. Stopping it (`stop()`, `kill()`, `unsubscribe()`) unregisters it, so
+it is never re-created after that. A notification that arrives in the same read
+as the `LIVE SELECT` reply, before the subscription knows its id, is held
+briefly and delivered once the id is registered.
 
 ---
 
