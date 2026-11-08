@@ -1,5 +1,6 @@
 import logging
 import weakref
+from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import (
     TYPE_CHECKING,
@@ -209,6 +210,21 @@ def _is_datetime_field(field_type: Any) -> bool:
             return datetime in args
         return False
     return field_type is datetime
+
+
+def _escape_column(column: str) -> str:
+    r"""Write *column* as a SurrealQL field name.
+
+    An identifier is written as it is. Any other name is written in the
+    backtick-delimited form, where SurrealDB reads ``\`` as an escape
+    character: a backslash becomes ``\\`` and a backtick ``\``` (backslash
+    first, so the one added before a backtick is not doubled), the rule
+    ``escape_record_id()`` applies to record ids.
+    """
+    if _SAFE_IDENTIFIER_RE.fullmatch(column):
+        return column
+    escaped = column.replace("\\", "\\\\").replace("`", "\\`")
+    return f"`{escaped}`"
 
 
 def _convert_record_id_to_string(value: Any) -> Any:
@@ -1102,8 +1118,15 @@ class BaseSurrealModel(BaseModel):
 
         # Get field type annotations for datetime parsing
         field_types = self.__class__.model_fields
+        # An aliased field is stored in its alias column; a column named after
+        # the field itself is read only when the alias column is absent.
+        field_of = self._alias_columns()
 
-        for key, value in record.items():
+        for column, value in record.items():
+            key = field_of.get(column, column)
+            info = field_types.get(column)
+            if key == column and info is not None and info.alias and info.alias in record:
+                continue
             if key == "id":
                 # For the 'id' field, extract just the ID part (strip table prefix)
                 value = _parse_record_id(value)
@@ -1351,26 +1374,43 @@ class BaseSurrealModel(BaseModel):
         return False
 
     @staticmethod
-    def _build_set_clause(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def _build_set_clause(
+        data: dict[str, Any],
+        *,
+        escaped_columns: Collection[str] = (),
+    ) -> tuple[str, dict[str, Any]]:
         """
         Build a ``SET field = value, ...`` clause from a data dict.
 
         SurrealFunc values are inlined as raw expressions; other values are
         bound as ``$_sv_<field>`` parameters.
 
+        Args:
+            data: Column names mapped to their values.
+            escaped_columns: Names that may be written although they are not
+                identifiers (a model field's alias such as ``first-name``).
+                Such a column is written backtick-delimited and its value is
+                bound as ``$_svq_<n>``, a name no ``_sv_<field>`` can take.
+                Any other name that is not an identifier raises.
+
         Returns:
             A tuple of (set_clause_str, variables_dict).
         """
         set_parts: list[str] = []
         variables: dict[str, Any] = {}
+        escaped = 0
         for field, value in data.items():
-            if not _SAFE_IDENTIFIER_RE.fullmatch(field):
+            if _SAFE_IDENTIFIER_RE.fullmatch(field):
+                column, var_name = field, f"_sv_{field}"
+            elif field in escaped_columns:
+                column, var_name = _escape_column(field), f"_svq_{escaped}"
+                escaped += 1
+            else:
                 raise ValueError(f"Invalid field name: {field!r}")
             if isinstance(value, SurrealFunc):
-                set_parts.append(f"{field} = {value.expression}")
+                set_parts.append(f"{column} = {value.expression}")
             else:
-                var_name = f"_sv_{field}"
-                set_parts.append(f"{field} = ${var_name}")
+                set_parts.append(f"{column} = ${var_name}")
                 variables[var_name] = value
         return ", ".join(set_parts), variables
 
@@ -1677,12 +1717,51 @@ class BaseSurrealModel(BaseModel):
                 for server-side expressions. They skip Pydantic validation, so
                 a foreign key is wrapped into a record link and a file column
                 given as ``"bucket:/key"`` text into a ``FileRef`` before the
-                request (invalid text raises ``ValueError`` first).
+                request (invalid text raises ``ValueError`` first). A field
+                declared with an alias may be given under its name or its alias
+                and is written to the alias column, as :meth:`save` writes it
+                (``first_name`` and ``**{"first-name": ...}`` both write
+                ``first-name``); a keyword that is not a model field is written
+                as given. The ``update_fields`` of the update signals carry
+                the column names sent.
 
         Returns:
             Self: The updated model instance.
+
+        Raises:
+            ValueError: A field is given under both its name and its alias
+                (before any request).
         """
-        return await self._merge_columns(data, tx=tx, refresh=refresh, extra_vars=extra_vars)
+        return await self._merge_columns(self._columns_by_alias(data), tx=tx, refresh=refresh, extra_vars=extra_vars)
+
+    @classmethod
+    def _columns_by_alias(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """Key *data* by column: a model field that has an alias becomes the alias.
+
+        Alias keys and keys that are not model fields are kept as they are.
+
+        Raises:
+            ValueError: Two keys name the same column (a field and its alias).
+        """
+        columns: dict[str, Any] = {}
+        given_as: dict[str, str] = {}
+        for key, value in data.items():
+            info = cls.model_fields.get(key)
+            column = info.alias if info is not None and info.alias else key
+            if column in columns:
+                first = given_as[column]
+                field = key if column != key else first
+                raise ValueError(
+                    f"merge() got field {field!r} under both its name and its alias {column!r}; pass only one of them."
+                )
+            columns[column] = value
+            given_as[column] = key
+        return columns
+
+    @classmethod
+    def _alias_columns(cls) -> dict[str, str]:
+        """Map each model field alias to its field name."""
+        return {info.alias: name for name, info in cls.model_fields.items() if info.alias}
 
     async def _merge_columns(
         self,
@@ -1741,7 +1820,7 @@ class BaseSurrealModel(BaseModel):
             result: Any
             if self._has_surreal_funcs(data_set):
                 # Use raw query path for SurrealFunc values
-                set_clause, variables = self._build_set_clause(wire_data)
+                set_clause, variables = self._build_set_clause(wire_data, escaped_columns=self._alias_columns())
                 if extra_vars:
                     conflicting = set(variables) & set(extra_vars)
                     if conflicting:
@@ -1771,10 +1850,13 @@ class BaseSurrealModel(BaseModel):
                 _log_query(f"MERGE {thing}", wire_data, _elapsed_ms(start))
                 self._raise_if_no_record_affected(result, thing, tx)
                 # Update local instance with merged data — from wire_data, so a
-                # foreign key given as a model instance lands as "table:id"
+                # foreign key given as a model instance lands as "table:id".
+                # An alias column is set through its field name.
+                field_of = self._alias_columns()
                 for key, value in wire_data.items():
-                    if hasattr(self, key):
-                        setattr(self, key, _convert_record_id_to_string(value))
+                    name = field_of.get(key, key)
+                    if hasattr(self, name):
+                        setattr(self, name, _convert_record_id_to_string(value))
             else:
                 client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
                 start = _start_timer()
