@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import warnings
 from collections import deque
 from datetime import UTC, datetime
@@ -503,6 +504,87 @@ class TestNaiveDatetimeInRecordId:
             warnings.simplefilter("ignore", RuntimeWarning)
             assert cbor._preprocess_for_cbor(record_id) is record_id
         assert record_id.id == ["x", NAIVE, None]
+
+
+def _cyclic_list() -> list[Any]:
+    cyclic: list[Any] = ["x"]
+    cyclic.append(cyclic)
+    return cyclic
+
+
+def _cyclic_dict() -> dict[str, Any]:
+    cyclic: dict[str, Any] = {"a": 1}
+    cyclic["self"] = cyclic
+    return cyclic
+
+
+def _cyclic_through_record_id() -> list[Any]:
+    cyclic: list[Any] = ["x"]
+    cyclic.append(RecordId("u", cyclic))
+    return cyclic
+
+
+CYCLIC_IDS = {
+    "list": _cyclic_list,
+    "dict": _cyclic_dict,
+    "through_a_record_id": _cyclic_through_record_id,
+}
+
+
+def _bounded(call: Any, *args: Any, timeout: float = 5.0) -> BaseException | None:
+    """Run ``call(*args)`` in a daemon thread and return what it raised (``None`` if nothing).
+
+    The record id walk is synchronous, so a cycle it does not detect never
+    returns: the thread bounds the test instead of hanging the whole run.
+    Warnings are recorded by the caller's ``catch_warnings`` (module state).
+    """
+    outcome: list[BaseException | None] = []
+
+    def run() -> None:
+        try:
+            call(*args)
+        except BaseException as exc:
+            outcome.append(exc)
+        else:
+            outcome.append(None)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    assert not thread.is_alive(), f"{call.__name__}() did not return: the record id walk loops on a cycle"
+    return outcome[0]
+
+
+class TestCyclicRecordIdStillRaises:
+    """The walk must not turn cbor2's cycle error into a hang (review of #279)."""
+
+    @pytest.mark.parametrize("name", list(CYCLIC_IDS))
+    def test_cbor2_still_refuses_the_cycle(self, name: str) -> None:
+        raised = _bounded(cbor.encode, {"id": RecordId("t", CYCLIC_IDS[name]())})
+        assert isinstance(raised, cbor2.CBOREncodeValueError)
+        assert "cyclic data structure" in str(raised)
+
+    @pytest.mark.parametrize("name", list(CYCLIC_IDS))
+    def test_the_walk_returns_without_a_warning(self, name: str) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            assert _bounded(cbor._warn_naive_in_record_id, CYCLIC_IDS[name]()) is None
+
+    def test_a_naive_datetime_in_a_cyclic_id_still_warns(self) -> None:
+        cyclic: list[Any] = ["x", {"k": [NAIVE]}]
+        cyclic.append(cyclic)
+        with pytest.warns(RuntimeWarning, match=WARNING):
+            raised = _bounded(cbor.encode, {"id": RecordId("t", cyclic)})
+        assert isinstance(raised, cbor2.CBOREncodeValueError)
+
+    def test_a_container_shared_twice_is_still_walked(self) -> None:
+        shared = [{"at": NAIVE}]
+        with pytest.warns(RuntimeWarning, match=WARNING):
+            cbor.encode({"id": RecordId("t", ["x", shared, shared])})
+
+    def test_a_nested_record_id_still_warns(self) -> None:
+        with pytest.warns(RuntimeWarning, match=WARNING):
+            cbor.encode({"id": RecordId("t", [RecordId("u", {"at": NAIVE})])})
 
 
 # --------------------------------------------------------------------------- item 5

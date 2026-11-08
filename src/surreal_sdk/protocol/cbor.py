@@ -275,15 +275,26 @@ def _warn_naive_in_record_id(value: Any) -> None:
     read as UTC by :func:`encode`); this walk only adds the warning
     :func:`_preprocess_for_cbor` gives for a naive ``datetime`` elsewhere. It
     enters lists, tuples, sets, dict values and nested ``RecordId`` ids.
+
+    Each container is entered once (tracked by ``id()``), so a cyclic id ends
+    the walk and reaches cbor2, which refuses it with ``CBOREncodeValueError``
+    as it did before this walk existed.
     """
     pending = [value]
+    seen: set[int] = set()
     while pending:
         item = pending.pop()
         if isinstance(item, datetime):
             if item.tzinfo is None:
                 _warn_naive_datetime()
                 return
-        elif isinstance(item, RecordId):
+            continue
+        if not isinstance(item, (RecordId, dict, list, tuple, set, frozenset)):
+            continue
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, RecordId):
             pending.append(item.id)
         elif isinstance(item, dict):
             pending.extend(item.values())
