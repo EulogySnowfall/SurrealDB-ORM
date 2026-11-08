@@ -6,6 +6,62 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.38.7] - 2026-11-07
+
+**Fix release.** One fix: concurrent first calls to
+`SurrealDBConnectionManager.get_ws_client()` create one WebSocket client,
+#598 via #625 (`surreal_orm/connection_manager.py` only). No API change. The
+SurrealDB pin is unchanged (tested against 3.3.5, supported range
+3.2.x – 3.3.x). `v2`: same defect, backport tracked in #626.
+
+### Fixed
+
+- **Concurrent first calls to `get_ws_client()` for one connection name now
+  build, connect and sign in a single WebSocket client, and every caller
+  receives it** (#598). This is the path several `QuerySet.live()` streams
+  started with `asyncio.gather()` take. Before, `get_ws_client()` looked the
+  client up and then built a new one with no lock: each caller opened its own
+  socket, the last registration overwrote the others, and the overwritten
+  sockets were never closed by `close_connection()` / `remove_connection()`,
+  while their callers kept clients the manager no longer knew about. The
+  registry is now re-checked under a lock and the client is built and
+  registered inside it.
+- When the registered WebSocket client is disconnected, concurrent callers
+  close it once and replace it with one new client.
+- A failed connect or sign-in still raises `SurrealDbConnectionError`,
+  registers nothing and releases the lock, so the next call builds again.
+
+### Changed
+
+- WebSocket client builds take a lock of their own, separate from the HTTP
+  client lock (an HTTP build in progress does not hold up a WebSocket build).
+  It is one lock for every connection name, so first builds are serialised
+  across names: a slow first build for one name delays the first build for
+  another (review suggestion on #625). Calls that find a connected client
+  registered do not take the lock.
+
+### Upgrading
+
+- Nothing to change.
+
+### Known limitations
+
+These were already there before this release; the new lock does not make them
+worse (review suggestions on #625).
+
+- `close_connection()`, `remove_connection()`, `reconnect()` and
+  `add_connection()` with a changed configuration do not take the WebSocket
+  lock. A WebSocket build already in progress when one of them runs still
+  registers its client once it has signed in, and the next caller gets that
+  client.
+- A build whose caller is cancelled during `connect()`, `signin()` or the
+  namespace/database `DEFINE` query (for example a `wait_for()` around
+  `live()` that times out) leaves the half-built `WebSocketConnection` open
+  with nothing referring to it. Since 0.38.3 the HTTP client build closes its
+  half-built client in that case; the WebSocket build does not yet.
+
+---
+
 ## [0.38.6] - 2026-11-07
 
 **Fix release.** One fix: `ConnectionPool` closes a new connection whose
