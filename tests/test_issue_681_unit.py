@@ -21,6 +21,8 @@ from src.surreal_orm import signals as model_signals
 from src.surreal_orm.fields.relation import ForeignKey
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict
 from src.surreal_orm.surreal_function import SurrealFunc
+from src.surreal_sdk.transaction import HTTPTransaction
+from src.surreal_sdk.types import QueryResponse
 from surreal_sdk.protocol.cbor import RecordId
 
 
@@ -173,10 +175,20 @@ class TestTransactionMerge:
         person = _person()
         await person.merge(tx=tx, **kwargs)
 
-        thing, data = tx.merge.call_args[0]
-        assert thing == "u681_people:a"
-        assert data == {"first-name": "Bob"}
+        tx.merge.assert_not_called()
+        query, variables = tx.query.call_args[0]
+        assert query == "UPDATE u681_people:a MERGE $_mq;"
+        assert variables == {"_mq": {"first-name": "Bob"}}
         assert person.first_name == "Bob"
+
+    async def test_identifier_columns_go_through_tx_merge(self) -> None:
+        tx = _tx()
+        person = _person()
+        await person.merge(tx=tx, nick="b")
+
+        tx.query.assert_not_called()
+        assert tx.merge.call_args[0] == ("u681_people:a", {"nick_col": "b"})
+        assert person.nick == "b"
 
     @pytest.mark.parametrize("key", ["owner", "owner-id"])
     async def test_foreign_key_updates_the_instance(self, key: str) -> None:
@@ -184,7 +196,7 @@ class TestTransactionMerge:
         person = _person()
         await person.merge(tx=tx, **{key: U681Owner(id="bob")})
 
-        assert tx.merge.call_args[0][1] == {"owner-id": RecordId(table="u681_owners", id="bob")}
+        assert tx.query.call_args[0][1] == {"_mq": {"owner-id": RecordId(table="u681_owners", id="bob")}}
         assert person.owner == "u681_owners:bob"
 
     @pytest.mark.parametrize("key", ["first_name", "first-name"])
@@ -194,6 +206,62 @@ class TestTransactionMerge:
 
         query, _variables = tx.query.call_args[0]
         assert query == "UPDATE u681_people:a SET `first-name` = 'x';"
+
+
+class TestHttpTransactionMerge:
+    """A real ``HTTPTransaction``: the one ``SurrealDBConnectionManager.transaction()`` returns.
+
+    ``HTTPTransaction.merge()`` writes each key into the statement text and
+    rejects one that is not an identifier, so a non-identifier alias column is
+    sent as one bound object instead (``UPDATE ... MERGE $_mq``).
+    """
+
+    @staticmethod
+    async def _open() -> tuple[HTTPTransaction, MagicMock]:
+        connection = MagicMock()
+        connection.query = AsyncMock(return_value=QueryResponse(results=[], raw=[]))
+        tx = HTTPTransaction(connection)
+        await tx._begin()
+        return tx, connection
+
+    @SPELLINGS
+    async def test_non_identifier_alias_is_bound_as_one_object(self, kwargs: dict[str, Any]) -> None:
+        tx, connection = await self._open()
+        person = _person()
+        await person.merge(tx=tx, **kwargs)
+
+        assert [(s.sql, s.vars) for s in tx._statements] == [
+            ("UPDATE u681_people:a MERGE $_mq;", {"_mq": {"first-name": "Bob"}}),
+        ]
+        assert person.first_name == "Bob"
+
+        await tx.commit()
+        sql, variables = connection.query.await_args.args
+        assert "UPDATE u681_people:a MERGE $tx_0__mq;" in sql
+        assert variables == {"tx_0__mq": {"first-name": "Bob"}}
+
+    async def test_foreign_key_under_a_non_identifier_alias_is_coerced(self) -> None:
+        tx, _connection = await self._open()
+        person = _person()
+        await person.merge(tx=tx, age=4, owner="bob")
+
+        assert [(s.sql, s.vars) for s in tx._statements] == [
+            (
+                "UPDATE u681_people:a MERGE $_mq;",
+                {"_mq": {"age": 4, "owner-id": RecordId(table="u681_owners", id="bob")}},
+            ),
+        ]
+        assert (person.age, person.owner) == (4, "u681_owners:bob")
+
+    async def test_identifier_columns_keep_the_merge_object_literal(self) -> None:
+        tx, _connection = await self._open()
+        person = _person()
+        await person.merge(tx=tx, nick="b", age=4)
+
+        assert [(s.sql, s.vars) for s in tx._statements] == [
+            ("UPDATE u681_people:a MERGE { nick_col: $nick_col, age: $age };", {"nick_col": "b", "age": 4}),
+        ]
+        assert (person.nick, person.age) == ("b", 4)
 
 
 class TestBothSpellings:
@@ -208,6 +276,7 @@ class TestBothSpellings:
         client.merge.assert_not_called()
         client.query.assert_not_called()
         tx.merge.assert_not_called()
+        tx.query.assert_not_called()
         assert person.first_name == "Ann"
 
 

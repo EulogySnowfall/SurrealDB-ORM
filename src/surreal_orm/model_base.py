@@ -1846,8 +1846,18 @@ class BaseSurrealModel(BaseModel):
                     await self.refresh()
             elif tx is not None:
                 start = _start_timer()
-                result = await tx.merge(thing, wire_data)
-                _log_query(f"MERGE {thing}", wire_data, _elapsed_ms(start))
+                if all(_SAFE_IDENTIFIER_RE.fullmatch(key) for key in wire_data):
+                    result = await tx.merge(thing, wire_data)
+                    _log_query(f"MERGE {thing}", wire_data, _elapsed_ms(start))
+                else:
+                    # HTTPTransaction.merge() writes each key into the statement
+                    # text and rejects one that is not an identifier, such as an
+                    # alias column (``first-name``). One bound object keeps the
+                    # MERGE semantics and never puts a key in the statement text.
+                    query = f"UPDATE {thing} MERGE $_mq;"
+                    variables = {"_mq": wire_data}
+                    result = await tx.query(query, variables)
+                    _log_query(query, variables, _elapsed_ms(start))
                 self._raise_if_no_record_affected(result, thing, tx)
                 # Update local instance with merged data — from wire_data, so a
                 # foreign key given as a model instance lands as "table:id".

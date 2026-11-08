@@ -89,3 +89,23 @@ async def test_merge_by_alias_writes_the_alias_column() -> None:
     assert person.first_name == "Cy"
     assert (await I681Person.objects().get("a")).first_name == "Cy"
     assert "first_name" not in await _record()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"first_name": "Dee"}, {"first-name": "Dee"}],
+    ids=["field-name", "alias"],
+)
+async def test_merge_in_a_transaction_writes_the_alias_column(kwargs: dict[str, Any]) -> None:
+    person = I681Person(id="a", first_name="Ann", age=3)
+    await person.save()
+
+    async with await surreal_orm.SurrealDBConnectionManager.transaction() as tx:
+        await person.merge(tx=tx, **kwargs)
+        assert person.first_name == "Dee"
+
+    assert (await I681Person.objects().get("a")).first_name == "Dee"
+    record = await _record()
+    assert record["first-name"] == "Dee"
+    assert "first_name" not in record
+    assert record["age"] == 3
