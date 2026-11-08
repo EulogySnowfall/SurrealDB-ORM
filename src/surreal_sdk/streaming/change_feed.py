@@ -22,12 +22,25 @@ How the server reads the feed (measured on SurrealDB 3.3.4 and 2.7.0):
   (see :func:`_window_units`). A window is the end of the feed only when its
   units are certainly fewer than ``LIMIT``.
 - A ``CREATE`` is recorded as an ``update``.
+- ``SINCE <n> LIMIT 1`` returns the first entry at or after ``n`` (or part of
+  it), which is all a probe needs: "now" is found by an exponential then
+  binary search over the 64-bit versionstamps (:func:`_find_now`), at most
+  :data:`_PROBE_BOUND` small requests whatever the size of the retained feed.
+- A versionstamp on 3.3.5 is the commit time in milliseconds shifted left by
+  16 bits, plus a counter. Whether a ``d'…'`` start is compared with it
+  depends on the storage engine (measured on 3.3.5): RocksDB selects the
+  entries written at or after that instant; in-memory storage and SurrealKV
+  select every entry for ``d'1970-01-01T00:00:00Z'`` and none for any later
+  instant, so a stream started there from a datetime never delivers. A stream
+  warns once when that happens (:class:`_DatetimeStartCheck`); a versionstamp
+  start works on every engine.
 """
 
 import asyncio
 import re
+import warnings
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..connection.http import HTTPConnection
@@ -41,6 +54,14 @@ _MAX_VERSIONSTAMP = 2**64 - 1
 
 #: Entries the server scans per ``SHOW CHANGES`` (its own ceiling).
 _SCAN_LIMIT = 1000
+
+#: Most requests :func:`_find_now` sends: the first probe, then at most 65
+#: exponential and 64 binary steps over the 64-bit versionstamps.
+_PROBE_BOUND = 1 + 65 + 64
+
+#: How long after a datetime start a change must be written before missing it
+#: counts as the engine ignoring the start (covers a client clock running ahead).
+_CLOCK_MARGIN = timedelta(seconds=5)
 
 
 def _render_since(since: object) -> str:
@@ -177,6 +198,195 @@ def _statement_error(response: Any) -> str | None:
     return (causes or errors)[0]
 
 
+async def _probe(connection: HTTPConnection, since: int) -> int | None:
+    """The versionstamp of the first entry at or after *since*, or ``None``.
+
+    Raises:
+        ChangeFeedError: The request failed or the statement was rejected.
+    """
+    try:
+        response = await connection.query(f"SHOW CHANGES FOR DATABASE SINCE {since} LIMIT 1;")
+    except Exception as e:
+        raise ChangeFeedError(f"Failed to read the change feed: {e}") from e
+    error = _statement_error(response)
+    if error is not None:
+        raise ChangeFeedError(f"Failed to read the change feed: {error}")
+    window = response.results[0].result if response.results else None
+    if not isinstance(window, list) or not window:
+        return None
+    return _versionstamp(window[0])
+
+
+async def _find_now(connection: HTTPConnection) -> int:
+    """The versionstamp after the last entry of the feed, i.e. "now".
+
+    A ``d'<now>'`` start would be simpler, but in-memory storage and SurrealKV
+    compare it on another scale and select nothing. The search sends
+    ``SINCE <n> LIMIT 1`` probes and jumps past the versionstamp each one
+    returns: first with a step doubling from 1, until a probe finds nothing,
+    then by bisection between the last entry seen and that empty probe. That
+    is at most :data:`_PROBE_BOUND` small requests, whatever the size of the
+    retained feed, and gaps left by its retention do not matter. A probe
+    reads the feed only from its start, so writers on any table cannot keep
+    the search going: once a probe is empty, the bisection only narrows.
+
+    The result is one past an entry that was read, and no later probe found
+    anything from it on. A change committed while the search runs may or may
+    not be counted as before "now"; a change committed after it returns is
+    always after.
+
+    Raises:
+        ChangeFeedError: A probe failed or was rejected.
+    """
+    found = await _probe(connection, 0)
+    if found is None:
+        return 0
+    low = found + 1  # "now" is at least one past an entry that exists
+    step = 1
+    high: int | None = None  # a probe here found nothing
+    while high is None:
+        if low > _MAX_VERSIONSTAMP:
+            return low
+        target = min(low - 1 + step, _MAX_VERSIONSTAMP)
+        found = await _probe(connection, target)
+        if found is None:
+            high = target
+        else:
+            low = found + 1
+            step *= 2
+    while low < high:
+        middle = (low + high) // 2
+        found = await _probe(connection, middle)
+        if found is None:
+            high = middle
+        else:
+            # Past ``high`` only if a change was committed after that probe:
+            # it is after "now" then, and so is everything following it.
+            low = found + 1
+    return low
+
+
+async def _read_window(
+    connection: HTTPConnection, tables: list[str], since: str
+) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
+    """Read the feed of each table and of the whole database over one window.
+
+    Every statement has the same ``SINCE`` and ``LIMIT``, and ``LIMIT`` counts
+    the entries of every table before ``FOR TABLE`` filters them, so all the
+    statements scan the same keys, in one transaction.
+
+    Args:
+        connection: The connection to read on.
+        tables: Validated table names.
+        since: A rendered ``SINCE`` operand.
+
+    Returns:
+        Each table's entries, in the order of *tables*, and the database window.
+
+    Raises:
+        ChangeFeedError: The request failed or a statement was rejected.
+    """
+    reads = "".join(f"SHOW CHANGES FOR TABLE {table} SINCE {since} LIMIT {_SCAN_LIMIT}; " for table in tables)
+    query = f"BEGIN; {reads}SHOW CHANGES FOR DATABASE SINCE {since} LIMIT {_SCAN_LIMIT}; COMMIT;"
+    names = ", ".join(tables)
+    try:
+        response = await connection.query(query)
+    except Exception as e:
+        raise ChangeFeedError(f"Failed to get changes for {names}: {e}") from e
+    error = _statement_error(response)
+    if error is not None:
+        raise ChangeFeedError(f"Failed to get changes for {names}: {error}")
+    shows = [result.result for result in response.results if isinstance(result.result, list)]
+    if len(shows) != len(tables) + 1:
+        raise ChangeFeedError(f"Unexpected SHOW CHANGES response for {names}: {response.results!r}")
+    return shows[:-1], shows[-1]
+
+
+def _window_end(window: list[dict[str, Any]]) -> tuple[int, bool]:
+    """Where a non-empty database window ends, and whether it ends the feed.
+
+    A window whose :func:`_window_units` are fewer than the scan limit was not
+    cut by the server: it ends the feed and the next read starts past its last
+    versionstamp. The last versionstamp of a full window may have been cut by
+    the server's ``LIMIT``, so it is read again, unless it is the only one.
+
+    Returns:
+        The cursor that follows the window, and whether it ends the feed.
+    """
+    last = _versionstamp(window[-1])
+    caught_up = _window_units(window) < _SCAN_LIMIT
+    complete = caught_up or _versionstamp(window[0]) == last
+    return (last + 1 if complete else last), caught_up
+
+
+def _split_entries(entries: list[dict[str, Any]], start: int, end: int, limit: int) -> tuple[list[dict[str, Any]], int, bool]:
+    """A table's entries in ``start <= versionstamp < end``, at most *limit* of them.
+
+    Returns:
+        The entries, the cursor that follows them (*end*, or one past the last
+        entry kept when *limit* cut them), and whether *limit* cut them.
+    """
+    kept = [entry for entry in entries if start <= _versionstamp(entry) < end]
+    if len(kept) <= limit:
+        return kept, end, False
+    kept = kept[:limit]
+    return kept, _versionstamp(kept[-1]) + 1, True
+
+
+class _DatetimeStartCheck:
+    """Warns once when a datetime start misses a change written after it.
+
+    In-memory storage and SurrealKV select nothing for a ``d'…'`` start after
+    the epoch (measured on 3.3.5), so such a stream waits forever without an
+    error. An empty window alone proves nothing: on RocksDB a start after the
+    last entry is empty too, until something is written. So once the start is
+    :data:`_CLOCK_MARGIN` in the past and a window is empty, the check finds
+    "now" (:func:`_find_now`); from then on, each empty poll is preceded by a
+    probe from that point. A change found there was written after the start,
+    and a window from the start that is still empty after it missed that
+    change: the check warns, once, and the stream goes on as before. The
+    first non-empty window ends the check, and so does the warning.
+    """
+
+    def __init__(self, connection: HTTPConnection, operand: str) -> None:
+        self._connection = connection
+        self._operand = operand
+        self._moment = datetime.fromisoformat(operand[2:-1])
+        self._active = True
+        self._marker: int | None = None
+        self._missed = False
+
+    @property
+    def active(self) -> bool:
+        """Whether the check still runs (no non-empty window and no warning yet)."""
+        return self._active
+
+    async def before_read(self) -> None:
+        """Probe for a change written after the marker, before the window is read."""
+        if self._active and self._marker is not None:
+            self._missed = await _probe(self._connection, self._marker) is not None
+
+    async def after_read(self, empty: bool) -> None:
+        """Account for the window just read; warn when it missed a later change."""
+        if not self._active:
+            return
+        if not empty:
+            self._active = False
+        elif self._marker is None:
+            if datetime.now(UTC) - _CLOCK_MARGIN >= self._moment:
+                self._marker = await _find_now(self._connection)
+        elif self._missed:
+            self._active = False
+            warnings.warn(
+                f"The change feed start {self._operand} selected no change, although changes were written "
+                "after it. SurrealDB compares a datetime start with the feed only on some storage engines "
+                "(not in memory or on SurrealKV); start from a versionstamp instead (an int, or the "
+                "cursor property of a stream).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+
 class ChangeFeedStream:
     """
     Stream changes from a SurrealDB table using Change Feeds.
@@ -266,72 +476,22 @@ class ChangeFeedStream:
         Returns:
             The table's entries (at most *limit*), the cursor that follows
             them (``None`` when nothing at all was written after *since*), and
-            whether the read reached the end of the feed. A window whose
-            :func:`_window_units` are fewer than the scan limit was not cut by
-            the server, so it ends the feed and the cursor passes its last
-            versionstamp. The last versionstamp of a full window may have been
-            cut by the server's ``LIMIT``, so it is read again unless it is the
-            only one.
+            whether the read reached the end of the feed (see
+            :func:`_window_end`).
 
         Raises:
             ChangeFeedError: The request failed or a statement was rejected.
         """
-        query = (
-            f"BEGIN; SHOW CHANGES FOR TABLE {self.table} SINCE {since} LIMIT {_SCAN_LIMIT}; "
-            f"SHOW CHANGES FOR DATABASE SINCE {since} LIMIT {_SCAN_LIMIT}; COMMIT;"
-        )
-        try:
-            response = await self.connection.query(query)
-        except Exception as e:
-            raise ChangeFeedError(f"Failed to get changes for {self.table}: {e}") from e
-        error = _statement_error(response)
-        if error is not None:
-            raise ChangeFeedError(f"Failed to get changes for {self.table}: {error}")
-        shows = [result.result for result in response.results if isinstance(result.result, list)]
-        if len(shows) != 2:
-            raise ChangeFeedError(f"Unexpected SHOW CHANGES response for {self.table}: {response.results!r}")
-        table_entries, window = shows
+        (table_entries,), window = await _read_window(self.connection, [self.table], since)
         if not window:
             return [], None, True
-
-        last = _versionstamp(window[-1])
-        caught_up = _window_units(window) < _SCAN_LIMIT
-        complete = caught_up or _versionstamp(window[0]) == last
-        boundary = last + 1 if complete else last
-        entries = [entry for entry in table_entries if _versionstamp(entry) < boundary]
-        if len(entries) > limit:
-            entries = entries[:limit]
-            boundary = _versionstamp(entries[-1]) + 1
-            caught_up = False
-        return entries, boundary, caught_up
+        end, caught_up = _window_end(window)
+        entries, cursor, cut = _split_entries(table_entries, 0, end, limit)
+        return entries, cursor, caught_up and not cut
 
     async def _resolve_now(self) -> int:
-        """The versionstamp after the last entry of the feed, i.e. "now".
-
-        A ``d'<now>'`` start would be simpler, but SurrealDB 3.3 (in-memory
-        storage) compares it against versionstamps on another scale and selects
-        nothing, so the feed is read once from its beginning instead. The cost
-        is proportional to the retained feed of the whole database. It stops
-        at the first window that ends the feed (see :func:`_window_units`),
-        so writers on other tables cannot keep it reading.
-        """
-        cursor = 0
-        while True:
-            query = f"SHOW CHANGES FOR DATABASE SINCE {cursor} LIMIT {_SCAN_LIMIT};"
-            try:
-                response = await self.connection.query(query)
-            except Exception as e:
-                raise ChangeFeedError(f"Failed to read the change feed: {e}") from e
-            error = _statement_error(response)
-            if error is not None:
-                raise ChangeFeedError(f"Failed to read the change feed: {error}")
-            window = response.results[0].result if response.results else None
-            if not isinstance(window, list) or not window:
-                return cursor
-            last = _versionstamp(window[-1])
-            if _window_units(window) < _SCAN_LIMIT:
-                return last + 1
-            cursor = last + 1 if _versionstamp(window[0]) == last else last
+        """The versionstamp after the last entry of the feed, i.e. "now" (see :func:`_find_now`)."""
+        return await _find_now(self.connection)
 
     async def _windows(self, since: str | int | datetime | None) -> AsyncIterator[list[dict[str, Any]]]:
         """Poll the feed from *since*, yielding each non-empty batch of entries.
@@ -340,14 +500,25 @@ class ChangeFeedStream:
         after the other tables' entries the last window scanned. A poll that
         reaches the end of the feed without an entry for the table is followed
         by ``poll_interval`` of sleep, even while other tables are written.
+        A datetime start that misses a later change emits one
+        ``RuntimeWarning`` (see :class:`_DatetimeStartCheck`).
         """
         operand = _render_since(since) if since is not None else str(await self._resolve_now())
-        if not operand.startswith("d'"):
+        check: _DatetimeStartCheck | None = None
+        if operand.startswith("d'"):
+            check = _DatetimeStartCheck(self.connection, operand)
+        else:
             self._cursor = operand
         self._running = True
         try:
             while self._running:
+                if check is not None:
+                    await check.before_read()
                 entries, cursor, caught_up = await self._read(operand, self.batch_size)
+                if check is not None:
+                    await check.after_read(cursor is None)
+                    if not check.active:
+                        check = None
                 if cursor is None:
                     await asyncio.sleep(self.poll_interval)
                     continue
@@ -459,7 +630,10 @@ class MultiTableChangeFeed:
     Stream changes from multiple tables.
 
     Useful for aggregating changes across related tables. Each table keeps its
-    own cursor; the tables are polled in turn.
+    own cursor. Each poll is one transaction: one ``SHOW CHANGES FOR TABLE``
+    per table and a single ``SHOW CHANGES FOR DATABASE``, all from the
+    smallest cursor, so they scan the same window; every table takes its
+    entries from that window and advances its cursor past it.
 
     Usage::
 
@@ -499,7 +673,9 @@ class MultiTableChangeFeed:
 
         Args:
             since: Starting point for every table, in any form
-                :meth:`ChangeFeedStream.get_changes` accepts; ``None`` means now.
+                :meth:`ChangeFeedStream.get_changes` accepts; ``None`` means
+                now. A datetime start that misses a later change emits one
+                ``RuntimeWarning``, as :meth:`ChangeFeedStream.stream` does.
 
         Yields:
             Tuple of (table_name, change entry)
@@ -511,24 +687,48 @@ class MultiTableChangeFeed:
         if not self.streams:
             return
         first = next(iter(self.streams.values()))
+        connection = first.connection
+        tables = list(self.streams)
         start = _render_since(since) if since is not None else str(await first._resolve_now())
-        operands = dict.fromkeys(self.streams, start)
+        check: _DatetimeStartCheck | None = None
+        #: Each table's cursor; ``None`` while a datetime start has selected nothing.
+        cursors: dict[str, int] | None = None
+        if start.startswith("d'"):
+            check = _DatetimeStartCheck(connection, start)
+        else:
+            cursors = dict.fromkeys(tables, int(start))
+            for stream in self.streams.values():
+                stream._cursor = start
         self._running = True
 
         try:
             while self._running:
-                progressed = False
-                for table, stream in self.streams.items():
-                    entries, cursor, caught_up = await stream._read(operands[table], stream.batch_size)
-                    if cursor is None:
-                        continue
-                    if entries or not caught_up:
+                operand = start if cursors is None else str(min(cursors.values()))
+                if check is not None:
+                    await check.before_read()
+                table_entries, window = await _read_window(connection, tables, operand)
+                if check is not None:
+                    await check.after_read(not window)
+                    if not check.active:
+                        check = None
+                if not window:
+                    await asyncio.sleep(self.poll_interval)
+                    continue
+                end, caught_up = _window_end(window)
+                progressed = not caught_up
+                if cursors is None:
+                    cursors = dict.fromkeys(tables, 0)
+                for table, entries in zip(tables, table_entries, strict=True):
+                    stream = self.streams[table]
+                    own = cursors[table]
+                    batch, cursor, cut = _split_entries(entries, own, end, stream.batch_size)
+                    cursors[table] = max(own, cursor)
+                    if batch or cut:
                         progressed = True
-                    operands[table] = str(cursor)
-                    for entry in entries:
+                    for entry in batch:
                         stream._cursor = str(_versionstamp(entry) + 1)
                         yield table, entry
-                    stream._cursor = operands[table]
+                    stream._cursor = str(cursors[table])
                 if not progressed:
                     await asyncio.sleep(self.poll_interval)
         finally:

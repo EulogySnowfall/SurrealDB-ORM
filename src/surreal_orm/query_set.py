@@ -3569,8 +3569,10 @@ class QuerySet(Generic[T]):
                   ``"2026-10-27T12:00:00Z"``; UTC when it has no offset).
 
                 Any other value raises ``ValueError`` before a query is sent.
-                SurrealDB 3.3 with in-memory storage selects nothing from a
-                datetime start; prefer a versionstamp there.
+                In-memory storage and SurrealKV select nothing from a
+                datetime start (RocksDB does; measured on SurrealDB 3.3.5):
+                the stream then emits one ``RuntimeWarning`` when it misses
+                a change written after the start. Prefer a versionstamp.
             poll_interval: Seconds between polls when no changes are
                 available. Defaults to 0.1.
             batch_size: Maximum changes handed over per poll. Defaults to 100.
