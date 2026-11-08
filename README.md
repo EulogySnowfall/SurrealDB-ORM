@@ -51,6 +51,17 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.62
+
+**Bug fix release (V2 LTS).** One backport from `main` (#637); pin unchanged (2.7.0).
+
+- **`inspectdb` writes the server's text as escaped Python literals.** A computed field's `VALUE` expression, the
+  changefeed duration, an unknown table type and the HNSW vector type are written with `repr()`, so a `VALUE` clause
+  holding a double quote or a backslash no longer produces a module that does not parse or that holds a different
+  expression. Event names and `WHEN` clauses in the generated comments stay on one line, and a geometry type becomes
+  `GeoField[...]` only for known geometry kinds. **Behaviour change:** generated literals use Python `repr()` quoting
+  (`changefeed='1h'`, `GeoField['point']`); re-run `inspectdb` to regenerate models. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.61
 
 **Bug fix release (V2 LTS).** The 0.21.60 review follow-up (#634); pin unchanged (2.7.0).

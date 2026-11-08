@@ -6,6 +6,87 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.62] - 2026-11-08
+
+**Bug fix release (V2 LTS).** One backport from `main`: `inspectdb` /
+`generate_models_from_db()` writes the text it reads from the server as
+escaped Python literals (#637 via #642, backport of #639). Also a test for
+the shielded close of a cancelled WebSocket client build (#640 via #641).
+No public API change. The SurrealDB pin is unchanged (tested against
+2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **Generated model source escapes the text read from the server.**
+  `ModelCodeGenerator` (used by `inspectdb` and `generate_models_from_db()`)
+  now writes a computed field's `VALUE` expression (`Computed(...)`), the
+  changefeed duration, an unknown table type and the HNSW vector type as
+  Python string literals built with `repr()`, so `ast.literal_eval()` of
+  each gives back the server text exactly. They used to go between
+  hand-written double quotes: a `VALUE` clause holding a double quote or a
+  backslash produced a module that did not parse, or that parsed into a
+  different expression than the one the database holds (#637, #642).
+- **Event names and `WHEN` clauses stay on one line** in the generated
+  comments: control characters and U+2028 / U+2029 are written as their
+  Python escapes, so a line break in that text no longer ends the comment.
+- **A geometry type becomes `GeoField[...]` only for known geometry
+  kinds.** The brackets must hold the 2.x geometry kinds, alone or as a
+  `|` union, optionally followed by `| null`; anything else maps to `Any`,
+  as an unrecognised type always did. A nullable geometry column
+  (`geometry<point> | null`) still generates `GeoField['point'] | None`.
+
+### Behaviour change
+
+- Generated literals use `repr()` quoting, e.g. `changefeed='1h'`,
+  `GeoField['point']`, `Computed('...')`. The meaning is unchanged; table
+  and field names are unchanged. No DDL, no SurrealQL change.
+
+### Docs
+
+- `[0.21.61]` *Known limitations*: the error from an orphaned shielded close
+  is described as reported by asyncio's exception handler at error level;
+  the quoted "Task exception was never retrieved" is the Python 3.12 and
+  3.13 message only (#640).
+
+### Known limitations
+
+- Still as in 0.21.60: `close_connection()`, `remove_connection()`,
+  `reconnect()` and `add_connection()` with a changed configuration do not
+  take the WebSocket lock, so a build already in progress still registers
+  its client once it has signed in.
+
+### Tests
+
+- `tests/test_issue_637_v2_unit.py` (new, 58 cases): one test per generator
+  site, an `ast` check of the generated class body, `ast.literal_eval()` of
+  the `Computed` argument, and the geometry mapping; 45 of them fail against
+  the 0.21.61 `src/` (the other 13 are inputs the old code already rendered
+  correctly). `tests/test_issue_637_v2_integration.py` (new) generates and
+  parses models from a SurrealDB 2.7.0 schema. Four existing assertions in
+  `tests/test_geo.py` and `tests/test_model_generator.py` changed for the
+  quote style only.
+- `TestI634CancelledWsBuild` in `tests/test_live.py` (now 7 tests): a second
+  cancellation while the shielded close runs does not interrupt it (the
+  close runs once and to its end, nothing is registered), and an error from
+  that orphaned close reaches the event loop's exception handler rather
+  than the debug log of `_build_ws_client()`. Both fail if
+  `asyncio.shield()` is removed (#640, #641). A comment next to the shield
+  in `connection_manager.py` records the same trade-off; no code change.
+
+### Migration notes
+
+- Re-run `inspectdb` to regenerate models written by an earlier version.
+
+### Verification
+
+Against SurrealDB 2.7.0, on the released tree (#642's validated head, which
+includes #641): 4,143 unit tests pass on each of Python 3.12, 3.13 and 3.14
+(1 expected failure, the strict `xfail` from 0.21.51), and 834 integration
+tests pass (4 expected failures, the existing strict `xfail`s for integer
+record ids over WebSocket); `ruff` and `mypy` clean.
+
+---
+
 ## [0.21.61] - 2026-11-07
 
 **Bug fix release (V2 LTS).** The 0.21.60 review follow-up (#634 via
@@ -41,8 +122,9 @@ against 2.7.0, supported range 2.6.x – 2.7.x).
   its client once it has signed in.
 - If the cancelled caller is cancelled a second time while the shielded
   close runs, the close still completes, but an error it then raises is
-  reported by asyncio as "Task exception was never retrieved" rather than
-  logged at debug level (review suggestion on #636).
+  reported by asyncio's exception handler at error level (on Python 3.12
+  and 3.13: "Task exception was never retrieved") rather than logged at
+  debug level (review suggestion on #636).
 
 ### Tests
 

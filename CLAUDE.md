@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.61)
+> Context document for Claude AI - Last updated: November 2026 (0.21.62)
 
 <!-- -->
 
@@ -20,12 +20,33 @@
 
 ---
 
-## Current Version: 0.21.61 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.62 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.62
+
+One fix PR, #637 via #642 (`surreal_orm/migrations/model_generator.py`, backport of #639), plus #640 via #641
+(tests and a comment in `surreal_orm/connection_manager.py`), the 0.21.61 review follow-up. Pin unchanged (2.7.0).
+
+- **Server text in generated source goes through two private helpers.** `_py_str()` writes one Python string literal
+  with `repr()` (`Computed(...)`, changefeed, unknown table type, HNSW vector type), so `ast.literal_eval()` gives
+  back the server text exactly; `_py_comment()` keeps event names and `WHEN` clauses on one comment line (control
+  characters and U+2028 / U+2029 as Python escapes). The other config values except `table_name` (`permissions`,
+  `view_query`, `relation_in` / `relation_out`) and `DEFAULT` already used `repr()`; table and field names are
+  written as before.
+  `main`'s `on_delete` sites have no counterpart here (no `REFERENCE` on 2.x).
+- **`_GEOMETRY_TYPE_RE.fullmatch()`** replaces the greedy `geometry<(.+)>` match: only 2.x geometry kinds, alone or
+  as a `|` union, plus the trailing `| null` that `parse_define_field()` leaves in a nullable column's type; anything
+  else maps to `Any`.
+- **The shielded close in `_build_ws_client()` is covered now** (`TestI634CancelledWsBuild`, 7 tests): a second
+  cancellation during the close and the error-level report of a close that then raises. This closes the second
+  0.21.61 open item.
+- **Open:** the lock-free unregistering paths (`close_connection()`, `remove_connection()`, `reconnect()`,
+  `add_connection()`) from 0.21.60.
 
 ### What's New in 0.21.61
 
@@ -39,7 +60,8 @@ One fix PR, #634 via #636 (`surreal_orm/connection_manager.py`), the 0.21.60 rev
   open item.
 - **Open:** the lock-free unregistering paths (`close_connection()`, `remove_connection()`, `reconnect()`,
   `add_connection()`) from 0.21.60; and no test cancels the builder a second time during the shielded close
-  (review suggestion on #636): if that orphaned close raises, asyncio reports "Task exception was never retrieved".
+  (review suggestion on #636): if that orphaned close raises, the error goes to asyncio's exception handler at error
+  level (on Python 3.12 and 3.13: "Task exception was never retrieved") rather than the debug log.
 
 ### What's New in 0.21.60
 
