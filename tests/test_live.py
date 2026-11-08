@@ -796,6 +796,9 @@ class _I634FakeWebSocket:
     ``block_on`` names the step that sets ``entered`` and then waits on ``gate``
     (never set by the tests, so only a cancellation ends the wait).
     ``close_error`` makes ``close()`` raise after counting the call.
+    ``close_gate`` makes ``close()`` set ``close_entered``, record its task in
+    ``close_tasks`` and wait on the gate before finishing; ``close_finished``
+    is set only when ``close()`` reaches its end (#640).
     """
 
     instances: list["_I634FakeWebSocket"] = []
@@ -803,11 +806,15 @@ class _I634FakeWebSocket:
     entered: asyncio.Event | None = None
     gate: asyncio.Event | None = None
     close_error: Exception | None = None
+    close_entered: asyncio.Event | None = None
+    close_gate: asyncio.Event | None = None
+    close_tasks: list["asyncio.Task[Any]"] = []
 
     def __init__(self, url: str, namespace: str, database: str, **kwargs: Any) -> None:
         self.connected = False
         self.signed_in = False
         self.close_calls = 0
+        self.close_finished = False
         type(self).instances.append(self)
 
     @property
@@ -830,9 +837,18 @@ class _I634FakeWebSocket:
         self.signed_in = True
 
     async def close(self) -> None:
+        cls = type(self)
         self.close_calls += 1
         self.connected = False
-        error = type(self).close_error
+        if cls.close_gate is not None:
+            assert cls.close_entered is not None
+            # No local reference to the task: the traceback of ``close_error``
+            # would keep it alive past the test's ``gc.collect()``.
+            cls.close_tasks.append(asyncio.current_task())  # type: ignore[arg-type]
+            cls.close_entered.set()
+            await cls.close_gate.wait()
+        self.close_finished = True
+        error = cls.close_error
         if error is not None:
             raise error
 
@@ -852,6 +868,9 @@ class TestI634CancelledWsBuild:
         monkeypatch.setattr(_I634FakeWebSocket, "entered", None)
         monkeypatch.setattr(_I634FakeWebSocket, "gate", None)
         monkeypatch.setattr(_I634FakeWebSocket, "close_error", None)
+        monkeypatch.setattr(_I634FakeWebSocket, "close_entered", None)
+        monkeypatch.setattr(_I634FakeWebSocket, "close_gate", None)
+        monkeypatch.setattr(_I634FakeWebSocket, "close_tasks", [])
         # Fresh registries and locks: a lock is bound to the loop of its first
         # contended use, and each test runs its own loop.
         monkeypatch.setattr(manager, "_configs", {})
@@ -920,6 +939,105 @@ class TestI634CancelledWsBuild:
         records = [r for r in caplog.records if r.exc_info and r.exc_info[1] is _I634FakeWebSocket.close_error]
         assert len(records) == 1
         assert records[0].levelno == logging.DEBUG
+
+    @staticmethod
+    async def _cancel_twice_during_close(manager: Any) -> tuple["asyncio.Task[Any]", "asyncio.Task[Any]"]:
+        """Cancel a build blocked in ``signin()``, then cancel it again while ``close()`` waits.
+
+        Returns the builder task (done) and the task running ``close()``, still
+        waiting on ``close_gate``.
+        """
+        _I634FakeWebSocket.block_on = "signin"
+        _I634FakeWebSocket.entered = asyncio.Event()
+        _I634FakeWebSocket.gate = asyncio.Event()
+        _I634FakeWebSocket.close_entered = asyncio.Event()
+        _I634FakeWebSocket.close_gate = asyncio.Event()
+        task = asyncio.create_task(manager.get_ws_client("default"))
+        await asyncio.wait_for(_I634FakeWebSocket.entered.wait(), timeout=5)
+        task.cancel()
+        await asyncio.wait_for(_I634FakeWebSocket.close_entered.wait(), timeout=5)
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert task in done
+        assert len(_I634FakeWebSocket.close_tasks) == 1
+        return task, _I634FakeWebSocket.close_tasks.pop()
+
+    def test_second_cancellation_does_not_interrupt_the_close(self, manager: Any) -> None:
+        """A second cancellation during the cleanup leaves the shielded ``close()`` running to its end (#640)."""
+
+        async def scenario() -> tuple[bool, bool, dict[str, Any], Any, bool]:
+            task, close_task = await self._cancel_twice_during_close(manager)
+            finished_before_gate = _I634FakeWebSocket.instances[0].close_finished
+            _I634FakeWebSocket.close_gate.set()  # type: ignore[union-attr]
+            await asyncio.wait({close_task}, timeout=5)
+            assert close_task.done()
+            return (
+                task.cancelled(),
+                finished_before_gate,
+                dict(manager._ws_clients),
+                manager._SurrealDBConnectionManager__ws_client,
+                manager._get_ws_connection_lock().locked(),
+            )
+
+        cancelled, finished_before_gate, registry, default_slot, locked = asyncio.run(scenario())
+
+        assert cancelled
+        assert not finished_before_gate
+        assert len(_I634FakeWebSocket.instances) == 1
+        client = _I634FakeWebSocket.instances[0]
+        assert client.close_calls == 1
+        assert client.close_finished
+        assert registry == {}
+        assert default_slot is None
+        assert not locked
+
+    def test_close_error_after_second_cancellation_reaches_the_loop_handler(
+        self, manager: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Nothing awaits the shielded ``close()`` any more: its error goes to the loop's exception handler (#640).
+
+        It is reported at error level by asyncio, not logged at debug level by
+        ``_build_ws_client()``. Python 3.14 reports it when the close ends,
+        3.12 and 3.13 when the task is garbage collected, so the test waits for
+        the close task, drops it and collects before checking.
+        """
+        import gc
+
+        from src.surreal_orm import connection_manager as cm
+
+        error = RuntimeError("i640 close failed")
+        _I634FakeWebSocket.close_error = error
+        contexts: list[dict[str, Any]] = []
+
+        async def scenario() -> bool:
+            loop = asyncio.get_running_loop()
+
+            def handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+                contexts.append(context)
+                loop.default_exception_handler(context)
+
+            loop.set_exception_handler(handler)
+            task, close_task = await self._cancel_twice_during_close(manager)
+            _I634FakeWebSocket.close_gate.set()  # type: ignore[union-attr]
+            await asyncio.wait({close_task}, timeout=5)
+            assert close_task.done()
+            del close_task
+            # Let the done callbacks of the close task run, then collect it.
+            await asyncio.sleep(0)
+            gc.collect()
+            await asyncio.sleep(0)
+            return task.cancelled()
+
+        with caplog.at_level(logging.DEBUG, logger=cm.logger.name), caplog.at_level(logging.ERROR, logger="asyncio"):
+            cancelled = asyncio.run(scenario())
+
+        assert cancelled
+        client = _I634FakeWebSocket.instances[0]
+        assert client.close_calls == 1
+        assert client.close_finished
+        assert [c.get("exception") for c in contexts] == [error]
+        reported = [r for r in caplog.records if r.exc_info and r.exc_info[1] is error]
+        assert [(r.name, r.levelno) for r in reported] == [("asyncio", logging.ERROR)]
 
     @pytest.mark.parametrize("step", ["connect", "signin"])
     def test_next_call_builds_and_registers_a_new_client(self, manager: Any, step: str) -> None:

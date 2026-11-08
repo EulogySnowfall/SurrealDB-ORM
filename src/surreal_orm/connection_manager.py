@@ -405,7 +405,10 @@ class SurrealDBConnectionManager:
             # timeout): the client was never registered, so nothing else
             # would ever close it. ``CancelledError`` is not an ``Exception``,
             # so the handlers below never see it. The close is shielded so a
-            # second cancellation cannot interrupt it.
+            # second cancellation cannot interrupt it. After such a second
+            # cancellation nothing awaits the close any more: an error it
+            # raises goes to the event loop's exception handler (error level),
+            # not to the debug log below.
             if _ws_client is not None:
                 try:
                     await asyncio.shield(_ws_client.close())
