@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.38.6)
+> Context document for Claude AI - Last updated: November 2026 (0.38.7)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.38.6 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.38.7 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -18,6 +18,31 @@
 | ------ | ---------- | ----------- | ------------------------------- |
 | `main` | **3.3.5**  | 0.38.x      | Active development              |
 | `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+
+### What's New in 0.38.7
+
+One fix, #598 via #625 (`surreal_orm/connection_manager.py` only). Pin
+unchanged (3.3.5). `v2`: same defect, backport tracked in #626.
+
+- **`get_ws_client()` gets the double-check `get_client()` already had.**
+  Fast path unchanged; otherwise the registry is re-checked under
+  `_get_ws_connection_lock()` and `_build_ws_client()` closes a stale client,
+  builds, connects, signs in and registers inside it. Without the lock,
+  concurrent first calls each built a client (`connect()` yields), the last
+  registration won, and the others leaked.
+- **A separate lock, not the HTTP one:** `get_client()` holds
+  `_connection_lock` while it builds, and a WebSocket build must not wait on
+  an HTTP build. Neither path takes one lock while holding the other. The
+  lock is class-wide, so first builds are serialised across connection names
+  (review suggestion on #625: a per-name lock if it ever matters).
+- **Open (review suggestions on #625, pre-existing):** `close_connection()` /
+  `remove_connection()` / `reconnect()` / `add_connection()` do not take the
+  WebSocket lock, so a build in progress still registers afterwards; and
+  `_build_ws_client()` has no `CancelledError` handler, unlike
+  `_build_client()` (0.38.3), so a cancelled build leaks its half-built
+  client.
+- Tests that reset the manager's registries must reset `_ws_connection_lock`
+  too (`tests/test_issue_232_unit.py`, `tests/test_issue_270_unit.py`).
 
 ### What's New in 0.38.6
 
