@@ -231,6 +231,15 @@ password, `created_at`, a computed field, a `server_fields` entry, a read-only
 field (`Field(frozen=True)` or `json_schema_extra={"readonly": True}`) or not a
 model field raises `ValueError` when the access definition is built.
 
+A required model field (no default) that a sign-up cannot set is reported when
+the access definition is built (`define_access()`, `makemigrations`,
+`schema_diff`): one `UserWarning` names every field that is not `id`, the
+identifier, the password, in `signup_fields`, a computed field, a
+`server_fields` entry or a `ManyToMany` / `Relation` attribute. Without a
+value, such a field makes every sign-up fail on a SCHEMAFULL table. List it in
+`signup_fields`, give it a default, or list it in `server_fields` when the
+server fills it (a `VALUE` clause or an event).
+
 > **Upgrading:** before `signup_fields` existed, every model field was a
 > sign-up parameter. List the fields your sign-up form sets in `signup_fields`,
 > then re-apply the access definition (`makemigrations` + `migrate`, or

@@ -5,6 +5,7 @@ Generates DEFINE ACCESS ... TYPE RECORD statements for user authentication
 using SurrealDB's built-in JWT support.
 """
 
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -105,6 +106,56 @@ def get_signup_parameters(model: type["BaseSurrealModel"]) -> set[str]:
     return {model.get_identifier_field(), model.get_password_field(), *get_signup_field_names(model)}
 
 
+def _warn_unset_required_fields(model: type["BaseSurrealModel"], signup_fields: dict[str, str]) -> None:
+    """
+    Warn about required model fields that a sign-up can never set.
+
+    A field is reported when Pydantic requires it (no default, no default
+    factory) and it is not ``id``, not in the sign-up set (identifier,
+    password, ``signup_fields``, ``created_at``), not a computed field, not a
+    ``server_fields`` entry and not a ``ManyToMany`` / ``Relation`` attribute
+    (those define no column).  The ``SIGNUP`` clause leaves such a field
+    unset, so a sign-up fails on a SCHEMAFULL table and the record cannot be
+    loaded into the model on a schemaless one.
+
+    A warning, not an error: the server may still fill the field (a
+    ``DEFINE FIELD ... VALUE`` or an event the model does not declare as
+    ``Computed``), and raising would break ``define_access()``,
+    ``makemigrations`` and ``schema_diff`` for such models.
+
+    Args:
+        model: The USER model class
+        signup_fields: The sign-up set built for ``model``
+    """
+    # Imported here: the fields package imports the model layer.
+    from ..fields.relation import _find_marker, _ManyToManyMarker, _RelationMarker
+
+    config: Any = getattr(model, "model_config", {})
+    server_fields = set(config.get("server_fields") or [])
+    computed = getattr(model, "_computed_expressions", None) or {}
+
+    missing = [
+        name
+        for name, field_info in model.model_fields.items()
+        if field_info.is_required()
+        and name != "id"
+        and name not in signup_fields
+        and name not in computed
+        and name not in server_fields
+        and _find_marker(field_info.annotation, field_info.metadata, (_ManyToManyMarker, _RelationMarker)) is None
+    ]
+    if missing:
+        names = ", ".join(repr(name) for name in missing)
+        warnings.warn(
+            f"{model.__name__} has required fields that the SIGNUP clause never sets: {names}. "
+            "A sign-up cannot give them a value. List the ones a caller provides in "
+            "SurrealConfigDict(signup_fields=[...]), the ones the server sets in server_fields, "
+            "or give them a default.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+
 def build_signup_fields(
     model: type["BaseSurrealModel"],
     algorithm: EncryptionAlgorithm | str = EncryptionAlgorithm.ARGON2,
@@ -126,7 +177,9 @@ def build_signup_fields(
 
     Every other field is left out of the clause, so the field's schema
     ``DEFAULT`` (emitted from the model default) or, on a schemaless table,
-    the Pydantic default on load supplies its value.
+    the Pydantic default on load supplies its value.  A required field left
+    out (no default, not computed, not in ``server_fields``) has no such
+    value: one ``UserWarning`` per call names every such field.
 
     Args:
         model: The USER model class
@@ -155,6 +208,7 @@ def build_signup_fields(
     # created_at is stamped by the server, never taken from the caller.
     if "created_at" in model.model_fields and "created_at" not in computed:
         signup_fields["created_at"] = "time::now()"
+    _warn_unset_required_fields(model, signup_fields)
     return signup_fields
 
 
