@@ -1846,7 +1846,12 @@ class BaseSurrealModel(BaseModel):
                     await self.refresh()
             elif tx is not None:
                 start = _start_timer()
-                if all(_SAFE_IDENTIFIER_RE.fullmatch(key) for key in wire_data):
+                field_of = self._alias_columns()
+                non_identifiers = [key for key in wire_data if not _SAFE_IDENTIFIER_RE.fullmatch(key)]
+                if not non_identifiers or any(key not in field_of for key in non_identifiers):
+                    # Identifier keys only, or a non-identifier key that is not a
+                    # declared alias (``x-y``, ``a.b``): tx.merge() checks the
+                    # keys itself, and HTTPTransaction raises before queueing.
                     result = await tx.merge(thing, wire_data)
                     _log_query(f"MERGE {thing}", wire_data, _elapsed_ms(start))
                 else:
@@ -1854,6 +1859,8 @@ class BaseSurrealModel(BaseModel):
                     # text and rejects one that is not an identifier, such as an
                     # alias column (``first-name``). One bound object keeps the
                     # MERGE semantics and never puts a key in the statement text.
+                    # It is taken only when every such key is a declared alias,
+                    # the names the SET path accepts (``escaped_columns``).
                     query = f"UPDATE {thing} MERGE $_mq;"
                     variables = {"_mq": wire_data}
                     result = await tx.query(query, variables)
@@ -1862,7 +1869,6 @@ class BaseSurrealModel(BaseModel):
                 # Update local instance with merged data — from wire_data, so a
                 # foreign key given as a model instance lands as "table:id".
                 # An alias column is set through its field name.
-                field_of = self._alias_columns()
                 for key, value in wire_data.items():
                     name = field_of.get(key, key)
                     if hasattr(self, name):

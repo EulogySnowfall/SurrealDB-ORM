@@ -263,6 +263,24 @@ class TestHttpTransactionMerge:
         ]
         assert (person.nick, person.age) == ("b", 4)
 
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"x-y": 1}, {"a.b": 1}, {"first_name": "Bob", "x-y": 1}],
+        ids=["dash", "dotted", "alias-and-unknown"],
+    )
+    async def test_unknown_non_identifier_key_is_still_rejected(self, kwargs: dict[str, Any]) -> None:
+        # Only declared aliases take the bound-object form; any other key that
+        # is not an identifier still reaches HTTPTransaction.merge(), which
+        # refuses it before queueing anything.
+        tx, connection = await self._open()
+        person = _person()
+        with pytest.raises(ValueError, match="Invalid data key"):
+            await person.merge(tx=tx, **kwargs)
+
+        assert tx._statements == []
+        assert person.first_name == "Ann"
+        connection.query.assert_not_called()
+
 
 class TestBothSpellings:
     @pytest.mark.parametrize("use_tx", [False, True], ids=["client", "tx"])
