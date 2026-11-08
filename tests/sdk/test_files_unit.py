@@ -1041,6 +1041,12 @@ class TestMaxRequestSize:
         assert isinstance(conn, WebSocketConnection)
         assert conn.max_request_size == 16 * MiB
 
+    def test_http_pool_forwards_it(self) -> None:
+        pool = ConnectionPool("http://localhost:1", "ns", "db", max_request_size=16 * MiB)
+        conn = pool._create_connection()
+        assert isinstance(conn, HTTPConnection)
+        assert conn.max_request_size == 16 * MiB
+
     @pytest.mark.parametrize("factory", [HTTPConnection, WebSocketConnection])
     def test_constructor_documents_it(self, factory: type[BaseSurrealConnection]) -> None:
         doc = factory.__init__.__doc__ or ""
