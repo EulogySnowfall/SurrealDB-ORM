@@ -6,6 +6,13 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- Encode named-tuple values as CBOR arrays, including values nested in dictionaries
+  and lists, instead of raising a constructor `TypeError` before sending (#661).
+
 ## [0.39.4] - 2026-11-08
 
 **Patch release — the relation detection helpers see optional relations.**
