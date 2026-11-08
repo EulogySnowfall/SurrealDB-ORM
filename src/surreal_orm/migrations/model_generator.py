@@ -41,6 +41,13 @@ _IMPORT_MAP: dict[str, str] = {
 }
 
 
+# Geometry kinds SurrealDB accepts in ``geometry<...>`` (``linestring`` and
+# ``feature`` are kept for states built by hand), alone or as a ``|`` union.
+# Anything else in the brackets is not a geometry type and maps to ``Any``.
+_GEOMETRY_KIND = r"\s*(?:point|line|linestring|polygon|multipoint|multiline|multipolygon|collection|feature)\s*"
+_GEOMETRY_TYPE_RE = re.compile(rf"geometry<({_GEOMETRY_KIND}(?:\|{_GEOMETRY_KIND})*)>", re.IGNORECASE)
+
+
 def _py_str(text: str) -> str:
     """Render server-supplied text as one Python string literal.
 
@@ -332,11 +339,11 @@ class ModelCodeGenerator:
         if record_match:
             return "str"  # Record references are stored as string IDs
 
-        # Handle geometry<T> → GeoField["T"]
-        geo_match = re.match(r"geometry<(.+)>", surreal_type, re.IGNORECASE)
+        # Handle geometry<T> → GeoField['T'], only for known geometry kinds
+        geo_match = _GEOMETRY_TYPE_RE.fullmatch(surreal_type)
         if geo_match:
-            geo_type = geo_match.group(1).strip().lower()
-            return f'GeoField["{geo_type}"]'
+            geo_type = " | ".join(kind.strip().lower() for kind in geo_match.group(1).split("|"))
+            return f"GeoField[{_py_str(geo_type)}]"
 
         # Simple type lookup
         return _SURREAL_TO_PYTHON.get(surreal_type.lower(), "Any")

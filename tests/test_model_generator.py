@@ -520,6 +520,49 @@ class TestI635ServerTextInGeneratedSource:
         assert isinstance(emb, ast.AnnAssign) and isinstance(emb.annotation, ast.Subscript)
         assert ast.literal_eval(emb.annotation.slice) == (3, text)
 
+    @pytest.mark.parametrize(
+        "field_type",
+        [
+            """geometry<point> | '"]; x = (1); y: GeoField[">'""",
+            """option<geometry<point> | '"]; x = (1); y: GeoField[">'>""",
+            """array<geometry<point> | '"]; x = (1); y: GeoField[">'>""",
+            "geometry<point'>",
+            'geometry<point">',
+            "geometry<point\\>",
+        ],
+    )
+    def test_geometry_type_text_stays_out_of_the_class_body(self, field_type: str) -> None:
+        state = SchemaState(
+            tables={
+                "i635_places": TableState(
+                    name="i635_places",
+                    fields={"g": FieldState(name="g", field_type=field_type, nullable=False)},
+                )
+            }
+        )
+        body = _i635_class_body(self.gen.generate(state), "I635Place")
+        assert list(body) == ["model_config", "id", "g"]
+        g = body["g"]
+        assert isinstance(g, ast.AnnAssign)
+        assert "GeoField" not in ast.unparse(g.annotation)
+
+    @pytest.mark.parametrize(
+        ("field_type", "geo_type"),
+        [
+            ("geometry<point>", "point"),
+            ("geometry<POLYGON>", "polygon"),
+            ("geometry<point | polygon>", "point | polygon"),
+            ("geometry<multipolygon|multipoint>", "multipolygon | multipoint"),
+            ("geometry<line>", "line"),
+            ("geometry<collection>", "collection"),
+        ],
+    )
+    def test_geometry_kind_is_one_literal(self, field_type: str, geo_type: str) -> None:
+        field = FieldState(name="g", field_type=field_type, nullable=False)
+        line, imports = self.gen._generate_field(field)
+        assert line == f"g: GeoField[{geo_type!r}]"
+        assert "from surreal_orm.fields import GeoField" in imports
+
     def test_ordinary_expression_round_trips(self) -> None:
         value = "string::concat(first_name, ' ', last_name)"
         field = FieldState(name="full_name", field_type="string", nullable=False, value=value)
