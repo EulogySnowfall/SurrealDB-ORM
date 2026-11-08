@@ -568,7 +568,7 @@ class TestCyclicRecordIdStillRaises:
     def test_the_walk_returns_without_a_warning(self, name: str) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
-            assert _bounded(cbor._warn_naive_in_record_id, CYCLIC_IDS[name]()) is None
+            assert _bounded(cbor._convert_record_id, RecordId("t", CYCLIC_IDS[name]())) is None
 
     def test_a_naive_datetime_in_a_cyclic_id_still_warns(self) -> None:
         cyclic: list[Any] = ["x", {"k": [NAIVE]}]

@@ -468,10 +468,18 @@ class ModelIntrospector:
         """
         Generate access state for a USER type table.
 
-        Built from :meth:`AccessGenerator.from_model`, the same definition
-        ``define_access()`` applies, so ``makemigrations`` and
-        ``schema_diff`` see the same ``SIGNUP`` set, hashing algorithm and
-        access name as the database receives.
+        Built from :meth:`AccessGenerator.from_model`, which
+        ``define_access()`` also uses, so ``makemigrations`` and
+        ``schema_diff`` share with it the ``SIGNUP`` set, the hashing
+        algorithm (``SIGNUP`` and ``SIGNIN``), the access name and the token
+        and session durations.
+
+        It is not the whole ``define_access()`` definition: ``AccessState``
+        does not track ``WITH REFRESH`` nor, for a record access, the grant
+        duration that goes with it.  For a model configured with
+        ``with_refresh=True``, the migration path never emits ``WITH
+        REFRESH`` and a diff does not see whether the database has it, while
+        ``define_access()`` emits it.
 
         Args:
             model: The user model class
