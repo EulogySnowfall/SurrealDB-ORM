@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.21.59)
+> Context document for Claude AI - Last updated: November 2026 (0.21.60)
 
 <!-- -->
 
@@ -20,12 +20,30 @@
 
 ---
 
-## Current Version: 0.21.59 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
+## Current Version: 0.21.60 (Beta — V2 LTS, deprecated) — SurrealDB 2.6.x – 2.7.x
 
 | Branch | SurrealDB tested | Supported range | ORM line | Status                                       |
 | ------ | ---------------- | --------------- | -------- | -------------------------------------------- |
 | `v2`   | **2.7.0**        | 2.6.x – 2.7.x   | 0.21.x   | LTS (security & bug fixes only) until 0.39.0 |
 | `main` | 3.3.x            | 3.2.x – 3.3.x   | 0.38.x   | Active development                           |
+
+### What's New in 0.21.60
+
+Two backports: #622 via #630 (`surreal_sdk/connection/pool.py`, of #621) and #626 via #631
+(`surreal_orm/connection_manager.py`, of #625). Pin unchanged (2.7.0).
+
+- **`acquire()` remembers the connection it built in this call (`created`).** If `connect()` or the pool sign-in
+  raises or is cancelled before it reaches `_in_use`, it goes through `_discard()` + `_close_quietly()` (shielded,
+  `Exception` swallowed) and the original error or `CancelledError` is re-raised; the semaphore release sits in a
+  `finally`. On `v2`, `WebSocketConnection.connect()` cleans up on an `Exception` but not on a cancellation, so a
+  cancelled `use()` during `connect()` is released only by this close.
+- **`get_ws_client()` re-checks the registry under `_get_ws_connection_lock()`** (lazily created, class-level,
+  separate from the HTTP lock) and `_build_ws_client()` closes a stale client, builds, connects, signs in and
+  registers inside it. Same as `main`'s #625 minus the 3.x-only namespace/database `DEFINE` step. Test fixtures that
+  reset `_connection_lock` reset `_ws_connection_lock` too.
+- **Open (review suggestion on #631, same as `main` 0.38.7):** `_build_ws_client()` does not close its half-built
+  client on `CancelledError` (`_build_client()` does); `close_connection()`, `remove_connection()`, `reconnect()` and
+  `add_connection()` do not take the WebSocket lock, so a build in progress can register after them.
 
 ### What's New in 0.21.59
 

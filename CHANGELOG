@@ -6,6 +6,97 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.21.60] - 2026-11-07
+
+**Bug fix release (V2 LTS).** Two backports from `main`: a pooled
+connection whose initialisation fails is closed (#622 via #630, backport of
+#621), and concurrent first calls to `get_ws_client()` create one WebSocket
+client (#626 via #631, backport of #625). No API change. The SurrealDB pin
+is unchanged (tested against 2.7.0, supported range 2.6.x – 2.7.x).
+
+### Fixed
+
+- **`ConnectionPool.acquire()` closes a new connection whose initialisation
+  fails.** When `connect()` or the pool sign-in of a connection built for
+  this `acquire()` raises, or is cancelled, the connection is now closed
+  before the error propagates, instead of being left open (HTTP client, or
+  WebSocket session and reader task) with nothing referring to it. The
+  close is shielded and its own errors are ignored, so the caller still gets
+  the original exception, or `CancelledError` on cancellation; the pool slot
+  is freed even if the close itself is cancelled. A connection reused from
+  the pool goes through no initialisation and is never closed by this path
+  (#622, #630).
+- **Concurrent first calls to `SurrealDBConnectionManager.get_ws_client()`
+  for one connection name now build, connect and sign in a single
+  `WebSocketConnection`, and every caller receives it.** This is the path
+  several `QuerySet.live()` streams started with `asyncio.gather()` take.
+  Before, each caller opened its own socket, only the last one stayed
+  registered, and the others were never closed by `close_connection()` /
+  `remove_connection()`, while their callers kept clients the manager no
+  longer knew about. The registry is now re-checked under a lock of its own
+  (separate from the HTTP client lock, so an HTTP client build in progress
+  does not hold it up), and the client is built and registered inside it. A
+  disconnected registered client is closed once and replaced once (#626,
+  #631).
+
+### Behaviour change
+
+- None for a single caller. Concurrent callers of `get_ws_client()` now wait
+  for the build in progress instead of building in parallel. It is one lock
+  for every connection name, so first WebSocket builds are serialised across
+  names; calls that find a connected client registered do not take it. A
+  failed connect or sign-in still raises `SurrealDbConnectionError`,
+  registers nothing, and the next call builds again.
+- On a failed or cancelled pool initialisation the caller gets the same
+  exception as before; the half-initialised connection is now closed.
+
+### Known limitations
+
+These were already there before this release; the new lock does not make
+them worse (same as `main` 0.38.7).
+
+- `close_connection()`, `remove_connection()`, `reconnect()` and
+  `add_connection()` with a changed configuration do not take the WebSocket
+  lock. A WebSocket build already in progress when one of them runs still
+  registers its client once it has signed in, and the next caller gets that
+  client.
+- A WebSocket build whose caller is cancelled during `connect()` or
+  `signin()` (for example a `wait_for()` around `live()` that times out)
+  leaves the half-built `WebSocketConnection` open with nothing referring to
+  it (review suggestion on #631). The HTTP client build already closes its
+  half-built client in that case; the WebSocket build does not yet.
+
+### Tests
+
+- `tests/sdk/test_issue_622_v2_unit.py` (new, 17 tests, HTTP and
+  WebSocket): failed sign-in, failed `connect()`, a failing `close()` not
+  replacing the initialisation error, cancelled initialisation, a cancelled
+  close still freeing the slot, the pool serving afterwards, reused
+  connections left open, and a cancelled or failed `use()` inside the real
+  WebSocket `connect()`. 14 of them fail against the 0.21.59 `pool.py`; the
+  other 3 pin behaviour that must not change.
+- `TestI626ConcurrentGetWsClient` in `tests/test_live.py` (10 tests):
+  concurrent first calls, the legacy `"default"` alias, an HTTP build in
+  progress, a waiter reusing the registered client, a cancelled waiter, a
+  stale client replaced once, failed connect and sign-in, and
+  `close_connection()` / `remove_connection()` closing the single registered
+  client. The registry fixtures of `tests/test_issue_266_unit.py` and
+  `tests/test_issue_569_unit.py` save and restore the new lock.
+
+### Migration notes
+
+- None.
+
+### Verification
+
+Against SurrealDB 2.7.0, on the released tree (both PRs merged): 4,078
+unit tests pass on each of Python 3.12, 3.13 and 3.14 (1 expected failure,
+the strict `xfail` from 0.21.51), and 833 integration tests pass (4
+expected failures, the existing strict `xfail`s for integer record ids over
+WebSocket); `ruff` and `mypy` clean.
+
+---
+
 ## [0.21.59] - 2026-11-07
 
 **Bug fix release (V2 LTS).** The 0.21.58 review follow-up (#619 via

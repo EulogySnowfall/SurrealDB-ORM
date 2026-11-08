@@ -51,6 +51,17 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.60
+
+**Bug fix release (V2 LTS).** Two backports from `main` (#622, #626); pin unchanged (2.7.0).
+
+- **A pooled connection whose initialisation fails is closed.** When `connect()` or the pool sign-in of a new
+  connection raises or is cancelled inside `ConnectionPool.acquire()`, the connection is closed before the error
+  reaches the caller, instead of being left open. The caller still gets the original exception.
+- **Concurrent first calls to `get_ws_client()` create one WebSocket client.** Several `QuerySet.live()` streams
+  started together on one connection now share a single socket; before, each opened its own and only the last stayed
+  registered. Concurrent callers wait for the build in progress. See the [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.59
 
 **Bug fix release (V2 LTS).** The 0.21.58 review follow-up (#619); pin unchanged (2.7.0).
