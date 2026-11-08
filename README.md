@@ -51,6 +51,15 @@ For SurrealDB 3.x, use the [`main` branch](https://github.com/EulogySnowfall/Sur
 
 ---
 
+## What's New in 0.21.58
+
+**Bug fix release (V2 LTS).** The 0.21.56 review follow-up (#610); pin unchanged (2.7.0).
+
+- **A stopped `changes()` stream ends quietly when its first client build fails.** If `stop()` is called while the
+  stream is still resolving its first HTTP client and that call then raises (for example when the server cannot be
+  reached), the stream now ends instead of raising. A stream that was not stopped still gets the error. See the
+  [CHANGELOG](CHANGELOG).
+
 ## What's New in 0.21.57
 
 **Bug fix release (V2 LTS).** One backport from `main` (#604); pin unchanged (2.7.0).
