@@ -6,6 +6,177 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.0] - 2026-11-08
+
+**Minor release — File Storage (roadmap v0.39.0, #562 via #632).** SurrealDB
+buckets from the SDK, the ORM and the migrations: `FileRef` pointers, file
+methods on every connection, `FileField` / `ImageField` model fields with
+`upload_file()` / `download_file()` / `delete_file()` / `file_info()`, and
+`DefineBucket` / `AlterBucket` / `RemoveBucket` migration operations. One
+fix: `inspectdb` / `generate_models_from_db()` write the text the server
+reports into the generated source as Python string literals (#635 via #639).
+Read *Behaviour changes* below. The SurrealDB pin is unchanged (tested
+against 3.3.5, supported range 3.2.x – 3.3.x).
+
+**Last release with a maintained `v2` line.** From this release, the `v2`
+branch (0.21.x, SurrealDB 2.x) is no longer maintained; 0.21.62 is its last
+release. Users of SurrealDB 2.x should move to
+[SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite).
+**Coming next:** `main` moves to SurrealDB 4.x with 0.40.0. SurrealDB 3.x
+support continues on a new permanent `v3` branch, cut from `main` right after
+this release, which receives bug and security fixes only (the same policy
+`v2` had).
+
+### Added
+
+- **File storage (SurrealDB buckets)**, experimental: it follows SurrealDB's
+  experimental `files` capability (a syntax change when SurrealDB stabilises
+  it will ship as a patch release). Requires a server started with
+  `--allow-experimental=files` (3.2.x and 3.3.x); otherwise every file call
+  raises `FilesNotEnabledError`. Files are not transactional, and a bucket
+  defined without `PERMISSIONS` is readable and writable by every record
+  user (#562).
+- **SDK**: `FileRef(bucket, key)`, sent and received as CBOR tag 55, with
+  `FileRef.parse("bucket:/key")` (also reads the `f"..."` literal) and
+  `with_key()`. A key gets a leading `/` and must not be `/` alone, contain
+  NUL, or have an empty (`//`, trailing `/`), `.` or `..` segment.
+  `FileInfo(file, size, updated)` with `FileInfo.from_result()`. On every
+  connection (HTTP, WebSocket, pooled): `file_put()`, `file_get()`,
+  `file_head()`, `file_exists()`, `file_delete()`, `file_copy()`,
+  `file_rename()`, `file_list()`, `iter_files()`; every value is bound and
+  every statement result is checked. `overwrite=False` keeps an existing
+  target; `file_list()`'s `start` is exclusive; file operations need
+  `protocol="cbor"` (#562).
+- **SDK**: `max_request_size=` on `HTTPConnection` (default 4 MiB) and
+  `WebSocketConnection` (default 128 MiB), matching the server defaults
+  `SURREAL_HTTP_MAX_RPC_BODY_SIZE` / `SURREAL_WEBSOCKET_MAX_MESSAGE_SIZE`.
+  `file_put()` checks its estimated request size against it before sending;
+  `None` disables the check; other methods are not checked. New exceptions
+  `PayloadTooLargeError` (`code == 413`, `size` / `limit`) and
+  `FilesNotEnabledError`, both `QueryError` subclasses (#562).
+- **ORM**: `FileField["bucket", ...]` and `ImageField["bucket", ...]`
+  (`option<file<bucket | ...>>`): a `FileRef` restricted to the named
+  buckets, accepting a `FileRef` or its `"bucket:/key"` text. A plain
+  `FileRef` annotation is also accepted (any bucket). Helpers
+  `is_file_field()`, `is_image_field()`, `get_file_buckets()` and
+  `BaseSurrealModel.get_file_columns()`. `FileRef`, `FileInfo`,
+  `FilesNotEnabledError` and `PayloadTooLargeError` are re-exported from
+  `surreal_orm` (#562).
+- **ORM**: `upload_file()`, `download_file()`, `delete_file()`, `file_info()`
+  on models. `upload_file()` writes to `/<table>/<id>/<column>` (or `key=`)
+  in the field's first bucket (or `bucket=`); in that default key the id is
+  percent-encoded as one segment (`a/b` → `a%2Fb`, `%` → `%25`, `..` →
+  `%2E%2E`), so each (table, id, column) has its own key: build the same key
+  when you call `file_get()` by hand. It then points the column at the file
+  through the `merge()` path (signals, cache invalidation, `QueryLogger` with
+  the data shown as `<N bytes>`). Uploads above the HTTP limit go over the
+  same named connection's WebSocket client. `overwrite=False` raises
+  `FileExistsError` when the key already holds a file. `ImageField` uploads
+  must start with a PNG, JPEG, GIF or WebP signature (#562).
+- **Migrations**: `DefineBucket`, `AlterBucket` (reversible when built with
+  `AlterBucket.from_bucket_states()`), `RemoveBucket` (irreversible, held back
+  unless `--drop-missing`), `BucketState`, `parse_define_bucket()`.
+  `SchemaState.buckets` (default `None`) is filled by `DatabaseIntrospector`
+  from `INFO FOR DB` and diffed only when the target state lists buckets, so
+  a state built from models never proposes a bucket operation. File columns
+  introspect as `option<file<bucket | ...>>` (a bare `FileRef` as `file`);
+  `inspectdb` generates `FileField[...]` / `FileRef` (a file column it cannot
+  type as `FileField[...]` becomes `FileRef | None`, with the server's type
+  text in the comment); `FieldType.FILE` (#562).
+- **JSON Lines**: export/import carries file pointer columns as
+  `{"$file": [bucket, key]}` (typed) or `bucket:/key` text with
+  `typed=False`; `JSONL_TAGS` contains `"$file"` (#562).
+- **Docs**: notebook `examples/18_file_storage.ipynb` (buckets, `FileRef`,
+  `FileField` / `ImageField`, the SDK and model helpers, a cleanup
+  `DEFINE EVENT` recipe and a `$action` permission rule) (#562).
+
+### Fixed
+
+- `inspectdb` / `generate_models_from_db()` write the text the server
+  reports into the generated model source as Python string literals
+  (`repr()`): computed-field `VALUE` expressions, `changefeed`, an unknown
+  table type (the `table_type` fallback), `on_delete` and the HNSW
+  `VectorField` type. Event names and `WHEN` clauses stay on one comment
+  line. A `VALUE` holding a double quote, a backslash or a newline used to
+  produce a module that did not parse or did not match the database
+  expression; it now round-trips exactly (#635).
+- A geometry field becomes `GeoField[...]` only when its type lists known
+  geometry kinds (alone or as a `|` union); any other `geometry<...>` text
+  maps to `Any` instead of being copied into the annotation. Nullable
+  geometry columns (`geometry<point> | null`) keep `GeoField['point'] | None`
+  (#635).
+
+### Behaviour changes
+
+- A file pointer in a CBOR query result is a `FileRef` (was the tuple
+  `('bucket', '/key')`). Only a server started with the files capability
+  returns pointers. The JSON protocol encoder raises `TypeError` for a
+  `FileRef` value (use `protocol="cbor"`).
+- An HTTP `413` on any RPC raises `PayloadTooLargeError` instead of a plain
+  `QueryError("HTTP error: 413 - …")`; it is still a `QueryError` with the
+  same `code`.
+- An RPC error saying the server's `files` capability is off raises
+  `FilesNotEnabledError` instead of a plain `QueryError`.
+- A table with a file pointer column exports to JSON Lines instead of
+  raising `DataFormatError`.
+- On a file column, `filter()` / `Q` / `live()` (`exact`, `in`, `not_in`),
+  `merge()` (`tx=` included), `bulk_update()`, `upsert()` and `bulk_upsert()`
+  turn `"bucket:/key"` text into a file pointer; text that is not a pointer
+  raises `ValueError` before any request.
+- In models generated by `inspectdb`, server text uses Python `repr()`
+  quoting: `Computed('a + b')` instead of `Computed("a + b")` (when the
+  expression holds no single quote), `on_delete='CASCADE'`,
+  `changefeed='1h'`, `GeoField['point']`. The meaning is unchanged; table and
+  field names are unchanged. A `geometry<...>` type whose brackets do not
+  list known geometry kinds maps to `Any` (#635).
+
+### Upgrading
+
+- Code that unpacked a decoded file pointer as a tuple reads `ref.bucket` /
+  `ref.key` instead.
+- If you raised the server's `SURREAL_HTTP_MAX_RPC_BODY_SIZE` or
+  `SURREAL_WEBSOCKET_MAX_MESSAGE_SIZE`, raise `max_request_size` with it to
+  send larger files through `file_put()`.
+- Models generated earlier keep working; regenerate with `inspectdb` to pick
+  up the new quoting, or if a computed field or an event comment came out
+  wrong.
+- Contributors: a local test container started before this release has no
+  files capability; recreate it
+  (`docker compose -f devops/docker-compose.yml up -d --force-recreate surrealdb`).
+- SurrealDB 2.x users: 0.21.62 is the last `v2` release; move to
+  [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite).
+
+### Known limitations
+
+- Whole payloads are held in memory (~4 MiB over HTTP, ~128 MiB over
+  WebSocket by default).
+- `dump_database()` saves bucket definitions and pointers, not file contents.
+- Deleting a record does not delete its files (a
+  `DEFINE EVENT … THEN $before.<field>.delete()` does).
+- The JSON protocol cannot write files.
+- The union spellings `FileField["b"] | None` / `Optional[FileField["b"]]`
+  need an explicit `= None` (the bare form is recommended).
+- `upload_file(key="")` uploads to the default key instead of raising, as
+  `FileRef(bucket, "")` does (review suggestion on #632).
+
+### Validation
+
+- Unit: 6,095 passed on each of Python 3.12, 3.13, 3.14 and 3.15 (at #639's
+  head, which includes #632).
+- Integration on 3.3.5 (the pin, started with the files capability): 980
+  passed, 1 skipped, 4 xfailed (#306, integer ids over WebSocket), 1 xpassed
+  (#147, non-strict, upstream). The file storage integration tests also
+  passed on the 3.2.6 floor (four runs).
+- `examples/18_file_storage.ipynb` executed on a copy against 3.3.5.
+
+### Release-note corrections
+
+- `[0.38.7]` *Known limitations*: the first bullet now says that, for
+  `add_connection()` with a changed configuration, the client registered
+  afterwards was built with the previous configuration (#628).
+
+---
+
 ## [0.38.7] - 2026-11-07
 
 **Fix release.** One fix: concurrent first calls to
@@ -53,7 +224,9 @@ worse (review suggestions on #625).
   `add_connection()` with a changed configuration do not take the WebSocket
   lock. A WebSocket build already in progress when one of them runs still
   registers its client once it has signed in, and the next caller gets that
-  client.
+  client. For `add_connection()` with a changed configuration, that client
+  was built with the previous configuration (URL, namespace, database,
+  credentials).
 - A build whose caller is cancelled during `connect()`, `signin()` or the
   namespace/database `DEFINE` query (for example a `wait_for()` around
   `live()` that times out) leaves the half-built `WebSocketConnection` open

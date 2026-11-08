@@ -2,19 +2,28 @@
 
 ## Supported Versions
 
-Two release lines are actively maintained, one per SurrealDB major version:
+One release line is maintained:
 
 | Version     | SurrealDB     | Branch | Supported          |
 | ----------- | ------------- | ------ | ------------------ |
-| **0.38.x**  | 3.2.x – 3.3.x | `main` | :white_check_mark: |
-| **0.21.x**  | 2.6.x – 2.7.x | `v2`   | :white_check_mark: |
+| **0.39.x**  | 3.2.x – 3.3.x | `main` | :white_check_mark: |
+| **0.21.x**  | 2.6.x – 2.7.x | `v2`   | :x: (unmaintained) |
 | any other   | -             | -      | :x:                |
 
 `main` supports **SurrealDB 3.2.x – 3.3.x** (tested against 3.3.5 as of ORM
 0.35.7); 3.1.x and earlier are not supported there. Security fixes on `main`
-ship in the current minor only — upgrade from 0.37.x to 0.38.x, which needs no
-server upgrade. The `v2` line supports SurrealDB 2.6.x – 2.7.x (tested against
-2.7.0 as of 0.21.8) and receives security and bug fixes only.
+ship in the current minor only — upgrade from 0.38.x to 0.39.x, which needs no
+server upgrade.
+
+The `v2` line (0.21.x, SurrealDB 2.x) is **no longer maintained from 0.39.0**:
+0.21.62 is its last release and it receives no further fixes, security fixes
+included. Users of SurrealDB 2.x should move to
+[SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite), and
+report vulnerabilities affecting SurrealDB 2.x there.
+
+`main` moves to SurrealDB 4.x with 0.40.0. SurrealDB 3.x support then continues
+on a permanent `v3` branch, cut from `main` right after 0.39.0, which receives
+bug and security fixes only; this table will list it once it has a release.
 
 ## Versioning Scheme
 
