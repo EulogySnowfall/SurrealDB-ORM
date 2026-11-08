@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.38.7)
+> Context document for Claude AI - Last updated: November 2026 (0.39.0)
 
 ## Project Vision
 
@@ -10,14 +10,66 @@
 
 ---
 
-## Current Version: 0.38.7 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.0 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
-| Branch | SurrealDB  | ORM Version | Status                          |
-| ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.5**  | 0.38.x      | Active development              |
-| `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+| Branch | SurrealDB  | ORM Version | Status                                           |
+| ------ | ---------- | ----------- | ------------------------------------------------ |
+| `main` | **3.3.5**  | 0.39.x      | Active development (SurrealDB 4.x from 0.40.0)   |
+| `v2`   | **2.7.0**  | 0.21.x      | Unmaintained from 0.39.0 (last release 0.21.62)  |
+
+SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
+bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.0
+
+File Storage, roadmap v0.39.0 (#562 via #632): `surreal_sdk/files.py` and
+`surreal_orm/fields/file.py` (new), SDK `connection/base.py`, `http.py`,
+`websocket.py`, `protocol/cbor.py`, `protocol/rpc.py`, `exceptions.py`,
+`jsonl.py`; ORM `model_base.py`, `query_set.py`, `types.py`, `migrations/`.
+Plus one fix, #635 via #639 (`migrations/model_generator.py` only). Pin
+unchanged (3.3.5). Last release with a maintained `v2` (0.21.62 is its last
+release; #474); `main` moves to SurrealDB 4.x with 0.40.0 (#581) and 3.x
+continues on a permanent `v3` branch cut right after this release (#579).
+
+- **Experimental, behind a server flag.** Every file call needs
+  `--allow-experimental=files` (3.2.x and 3.3.x); without it the server's
+  error becomes `FilesNotEnabledError`. CI, the 3.x monitor and the
+  pre-release canary start SurrealDB with the flag and set
+  `SORM_REQUIRE_FILES=1`, so the file tests fail instead of skipping on a
+  server without it. A local container started before 0.39.0 must be
+  recreated.
+- **`FileRef` is CBOR tag 55 `[bucket, key]`.** Keys get a leading `/` and
+  one spelling only: no `/` alone, NUL, empty (`//`, trailing `/`), `.` or
+  `..` segment (a memory bucket stores `/a//b` and `/a/b` as two files).
+  Decoding stays tolerant (`FileRef._from_wire()`), so a pointer written by
+  other means still reads. Under `protocol="json"` the encoder refuses a
+  `FileRef`: file operations need CBOR.
+- **SDK first, ORM on top.** The `file_*` methods live on
+  `BaseSurrealConnection`, bind every value and check each statement result.
+  `max_request_size` mirrors the server's RPC body / WebSocket message caps
+  (4 MiB / 128 MiB) and `file_put()` checks its estimated size before
+  sending; `upload_file()` switches to the named connection's WebSocket
+  client above the HTTP limit.
+- **The default upload key is `/<table>/<id>/<column>` with the id
+  percent-encoded as one segment** (`a/b` → `a%2Fb`, `..` → `%2E%2E`), so
+  no two (table, id, column) share a key. The column is set through the
+  `merge()` path (signals, cache, `QueryLogger` shows `<N bytes>`).
+- **Buckets are diffed only when the target state lists them**
+  (`SchemaState.buckets` defaults to `None`): a state built from models never
+  proposes a bucket operation, and `RemoveBucket` is irreversible (held back
+  without `--drop-missing`).
+- **`inspectdb` writes server text through two helpers** in
+  `model_generator.py`: `_py_str()` (`repr()`, so `ast.literal_eval()` gives
+  the server text back) and `_py_comment()` (event name and `WHEN` on one
+  comment line). Geometry types must fullmatch known kinds (optional trailing
+  `| null`), anything else maps to `Any`. Any new site that writes server
+  text into generated source goes through one of them.
+- **Open (review suggestions):** `upload_file(key="")` falls back to the
+  default key instead of raising (#632); `_py_comment()` could test
+  `isprintable()` like `_py_str()`, and the `FileField` fallback comment
+  could go through the helper (#639).
 
 ### What's New in 0.38.7
 
@@ -37,7 +89,9 @@ unchanged (3.3.5). `v2`: same defect, backport tracked in #626.
   (review suggestion on #625: a per-name lock if it ever matters).
 - **Open (review suggestions on #625, pre-existing):** `close_connection()` /
   `remove_connection()` / `reconnect()` / `add_connection()` do not take the
-  WebSocket lock, so a build in progress still registers afterwards; and
+  WebSocket lock, so a build in progress still registers afterwards (for
+  `add_connection()` with a changed configuration, a client built with the
+  previous configuration); and
   `_build_ws_client()` has no `CancelledError` handler, unlike
   `_build_client()` (0.38.3), so a cancelled build leaks its half-built
   client.

@@ -1,6 +1,6 @@
 # SurrealDB-ORM Roadmap
 
-> Planning document for future ORM features - Last updated: November 2026 (0.38.0)
+> Planning document for future ORM features - Last updated: November 2026 (0.39.0)
 
 ---
 
@@ -40,6 +40,12 @@
 | 0.36.0  | Released | Graph Power: recursive traversal, paths, shortest path     |
 | 0.37.0  | Released | ML & Data: JSONL import/export, DB dump/restore            |
 | 0.38.0  | Released | Advanced Queries: element filters, nested path annotations |
+| 0.39.0  | Released | File Storage: buckets, `FileRef`, `FileField`/`ImageField` |
+
+**Release lines.** `v2` (0.21.x, SurrealDB 2.x) is no longer maintained from 0.39.0; 0.21.62 is its last release, and
+SurrealDB 2.x users should move to [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite).
+0.40.0 is the first release for SurrealDB 4.x on `main`; SurrealDB 3.x support continues on a permanent `v3` branch,
+cut from `main` right after 0.39.0 (bug and security fixes only).
 
 ---
 
@@ -1313,246 +1319,87 @@ print(f"Total: {logger.total_queries} queries, {logger.total_ms:.1f}ms")
 - [x] `DEFINE CONFIG GRAPHQL` — GraphQL schema configuration
 - [x] Bearer access method — `DEFINE ACCESS ... TYPE BEARER` support
 - [x] SurrealQL enhancements: `UPSERT ... ON DUPLICATE KEY UPDATE`
-- Deferred to future: `DEFINE BUCKET` — Object/file storage integration (see Future Versions)
+- Deferred, then shipped in 0.39.0: `DEFINE BUCKET` — Object/file storage integration (FR1 below)
 
 ---
 
-#### FR1: File & Bucket Management (Flagship)
+#### FR1: File & Bucket Management (Released — 0.39.0)
 
-SurrealDB 3.0 introduces native object/file storage via `DEFINE BUCKET`. This enables storing and retrieving files (images, documents, blobs) directly in SurrealDB without external storage services.
+Shipped in 0.39.0 (#562). **Experimental:** it follows SurrealDB's experimental `files` capability; the server must be
+started with `--allow-experimental=files` (3.2.x and 3.3.x), otherwise every file call raises `FilesNotEnabledError`.
+Files are not transactional, and a bucket defined without `PERMISSIONS` is readable and writable by every record user.
 
-**SurrealDB 3.0 Bucket Syntax:**
+The design changed from the plan below in two places: the SDK methods are named `file_*`, not `bucket_*`, and there
+is no `BucketBackend` enum (`backend` is a plain string passed to the server, e.g. `'memory'` or `'file:/dir'`).
 
-```sql
--- Define a bucket with constraints
-DEFINE BUCKET avatars
-  BACKEND memory             -- memory | file | s3 | gcs
-  CACHE 3600                 -- cache TTL in seconds
-  PERMISSIONS
-    FOR select WHERE $auth.id = user_id
-    FOR create WHERE $auth.role = "admin";
-
--- Store a file
-CREATE file:avatars/user123.png CONTENT <binary data>;
-
--- Retrieve a file
-SELECT * FROM file:avatars/user123.png;
-
--- List files in a bucket
-SELECT * FROM file:avatars;
-
--- Delete a file
-DELETE file:avatars/user123.png;
-```
-
-**1a. Migration Operations — `DefineBucket` / `RemoveBucket`**
-
-Follows the same `@dataclass` + `Operation` pattern as `DefineAnalyzer` and `DefineApi`:
-
-```python
-from surreal_orm.migrations.operations import DefineBucket, RemoveBucket
-from surreal_orm.storage import BucketBackend
-
-# In migrations
-DefineBucket(
-    name="avatars",
-    backend=BucketBackend.S3,
-    cache=3600,
-    permissions={"select": "$auth.id = user_id", "create": "$auth.role = 'admin'"},
-)
-
-DefineBucket(
-    name="documents",
-    backend=BucketBackend.FILE,
-    cache=7200,
-)
-
-RemoveBucket(name="temp_uploads")
-```
-
-Generates:
+**SurrealDB syntax (3.2.x – 3.3.x):**
 
 ```sql
-DEFINE BUCKET avatars BACKEND s3 CACHE 3600
-    PERMISSIONS FOR select WHERE $auth.id = user_id FOR create WHERE $auth.role = 'admin';
-DEFINE BUCKET documents BACKEND file CACHE 7200;
-REMOVE BUCKET temp_uploads;
+DEFINE BUCKET avatars BACKEND 'memory' PERMISSIONS WHERE $action INSIDE ['get', 'head'];
+-- A file pointer is f"avatars:/user123.png"; the SDK binds it as a parameter
+file::put(f"avatars:/user123.png", <bytes> "...");
+RETURN file::get(f"avatars:/user123.png");
+RETURN file::list("avatars", { prefix: "/user" });
+file::delete(f"avatars:/user123.png");
 ```
 
-**Implementation:**
-
-| File                                       | Component            | Description                         |
-| ------------------------------------------ | -------------------- | ----------------------------------- |
-| `src/surreal_orm/storage.py`               | `BucketBackend` enum | `MEMORY`, `FILE`, `S3`, `GCS`       |
-| `src/surreal_orm/migrations/operations.py` | `DefineBucket`       | `forwards()` → `DEFINE BUCKET ...;` |
-| `src/surreal_orm/migrations/operations.py` | `RemoveBucket`       | `forwards()` → `REMOVE BUCKET ...;` |
-
-**1b. Schema State — `BucketState`**
+**1a. Migration operations** — `DefineBucket`, `AlterBucket` (reversible when built with
+`AlterBucket.from_bucket_states()`), `RemoveBucket` (irreversible, held back unless `--drop-missing`):
 
 ```python
-# In src/surreal_orm/migrations/state.py
-@dataclass
-class BucketState:
-    name: str
-    backend: str = "memory"    # memory | file | s3 | gcs
-    cache: int | None = None   # TTL in seconds
-    permissions: dict[str, str] = field(default_factory=dict)
+from surreal_orm.migrations.operations import AlterBucket, DefineBucket, RemoveBucket
 
-@dataclass
-class SchemaState:
-    tables: dict[str, TableState] = field(default_factory=dict)
-    analyzers: dict[str, AnalyzerState] = field(default_factory=dict)
-    apis: dict[str, ApiState] = field(default_factory=dict)
-    buckets: dict[str, BucketState] = field(default_factory=dict)  # NEW
+DefineBucket("avatars", backend="memory", permissions="$action INSIDE ['get', 'head']", comment="it's")
+# DEFINE BUCKET avatars BACKEND 'memory' PERMISSIONS WHERE $action INSIDE ['get', 'head'] COMMENT 'it\'s';
+RemoveBucket("old-uploads")
+# REMOVE BUCKET `old-uploads`;
 ```
 
-**Diff algorithm** (in `SchemaState.diff()`):
+A bucket takes a single permission rule (`"FULL"`, `"NONE"` or an expression on `$action`, `$file` and `$auth`), not
+one rule per action.
+
+**1b. Schema state, parser, introspection** — `BucketState(name, backend, readonly, permissions, comment)`,
+`parse_define_bucket()`, `SchemaState.buckets` (default `None`) filled by `DatabaseIntrospector` from `INFO FOR DB`.
+Buckets are diffed only when the target state lists them, so a state built from models never proposes a bucket
+operation.
+
+**1c. Fields** — `FileField["bucket", ...]` / `ImageField["bucket", ...]` (`option<file<bucket | ...>>`), a
+`FileRef` restricted to the named buckets, accepting a `FileRef` or its `"bucket:/key"` text; a plain `FileRef`
+annotation accepts any bucket. Helpers `is_file_field()`, `is_image_field()`, `get_file_buckets()`,
+`BaseSurrealModel.get_file_columns()`; `FieldType.FILE`. `inspectdb` generates `FileField[...]` / `FileRef`.
 
 ```python
-# Buckets (after tables, before deferred removals)
-for bucket_name, target_bucket in target.buckets.items():
-    if bucket_name not in self.buckets or self.buckets[bucket_name] != target_bucket:
-        operations.append(DefineBucket(
-            name=target_bucket.name,
-            backend=target_bucket.backend,
-            cache=target_bucket.cache,
-            permissions=target_bucket.permissions,
-        ))
-
-for bucket_name in self.buckets:
-    if bucket_name not in target.buckets:
-        operations.append(RemoveBucket(name=bucket_name))
-```
-
-**1c. Parser — `parse_define_bucket()`**
-
-```python
-# In src/surreal_orm/migrations/define_parser.py
-def parse_define_bucket(statement: str) -> BucketState:
-    """Parse DEFINE BUCKET statement into BucketState."""
-    # Pattern: DEFINE BUCKET name [BACKEND ...] [CACHE ...] [PERMISSIONS ...]
-    # Follows same regex approach as parse_define_analyzer()
-```
-
-**1d. Database Introspection**
-
-```python
-# In db_introspector.py — introspect()
-buckets_info = db_info.get("buckets", db_info.get("bk", {}))
-if isinstance(buckets_info, dict):
-    for _name, define_stmt in buckets_info.items():
-        bucket_state = parse_define_bucket(define_stmt)
-        state.buckets[bucket_state.name] = bucket_state
-```
-
-**1e. FileField — Model Field Type**
-
-Follows the `Annotated` + marker class pattern from `ReferencesField` and `VectorField`:
-
-```python
-from surreal_orm.fields import FileField, ImageField
+from surreal_orm import BaseSurrealModel, FileField, ImageField
 
 class User(BaseSurrealModel):
-    model_config = SurrealConfigDict(table_name="users")
-    name: str
-    avatar: FileField["avatars"] | None = None       # → references file in "avatars" bucket
-    resume: FileField["documents"] | None = None      # → references file in "documents" bucket
-
-class Product(BaseSurrealModel):
-    model_config = SurrealConfigDict(table_name="products")
-    name: str
-    photo: ImageField["product_images"] | None = None  # → image validation + bucket reference
+    avatar: ImageField["avatars"]    # PNG, JPEG, GIF or WebP uploads only
+    resume: FileField["documents"]
 ```
 
-**Implementation:**
+**1d. SDK** (`surreal_sdk`, on every connection: HTTP, WebSocket, pooled; CBOR only):
 
-| File                             | Component           | Description                                   |
-| -------------------------------- | ------------------- | --------------------------------------------- |
-| `src/surreal_orm/fields/file.py` | `_FileMarker`       | Pydantic marker with bucket name              |
-| `src/surreal_orm/fields/file.py` | `FileField`         | `FileField["bucket"]` via `__class_getitem__` |
-| `src/surreal_orm/fields/file.py` | `ImageField`        | Subclass with content-type validation         |
-| `src/surreal_orm/fields/file.py` | `is_file_field()`   | Detection helper                              |
-| `src/surreal_orm/fields/file.py` | `get_file_bucket()` | Extract bucket name                           |
+| Method                                               | Effect                                          |
+| ---------------------------------------------------- | ----------------------------------------------- |
+| `file_put(file, data, *, overwrite=True)`            | Write a file (size checked first)               |
+| `file_get(file)` / `file_head(file)`                 | Content / `FileInfo`, `None` when missing       |
+| `file_exists(file)` / `file_delete(file)`            | Existence / delete (a missing file succeeds)    |
+| `file_copy(file, key)` / `file_rename(file, key)`    | Copy / move within the same bucket              |
+| `file_list(bucket, *, prefix, start, limit)`         | `list[FileInfo]` in key order                   |
+| `iter_files(bucket, *, prefix, batch_size)`          | Async iterator over every file                  |
 
-**1f. SDK Bucket Methods**
+`FileRef(bucket, key)` is CBOR tag 55; a key gets a leading `/` and must not be `/` alone, contain NUL, or have an
+empty, `.` or `..` segment. `max_request_size=` (4 MiB over HTTP, 128 MiB over WebSocket, as on the server) is checked
+by `file_put()` before sending; `PayloadTooLargeError` (code 413) and `FilesNotEnabledError` are `QueryError`
+subclasses.
 
-```python
-from surreal_sdk import SurrealDB
+**1e. Model helpers** — `upload_file(field, data, *, key=None, bucket=None, overwrite=True)`, `download_file(field)`,
+`delete_file(field)`, `file_info(field)`. The default key is `/<table>/<id>/<column>` with the id percent-encoded as
+one segment; the column is set through the `merge()` path; uploads above the HTTP limit go over the connection's
+WebSocket client.
 
-async with SurrealDB.http("http://localhost:8000", "ns", "db") as db:
-    # List files in a bucket
-    files = await db.bucket_list("avatars")
-
-    # Upload directly
-    await db.bucket_put("avatars", "photo.png", data=binary_data)
-
-    # Download
-    data = await db.bucket_get("avatars", "photo.png")
-
-    # Delete
-    await db.bucket_delete("avatars", "photo.png")
-```
-
-**Implementation:**
-
-| File                                      | Method                           | SurrealQL                                 |
-| ----------------------------------------- | -------------------------------- | ----------------------------------------- |
-| `src/surreal_sdk/connection/base.py`      | `bucket_list(bucket)`            | `SELECT * FROM file:{bucket}`             |
-| `src/surreal_sdk/connection/base.py`      | `bucket_put(bucket, name, data)` | `CREATE file:{bucket}/{name} CONTENT ...` |
-| `src/surreal_sdk/connection/base.py`      | `bucket_get(bucket, name)`       | `SELECT * FROM file:{bucket}/{name}`      |
-| `src/surreal_sdk/connection/base.py`      | `bucket_delete(bucket, name)`    | `DELETE file:{bucket}/{name}`             |
-| `src/surreal_sdk/connection/http.py`      | Override with multipart/binary   | HTTP-specific binary upload               |
-| `src/surreal_sdk/connection/websocket.py` | Override with CBOR binary        | WS-specific binary encoding               |
-
-**1g. ORM File Helpers on `BaseSurrealModel`**
-
-```python
-# High-level file operations on model instances
-user = await User.objects().get("user:alice")
-
-# Upload a file — stores in bucket, updates field with file reference
-await user.upload_file("avatar", file_data=b"...", filename="alice.png")
-
-# Download a file — reads from bucket
-data = await user.download_file("avatar")
-
-# Delete a file — removes from bucket, sets field to None
-await user.delete_file("avatar")
-```
-
-**Implementation** in `model_base.py`:
-
-```python
-async def upload_file(self, field_name: str, file_data: bytes, filename: str) -> None:
-    """Upload file to the bucket associated with the field and update the model."""
-    bucket = get_file_bucket(type(self).__annotations__[field_name])
-    client = await SurrealDBConnectionManager.get_client()
-    file_ref = f"file:{bucket}/{filename}"
-    await client.bucket_put(bucket, filename, data=file_data)
-    await self.merge(**{field_name: file_ref})
-
-async def download_file(self, field_name: str) -> bytes:
-    """Download file from the bucket associated with the field."""
-    file_ref = getattr(self, field_name)
-    client = await SurrealDBConnectionManager.get_client()
-    return await client.bucket_get_raw(file_ref)
-
-async def delete_file(self, field_name: str) -> None:
-    """Delete file from the bucket and clear the field."""
-    file_ref = getattr(self, field_name)
-    client = await SurrealDBConnectionManager.get_client()
-    await client.bucket_delete_ref(file_ref)
-    await self.merge(**{field_name: None})
-```
-
-**1h. Model Code Generator**
-
-```python
-# ModelCodeGenerator generates FileField from bucket-related field types
-# In model_generator.py
-if field_state.file_bucket:
-    type_str = f'FileField["{field_state.file_bucket}"]'
-```
+**Not in 0.39.0:** declarative bucket definitions picked up by `makemigrations`, streaming uploads (whole payloads are
+held in memory), file contents in `dump_database()`. Stable buckets on SurrealDB 4.x (no experimental flag, mandatory
+`BACKEND`) are tracked in [#586](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/586).
 
 ---
 
@@ -1868,7 +1715,24 @@ await User.objects().bulk_upsert(
 | 0.36.0  | Graph Power      | Recursive traversal, shortest path, path collection (Done)                    |
 | 0.37.0  | ML & Data        | JSONL import/export, DB dump/restore (Done)                                   |
 | 0.38.0  | Advanced Queries | Element filters (`__any`/`__all`/`__none`), `FieldPath` nested paths (Done)   |
-| 0.39.0  | File Storage     | DEFINE BUCKET, FileField/ImageField, SDK bucket CRUD, upload/download helpers |
+| 0.39.0  | File Storage     | DEFINE BUCKET, FileField/ImageField, SDK `file_*` methods, model helpers (Done) |
+
+### SurrealDB 4.x (from 0.40.0)
+
+`main` moves to SurrealDB 4.x with 0.40.0; SurrealDB 3.x support continues on the permanent `v3` branch, cut from
+`main` right after 0.39.0 (bug and security fixes only). `v2` (SurrealDB 2.x) is no longer maintained from 0.39.0.
+
+| Version | Focus                                        | Epic                                                            |
+| ------- | -------------------------------------------- | --------------------------------------------------------------- |
+| 0.40.0  | SurrealDB 4.x (floor 4.0, migration only)    | [#581](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/581) |
+| 0.41.0  | Schema evolution on 4.x                      | [#591](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/591) |
+| 0.42.0  | Transactions & named types                   | [#593](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/593) |
+| 0.43.0  | Embedded engine                              | [#594](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/594) |
+| 0.44.0  | CBOR v2 and temporal types                   | [#595](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/595) |
+| 0.45.0  | Composite record ids and materialized references | [#596](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/596) |
+
+Smaller 4.x features (`SPATIAL` index, `order_by()` on a vector distance, ...) ship once 0.40.0 is out:
+[#592](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/592).
 
 SurrealML inference, planned for 0.37.0, is not shipped: it cannot be used on the official SurrealDB 3.x
 images. It is in the backlog ([#450](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/450)).
@@ -1960,12 +1824,13 @@ images. It is in the backlog ([#450](https://github.com/EulogySnowfall/SurrealDB
 | DEFINE CONFIG GRAPHQL         | 0.31.0  | Medium   | Done    | Migrations           |
 | Bearer access (TYPE BEARER)   | 0.31.0  | High     | Done    | Auth + SDK           |
 | UPSERT ON DUPLICATE KEY       | 0.31.0  | Medium   | Done    | QuerySet             |
-| DEFINE BUCKET (migrations)    | 0.39.0  | High     | Planned | Migrations           |
-| BucketBackend enum + parser   | 0.39.0  | High     | Planned | DEFINE BUCKET        |
-| FileField / ImageField        | 0.39.0  | High     | Planned | DEFINE BUCKET        |
-| SDK bucket CRUD methods       | 0.39.0  | High     | Planned | SDK                  |
-| ORM upload/download helpers   | 0.39.0  | Medium   | Planned | FileField + SDK      |
-| Bucket introspection          | 0.39.0  | Medium   | Planned | DatabaseIntrospector |
+| DEFINE BUCKET (migrations)    | 0.39.0  | High     | Done    | Migrations           |
+| parse_define_bucket()         | 0.39.0  | High     | Done    | DEFINE BUCKET        |
+| FileField / ImageField        | 0.39.0  | High     | Done    | DEFINE BUCKET        |
+| SDK file_* methods, FileRef   | 0.39.0  | High     | Done    | SDK                  |
+| ORM upload/download helpers   | 0.39.0  | Medium   | Done    | FileField + SDK      |
+| Bucket introspection          | 0.39.0  | Medium   | Done    | DatabaseIntrospector |
+| SurrealDB 4.x migration       | 0.40.0  | High     | Planned | `v3` branch cut      |
 
 ---
 

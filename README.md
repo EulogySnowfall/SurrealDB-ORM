@@ -14,7 +14,7 @@
 > | -------------- | ------- |
 > | **3.2+** (3.2.x – 3.3.x) | `pip install surrealdb-orm` (0.32.x and later; 3.3 tested from 0.34.0) |
 > | 3.0 – 3.1 | `pip install "surrealdb-orm<0.32"` |
-> | 2.x | `pip install "surrealdb-orm<0.30"` — or the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`0.21.x`, security + critical fixes only) |
+> | 2.x | [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite) — the `v2` branch (`0.21.x`) is no longer maintained from 0.39.0; its last release is 0.21.62 |
 >
 > `Subquery` also emits different SQL in 0.32.0 (a `LET` prelude). The Python API and the results are
 > unchanged — only code asserting on the *generated SQL string* is affected. See
@@ -28,14 +28,74 @@
 
 ## Branch Strategy
 
-| Branch | SurrealDB  | ORM Version | Status                          |
-| ------ | ---------- | ----------- | ------------------------------- |
-| `main` | **3.3.5**  | 0.38.x      | Active development              |
-| `v2`   | **2.7.0**  | 0.21.x      | LTS (security & bug fixes only) |
+| Branch | SurrealDB  | ORM Version | Status                                                     |
+| ------ | ---------- | ----------- | ---------------------------------------------------------- |
+| `main` | **3.3.5**  | 0.39.x      | Active development                                         |
+| `v2`   | **2.7.0**  | 0.21.x      | Unmaintained from 0.39.0 — use [SurrealDB-ORM-lite][lite]  |
 
-Both branches receive automated daily security monitoring from `main` (GitHub Actions only runs cron workflows from the default branch).
+[lite]: https://github.com/EulogySnowfall/SurrealDB-ORM-lite
+
+**Coming next:** `main` moves to **SurrealDB 4.x with 0.40.0**. SurrealDB 3.x support continues on a new permanent
+`v3` branch, cut from `main` right after 0.39.0, which receives 3.x updates (bug and security fixes only, the policy
+`v2` had). The `v2` line (SurrealDB 2.x) is no longer maintained from 0.39.0; 0.21.62 is its last release.
 
 ---
+
+## What's New in 0.39.0
+
+**Minor release — File Storage** ([#562](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/562)). Store files in
+SurrealDB buckets from the SDK, the ORM and the migrations. **Experimental:** it follows SurrealDB's experimental
+`files` capability, so the server must be started with `--allow-experimental=files` (3.2.x and 3.3.x); otherwise every
+file call raises `FilesNotEnabledError`. Files are not transactional, and a bucket defined without `PERMISSIONS` is
+readable and writable by every record user. SurrealDB pin unchanged (3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the
+full notes.
+
+```python
+from surreal_orm import BaseSurrealModel, FileField, FileRef, ImageField, SurrealConfigDict
+from surreal_orm.migrations.operations import DefineBucket
+
+# Migrations: DEFINE BUCKET docs BACKEND 'memory' PERMISSIONS WHERE $action INSIDE ['get', 'head'];
+DefineBucket("docs", backend="memory", permissions="$action INSIDE ['get', 'head']")
+
+class Doc(BaseSurrealModel):
+    model_config = SurrealConfigDict(table_name="doc")
+    id: str | None = None
+    attachment: FileField["docs"]   # option<file<docs>>
+    cover: ImageField["images"]     # PNG, JPEG, GIF or WebP uploads only
+
+doc = Doc(id="report")
+await doc.save()
+ref = await doc.upload_file("attachment", b"Q1 revenue: 42")  # docs:/doc/report/attachment
+data = await doc.download_file("attachment")
+info = await doc.file_info("attachment")                       # FileInfo: file, size, updated
+await doc.delete_file("attachment")
+
+# SDK, on every connection (HTTP, WebSocket, pooled)
+await client.file_put(FileRef("docs", "/notes/hello.txt"), b"Hello")
+files = await client.file_list("docs", prefix="/notes/")
+```
+
+- **SDK:** `FileRef(bucket, key)` (CBOR tag 55) and `FileInfo`; `file_put()`, `file_get()`, `file_head()`,
+  `file_exists()`, `file_delete()`, `file_copy()`, `file_rename()`, `file_list()`, `iter_files()`;
+  `max_request_size=` (4 MiB over HTTP, 128 MiB over WebSocket, as on the server), checked by `file_put()` before
+  sending; `PayloadTooLargeError` and `FilesNotEnabledError`.
+- **ORM:** `FileField` / `ImageField` accept a `FileRef` or its `"bucket:/key"` text; `upload_file()` writes to
+  `/<table>/<id>/<column>` with the id percent-encoded as one segment, and switches to the connection's WebSocket for
+  uploads above the HTTP limit. Filters, `Q`, `live()`, `merge()`, `bulk_update()`, `upsert()` and `bulk_upsert()`
+  turn `"bucket:/key"` text on a file column into a pointer.
+- **Migrations:** `DefineBucket`, `AlterBucket`, `RemoveBucket` (needs `--drop-missing`), `parse_define_bucket()`;
+  buckets are introspected and diffed, and `inspectdb` generates `FileField[...]`.
+- **Behaviour changes:** a file pointer in a query result is a `FileRef` (was a `(bucket, key)` tuple); an HTTP 413
+  raises `PayloadTooLargeError` (a `QueryError`, code 413).
+- **Fix ([#635](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/635)):** `inspectdb` writes the text the server
+  reports (computed `VALUE` expressions, `changefeed`, `on_delete`, event comments...) as Python string literals, so a
+  quote, a backslash or a newline round-trips. Generated models now use `repr()` quoting (`Computed('a + b')`).
+- **Notebook:** [`examples/18_file_storage.ipynb`](examples/18_file_storage.ipynb).
+
+**`v2` is no longer maintained** from this release (0.21.62 is its last release): SurrealDB 2.x users should move to
+[SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite). **Coming next:** `main` moves to
+SurrealDB 4.x with 0.40.0, and SurrealDB 3.x support continues on a new permanent `v3` branch, cut from `main` right
+after this release (bug and security fixes only).
 
 ## What's New in 0.38.7
 
@@ -2056,7 +2116,7 @@ pip install surrealdb-orm
 pip install surrealdb-orm[cli]
 ```
 
-**Requirements:** Python 3.12+ (tested on 3.12 – 3.15) | SurrealDB 3.2.x – 3.3.x, tested against 3.3.5 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers)
+**Requirements:** Python 3.12+ (tested on 3.12 – 3.15) | SurrealDB 3.2.x – 3.3.x, tested against 3.3.5 (see [SurrealDB Compatibility](#surrealdb-compatibility) for older servers; SurrealDB 2.x: the `v2` line is unmaintained, use [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite))
 
 **Included:** `pydantic`, `httpx`, `aiohttp`, `cbor2` (CBOR is the default protocol for WebSocket)
 
@@ -2064,16 +2124,17 @@ pip install surrealdb-orm[cli]
 
 | ORM Version           | SurrealDB     | Branch | Status              |
 | --------------------- | ------------- | ------ | ------------------- |
-| **0.38.x**            | 3.2.x – 3.3.x | `main` | Active development  |
-| **0.35.x – 0.37.x**   | 3.2.x – 3.3.x | —      | Superseded          |
+| **0.39.x**            | 3.2.x – 3.3.x | `main` | Active development  |
+| **0.35.x – 0.38.x**   | 3.2.x – 3.3.x | —      | Superseded          |
 | **0.34.x**            | 3.2.x – 3.3.x | —      | Superseded          |
 | **0.32.x – 0.33.x**   | >= 3.2        | —      | Superseded          |
 | **0.30.x – 0.31.x**   | 3.0 – 3.1     | —      | Superseded          |
-| **0.21.x**            | 2.6.x – 2.7.x | `v2`   | Security fixes only |
+| **0.21.x**            | 2.6.x – 2.7.x | `v2`   | Unmaintained        |
 
 - **SurrealDB 3.2.x – 3.3.x** — Use `surrealdb-orm >= 0.34.0` (this branch). Tested against SurrealDB **3.3.5**, and against 3.2.6 on the 3.2 floor line.
 - **SurrealDB 3.0 – 3.1** — Pin `surrealdb-orm<0.32`. 0.32.0 requires 3.2+ and is not tested against 3.1.x.
-- **SurrealDB 2.6.x – 2.7.x** — Use the [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`; 2.7.x from 0.21.8, tested against **2.7.0**). This branch receives security patches but no new features.
+- **SurrealDB 2.6.x – 2.7.x** — Use [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite). The [`v2` branch](https://github.com/EulogySnowfall/SurrealDB-ORM/tree/v2) (`surrealdb-orm 0.21.x`, tested against **2.7.0**) is no longer maintained from 0.39.0: 0.21.62 is its last release, and it receives no further fixes.
+- **SurrealDB 4.x (coming)** — `main` moves to SurrealDB 4.x with 0.40.0. SurrealDB 3.x support then continues on the permanent `v3` branch (cut from `main` right after 0.39.0; bug and security fixes only).
 
 ---
 
