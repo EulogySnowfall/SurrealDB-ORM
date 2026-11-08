@@ -543,7 +543,7 @@ class TestModelGeneratorRecordLinks:
 
         code = ModelCodeGenerator().generate(state)
 
-        assert 'author: ForeignKey("users", on_delete="CASCADE")' in code
+        assert "author: ForeignKey(\"users\", on_delete='CASCADE')" in code
         assert "ReferencesField" not in code
 
     def test_array_record_reference_still_generates_references_field(self) -> None:
@@ -567,7 +567,7 @@ class TestModelGeneratorRecordLinks:
 
         code = ModelCodeGenerator().generate(state)
 
-        assert 'books: ReferencesField["books", "CASCADE"]' in code
+        assert "books: ReferencesField[\"books\", 'CASCADE']" in code
 
     def test_generated_foreign_key_round_trips_without_a_type_change(self) -> None:
         """Re-introspecting the generated model reproduces the same column."""

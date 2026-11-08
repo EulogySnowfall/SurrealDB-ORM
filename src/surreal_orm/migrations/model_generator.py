@@ -10,6 +10,7 @@ reverse of the ``ModelIntrospector`` → ``SchemaState`` path used by
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from ..surreal_function import SurrealFunc
 from ..utils import SAFE_IDENTIFIER_RE
@@ -43,6 +44,41 @@ _IMPORT_MAP: dict[str, str] = {
     "Decimal": "from decimal import Decimal",
     "Any": "from typing import Any",
 }
+
+
+# Geometry kinds SurrealDB accepts in ``geometry<...>`` (``linestring`` and
+# ``feature`` are kept for states built by hand), alone or as a ``|`` union.
+# Anything else in the brackets is not a geometry type and maps to ``Any``.
+# A trailing ``| null`` is allowed: ``INFO FOR TABLE`` keeps it in the type
+# text of a nullable column (``parse_define_field()`` sets ``nullable`` and
+# leaves it there), and the ``| None`` comes from ``nullable``.
+_GEOMETRY_KIND = r"\s*(?:point|line|linestring|polygon|multipoint|multiline|multipolygon|collection|feature)\s*"
+_GEOMETRY_TYPE_RE = re.compile(
+    rf"geometry<({_GEOMETRY_KIND}(?:\|{_GEOMETRY_KIND})*)>(?:\s*\|\s*null)?",
+    re.IGNORECASE,
+)
+
+
+def _py_str(text: str) -> str:
+    """Render server-supplied text as one Python string literal.
+
+    ``repr()`` escapes quotes, backslashes, newlines and every other control
+    character, so ``ast.literal_eval`` of the result gives back ``text``
+    exactly. Interpolating the text between hand-written quotes did not: a
+    quote or a backslash in a ``VALUE`` clause changed the generated source.
+    """
+    return repr(text)
+
+
+def _py_comment(text: str) -> str:
+    """Render server-supplied text for a ``#`` comment, on one line.
+
+    Characters that end or break a source line (``\\n``, ``\\r``, the other
+    control characters, the Unicode line and paragraph separators) are written
+    as their Python escape (``\\n``, ``\\x0c``, ``\\u2028``), so the text
+    after them stays inside the comment. Everything else is kept as is.
+    """
+    return "".join(repr(char)[1:-1] if unicodedata.category(char) in ("Cc", "Zl", "Zp") else char for char in text)
 
 
 class ModelCodeGenerator:
@@ -125,11 +161,11 @@ class ModelCodeGenerator:
                 "hash": "TableType.HASH",
                 "any": "TableType.ANY",
             }
-            tt = type_map.get(table.table_type, f'"{table.table_type}"')
+            tt = type_map.get(table.table_type, _py_str(table.table_type))
             config_parts.append(f"table_type={tt}")
 
         if table.changefeed:
-            config_parts.append(f'changefeed="{table.changefeed}"')
+            config_parts.append(f"changefeed={_py_str(table.changefeed)}")
 
         if table.permissions:
             perm_str = repr(table.permissions)
@@ -177,7 +213,7 @@ class ModelCodeGenerator:
                 if vtype == "F32":
                     field_line = f"{field_state.name}: VectorField[{hnsw_idx.dimension}]"
                 else:
-                    field_line = f'{field_state.name}: VectorField[{hnsw_idx.dimension}, "{vtype}"]'
+                    field_line = f"{field_state.name}: VectorField[{hnsw_idx.dimension}, {_py_str(vtype)}]"
                 lines.append(f"    {field_line}")
             else:
                 field_line, field_imports = self._generate_field(field_state)
@@ -189,7 +225,7 @@ class ModelCodeGenerator:
             lines.append("")
             lines.append("    # Server-side events (managed by SurrealDB):")
             for event_name, event_state in sorted(table.events.items()):
-                lines.append(f"    # - {event_name}: WHEN {event_state.when}")
+                lines.append(f"    # - {_py_comment(event_name)}: WHEN {_py_comment(event_state.when)}")
 
         return "\n".join(lines), extra_imports
 
@@ -214,7 +250,7 @@ class ModelCodeGenerator:
                     extra_imports.add("from surreal_orm.fields import ReferencesField")
                     if field.on_delete:
                         return (
-                            f'{field.name}: ReferencesField["{table_name}", "{field.on_delete}"]',
+                            f'{field.name}: ReferencesField["{table_name}", {_py_str(field.on_delete)}]',
                             extra_imports,
                         )
                     return f'{field.name}: ReferencesField["{table_name}"]', extra_imports
@@ -222,7 +258,7 @@ class ModelCodeGenerator:
                 extra_imports.add("from surreal_orm.fields import ForeignKey")
                 if field.on_delete:
                     return (
-                        f'{field.name}: ForeignKey("{table_name}", on_delete="{field.on_delete}")',
+                        f'{field.name}: ForeignKey("{table_name}", on_delete={_py_str(field.on_delete)})',
                         extra_imports,
                     )
                 return f'{field.name}: ForeignKey("{table_name}")', extra_imports
@@ -244,7 +280,7 @@ class ModelCodeGenerator:
         if field.value and not field.encrypted:
             extra_imports.add("from surreal_orm.fields import Computed")
             return (
-                f'{field.name}: Computed[{python_type}] = Computed("{field.value}")',
+                f"{field.name}: Computed[{python_type}] = Computed({_py_str(field.value)})",
                 extra_imports,
             )
 
@@ -345,11 +381,11 @@ class ModelCodeGenerator:
         if record_match:
             return "str"  # Record references are stored as string IDs
 
-        # Handle geometry<T> → GeoField["T"]
-        geo_match = re.match(r"geometry<(.+)>", surreal_type, re.IGNORECASE)
+        # Handle geometry<T> → GeoField['T'], only for known geometry kinds
+        geo_match = _GEOMETRY_TYPE_RE.fullmatch(surreal_type)
         if geo_match:
-            geo_type = geo_match.group(1).strip().lower()
-            return f'GeoField["{geo_type}"]'
+            geo_type = " | ".join(kind.strip().lower() for kind in geo_match.group(1).split("|"))
+            return f"GeoField[{_py_str(geo_type)}]"
 
         # Simple type lookup
         return _SURREAL_TO_PYTHON.get(surreal_type.lower(), "Any")
