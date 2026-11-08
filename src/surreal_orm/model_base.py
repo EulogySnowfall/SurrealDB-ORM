@@ -2464,16 +2464,25 @@ class BaseSurrealModel(BaseModel):
             from_thing, to_thing = to_thing, from_thing
 
         if tx is not None:
-            await tx.relate(from_thing, relation, to_thing, edge_data if edge_data else None)
+            try:
+                await tx.relate(from_thing, relation, to_thing, edge_data if edge_data else None)
+            finally:
+                # Dropped now and again once the transaction commits.
+                QueryCache._invalidate_table_for_write(relation, tx)
             return {"in": from_thing, "out": to_thing, **edge_data}
 
         client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
-        result = await client.relate(
-            from_thing,
-            relation,
-            to_thing,
-            edge_data if edge_data else None,
-        )
+        try:
+            result = await client.relate(
+                from_thing,
+                relation,
+                to_thing,
+                edge_data if edge_data else None,
+            )
+        finally:
+            # Once the statement is sent, the edge table may have changed even
+            # if the call raises: dropping too much only costs a re-query.
+            QueryCache._invalidate_table_for_write(relation)
 
         if result.exists and result.record:
             return dict(result.record)
@@ -2548,12 +2557,7 @@ class BaseSurrealModel(BaseModel):
                 else:
                     query = f"DELETE {relation} WHERE in = {source_thing} AND record::id(out) = $target_id;"
 
-                if tx is not None:
-                    await tx.query(query, {"target_id": target_id})
-                    return
-
-                client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
-                await client.query(query, {"target_id": target_id})
+                await self._write_relation_tables(query, [relation], tx, {"target_id": target_id})
                 return
         else:
             # Model instance
@@ -2569,12 +2573,7 @@ class BaseSurrealModel(BaseModel):
         else:
             query = f"DELETE {relation} WHERE in = {source_thing} AND out = {target_thing};"
 
-        if tx is not None:
-            await tx.query(query)
-            return
-
-        client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
-        await client.query(query)
+        await self._write_relation_tables(query, [relation], tx)
 
     async def remove_all_relations(
         self,
@@ -2642,14 +2641,43 @@ class BaseSurrealModel(BaseModel):
         if not queries:
             raise ValueError(f"Invalid direction: {direction!r}. Expected one of 'out', 'in', or 'both'.")
 
+        await self._write_relation_tables(queries, relations, tx)
+
+    async def _write_relation_tables(
+        self,
+        queries: str | list[str],
+        tables: list[str],
+        tx: "BaseTransaction | None",
+        variables: dict[str, Any] | None = None,
+    ) -> None:
+        """Run the edge-table *queries*, then drop the cached entries of *tables*.
+
+        With *tx*, the queries are queued on (or, over WebSocket, run inside)
+        the transaction, and the tables are dropped at once and again once the
+        transaction commits; a rollback drops nothing more. Without it, they
+        run on the instance's connection. Either way the tables are dropped even
+        if a query raises: an earlier one may already have changed the edge
+        table, and dropping too much only costs a re-query.
+        """
+        statements = [queries] if isinstance(queries, str) else queries
+        # Bindings only when there are some: the call keeps its historical shape.
+        args: tuple[dict[str, Any], ...] = (variables,) if variables is not None else ()
         if tx is not None:
-            for query in queries:
-                await tx.query(query)
+            try:
+                for query in statements:
+                    await tx.query(query, *args)
+            finally:
+                for table in tables:
+                    QueryCache._invalidate_table_for_write(table, tx)
             return
 
         client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
-        for query in queries:
-            await client.query(query)
+        try:
+            for query in statements:
+                await client.query(query, *args)
+        finally:
+            for table in tables:
+                QueryCache._invalidate_table_for_write(table)
 
     @overload
     async def get_related(
