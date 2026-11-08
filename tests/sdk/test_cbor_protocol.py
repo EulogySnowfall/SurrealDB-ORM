@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
+from typing import NamedTuple
 from uuid import UUID
 
 import pytest
@@ -67,6 +68,24 @@ class TestCBORDataclasses:
 
 class TestCBOREncodeDecode:
     """Test CBOR encoding and decoding."""
+
+    @pytest.mark.parametrize("wrapper", [lambda value: value, lambda value: {"point": value}, lambda value: [value]])
+    def test_namedtuple_encodes_like_plain_tuple(self, wrapper) -> None:
+        class Point(NamedTuple):
+            x: Decimal
+            y: date
+            optional: None = None
+
+        point = Point(Decimal("1.25"), date(2026, 1, 2))
+        assert encode(wrapper(point)) == encode(wrapper(tuple(point)))
+        assert point == Point(Decimal("1.25"), date(2026, 1, 2))
+
+    @pytest.mark.parametrize("values", [(), (1,), (1, 2)])
+    def test_namedtuple_field_counts(self, values) -> None:
+        from collections import namedtuple
+
+        record = namedtuple("Record", [f"field_{index}" for index in range(len(values))])
+        assert encode(record(*values)) == encode(values)
 
     def test_encode_decode_string(self) -> None:
         """Encode and decode simple string."""

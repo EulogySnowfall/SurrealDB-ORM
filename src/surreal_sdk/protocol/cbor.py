@@ -264,7 +264,9 @@ def _preprocess_for_cbor(data: Any) -> Any:
         return {_check_key(k): _preprocess_for_cbor(v) for k, v in data.items()}
     if isinstance(data, (list, tuple, set, frozenset)):
         converted = [_preprocess_for_cbor(item) for item in data]
-        return type(data)(converted)
+        # Tuple subclasses such as NamedTuple take positional fields rather than
+        # an iterable. They have the same CBOR array representation as tuples.
+        return tuple(converted) if isinstance(data, tuple) else type(data)(converted)
     return data
 
 
