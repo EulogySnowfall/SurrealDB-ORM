@@ -96,6 +96,48 @@ def parse_filter_key(key: str) -> tuple[str, str]:
     return field_name, lookup_name
 
 
+def validate_filter_condition(field_name: Any, lookup_name: Any) -> None:
+    """Check the field and the lookup of one filter condition, each on its own.
+
+    The renderer calls this for every ``(field, lookup, value)`` condition,
+    because a ``Q``'s ``children`` can be built by hand and never go through
+    :func:`parse_filter_key`. The two parts are checked separately, never
+    joined back into a key: ``("a__b", "exact")`` would otherwise be split as
+    field ``a`` and lookup ``b__exact``, and reported against a lookup the
+    caller never wrote. The field is checked first, as in
+    :func:`parse_filter_key`.
+
+    Args:
+        field_name: The field part: a field name or a dotted path, without
+            ``__`` (which separates a field from its lookup in a key).
+        lookup_name: The lookup, one of ``VALID_LOOKUPS``.
+
+    Raises:
+        ValueError: If the field is not a field name or dotted path, or
+            contains ``__`` (the message names the field); or if the lookup
+            is not a string or not a known lookup (the message names the
+            lookup and lists the supported ones).
+    """
+    if isinstance(field_name, str) and "__" in field_name:
+        raise ValueError(
+            f"Invalid filter field {field_name!r}: '__' separates a field from its lookup and cannot appear in the field name."
+        )
+    try:
+        validate_field_path(field_name)
+    except ValueError:
+        raise ValueError(
+            f"Invalid filter field {field_name!r}: expected a field name or a dotted path of field names "
+            "(letters, digits and underscores, each starting with a letter or underscore)."
+        ) from None
+    supported = f"Supported lookups: {', '.join(sorted(VALID_LOOKUPS))}."
+    # The type is checked first: an unhashable lookup would make the set
+    # membership test raise TypeError.
+    if not isinstance(lookup_name, str):
+        raise ValueError(f"Invalid lookup {lookup_name!r} on filter field {field_name!r}: expected a string. {supported}")
+    if lookup_name not in VALID_LOOKUPS:
+        raise ValueError(f"Invalid lookup {lookup_name!r} on filter field {field_name!r}. {supported}")
+
+
 def surql_string(text: str) -> str:
     """Render *text* as a single-quoted SurrealQL string literal.
 

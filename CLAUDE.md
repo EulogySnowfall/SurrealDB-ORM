@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.7)
+> Context document for Claude AI - Last updated: November 2026 (0.39.8)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.7 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.8 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -21,6 +21,32 @@
 
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.8
+
+One fix, #375 via #676 (`surreal_orm/auth/mixins.py` only). Pin unchanged
+(3.3.5). `v2`: not backported (the line ended at 0.21.62; its
+`validate_token_local()` has the same gap).
+
+- **`validate_token_local()` calls `_is_own_record()` on the `ID` claim**
+  after the `exp` check, the helper `validate_token()` /
+  `authenticate_token()` have used since 0.35.1. It reads a quoted table
+  (`` `t`:x ``, angle brackets) and rejects a table that only starts with
+  the model's (`staffer:a` vs `staff`). Signature and `AC` / `NS` / `DB`
+  are still not checked.
+- **Behaviour change:** on another model, or on the bare mixin (whose
+  `_auth_table_name()` is `AuthenticatedUserMixin`), it returns `None`. The
+  0.14.2 tests now call it on a model whose table is `users`.
+- The expiry integration test uses `DURATION FOR TOKEN 5s` (was 2 s): with
+  a 1 s `exp` resolution the 2 s token could have about 1 s left at the
+  first assertion.
+- Release-doc corrections: 0.35.1 known limitation marked resolved;
+  `refresh_access_token()` added to 0.35.1's routed auth methods.
+- **Open (review suggestion on #676):** for a string ID, `_is_own_record()`
+  strips a quoted table's delimiters without unescaping inside them, so a
+  table name that needs escaping never matches; reading it through
+  `surreal_sdk.utils._parse_record_reference(..., any_table=True)` is the
+  suggested fix.
 
 ### What's New in 0.39.7
 
@@ -795,8 +821,8 @@ One fix, #331 via #370 (`auth/mixins.py` only). Pin unchanged (3.3.4).
   `TYPE_CHECKING` now.** At runtime it returned `"default"` and, with the
   documented mixin-first MRO, shadowed `BaseSurrealModel.get_connection_name()`,
   so every auth call ignored `using()` / `connection=`.
-- **Open:** `validate_token_local()` still skips the table check (review
-  suggestion on #370).
+- **Open (resolved in 0.39.8, #375):** `validate_token_local()` skipped
+  the table check (review suggestion on #370).
 
 ### What's New in 0.35.0
 
