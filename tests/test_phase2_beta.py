@@ -668,7 +668,7 @@ class TestModelGeneratorReferences:
         )
         gen = ModelCodeGenerator()
         code = gen.generate(state)
-        assert 'ForeignKey("users", on_delete="CASCADE")' in code
+        assert "ForeignKey(\"users\", on_delete='CASCADE')" in code
         assert "from surreal_orm.fields import ForeignKey" in code
 
     def test_generates_references_field_with_on_delete(self) -> None:
@@ -691,7 +691,7 @@ class TestModelGeneratorReferences:
         )
         gen = ModelCodeGenerator()
         code = gen.generate(state)
-        assert 'ReferencesField["books", "CASCADE"]' in code
+        assert "ReferencesField[\"books\", 'CASCADE']" in code
 
 
 # ==================== FieldType.REFERENCES ====================
