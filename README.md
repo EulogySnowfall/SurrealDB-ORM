@@ -41,6 +41,25 @@
 
 ---
 
+## What's New in 0.39.7
+
+**Patch release — one reading of a `table:id` reference on every SDK path**
+([#324](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/324)). SDK only, no new public API, SurrealDB pin
+unchanged (3.3.5):
+
+- The `HTTPConnection` / `WebSocketConnection` record methods (`select`, `create`, `update`, `upsert`, `merge`, `patch`,
+  `delete`, `relate`), and so `WebSocketTransaction`, now read a `table:id` reference as `HTTPTransaction` does: `t:1`
+  and `t:-5` are integer IDs (signed 64-bit range), `t:05` is the integer 5 (leading zeros dropped, as SurrealQL does),
+  and `t:⟨a b⟩` / ``t:`a b` `` are the string ID `"a b"`. A `RecordId` argument is now sent as is instead of raising
+  `TypeError`.
+- **Behaviour change (CBOR, the default):** `conn.select("t:1")` targets the integer ID 1, where it used to target the
+  string ID `"1"`; a malformed reference raises `ValueError` before any request; `t:rand()` / `t:ulid()` / `t:uuid()`
+  given to a connection method raises `ValueError` instead of storing the literal text as the ID. To address a
+  digit-only string ID, write it delimited (``t:`123` ``) or pass a `RecordId`; the ORM already does.
+- `docs/sdk.md` has a new "Record references" section.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.39.6
 
 **Patch release — relation writes drop the edge table's cached entries**

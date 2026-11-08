@@ -6,6 +6,77 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.7] - 2026-11-08
+
+**Patch release — one reading of a `table:id` reference on every SDK path.**
+One fix: #324 via #649 (`surreal_sdk/utils.py`, `connection/http.py`,
+`connection/websocket.py`, `transaction.py`). SDK only; no public API is
+added. The SurrealDB pin is unchanged (tested against 3.3.5, supported
+range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **The SDK reads a `table:id` reference the same way on every path.**
+  `HTTPConnection` / `WebSocketConnection` `select` / `create` / `update` /
+  `upsert` / `merge` / `patch` / `delete` / `relate`, and so
+  `WebSocketTransaction`, now share `HTTPTransaction`'s reading: `t:1` and
+  `t:-5` are integer IDs (signed 64-bit range; beyond it the digits stay a
+  string ID), and `t:⟨a b⟩` / ``t:`a b` `` are the string ID `"a b"`.
+  Leading zeros are dropped as SurrealQL drops them (`t:05` is the integer
+  5, and `t:` followed by 100 zeros and `1` is the integer 1). A connection
+  method still accepts a table that is not an identifier
+  (`user-profiles:abc`) and reads a delimited table back once (#324).
+- **Passing a `RecordId` to the WebSocket methods, and to the HTTP methods
+  other than `upsert()`, raised `TypeError`;** it is now sent as is (#324).
+
+### Behaviour changes
+
+CBOR protocol only (the default); under `protocol="json"` nothing changes.
+
+- `conn.select/update/merge/upsert/delete/relate("t:1")` now targets the
+  integer ID `1`, where it used to target the string ID `"1"`.
+- `t:05` / `t:-05` now name the integer IDs 5 / -5 on every path,
+  `HTTPTransaction` included, where they named the string ID `"05"`.
+  `HTTPTransaction` used to bind an ID part longer than 20 characters as a
+  string ID; such an ID made of digits now reads as the integer the server
+  reads.
+- A malformed reference (empty table, empty ID, unclosed or doubled
+  delimiter, array/object ID) raises `ValueError` before any request.
+- `t:rand()` / `t:ulid()` / `t:uuid()` passed to a connection method (or
+  `WebSocketTransaction`) raises `ValueError`; it used to create a record
+  whose ID was the literal text `"ulid()"`. `HTTPTransaction` still
+  evaluates generators.
+
+### Upgrading
+
+- To address a string ID made of digits through the SDK, write it delimited
+  (`format_thing(table, "123")` → ``t:`123` ``, or `t:⟨123⟩`), or pass a
+  `RecordId`. The ORM already does this.
+- Records created earlier over RPC with `t:<digits>`, or in an
+  `HTTPTransaction` with `t:0<digits>`, have a string ID: address them as
+  ``t:`<digits>` ``.
+- For a random ID, pass the table name instead of `t:rand()`.
+
+### Documentation
+
+- `docs/sdk.md`: new "Record references" section (readings, errors, table
+  names, generators).
+
+### Tests
+
+- ORM integration test for `merge(tx=)` and `save(tx=)` of a saved record in
+  an HTTP transaction, read back after the commit. The strict `xfail` for
+  integer IDs through `WebSocketTransaction` (#306 tests) now passes and is
+  removed; this resolves the `[0.34.14]` known gap.
+
+### Known limitations
+
+- `RecordId.parse()` (`surreal_sdk/protocol/cbor.py`) keeps its own
+  `split(":", 1)` reading: no integer IDs, delimiters kept (review
+  suggestion on #649).
+
+---
+
 ## [0.39.6] - 2026-11-08
 
 **Patch release — relation writes drop the edge table's cached entries.**
