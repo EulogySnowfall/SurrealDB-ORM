@@ -194,13 +194,6 @@ def unescape_record_id(id_part: str) -> str:
     return _ESCAPED_ID_UNIT.sub(lambda m: m.group(0)[-1] if len(m.group(0)) == 2 else m.group(0), id_part[1:-1])
 
 
-#: A record ID part that SurrealQL reads as an integer when written inline
-#: (``users:1``, ``users:-5``, ``users:05`` = 5), provided its value fits in a
-#: signed 64-bit integer; outside that range the server keeps the digits, as
-#: written, as a string ID. Groups: the sign, then the digits without their
-#: leading zeros (``"0"`` for zero).
-_INTEGER_ID_RE = re.compile(r"(-?)0*([0-9]+)")
-
 #: Digits of the largest magnitude in the signed 64-bit range (``2**63``).
 _I64_DIGITS = 19
 
@@ -255,13 +248,21 @@ def _integer_record_id(id_part: str) -> int | None:
 
     An optional ``-``, then digits; leading zeros are dropped (``05`` is 5,
     ``-05`` is -5, as the server reads them). The value must be in the signed
-    64-bit range. Only the significant digits are converted, so a long run of
-    zeros or digits costs no large-integer parsing.
+    64-bit range; outside it the server keeps the digits, as written, as a
+    string ID.
+
+    The check runs in time linear in the length of ``id_part``; only the
+    significant digits, at most 19, are converted.
     """
-    match = _INTEGER_ID_RE.fullmatch(id_part)
-    if match is None or len(match.group(2)) > _I64_DIGITS:
+    digits = id_part[1:] if id_part.startswith("-") else id_part
+    if not (digits.isascii() and digits.isdigit()):
         return None
-    value = int(match.group(1) + match.group(2))
+    significant = digits.lstrip("0") or "0"
+    if len(significant) > _I64_DIGITS:
+        return None
+    value = int(significant)
+    if id_part.startswith("-"):
+        value = -value
     return value if _I64_MIN <= value <= _I64_MAX else None
 
 

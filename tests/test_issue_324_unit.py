@@ -14,6 +14,7 @@ Both paths now go through one private parser,
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -23,7 +24,7 @@ from src.surreal_orm.utils import format_thing
 from src.surreal_sdk.connection.http import HTTPConnection
 from src.surreal_sdk.connection.websocket import WebSocketConnection
 from src.surreal_sdk.protocol.cbor import RecordId
-from src.surreal_sdk.utils import _parse_record_reference
+from src.surreal_sdk.utils import _integer_record_id, _parse_record_reference
 
 T = "i324_nodes"
 
@@ -117,6 +118,27 @@ class TestParser:
         assert _parse_record_reference(f"{T}:{'0' * 5000}1", "thing").id == 1
         assert _parse_record_reference(f"{T}:-{'0' * 5000}", "thing").id == 0
         assert _parse_record_reference(f"{T}:{'1' * 5000}", "thing").id == "1" * 5000
+
+    @pytest.mark.parametrize("sign", ["", "-"])
+    def test_long_zero_run_then_non_digit_is_a_string_id(self, sign: str) -> None:
+        """A long run of zeros followed by a non-digit is not an integer: it stays a string ID.
+
+        The integer check runs in time linear in the length of the ID part, so
+        200,000 zeros are read well under 50 ms.
+        """
+        id_part = sign + "0" * 200_000 + "x"
+        start = time.perf_counter()
+        integer = _integer_record_id(id_part)
+        ref = _parse_record_reference(f"{T}:{id_part}", "thing")
+        elapsed = time.perf_counter() - start
+        assert integer is None
+        assert ref.id == id_part
+        assert elapsed < 0.05, f"took {elapsed * 1000:.1f} ms"
+
+    @pytest.mark.parametrize("id_part", ["", "-", "--5", "+5", "5-", "1_000", " 5", "5 ", "\u0665", "\u00b2", "0x10"])
+    def test_not_an_integer(self, id_part: str) -> None:
+        """Only an optional ``-`` then ASCII digits is an integer (``str.isdigit()`` alone accepts ``"\\u00b2"`` and ``"\\u0665"``)."""
+        assert _integer_record_id(id_part) is None
 
     def test_bare_table(self) -> None:
         ref = _parse_record_reference(T, "thing")
