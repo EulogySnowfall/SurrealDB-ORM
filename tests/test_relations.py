@@ -1,5 +1,9 @@
 """Tests for ORM v0.4.0 features: relations and graph traversal."""
 
+from collections.abc import Callable
+from typing import Annotated, Any, Optional, Union
+
+import pytest
 from pydantic import Field
 
 from src.surreal_orm.fields.relation import (
@@ -457,3 +461,138 @@ def test_helper_functions_exported_from_fields() -> None:
     assert is_many_to_many is not None
     assert is_graph_relation is not None
     assert get_relation_info is not None
+
+
+# ==================== Union-wrapped markers (#299) ====================
+#
+# ``ForeignKey(X) | None`` and ``Optional[ForeignKey(X)]`` keep the marker on a
+# union member, not on a top-level ``Annotated``.  The five public helpers must
+# report such a field exactly as they report the bare marker.
+
+
+_I299_MARKERS: dict[str, tuple[Any, RelationInfo]] = {
+    "foreign_key": (
+        ForeignKey("I299Target", on_delete="SET_NULL", related_name="sources"),
+        RelationInfo(
+            to_model="I299Target",
+            relation_type="foreign_key",
+            on_delete="SET_NULL",
+            related_name="sources",
+        ),
+    ),
+    "many_to_many": (
+        ManyToMany("I299Target", through="i299_link", related_name="members"),
+        RelationInfo(
+            to_model="I299Target",
+            relation_type="many_to_many",
+            through="i299_link",
+            related_name="members",
+        ),
+    ),
+    "relation": (
+        Relation("i299_follows", "I299Target", reverse=True),
+        RelationInfo(
+            to_model="I299Target",
+            relation_type="relation",
+            edge_table="i299_follows",
+            reverse=True,
+        ),
+    ),
+}
+
+_I299_WRAPPINGS: dict[str, Callable[[Any], Any]] = {
+    "bare": lambda marker: marker,
+    "pipe_none": lambda marker: marker | None,
+    "none_pipe": lambda marker: None | marker,
+    "optional": lambda marker: Optional[marker],
+    "union": lambda marker: Union[marker, None],  # noqa: UP007 - the typing form is what is tested
+}
+
+_I299_TYPE_CHECKS: dict[str, Callable[[Any], bool]] = {
+    "foreign_key": is_foreign_key,
+    "many_to_many": is_many_to_many,
+    "relation": is_graph_relation,
+}
+
+
+@pytest.mark.parametrize("wrapping", sorted(_I299_WRAPPINGS))
+@pytest.mark.parametrize("kind", sorted(_I299_MARKERS))
+def test_i299_is_relation_field_sees_marker_in_union(kind: str, wrapping: str) -> None:
+    """is_relation_field() reports a union-wrapped marker as a relation."""
+    marker, _ = _I299_MARKERS[kind]
+    assert is_relation_field(_I299_WRAPPINGS[wrapping](marker)) is True
+
+
+@pytest.mark.parametrize("wrapping", sorted(_I299_WRAPPINGS))
+@pytest.mark.parametrize("kind", sorted(_I299_MARKERS))
+def test_i299_type_specific_helpers_see_marker_in_union(kind: str, wrapping: str) -> None:
+    """Each type-specific helper matches its own marker in a union, and only it."""
+    marker, _ = _I299_MARKERS[kind]
+    field_type = _I299_WRAPPINGS[wrapping](marker)
+    for check_kind, check in _I299_TYPE_CHECKS.items():
+        assert check(field_type) is (check_kind == kind), (check.__name__, kind, wrapping)
+
+
+@pytest.mark.parametrize("wrapping", sorted(_I299_WRAPPINGS))
+@pytest.mark.parametrize("kind", sorted(_I299_MARKERS))
+def test_i299_get_relation_info_sees_marker_in_union(kind: str, wrapping: str) -> None:
+    """get_relation_info() returns the same RelationInfo as for the bare marker."""
+    marker, expected = _I299_MARKERS[kind]
+    info = get_relation_info(_I299_WRAPPINGS[wrapping](marker))
+    assert info == expected
+    assert info == get_relation_info(marker)
+
+
+@pytest.mark.parametrize(
+    "field_type",
+    [
+        str,
+        int,
+        list,
+        str | None,
+        int | str,
+        Optional[int],
+        Union[str, int, None],  # noqa: UP007 - the typing form is what is tested
+        list[str] | None,
+        Annotated[str, "not a marker"] | None,
+    ],
+    ids=repr,
+)
+def test_i299_plain_types_and_unions_are_not_relations(field_type: Any) -> None:
+    """Unions and types carrying no relation marker are still not relations."""
+    assert is_relation_field(field_type) is False
+    assert is_foreign_key(field_type) is False
+    assert is_many_to_many(field_type) is False
+    assert is_graph_relation(field_type) is False
+    assert get_relation_info(field_type) is None
+
+
+def test_i299_relation_queryset_chains_through_optional_relation() -> None:
+    """An optional relation on the target model can be chained after a traversal."""
+    from src.surreal_orm.relations import RelationQuerySet
+
+    # Defined here, not at module level: other test files clear the model
+    # registry, and the traversal looks the target model up there.
+    class I299Target(BaseSurrealModel):
+        """Traversal target whose relations are declared optional."""
+
+        id: str | None = None
+        friends: Relation("i299_friend", "I299Target") | None = None  # type: ignore[valid-type]
+        manager: Optional[ForeignKey("I299Target")] = None  # type: ignore[valid-type]
+
+    class I299Source(BaseSurrealModel):
+        """Traversal source."""
+
+        id: str | None = None
+
+    start = RelationInfo(to_model="I299Target", relation_type="relation", edge_table="i299_follows")
+    qs = RelationQuerySet(I299Source(id="a"), start)
+
+    chained = qs.friends
+    assert isinstance(chained, RelationQuerySet)
+    assert chained._relation_info == RelationInfo(to_model="I299Target", relation_type="relation", edge_table="i299_friend")
+    assert [info for info, _ in chained._traversal_path] == [start, chained._relation_info]
+
+    via_fk = qs.manager
+    assert via_fk._relation_info.relation_type == "foreign_key"
+    assert via_fk._relation_info.to_model == "I299Target"
