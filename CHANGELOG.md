@@ -31,12 +31,16 @@ range 3.2.x – 3.3.x).
 
 ### Behaviour changes
 
-CBOR protocol only (the default); under `protocol="json"` nothing changes.
+The connection-method changes apply under the CBOR protocol only (the
+default); under `protocol="json"` a connection method sends the reference
+unchanged, as before. The `HTTPTransaction` changes (leading zeros, long
+digit IDs) apply under both protocols: it writes the reference into its
+statement text.
 
 - `conn.select/update/merge/upsert/delete/relate("t:1")` now targets the
   integer ID `1`, where it used to target the string ID `"1"`.
 - `t:05` / `t:-05` now name the integer IDs 5 / -5 on every path,
-  `HTTPTransaction` included, where they named the string ID `"05"`.
+  `HTTPTransaction` included, where they named the string IDs `"05"` / `"-05"`.
   `HTTPTransaction` used to bind an ID part longer than 20 characters as a
   string ID; such an ID made of digits now reads as the integer the server
   reads.
