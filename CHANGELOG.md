@@ -6,6 +6,40 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.38.6] - 2026-11-07
+
+**Fix release.** One fix: `ConnectionPool` closes a new connection whose
+initialisation fails, #614 via #621 (`surreal_sdk/connection/pool.py`
+only). No API change. The SurrealDB pin is unchanged (tested against 3.3.5,
+supported range 3.2.x – 3.3.x). `v2`: same defect, backport tracked in #622.
+
+### Fixed
+
+- **`ConnectionPool.acquire()` now closes a new connection whose
+  `connect()` or pool sign-in fails, or is cancelled** (#614). Before, the
+  error handler only gave the semaphore slot back, so the connection
+  `connect()` had already opened (the HTTP client, or the WebSocket session
+  and its reader task) was left open with no owner. The close is shielded and
+  its errors are ignored: the caller still gets the original exception, or
+  `CancelledError` on cancellation. The slot is given back even when that
+  close is itself cancelled. Connections reused from the pool are not
+  affected.
+
+### Changed
+
+- On a failed or cancelled initialisation, `acquire()` raises once the new
+  connection is closed, and its slot stays taken until then. A WebSocket
+  close waits for the server's close frame for up to the connection's
+  `timeout`, so against a server that stopped answering the error can reach
+  the caller up to `timeout` seconds later than before (review suggestion on
+  #621). The success path is unchanged.
+
+### Upgrading
+
+- Nothing to change.
+
+---
+
 ## [0.38.5] - 2026-11-07
 
 **Fix release.** One fix: the CBOR encoder's datetime, date, duration and
