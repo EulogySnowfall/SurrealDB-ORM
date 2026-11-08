@@ -9,6 +9,8 @@ the edge table kept serving the rows from before the write.
 
 from __future__ import annotations
 
+import gc
+import weakref
 from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,6 +22,8 @@ from src.surreal_orm.connection_manager import SurrealDBConnectionManager
 from src.surreal_orm.fields.relation import RelationInfo
 from src.surreal_orm.model_base import BaseSurrealModel, SurrealConfigDict, SurrealDbError
 from src.surreal_orm.relations import RelationManager
+from surreal_sdk.exceptions import TransactionError
+from surreal_sdk.transaction import BaseTransaction, HTTPTransaction, WebSocketTransaction
 from surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
 
 _EDGE = "i465_follows"
@@ -271,3 +275,100 @@ class TestInvalidateByTable:
         _fill("i465_users")
         assert QueryCache.invalidate(I465User) == 2
         _assert_dropped("i465_users")
+
+
+# ── tx=: dropped again once the transaction commits ─────────────────────────
+
+
+class I465Follows(BaseSurrealModel):
+    """A model mapped to the edge table, written with ``save(tx=)`` beside a relation write."""
+
+    model_config = SurrealConfigDict(table_name=_EDGE)
+    id: str | None = None
+
+
+def _tx_connection() -> MagicMock:
+    """What a real transaction talks to: every statement and the commit are accepted."""
+    conn = MagicMock()
+    conn.query = AsyncMock(return_value=_ok())
+    relate_result = MagicMock()
+    relate_result.exists = True
+    relate_result.record = {"id": f"{_EDGE}:e1"}
+    conn.relate = AsyncMock(return_value=relate_result)
+    conn.upsert = AsyncMock(return_value=MagicMock(records=[{"id": f"{_EDGE}:f1"}], is_empty=False))
+    return conn
+
+
+async def _open(kind: str) -> BaseTransaction:
+    tx: BaseTransaction = (HTTPTransaction if kind == "http" else WebSocketTransaction)(_tx_connection())
+    await tx._begin()
+    return tx
+
+
+def _no_client() -> AsyncMock:
+    return AsyncMock(side_effect=AssertionError("a tx= write must not use the connection"))
+
+
+class TestTxRelationWritesInvalidateAgainOnCommit:
+    """A read cached between a ``tx=`` relation write and the commit does not outlive the commit."""
+
+    @pytest.mark.parametrize("kind", ["http", "websocket"])
+    @pytest.mark.parametrize("write", list(_MODEL_WRITES))
+    async def test_entries_cached_before_the_commit_are_dropped_at_commit(self, write: str, kind: str) -> None:
+        call, tables = _MODEL_WRITES[write]
+        tx = await _open(kind)
+        with patch.object(SurrealDBConnectionManager, "get_client", _no_client()):
+            await call(tx)
+        _fill(*tables)  # another task read the edge table before the commit
+        await tx.commit()
+        assert tx.is_committed
+        _assert_dropped(*tables)
+
+    @pytest.mark.parametrize("kind", ["http", "websocket"])
+    @pytest.mark.parametrize("write", list(_MODEL_WRITES))
+    async def test_rollback_drops_nothing_more(self, write: str, kind: str) -> None:
+        call, tables = _MODEL_WRITES[write]
+        tx = await _open(kind)
+        with patch.object(SurrealDBConnectionManager, "get_client", _no_client()):
+            await call(tx)
+        _fill(*tables)
+        await tx.rollback()
+        assert tx._commit_callbacks == {}
+        for table in tables:
+            assert QueryCache.get(f"{table}-bare") == ["stale"], table
+            assert QueryCache.get(f"{table}-conn") == ["stale"], table
+
+    async def test_one_callback_per_table_and_transaction(self) -> None:
+        """Keyed like the model writes (#360): a ``save(tx=)`` on the edge model shares the key."""
+        QueryCache._connect_signals()
+        tx = await _open("http")
+        with patch.object(SurrealDBConnectionManager, "get_client", _no_client()):
+            await _alice().relate(_EDGE, _bob(), tx=tx)
+            await _alice().relate(_EDGE, _bob(), tx=tx)
+            await _alice().remove_all_relations([_EDGE, _EDGE_2], tx=tx)
+            await I465Follows(id="f1").save(tx=tx)
+        assert set(tx._commit_callbacks) == {(QueryCache._COMMIT_KEY, _EDGE), (QueryCache._COMMIT_KEY, _EDGE_2)}
+        await tx.rollback()
+
+    async def test_callback_keeps_neither_transaction_nor_instance(self) -> None:
+        tx = await _open("http")
+        alice = _alice()
+        with patch.object(SurrealDBConnectionManager, "get_client", _no_client()):
+            await alice.relate(_EDGE, _bob(), tx=tx)
+        tx_ref, alice_ref = weakref.ref(tx), weakref.ref(alice)
+        callbacks = list(tx._commit_callbacks.values())
+        del tx, alice
+        gc.collect()
+        assert callbacks
+        assert tx_ref() is None
+        assert alice_ref() is None
+
+    async def test_failed_commit_drops_nothing_more(self) -> None:
+        tx = await _open("http")
+        with patch.object(SurrealDBConnectionManager, "get_client", _no_client()):
+            await _alice().relate(_EDGE, _bob(), tx=tx)
+        _fill(_EDGE)
+        tx._connection.query = AsyncMock(side_effect=ConnectionError("connection lost"))
+        with pytest.raises(TransactionError):
+            await tx.commit()
+        assert QueryCache.get(f"{_EDGE}-bare") == ["stale"]

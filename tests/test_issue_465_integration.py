@@ -98,3 +98,17 @@ async def test_cached_read_after_commit_sees_relate_tx(i465_users: tuple[I465Int
 
     edges = await _cached_edges()
     assert [edge.since for edge in edges] == ["tx"]
+
+
+async def test_read_cached_before_the_commit_is_dropped_at_commit(
+    i465_users: tuple[I465IntUser, I465IntUser],
+) -> None:
+    """A ``.cache()`` read between ``relate(tx=)`` and the commit stores the rows from before it."""
+    alice, bob = i465_users
+
+    async with await SurrealDBConnectionManager.transaction() as tx:
+        await alice.relate(_EDGE, bob, tx=tx, since="tx")
+        assert await _cached_edges() == []  # queued, not committed yet
+
+    edges = await _cached_edges()
+    assert [edge.since for edge in edges] == ["tx"]

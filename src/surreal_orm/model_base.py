@@ -2464,8 +2464,11 @@ class BaseSurrealModel(BaseModel):
             from_thing, to_thing = to_thing, from_thing
 
         if tx is not None:
-            await tx.relate(from_thing, relation, to_thing, edge_data if edge_data else None)
-            QueryCache._invalidate_table_for_write(relation, tx)
+            try:
+                await tx.relate(from_thing, relation, to_thing, edge_data if edge_data else None)
+            finally:
+                # Dropped now and again once the transaction commits.
+                QueryCache._invalidate_table_for_write(relation, tx)
             return {"in": from_thing, "out": to_thing, **edge_data}
 
         client = await SurrealDBConnectionManager.get_client(self.get_connection_name())
@@ -2649,20 +2652,23 @@ class BaseSurrealModel(BaseModel):
     ) -> None:
         """Run the edge-table *queries*, then drop the cached entries of *tables*.
 
-        With *tx*, the queries are queued on the transaction and the tables are
-        dropped once they are queued. Without it, they run on the instance's
-        connection and the tables are dropped even if a query raises: an
-        earlier one may already have changed the edge table, and dropping too
-        much only costs a re-query.
+        With *tx*, the queries are queued on (or, over WebSocket, run inside)
+        the transaction, and the tables are dropped at once and again once the
+        transaction commits; a rollback drops nothing more. Without it, they
+        run on the instance's connection. Either way the tables are dropped even
+        if a query raises: an earlier one may already have changed the edge
+        table, and dropping too much only costs a re-query.
         """
         statements = [queries] if isinstance(queries, str) else queries
         # Bindings only when there are some: the call keeps its historical shape.
         args: tuple[dict[str, Any], ...] = (variables,) if variables is not None else ()
         if tx is not None:
-            for query in statements:
-                await tx.query(query, *args)
-            for table in tables:
-                QueryCache._invalidate_table_for_write(table, tx)
+            try:
+                for query in statements:
+                    await tx.query(query, *args)
+            finally:
+                for table in tables:
+                    QueryCache._invalidate_table_for_write(table, tx)
             return
 
         client = await SurrealDBConnectionManager.get_client(self.get_connection_name())

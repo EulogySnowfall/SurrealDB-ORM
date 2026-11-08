@@ -310,13 +310,25 @@ class QueryCache:
 
     @classmethod
     def _invalidate_table_for_write(cls, table: str, tx: Any = None) -> None:
-        """Drop *table*'s entries after a write to it, made directly or with ``tx=``.
+        """Drop *table*'s entries now and, for a ``tx=`` write, again at commit.
 
-        The relation writes (``relate()``, ``remove_relation()``,
-        ``remove_all_relations()`` and the ``RelationManager`` writes) call it
-        once the statement is sent, or queued when *tx* is given.
+        Called once a write to *table* is sent, or queued on *tx*: by the model
+        signal handlers (through ``_invalidate_for_write()``) and by the
+        relation writes (``relate()``, ``remove_relation()``,
+        ``remove_all_relations()``), which fire no signal and write an edge
+        table that often has no model.
+
+        A ``tx=`` write is issued before the transaction commits, while other
+        sessions still read the previous rows: a ``.cache()`` read from another
+        task in that window stores them, so the table is dropped a second time
+        once the transaction has committed. Nothing more happens on a rollback
+        or a failed commit (nothing was written). One callback per table and
+        transaction, keyed ``(_COMMIT_KEY, table)``; it holds the table name
+        only, never the transaction, the model or the instance.
         """
         cls._invalidate_table(table)
+        if isinstance(tx, BaseTransaction):
+            tx._call_on_commit((cls._COMMIT_KEY, table), lambda: cls._invalidate_table(table))
 
     @classmethod
     def _drop_bucket(cls, bucket: tuple[_Location, str]) -> int:
@@ -349,17 +361,10 @@ class QueryCache:
     def _invalidate_for_write(cls, model: Any, tx: Any) -> None:
         """Drop *model*'s table now and, for a ``tx=`` write, again at commit.
 
-        A ``tx=`` write fires its signal before the transaction commits, while
-        other sessions still read the previous rows: a ``.cache()`` read from
-        another task in that window stores them, so the table is dropped a
-        second time once the transaction has committed. Nothing more happens on
-        a rollback or a failed commit (nothing was written). One callback per
-        table and transaction; it holds the model class only, never the
-        transaction or the instance.
+        A ``tx=`` write fires its signal before the transaction commits; see
+        ``_invalidate_table_for_write()``, which this delegates to.
         """
-        cls.invalidate(model)
-        if isinstance(tx, BaseTransaction):
-            tx._call_on_commit((cls._COMMIT_KEY, model.get_table_name()), lambda: cls.invalidate(model))
+        cls._invalidate_table_for_write(model.get_table_name(), tx)
 
     @classmethod
     def _connect_signals(cls) -> None:
