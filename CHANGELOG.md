@@ -9,11 +9,14 @@ and adheres to [SemVer](https://semver.org/) versioning.
 ## [0.39.3] - 2026-11-08
 
 **Patch release — change feed start-up, `Prefetch` variables, the user
-returned by a token refresh, and cache drops at commit.** Four fixes: #312
-via #650 (`surreal_sdk/streaming/change_feed.py`), #344 via #653
+returned by a token refresh, cache drops at commit, a sign-up set warning and
+CBOR checks inside record ids and dict keys.** Six fixes: #312 via #650
+(`surreal_sdk/streaming/change_feed.py`), #344 via #653
 (`surreal_orm/query_set.py`, `prefetch.py`), #357 via #655
-(`surreal_orm/auth/mixins.py`) and #360 via #656 (`surreal_orm/cache.py`,
-`surreal_sdk/transaction.py`). No public API is added and no DDL is emitted.
+(`surreal_orm/auth/mixins.py`), #360 via #656 (`surreal_orm/cache.py`,
+`surreal_sdk/transaction.py`), #371 via #658 (`surreal_orm/auth/access.py`,
+`migrations/introspector.py`) and #612 via #659
+(`surreal_sdk/protocol/cbor.py`). No public API is added and no DDL is emitted.
 The SurrealDB pin is unchanged (tested against 3.3.5, supported range
 3.2.x – 3.3.x).
 
@@ -63,6 +66,22 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
   another task before the commit kept serving the pre-commit rows until the
   TTL ran out. The table's entries are now dropped again once the transaction
   commits, over HTTP and WebSocket (#360).
+- **Building a USER model's access definition warns about required fields
+  that a sign-up can never set.** `define_access()`, `makemigrations` and
+  `schema_diff` now emit one `UserWarning` naming every field with no default
+  that is not the identifier, the password, in `signup_fields`, computed, in
+  `server_fields`, or a `ManyToMany` / `Relation` attribute. Before, such a
+  field showed up only as a server error on the first sign-up (#371).
+- **An integer outside the 64-bit range inside a `RecordId`'s id or used as a
+  dict key** (at any depth, tuple keys included) now raises `ValueError`
+  before the request, with the same message as for a plain value. It used to
+  go out as a CBOR bignum, which SurrealDB rejects: HTTP 400 over HTTP, no
+  reply over WebSocket, so the caller waited for the timeout (#612).
+- **A `date` inside a `RecordId`'s id** (at any depth, nested record ids
+  included) is sent as the UTC-midnight `datetime` (tag 12), like a plain
+  `date`. It used to go out as cbor2's native date tag (1004), which SurrealDB
+  does not read, so the request failed. Datetimes in record ids encode exactly
+  as before, and a naive one still warns once (#612).
 
 ### Added
 
@@ -96,6 +115,15 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
 - A transaction that commits drops the cache entries of each table written
   with `tx=` a second time. A rollback or a failed commit drops nothing more.
   Non-transactional writes are unchanged (#360).
+- A USER model whose required field is filled by the server through a `VALUE`
+  clause or an event that the model does not declare now warns when its
+  access definition is built. The `SIGNUP` clause, the DDL and the API are
+  unchanged; list that field in `server_fields` to silence the warning (#371).
+- A call that used to send a bignum in a record id or a dict key fails
+  locally with `ValueError` instead of an HTTP 400 or a WebSocket timeout.
+  Integers within `[-2**64, 2**64 - 1]` are unchanged (the signed 64-bit range
+  is #657). Dict keys are only checked, never converted, and the caller's
+  `RecordId` is never modified (#612).
 
 ### Upgrading
 
@@ -104,6 +132,9 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
 - Rename any variable declared with a leading underscore:
   `.variables(_min=18)` with `filter(age__gte="$_min")` becomes
   `.variables(min_age=18)` with `filter(age__gte="$min_age")` (#344).
+- A record id key that held a UTC-midnight `datetime` as a workaround for a
+  `date` keeps working, and now equals the same key written with a `date`
+  (#612).
 
 ### Known limitations
 
@@ -127,6 +158,21 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
   is then served until the TTL runs out (transactional or not). An HTTP commit
   cancelled after the server applied the batch skips the drop at commit
   (review suggestion on #656).
+- The sign-up warning suggests `signup_fields` for every field it names, but a
+  read-only field (`Field(frozen=True)` or `readonly`) cannot be a sign-up
+  field: `signup_fields` refuses it with `ValueError`. Give such a field a
+  default or list it in `server_fields` (review suggestion on #658).
+- `examples/15_surrealdb3_features.ipynb` defines a USER model with a required
+  `name` and no `signup_fields`, so its `define_access()` cell now emits the
+  warning (#660).
+- CBOR: a `date` used as a dict key keeps cbor2's native date tag (keys are
+  only checked, never converted); the `encode()` docstring does not say so
+  yet (review suggestion on #659). Encoding a `NamedTuple` value fails locally
+  with `TypeError`, as a plain value before this release and now also inside a
+  record id when something in it is converted (#661).
+- Two of the 0.38.5 known limitations are resolved: the `date` inside a
+  `RecordId` key and the 64-bit range check skipping `RecordId` keys and dict
+  keys. The third, the signed 64-bit wrap on SurrealDB 3.x, remains (#657).
 
 ### Internal
 
@@ -155,6 +201,11 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
   for `save`, `update`, `merge` and `delete` over HTTP and WebSocket and for
   `bulk_create(atomic=True)`; rollback, failed commit, rejected batch,
   raising callback and deduplication of the commit hook (#360).
+- The sign-up warning (which fields it names, which it skips, one warning
+  per build), and an integration test of `schema_diff()` replacing a
+  pre-0.35.0 `DEFINE ACCESS` and converging on the second diff (#371).
+- Integers out of range and `date` values inside record ids and dict keys,
+  unit and integration over HTTP and WebSocket (#612).
 
 ### Documentation
 
@@ -169,6 +220,11 @@ The SurrealDB pin is unchanged (tested against 3.3.5, supported range
 - The `QueryCache.set(connection=)` docstring now says that the connection
   identity only scopes reads, and that a write through any connection drops
   every entry of the table (#360).
+- `docs/auth.md` describes the sign-up warning and the three ways to silence
+  it (`signup_fields`, a default, `server_fields`). The
+  `ModelIntrospector._generate_access_state()` docstring no longer claims the
+  full `define_access()` definition: `AccessState` does not track
+  `WITH REFRESH`, so `makemigrations` / `schema_diff` never emit it (#371).
 - Release-note correction: the `[0.34.17]` entry now says "Applications whose
   identifier values are unique get the same user record back as before."
   instead of "Nothing changes for applications whose identifier values are

@@ -24,10 +24,12 @@ bug and security fixes only) is cut from `main` right after 0.39.0.
 
 ### What's New in 0.39.3
 
-Four fixes: #312 via #650 (`surreal_sdk/streaming/change_feed.py`,
+Six fixes: #312 via #650 (`surreal_sdk/streaming/change_feed.py`,
 `docs/sdk.md`), #344 via #653 (`query_set.py`, `prefetch.py`), #357 via #655
-(`auth/mixins.py`) and #360 via #656 (`cache.py`, `surreal_sdk/transaction.py`).
-Pin unchanged (3.3.5). `v2`: not needed, the line ended at 0.39.0.
+(`auth/mixins.py`), #360 via #656 (`cache.py`, `surreal_sdk/transaction.py`),
+#371 via #658 (`auth/access.py`, `migrations/introspector.py`, `docs/auth.md`)
+and #612 via #659 (`surreal_sdk/protocol/cbor.py`). Pin unchanged (3.3.5).
+`v2`: not needed, the line ended at 0.39.0.
 
 - **"Now" is found with probes.** `_resolve_now()` delegates to `_find_now()`:
   `SHOW CHANGES FOR DATABASE SINCE <n> LIMIT 1`, jumping past the
@@ -62,6 +64,18 @@ Pin unchanged (3.3.5). `v2`: not needed, the line ended at 0.39.0.
   `BaseTransaction._call_on_commit(key, callback)` hook (HTTP and WebSocket;
   runs only once `is_committed` is set, once per key; a raising callback is
   logged, never fails the commit). The callback holds the model class only.
+- **`build_signup_fields()` warns** (`_warn_unset_required_fields()`, one
+  `UserWarning` per build) about required fields outside the sign-up set:
+  not `id`, the identifier, the password, `signup_fields`, `created_at`, a
+  computed field, a `server_fields` entry or a `ManyToMany` / `Relation`
+  attribute. A warning, not an error: the server may fill the field through a
+  `VALUE` clause or an event the model does not declare.
+- **CBOR record ids get a converting walk** (`_convert_record_id()`, replacing
+  the read-only naive-datetime scan): integers range-checked, `date` →
+  UTC-midnight `datetime`, naive `datetime` warned once; nothing else in an id
+  is converted, the caller's `RecordId` is never modified (copy only on
+  changed paths), the cycle guard stays. Dict keys are range-checked
+  (`_check_key()`), never converted. The signed 64-bit question is #657.
 - **Open (review suggestions):** changes between the `since` instant and the
   datetime check's marker are skipped without a warning, and a small feed
   costs more probes than the old one-request scan (#650); a `$auth` read
@@ -70,7 +84,10 @@ Pin unchanged (3.3.5). `v2`: not needed, the line ended at 0.39.0.
   generation counter would close it), and an HTTP commit cancelled after the
   server applied it skips the second drop (#656); the `iter_jsonl()`
   docstring still lists the `_x_` variable case `.variables()` now refuses
-  first (#653).
+  first (#653); the sign-up warning's `signup_fields` hint is a dead end for
+  a read-only field (#658); the `encode()` docstring does not say a `date`
+  dict key keeps tag 1004 (#659). Filed: notebook 15's USER model now warns
+  (#660), a `NamedTuple` value fails with `TypeError` (#661).
 - Release-docs correction carried here: `[0.34.17]` "unique identifier"
   sentence (#357 item 4).
 
