@@ -6,6 +6,38 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.5] - 2026-11-08
+
+**Patch release — change-feed unit count under the JSON protocol.** One
+fix: #364 via #667 (`surreal_sdk/streaming/change_feed.py`). No public API
+is added and no query text changes. CBOR (the default) is not affected. The
+SurrealDB pin is unchanged (tested against 3.3.5, supported range 3.2.x –
+3.3.x).
+
+### Fixed
+
+- **Change feeds over the JSON protocol no longer merge the changes of two
+  escaped table names that share a prefix before `:`** (`` `a:b`:1 `` and
+  `` `a:c`:1 ``, or the `⟨a:b⟩:1` form) into one (versionstamp, table) unit.
+  `_record_table()` leaves a string id whose table is escaped unread, so its
+  change counts as a unit of its own, and a window cut at the scan limit can
+  no longer be taken for the end of the feed (#364).
+
+### Behaviour changes
+
+- None for CBOR. Under JSON, every change on an escaped table name (one
+  holding `:`, or a hyphenated name such as `my-table`, which the server also
+  prints in backticks) counts as its own unit, so a window holding such
+  changes can be re-read one extra time. No entry is skipped or delivered
+  twice (#364).
+
+### Documentation
+
+- This resolves the `[0.34.19]` known limitation (a JSON-protocol string id
+  with an escaped table name containing `:` could be under-counted).
+
+---
+
 ## [0.39.4] - 2026-11-08
 
 **Patch release — the relation detection helpers see optional relations.**

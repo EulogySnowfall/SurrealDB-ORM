@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.4)
+> Context document for Claude AI - Last updated: November 2026 (0.39.5)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.4 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.5 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -21,6 +21,24 @@
 
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.5
+
+One fix, #364 via #667 (`surreal_sdk/streaming/change_feed.py` only). Pin
+unchanged (3.3.5). `v2`: not backported (the line ended at 0.21.62; `v2`
+counts entries and has no `_record_table()`).
+
+- **Under JSON, an escaped table name is left unread.** `_record_table()`
+  split a string id at the first `:`, so `` `a:b`:1 `` and `` `a:c`:1 ``
+  both read as `` `a `` and merged into one unit: the only way
+  `_window_units()` could count low. A string id whose table starts with a
+  backtick or `⟨` now returns `None` and counts as its own unit, so the
+  count only errs upwards. CBOR `RecordId`s and unescaped strings are read
+  as before. Resolves the 0.34.19 known limitation.
+- **Broader than the `:` case:** the server also escapes a hyphenated table
+  (`` `my-table`:1 ``), so under JSON each such change is its own unit (one
+  extra read at worst). Reading the escaped name up to its closing delimiter
+  would tighten it (review suggestion on #667).
 
 ### What's New in 0.39.4
 
@@ -768,8 +786,9 @@ correct (on 2.7.0 each (versionstamp, table) pair is its own entry).
   at least one, one per change whose table cannot be told). Only a window
   below the scan limit by that bound is caught up; a full window still
   re-reads its last versionstamp.
-- **Known limitation:** a JSON-protocol string id with an escaped table name
-  containing `:` is split at the first `:` and can be under-counted.
+- **Known limitation (resolved in 0.39.5, #364):** a JSON-protocol string id
+  with an escaped table name containing `:` was split at the first `:` and
+  could be under-counted.
 
 ### What's New in 0.34.18
 
