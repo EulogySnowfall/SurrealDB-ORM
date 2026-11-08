@@ -297,7 +297,7 @@ class TestAccessGenerator:
             password: Encrypted
 
         class UserB(BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, identifier_field="username")
             id: str | None = None
             username: str
             password: Encrypted
