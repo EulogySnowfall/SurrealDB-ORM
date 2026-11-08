@@ -79,6 +79,22 @@ class TestI604HTTPPoolForwardsKeywords:
         assert not pool._pool
         assert not pool._pool_auth
 
+    async def test_invalid_protocol_raises_value_error_on_first_acquire(self) -> None:
+        # Issue #616: a keyword HTTPConnection takes, with a value it refuses,
+        # raises the ValueError of its constructor, not TypeError.
+        pool = ConnectionPool(HTTP_URL, "ns", "db", size=1, protocol="msgpack")
+        with patch.object(HTTPConnection, "connect", new=AsyncMock()) as connect:
+            with pytest.raises(ValueError, match="msgpack"):
+                async with pool.acquire():
+                    pass  # pragma: no cover - never reached
+            # No connection was built, so none was opened.
+            connect.assert_not_awaited()
+        # The failed acquire gave its slot back and tracked nothing.
+        assert pool._semaphore._value == 1
+        assert not pool._in_use
+        assert not pool._pool
+        assert not pool._pool_auth
+
 
 class TestI604WebSocketPoolUnchanged:
     def test_websocket_keywords_still_forwarded(self) -> None:
