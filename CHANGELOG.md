@@ -6,6 +6,45 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.1] - 2026-11-08
+
+**Patch release — dependency floor.** The declared `aiohttp` floor moves to
+`>= 3.14.4` (#291 via #646). No library code change. The SurrealDB pin is
+unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **Dependencies:** the declared `aiohttp` floor is now `>= 3.14.4` (was
+  `>= 3.12`) in both `surrealdb-orm` and the bundled SDK, so a downstream
+  install picks up the fixes for GHSA-494j-54xm-rwp3, GHSA-2g87-pp6c-29x5
+  and GHSA-5wr8-gcqf-gqf3 (all aiohttp <= 3.14.3). `uv.lock` has resolved
+  3.14.4 since 0.34.3, but the lock only pins what this project's CI
+  installs: a `pip install -U surrealdb-orm` and an existing downstream lock
+  file follow the declared floor, so they could keep any aiohttp from 3.12
+  to 3.14.3. `aiohttp` is a runtime dependency (the WebSocket transport)
+  (#291).
+
+### Behaviour changes
+
+- Installing or upgrading `surrealdb-orm` now requires aiohttp >= 3.14.4;
+  pip moves an installed aiohttp 3.12 – 3.14.3 forward during the upgrade.
+
+### Upgrading
+
+- No code change. A downstream lock file that pins aiohttp below 3.14.4
+  must be updated (for example `uv lock --upgrade-package aiohttp` or
+  `pip install -U aiohttp`).
+
+### Documentation
+
+- The `[0.39.0]` entry now opens its `v2` paragraph with "End of the `v2`
+  line" (it said "Last release with a maintained `v2` line", which the next
+  sentence contradicted), and the 0.39.0 roadmap section refers to "the
+  original plan", which is no longer below it (review suggestions on #644,
+  #645).
+
+---
+
 ## [0.39.0] - 2026-11-08
 
 **Minor release — File Storage (roadmap v0.39.0, #562 via #632).** SurrealDB
@@ -18,7 +57,7 @@ reports into the generated source as Python string literals (#635 via #639).
 Read *Behaviour changes* below. The SurrealDB pin is unchanged (tested
 against 3.3.5, supported range 3.2.x – 3.3.x).
 
-**Last release with a maintained `v2` line.** From this release, the `v2`
+**End of the `v2` line.** From this release, the `v2`
 branch (0.21.x, SurrealDB 2.x) is no longer maintained; 0.21.62 is its last
 release. Users of SurrealDB 2.x should move to
 [SurrealDB-ORM-lite](https://github.com/EulogySnowfall/SurrealDB-ORM-lite).
