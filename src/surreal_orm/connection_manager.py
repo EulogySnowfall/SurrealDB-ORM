@@ -66,6 +66,7 @@ class SurrealDBConnectionManager:
     _clients: dict[str, HTTPConnection] = {}
     _ws_clients: dict[str, WebSocketConnection] = {}
     _connection_lock: asyncio.Lock | None = None
+    _ws_connection_lock: asyncio.Lock | None = None
 
     # Upper bound, in seconds, that ``reconnect()`` waits for requests still in
     # flight on the client it replaces before closing that client anyway. It
@@ -338,6 +339,11 @@ class SurrealDBConnectionManager:
 
         Required for Live Queries (``QuerySet.live()``).
 
+        Concurrent first calls create one client: the client is built,
+        connected, signed in and registered under a lock of its own (not the
+        HTTP client lock), and every caller that waited on it gets the client
+        the first one registered.
+
         Args:
             name: Connection name.  ``None`` means use the active connection.
 
@@ -347,10 +353,25 @@ class SurrealDBConnectionManager:
         """
         name = name or cls.get_active_connection_name() or "default"
 
+        # Fast path: reuse existing connected client
         existing = cls._ws_clients.get(name)
         if existing is not None and existing.is_connected:
             return existing
 
+        async with cls._get_ws_connection_lock():
+            # Double-check after acquiring the lock (another coroutine may
+            # have created the connection while we were waiting).
+            existing = cls._ws_clients.get(name)
+            if existing is not None and existing.is_connected:
+                return existing
+            return await cls._build_ws_client(name)
+
+    @classmethod
+    async def _build_ws_client(cls, name: str) -> WebSocketConnection:
+        """Create, connect, authenticate and register the WebSocket client of *name*.
+
+        Called by ``get_ws_client()`` with the WebSocket client lock held.
+        """
         config = cls._configs.get(name)
         if config is None:
             raise ValueError(f"Connection {name!r} not configured. Call set_connection() or add_connection() first.")
@@ -988,6 +1009,18 @@ class SurrealDBConnectionManager:
         if cls._connection_lock is None:
             cls._connection_lock = asyncio.Lock()
         return cls._connection_lock
+
+    @classmethod
+    def _get_ws_connection_lock(cls) -> asyncio.Lock:
+        """Return the lock that serialises creating WebSocket clients.
+
+        Separate from ``_get_connection_lock()``: ``get_client()`` holds that
+        lock while it builds an HTTP client, and a WebSocket build must not
+        wait for it.
+        """
+        if cls._ws_connection_lock is None:
+            cls._ws_connection_lock = asyncio.Lock()
+        return cls._ws_connection_lock
 
     @classmethod
     async def _build_client(cls, name: str) -> HTTPConnection:

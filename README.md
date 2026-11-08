@@ -37,6 +37,15 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.38.6
+
+**Fix release.** `ConnectionPool.acquire()` closes a new connection whose `connect()` or pool sign-in fails, or is
+cancelled ([#614](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/614)). Before, it gave the slot back but left
+the connection `connect()` had opened (HTTP client, or WebSocket session and reader task) open with no owner. The close
+is shielded and its errors are ignored, so the caller still gets the original exception; it is raised once that close
+ends (on WebSocket, up to the connection's `timeout` against a server that stopped answering). Connections reused from
+the pool are not affected. SurrealDB pin unchanged (3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.38.5
 
 **Fix release.** CBOR encoding ready for SurrealDB 4.0 ([#578](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/578)).
