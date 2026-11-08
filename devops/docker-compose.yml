@@ -17,7 +17,9 @@ services:
     container_name: surrealdb-orm
     ports:
       - "8000:8000"
-    command: start --log warn --user root --pass root memory
+    # File storage (0.39.0) is an experimental SurrealDB capability: without
+    # this flag DEFINE BUCKET is a parse error and every file::* call fails.
+    command: start --log warn --user root --pass root --allow-experimental=files memory
     networks:
       - surrealdb-net
 

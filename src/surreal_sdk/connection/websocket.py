@@ -45,6 +45,9 @@ class WebSocketConnection(BaseSurrealConnection):
     Ideal for real-time applications, dashboards, and collaborative features.
     """
 
+    _transport_name = "WebSocket"
+    _server_size_setting = "SURREAL_WEBSOCKET_MAX_MESSAGE_SIZE"
+
     def __init__(
         self,
         url: str,
@@ -57,6 +60,7 @@ class WebSocketConnection(BaseSurrealConnection):
         protocol: str = "cbor",
         *,
         max_message_size: int | None = None,
+        max_request_size: int | None = 128 * 1024 * 1024,
     ):
         """
         Initialize WebSocket connection.
@@ -77,14 +81,33 @@ class WebSocketConnection(BaseSurrealConnection):
             max_message_size: The largest message the client accepts, in bytes.
                 ``None`` (the default) sets no client-side cap, like the HTTP
                 transport. A reply above the cap ends the socket, and the
-                request waiting for it raises ``ConnectionError``.
+                request waiting for it raises ``ConnectionError``. It does not
+                limit what the client sends: that is ``max_request_size``.
+            max_request_size: The largest request the client sends, in bytes.
+
+                Experimental: follows SurrealDB's experimental ``files`` capability.
+                File uploads need a server started with
+                ``--allow-experimental=files``. Only ``file_put()`` checks it,
+                before sending: an upload over it raises
+                ``PayloadTooLargeError`` and nothing is sent. The default,
+                128 MiB, is the server's WebSocket message limit
+                (``SURREAL_WEBSOCKET_MAX_MESSAGE_SIZE``); a larger message
+                makes the server close the socket, which fails every request
+                pending on it. Raise both together. ``None`` disables the
+                check; ``query()`` and the other methods are not checked. It
+                does not limit what the client accepts: that is
+                ``max_message_size``.
 
         Raises:
-            TypeError: If ``max_message_size`` is not an ``int`` (a ``bool`` included).
-            ValueError: If ``max_message_size`` is below 1, or ``protocol`` is unknown.
+            TypeError: If ``max_message_size`` or ``max_request_size`` is not an
+                ``int`` (a ``bool`` included).
+            ValueError: If ``max_message_size`` or ``max_request_size`` is below
+                1, or ``protocol`` is unknown.
         """
         if max_message_size is not None:
             max_message_size = require_int("max_message_size", max_message_size, minimum=1)
+        if max_request_size is not None:
+            max_request_size = require_int("max_request_size", max_request_size, minimum=1)
 
         # Normalize URL to WebSocket
         if url.startswith("http://"):
@@ -107,6 +130,7 @@ class WebSocketConnection(BaseSurrealConnection):
         self.reconnect_interval = reconnect_interval
         self.max_reconnect_attempts = max_reconnect_attempts
         self.max_message_size = max_message_size
+        self.max_request_size = max_request_size
 
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None

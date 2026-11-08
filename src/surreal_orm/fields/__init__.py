@@ -7,6 +7,7 @@ built-in functions for encryption, validation, and other operations.
 
 from .computed import Computed, get_computed_expression, is_computed_field
 from .encrypted import Encrypted, EncryptedField, EncryptedFieldInfo
+from .file import FileField, ImageField, get_file_buckets, is_file_field, is_image_field
 from .geometry import (
     GeoField,
     LineStringField,
@@ -45,6 +46,12 @@ __all__ = [
     "VectorField",
     "is_vector_field",
     "get_vector_info",
+    # File fields (experimental: SurrealDB files capability)
+    "FileField",
+    "ImageField",
+    "is_file_field",
+    "is_image_field",
+    "get_file_buckets",
     # Geometry fields
     "GeoField",
     "PointField",

@@ -21,6 +21,7 @@ Usage:
 from .db_introspector import DatabaseIntrospector
 from .define_parser import (
     parse_define_access,
+    parse_define_bucket,
     parse_define_field,
     parse_define_index,
     parse_define_table,
@@ -30,6 +31,7 @@ from .migration import Migration
 from .model_generator import ModelCodeGenerator
 from .operations import (
     AddField,
+    AlterBucket,
     AlterField,
     AlterTable,
     CreateIndex,
@@ -37,6 +39,7 @@ from .operations import (
     DataMigration,
     DefineAccess,
     DefineBearerAccess,
+    DefineBucket,
     DefineGraphQLConfig,
     DropField,
     DropIndex,
@@ -45,9 +48,11 @@ from .operations import (
     RawSQL,
     RebuildIndex,
     RemoveAccess,
+    RemoveBucket,
     RemoveGraphQLConfig,
     split_destructive,
 )
+from .state import BucketState
 
 __all__ = [
     "split_destructive",
@@ -58,6 +63,7 @@ __all__ = [
     "parse_define_table",
     "parse_define_index",
     "parse_define_access",
+    "parse_define_bucket",
     # Migrations
     "Migration",
     "Operation",
@@ -77,6 +83,11 @@ __all__ = [
     "RebuildIndex",
     "DefineGraphQLConfig",
     "RemoveGraphQLConfig",
+    # File storage buckets (experimental: SurrealDB's ``files`` capability)
+    "DefineBucket",
+    "AlterBucket",
+    "RemoveBucket",
+    "BucketState",
     # Execution
     "MigrationExecutor",
     "MigrationStatementError",

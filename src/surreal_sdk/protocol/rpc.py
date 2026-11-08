@@ -12,6 +12,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from ..files import FileRef
 from . import cbor as cbor_module
 
 
@@ -60,12 +61,18 @@ class SurrealJSONEncoder(json.JSONEncoder):
     - Decimal → float
     - UUID → string
     - RecordId → "table:id" string
+
+    A ``FileRef`` raises ``TypeError``: JSON has no file pointer, and the
+    ``"bucket:/key"`` string SurrealDB would receive instead is not equal to
+    the file it names.
     """
 
     def default(self, obj: Any) -> Any:
         """Encode non-standard types to JSON-serializable values."""
         if isinstance(obj, cbor_module.RecordId):
             return str(obj)
+        if isinstance(obj, FileRef):
+            raise TypeError("FileRef cannot be sent with protocol='json'; use protocol='cbor'")
         if isinstance(obj, datetime):
             return obj.isoformat()
         if isinstance(obj, date):

@@ -18,10 +18,10 @@ from .base import BaseSurrealConnection
 
 if TYPE_CHECKING:
     from ..transaction import HTTPTransaction
-from ..exceptions import ConnectionError, DataImportError, QueryError
+from ..exceptions import ConnectionError, DataImportError, PayloadTooLargeError, QueryError
 from ..protocol.rpc import RPCMethod, RPCRequest, RPCResponse
 from ..types import AuthResponse
-from ..utils import _open_owner_only, unescape_record_id, validate_table_name
+from ..utils import _open_owner_only, require_int, unescape_record_id, validate_table_name
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,9 @@ class HTTPConnection(BaseSurrealConnection):
     being interpreted as record links).
     """
 
+    _transport_name = "HTTP"
+    _server_size_setting = "SURREAL_HTTP_MAX_RPC_BODY_SIZE"
+
     def __init__(
         self,
         url: str,
@@ -108,6 +111,8 @@ class HTTPConnection(BaseSurrealConnection):
         database: str,
         timeout: float = 30.0,
         protocol: Literal["json", "cbor"] = "cbor",
+        *,
+        max_request_size: int | None = 4 * 1024 * 1024,
     ):
         """
         Initialize HTTP connection.
@@ -120,7 +125,27 @@ class HTTPConnection(BaseSurrealConnection):
             protocol: Serialization protocol ("json" or "cbor").
                       Defaults to "cbor" which properly handles string values
                       that might be misinterpreted as record links (e.g., "data:...").
+            max_request_size: The largest request the client sends, in bytes.
+
+                Experimental: follows SurrealDB's experimental ``files`` capability.
+                File uploads need a server started with
+                ``--allow-experimental=files``. Only ``file_put()`` checks it,
+                before sending: an upload over it raises
+                ``PayloadTooLargeError`` and nothing is sent. The default,
+                4 MiB, is the server's HTTP body limit
+                (``SURREAL_HTTP_MAX_RPC_BODY_SIZE``); above it the server
+                answers ``413`` or resets the request. Raise both together.
+                ``None`` disables the check. ``query()`` and the other
+                methods are not checked; a ``413`` from the server raises
+                ``PayloadTooLargeError`` whatever the request.
+
+        Raises:
+            TypeError: If ``max_request_size`` is not an ``int`` (a ``bool`` included).
+            ValueError: If ``max_request_size`` is below 1, or ``protocol`` is unknown.
         """
+        if max_request_size is not None:
+            max_request_size = require_int("max_request_size", max_request_size, minimum=1)
+
         # Normalize URL to HTTP if needed
         if url.startswith("ws://"):
             url = url.replace("ws://", "http://", 1)
@@ -134,6 +159,7 @@ class HTTPConnection(BaseSurrealConnection):
         self._client: httpx.AsyncClient | None = None
         self._request_id = 0
         self.protocol: Literal["json", "cbor"] = protocol
+        self.max_request_size = max_request_size
         # Arguments of the ``signin()`` the current token came from, retained so
         # a transient auth failure (see ``_post_rpc``) can transparently re-mint
         # a token. ``None`` whenever the current identity did not come from a
@@ -495,6 +521,12 @@ class HTTPConnection(BaseSurrealConnection):
                             continue
                         # Another task changed the identity during the re-mint
                         # (whose token was then discarded): do not replay.
+                if e.response.status_code == 413:
+                    raise PayloadTooLargeError(
+                        "Request rejected by the server: body over its size limit "
+                        f"(HTTP 413 - {e.response.text}); raise SURREAL_HTTP_MAX_RPC_BODY_SIZE or use a WebSocket "
+                        "connection"
+                    )
                 raise QueryError(
                     message=f"HTTP error: {e.response.status_code} - {e.response.text}",
                     code=e.response.status_code,

@@ -155,7 +155,12 @@ jobs:
           docker compose -f devops/docker-compose.yml up -d surrealdb
           ./devops/wait-for-healthy.sh localhost 8000 60
 
+      # The compose service starts SurrealDB with --allow-experimental=files;
+      # SORM_REQUIRE_FILES makes the file storage tests fail instead of skip
+      # if the server ever lacks it.
       - name: Run integration tests
+        env:
+          SORM_REQUIRE_FILES: "1"
         run: |
           uv run pytest tests/ -m integration \
             --junitxml=junit-integration.xml \

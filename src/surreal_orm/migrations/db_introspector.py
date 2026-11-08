@@ -18,13 +18,14 @@ from .define_parser import (
     parse_define_access,
     parse_define_analyzer,
     parse_define_api,
+    parse_define_bucket,
     parse_define_config_graphql,
     parse_define_event,
     parse_define_field,
     parse_define_index,
     parse_define_table,
 )
-from .state import AccessState, AnalyzerState, SchemaState, TableState
+from .state import AccessState, AnalyzerState, BucketState, SchemaState, TableState
 
 logger = logging.getLogger(__name__)
 
@@ -78,15 +79,33 @@ class DatabaseIntrospector:
 
         Returns:
             SchemaState containing all tables, fields, indexes, and
-            access definitions found in the live database.
+            access definitions found in the live database. Its ``buckets``
+            is always a dict (empty when the database has none).
         """
         conn = await self._get_connection()
-        state = SchemaState()
+        # A database state lists every bucket: ``{}`` means none, never "unknown"
+        buckets: dict[str, BucketState] = {}
+        state = SchemaState(buckets=buckets)
 
         # Get database-level info (tables, accesses, etc.)
         db_info = await self._query_info(conn, "INFO FOR DB")
         if db_info is None:
             return state
+
+        # File storage buckets (experimental ``files`` capability)
+        buckets_info = db_info.get("buckets", {})
+        if isinstance(buckets_info, dict):
+            for bucket_define_stmt in buckets_info.values():
+                try:
+                    bucket_state = parse_define_bucket(bucket_define_stmt)
+                except Exception:
+                    logger.warning(
+                        "Failed to parse bucket definition %r, skipping.",
+                        bucket_define_stmt,
+                        exc_info=True,
+                    )
+                    continue
+                buckets[bucket_state.name] = bucket_state
 
         # Extract table definitions
         tables_info = db_info.get("tables", db_info.get("tb", {}))

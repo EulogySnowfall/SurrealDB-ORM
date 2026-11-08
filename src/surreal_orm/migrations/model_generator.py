@@ -13,6 +13,7 @@ import re
 import unicodedata
 
 from ..surreal_function import SurrealFunc
+from ..utils import SAFE_IDENTIFIER_RE
 from .state import FieldState, SchemaState, TableState
 
 # SurrealDB type → Python type annotation
@@ -31,7 +32,11 @@ _SURREAL_TO_PYTHON: dict[str, str] = {
     "any": "Any",
     "geometry": "dict[str, Any]",
     "regex": "str",
+    "file": "FileRef",
 }
+
+# ``file<a | b>``: a file pointer restricted to the listed buckets.
+_FILE_BUCKETS_RE = re.compile(r"file<(.+)>", re.IGNORECASE)
 
 # SurrealDB types that require extra imports
 _IMPORT_MAP: dict[str, str] = {
@@ -252,6 +257,10 @@ class ModelCodeGenerator:
                     )
                 return f'{field.name}: ForeignKey("{table_name}")', extra_imports
 
+        file_line = self._generate_file_field(field, extra_imports)
+        if file_line is not None:
+            return file_line, extra_imports
+
         python_type = self._surreal_type_to_python(field.field_type)
 
         # Collect any needed imports from the type
@@ -295,6 +304,33 @@ class ModelCodeGenerator:
             return f"{field.name}: {python_type} = None", extra_imports
 
         return f"{field.name}: {python_type}", extra_imports
+
+    @staticmethod
+    def _generate_file_field(field: FieldState, extra_imports: set[str]) -> str | None:
+        """
+        Generate the line of a ``file<a | b>`` column, or ``None`` for any other type.
+
+        The buckets become a :class:`~surreal_orm.fields.FileField`
+        subscript, in the order the server lists them.  ``FileField`` writes
+        its bucket names into DDL and so accepts only identifiers; a bucket the
+        server reports backticked (``file<`my-b`>``) would make the generated
+        module fail at import, so that column falls back to an untyped
+        ``FileRef | None`` with a comment carrying the original type, written
+        through ``repr`` so that no character of the server's text (a carriage
+        return, a form feed) can end the comment.  A bare
+        ``file`` column needs nothing here: it maps to ``FileRef`` like any
+        simple type.
+        """
+        match = _FILE_BUCKETS_RE.fullmatch(field.field_type.strip())
+        if match is None:
+            return None
+        buckets = [bucket.strip() for bucket in match.group(1).split("|")]
+        if all(SAFE_IDENTIFIER_RE.fullmatch(bucket) for bucket in buckets):
+            extra_imports.add("from surreal_orm.fields import FileField")
+            subscript = ", ".join(f'"{bucket}"' for bucket in buckets)
+            return f"{field.name}: FileField[{subscript}]"
+        extra_imports.add("from surreal_orm import FileRef")
+        return f"{field.name}: FileRef | None = None  # {field.field_type!r}: bucket name is not an identifier"
 
     @staticmethod
     def _extract_record_table(field_type: str) -> str | None:
@@ -357,6 +393,8 @@ class ModelCodeGenerator:
             imports.add("from surreal_orm.fields import GeoField")
         if "ReferencesField" in python_type:
             imports.add("from surreal_orm.fields import ReferencesField")
+        if "FileRef" in python_type:
+            imports.add("from surreal_orm import FileRef")
 
     def _format_default(self, default: object) -> str:
         """Format a default value for Python source code.

@@ -73,6 +73,8 @@ class FieldType(StrEnum):
         - RECORD: Reference to another record (can be typed: record<users>)
         - GEOMETRY: GeoJSON spatial data (point, line, polygon, etc.)
         - REGEX: Compiled regular expression
+        - FILE: Pointer to a file in a bucket (can be typed: file<avatars>,
+          file<a | b>); experimental, behind SurrealDB's ``files`` capability
 
     Generic Type Syntax:
         For typed collections/references, use the generic() class method:
@@ -108,6 +110,7 @@ class FieldType(StrEnum):
     GEOMETRY = "geometry"
     REGEX = "regex"
     REFERENCES = "references"
+    FILE = "file"
 
     def generic(self, inner_type: str) -> str:
         """
