@@ -51,7 +51,9 @@ class ConnectionPool:
                 ``"http"``, ``WebSocketConnection`` for ``"websocket"``), such
                 as ``protocol``. They are passed as is when a connection is
                 created, so a keyword that class does not take raises
-                ``TypeError`` at the first ``acquire()``.
+                ``TypeError`` at the first ``acquire()``, and an invalid value
+                for a keyword it does take (such as an unknown ``protocol``)
+                raises ``ValueError`` there too.
         """
         if size <= 0:
             raise ValueError(f"Pool size must be > 0, got {size}")
