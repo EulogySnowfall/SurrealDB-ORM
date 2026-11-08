@@ -41,6 +41,17 @@
 
 ---
 
+## What's New in 0.39.3
+
+**Patch release — change feed start-up and multi-table polls**
+([#312](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/312)). SDK only. The default start of a change feed
+(`since=None`, in `ChangeFeedStream`, `MultiTableChangeFeed` and `QuerySet.changes()`) is found with at most 130 small
+`LIMIT 1` probes instead of reading the whole retained database feed; a `MultiTableChangeFeed` poll reads the database
+feed once instead of once per table; and a stream started from a datetime that misses a change written after it started
+watching emits one `RuntimeWarning` (on SurrealDB 3.3.5, in-memory storage and SurrealKV select nothing from a datetime
+start; RocksDB does). Prefer a versionstamp start (an `int` or `stream.cursor`) on those engines. SurrealDB pin unchanged
+(3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full notes and known limitations.
+
 ## What's New in 0.39.2
 
 **Patch release — live queries across a WebSocket reconnect**

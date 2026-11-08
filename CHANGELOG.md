@@ -6,6 +6,86 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.3] - 2026-11-08
+
+**Patch release — change feed start-up and multi-table polls (#312 via
+#650).** SDK only (`surreal_sdk/streaming/change_feed.py`, plus the
+`QuerySet.changes()` docstring): the default start of a change feed no longer
+reads the whole retained database feed, a multi-table poll reads the database
+feed once instead of once per table, and a datetime start that misses a
+change now warns. No public API is added and no DDL is emitted. The SurrealDB
+pin is unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **The default start (`since=None`) is found with probes.**
+  `ChangeFeedStream.stream()` / `stream_batch()`,
+  `MultiTableChangeFeed.stream()` and `QuerySet.changes()` used to find "now"
+  by reading the database feed from versionstamp 0, 1000 full entries per
+  request, so the start-up cost grew with the whole retained feed of the
+  database. It now sends `SHOW CHANGES FOR DATABASE SINCE <n> LIMIT 1` probes
+  (exponential search, then bisection): at most 130 small requests, whatever
+  the size of the feed (#312).
+- **`MultiTableChangeFeed` reads the database feed once per poll.** A round
+  used to read the same database window once per table. It is now one
+  transaction: one `SHOW CHANGES FOR TABLE` per table and a single
+  `SHOW CHANGES FOR DATABASE`, from the smallest cursor. A table's cursor never
+  moves back, and each `stream.cursor` keeps its meaning (#312).
+
+### Added
+
+- **A datetime start that misses a change emits one `RuntimeWarning`**
+  pointing to versionstamp cursors, instead of waiting silently. Measured on
+  SurrealDB 3.3.5: RocksDB selects the entries written from a `d'...'` start;
+  in-memory storage and SurrealKV select nothing for any instant after the
+  epoch. The stream does not raise and keeps polling; the first non-empty
+  window ends the check (#312).
+
+### Behaviour changes
+
+- The default start sends small `LIMIT 1` probes (up to 130) instead of pages
+  of 1000 full entries.
+- A multi-table round is a single request.
+- A stream with a datetime start whose window stays empty sends one extra
+  small probe per empty poll, until a change is written after the start or it
+  has warned.
+
+### Upgrading
+
+- On in-memory or SurrealKV servers, start a change feed from a versionstamp
+  (an `int`, or a saved `stream.cursor`) rather than a datetime.
+
+### Known limitations
+
+- The warning only covers changes written after the stream started watching:
+  the check finds "now" at the first empty poll that comes at least 5 seconds
+  after the datetime start, and only a change written after that point is
+  detected. Changes committed between the `since` instant and that point are
+  skipped without a warning, and on in-memory or SurrealKV storage they are
+  never delivered (review suggestion on #650).
+- On a small feed, the probe search can take more round trips than the old
+  scan, which needed one request below 1000 entries: about 10 probes for a
+  few entries written over a second, about 40 for twenty entries over a
+  minute. Each probe is one sequential request (review suggestion on #650).
+
+### Tests
+
+- Special-character record IDs through `save(tx=)`, `merge(tx=)` (plain and
+  `SurrealFunc`) and `delete(tx=)` followed by a whole-database snapshot
+  check, and `RelationQuerySet` traversal queries for an ID with a backtick,
+  one ending in a backslash, and both (#312).
+- A change behind more than 1000 entries of another table is delivered once
+  (#312).
+
+### Documentation
+
+- `docs/sdk.md`, the `QuerySet.changes()` docstring and
+  `examples/12_realtime.ipynb` (markdown only) describe the probe search, the
+  per-engine datetime behaviour and the single read per multi-table poll
+  (#312).
+
+---
+
 ## [0.39.2] - 2026-11-08
 
 **Patch release — live queries across a WebSocket reconnect (#279 via

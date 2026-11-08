@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.2)
+> Context document for Claude AI - Last updated: November 2026 (0.39.3)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.3 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -21,6 +21,35 @@
 
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.3
+
+One fix, #312 via #650 (`surreal_sdk/streaming/change_feed.py`, the
+`QuerySet.changes()` docstring, `docs/sdk.md`). Pin unchanged (3.3.5).
+`v2`: not needed, the line ended at 0.39.0.
+
+- **"Now" is found with probes.** `_resolve_now()` delegates to `_find_now()`:
+  `SHOW CHANGES FOR DATABASE SINCE <n> LIMIT 1`, jumping past the
+  versionstamp each probe returns, exponential until a probe is empty, then
+  bisection. At most 130 requests (`_PROBE_BOUND`); retention gaps and an
+  empty feed need nothing special. The old scan read 1000 full entries per
+  request from versionstamp 0.
+- **One database read per multi-table round.** One transaction: one
+  `FOR TABLE` read per table and a single `FOR DATABASE` read from the
+  smallest cursor. Each table keeps entries at or after its own cursor and
+  before `_window_end()` (shared with the single-table read, so the 3.3 unit
+  counting is unchanged); a cursor never moves back.
+- **A versionstamp is the commit time in milliseconds shifted by 16 bits**
+  (3.3.5). RocksDB compares a `d'...'` start with it; in-memory storage and
+  SurrealKV select nothing for any instant after the epoch. An empty window
+  proves nothing (on RocksDB a start after the last entry is empty until a
+  write), so `_DatetimeStartCheck` finds "now" once the start is 5 s in the
+  past and a window is empty, then probes from there before each empty poll
+  and warns once when a probe finds a change the window missed.
+- **Open (review suggestions on #650):** changes between the `since` instant
+  and the check's marker are skipped without a warning; a small feed costs
+  more probes than the old one-request scan (starting the step at `1 << 16`,
+  or a far-ahead first probe, would cut that).
 
 ### What's New in 0.39.2
 
