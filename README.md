@@ -37,6 +37,15 @@ Both branches receive automated daily security monitoring from `main` (GitHub Ac
 
 ---
 
+## What's New in 0.38.7
+
+**Fix release.** Concurrent first calls to `SurrealDBConnectionManager.get_ws_client()` for one connection (for
+example several `QuerySet.live()` streams started with `asyncio.gather()`) now create a single WebSocket client and all
+receive it ([#598](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/598)). Before, each caller opened its own
+socket, the last registration overwrote the others, and the overwritten sockets were never closed. WebSocket client
+builds now take a lock of their own, separate from the HTTP one and shared by every connection name. SurrealDB pin
+unchanged (3.3.5). See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.38.6
 
 **Fix release.** `ConnectionPool.acquire()` closes a new connection whose `connect()` or pool sign-in fails, or is
