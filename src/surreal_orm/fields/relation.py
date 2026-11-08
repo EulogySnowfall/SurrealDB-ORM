@@ -445,9 +445,10 @@ def _find_marker[MarkerT](
       ``FieldInfo.annotation`` as well.  Pydantic does not lift a union
       member's metadata into ``FieldInfo.metadata``.
 
-    Both places are searched, so the migrations introspector and the
-    record-link coercion, which share this lookup, cannot disagree about which
-    fields carry a marker.
+    Both places are searched, so the migrations introspector, the
+    record-link coercion and the public helpers (:func:`is_relation_field`,
+    :func:`get_relation_info`, ...), which share this lookup, cannot disagree
+    about which fields carry a marker.
 
     Args:
         annotation: The field's type annotation — from ``get_type_hints`` with
@@ -500,63 +501,51 @@ def on_delete_to_surql(on_delete: str | None) -> str | None:
     return {"SET_NULL": "UNSET", "PROTECT": "REJECT"}.get(normalized, normalized)
 
 
+#: Every relation marker; ``is_relation_field()`` matches any of them.
+_RELATION_MARKERS = (_ForeignKeyMarker, _ManyToManyMarker, _RelationMarker)
+
+
 def is_relation_field(field_type: Any) -> bool:
     """
     Check if a field type is a relation type.
+
+    The marker is found on a bare annotation (``ForeignKey("User")``) and
+    inside a union (``ForeignKey("User") | None``,
+    ``Optional[ForeignKey("User")]``), through the same lookup as the
+    migrations introspector and the record-link coercion.
 
     Args:
         field_type: The type annotation to check
 
     Returns:
-        True if the field is a ForeignKey, ManyToMany, or Relation
+        True if the field is a ForeignKey, ManyToMany, or Relation, bare or
+        inside a union
     """
-    origin = get_origin(field_type)
-
-    if origin is Annotated:
-        args = get_args(field_type)
-        for arg in args:
-            if isinstance(arg, (_ForeignKeyMarker, _ManyToManyMarker, _RelationMarker)):
-                return True
-
-    return False
+    return _find_marker(field_type, (), _RELATION_MARKERS) is not None
 
 
 def is_foreign_key(field_type: Any) -> bool:
-    """Check if a field type is a ForeignKey."""
-    origin = get_origin(field_type)
-    if origin is Annotated:
-        args = get_args(field_type)
-        for arg in args:
-            if isinstance(arg, _ForeignKeyMarker):
-                return True
-    return False
+    """Check if a field type is a ForeignKey, bare or inside a union."""
+    return _find_marker(field_type, (), _ForeignKeyMarker) is not None
 
 
 def is_many_to_many(field_type: Any) -> bool:
-    """Check if a field type is a ManyToMany relation."""
-    origin = get_origin(field_type)
-    if origin is Annotated:
-        args = get_args(field_type)
-        for arg in args:
-            if isinstance(arg, _ManyToManyMarker):
-                return True
-    return False
+    """Check if a field type is a ManyToMany relation, bare or inside a union."""
+    return _find_marker(field_type, (), _ManyToManyMarker) is not None
 
 
 def is_graph_relation(field_type: Any) -> bool:
-    """Check if a field type is a graph Relation."""
-    origin = get_origin(field_type)
-    if origin is Annotated:
-        args = get_args(field_type)
-        for arg in args:
-            if isinstance(arg, _RelationMarker):
-                return True
-    return False
+    """Check if a field type is a graph Relation, bare or inside a union."""
+    return _find_marker(field_type, (), _RelationMarker) is not None
 
 
 def get_relation_info(field_type: Any) -> RelationInfo | None:
     """
     Extract relation information from a field type.
+
+    The marker is found on a bare annotation and inside a union
+    (``ForeignKey("User") | None``, ``Optional[ForeignKey("User")]``); both
+    give the same :class:`RelationInfo`.
 
     Args:
         field_type: The type annotation to extract from
@@ -564,34 +553,27 @@ def get_relation_info(field_type: Any) -> RelationInfo | None:
     Returns:
         RelationInfo if the field is a relation, None otherwise
     """
-    if not is_relation_field(field_type):
-        return None
+    marker = _find_marker(field_type, (), _RELATION_MARKERS)
 
-    origin = get_origin(field_type)
-
-    if origin is Annotated:
-        args = get_args(field_type)
-        for arg in args:
-            if isinstance(arg, _ForeignKeyMarker):
-                return RelationInfo(
-                    to_model=arg.to,
-                    relation_type="foreign_key",
-                    on_delete=arg.on_delete,
-                    related_name=arg.related_name,
-                )
-            elif isinstance(arg, _ManyToManyMarker):
-                return RelationInfo(
-                    to_model=arg.to,
-                    relation_type="many_to_many",
-                    through=arg.through,
-                    related_name=arg.related_name,
-                )
-            elif isinstance(arg, _RelationMarker):
-                return RelationInfo(
-                    to_model=arg.to,
-                    relation_type="relation",
-                    edge_table=arg.edge,
-                    reverse=arg.reverse,
-                )
-
+    if isinstance(marker, _ForeignKeyMarker):
+        return RelationInfo(
+            to_model=marker.to,
+            relation_type="foreign_key",
+            on_delete=marker.on_delete,
+            related_name=marker.related_name,
+        )
+    if isinstance(marker, _ManyToManyMarker):
+        return RelationInfo(
+            to_model=marker.to,
+            relation_type="many_to_many",
+            through=marker.through,
+            related_name=marker.related_name,
+        )
+    if isinstance(marker, _RelationMarker):
+        return RelationInfo(
+            to_model=marker.to,
+            relation_type="relation",
+            edge_table=marker.edge,
+            reverse=marker.reverse,
+        )
     return None

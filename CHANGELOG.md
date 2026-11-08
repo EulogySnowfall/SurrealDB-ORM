@@ -6,6 +6,402 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.5] - 2026-11-08
+
+**Patch release — change-feed unit count under the JSON protocol.** One
+fix: #364 via #667 (`surreal_sdk/streaming/change_feed.py`). No public API
+is added and no query text changes. CBOR (the default) is not affected. The
+SurrealDB pin is unchanged (tested against 3.3.5, supported range 3.2.x –
+3.3.x).
+
+### Fixed
+
+- **Change feeds over the JSON protocol no longer merge the changes of two
+  escaped table names that share a prefix before `:`** (`` `a:b`:1 `` and
+  `` `a:c`:1 ``, or the `⟨a:b⟩:1` form) into one (versionstamp, table) unit.
+  `_record_table()` leaves a string id whose table is escaped unread, so its
+  change counts as a unit of its own, and a window cut at the scan limit can
+  no longer be taken for the end of the feed (#364).
+
+### Behaviour changes
+
+- None for CBOR. Under JSON, every change on an escaped table name (one
+  holding `:`, or a hyphenated name such as `my-table`, which the server also
+  prints in backticks) counts as its own unit, so a window holding such
+  changes can be re-read one extra time. No entry is skipped or delivered
+  twice (#364).
+
+### Documentation
+
+- This resolves the `[0.34.19]` known limitation (a JSON-protocol string id
+  with an escaped table name containing `:` could be under-counted).
+
+---
+
+## [0.39.4] - 2026-11-08
+
+**Patch release — the relation detection helpers see optional relations.**
+One fix: #299 via #663 (`surreal_orm/fields/relation.py`). No public API is
+added and no DDL, migration or query text changes. The SurrealDB pin is
+unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`is_relation_field()`, `is_foreign_key()`, `is_many_to_many()`,
+  `is_graph_relation()` and `get_relation_info()` now find a relation marker
+  inside a union** (`ForeignKey("X") | None`, `Optional[ForeignKey("X")]`,
+  same for `ManyToMany` and `Relation`). They use the same lookup as the
+  record-link coercion and the migrations introspector, which have read union
+  members since 0.34.10 (#299).
+- **Chaining through `RelationQuerySet` attributes** (`user.following.<name>`)
+  now works when the relation on the target model is declared optional
+  (`Relation(...) | None`, `Optional[ForeignKey(...)]`) (#299).
+
+### Behaviour changes
+
+- The public detection helpers now report a union-wrapped relation marker as
+  a relation. They used to return `False` or `None` for
+  `ForeignKey("X") | None` and `Optional[ForeignKey("X")]`, and now return
+  `True` or the `RelationInfo`. Bare markers and unions with no marker
+  (`str | None`, `int | str`) give the same answers as before, and each
+  type-specific helper still matches only its own marker (#299).
+- This resolves the 0.34.10 known limitation on these helpers.
+
+### Tests
+
+- The Python-support guard (`tests/test_python_support.py`) now reads the
+  README `**Requirements:**` line and fails when its "tested on 3.X – 3.Y"
+  range differs from the `ci.yml` unit matrix. Its text now says that `cbor2`
+  needs a Rust toolchain, like `pydantic-core`, that the glibc 2.35 cap is
+  deliberate, and its no-wheel message points a pure-Python package shipped
+  only as an sdist to `SOURCE_BUILD_ALLOWED` (#292 via #662).
+
+### Removed
+
+- `tox.ini` (repository tooling only, not shipped). Nothing ran it, it listed
+  py312–py314, and it configured black and flake8, which the project does not
+  use (#292 via #662).
+
+### Documentation
+
+- Release-note corrections in the `[0.39.3]` entry: the *Added* bullet says
+  the warning is for a change written after the stream started watching; the
+  datetime-start *Behaviour changes* bullet describes the one-time search for
+  "now"; the first *Known limitations* bullet says which storage engines never
+  deliver the uncovered changes; the sign-up warning bullet lists `id` and
+  `created_at` among the fields it skips.
+- The README "What's New in 0.34.10" section no longer lists the detection
+  helpers as a known limitation (#299).
+
+---
+
+## [0.39.3] - 2026-11-08
+
+**Patch release — change feed start-up, `Prefetch` variables, the user
+returned by a token refresh, cache drops at commit, a sign-up set warning and
+CBOR checks inside record ids and dict keys.** Six fixes: #312 via #650
+(`surreal_sdk/streaming/change_feed.py`), #344 via #653
+(`surreal_orm/query_set.py`, `prefetch.py`), #357 via #655
+(`surreal_orm/auth/mixins.py`), #360 via #656 (`surreal_orm/cache.py`,
+`surreal_sdk/transaction.py`), #371 via #658 (`surreal_orm/auth/access.py`,
+`migrations/introspector.py`) and #612 via #659
+(`surreal_sdk/protocol/cbor.py`). No public API is added and no DDL is emitted.
+The SurrealDB pin is unchanged (tested against 3.3.5, supported range
+3.2.x – 3.3.x).
+
+### Fixed
+
+- **The default change feed start (`since=None`) is found with probes.**
+  `ChangeFeedStream.stream()` / `stream_batch()`,
+  `MultiTableChangeFeed.stream()` and `QuerySet.changes()` used to find "now"
+  by reading the database feed from versionstamp 0, 1000 full entries per
+  request, so the start-up cost grew with the whole retained feed of the
+  database. It now sends `SHOW CHANGES FOR DATABASE SINCE <n> LIMIT 1` probes
+  (exponential search, then bisection): at most 130 small requests, whatever
+  the size of the feed (#312).
+- **`MultiTableChangeFeed` reads the database feed once per poll.** A round
+  used to read the same database window once per table. It is now one
+  transaction: one `SHOW CHANGES FOR TABLE` per table and a single
+  `SHOW CHANGES FOR DATABASE`, from the smallest cursor. A table's cursor never
+  moves back, and each `stream.cursor` keeps its meaning (#312).
+- **`Prefetch(queryset=...)` sends the variables its queryset declared with
+  `.variables()`.** `Prefetch("wrote", queryset=Post.objects().filter(tag="$t").variables(t="x"))`
+  now filters the edges on `tag = "x"`; the variable used to reach the server
+  unbound, so the filter compared against `NONE` and no related record
+  matched. The rule is the one `Subquery` follows: only declared names are
+  sent, and the ORM's compiled `$_fN` bindings are never replaced (#344).
+- **A variable declared with `.variables()` can no longer be overwritten by a
+  binding the ORM writes while compiling.**
+  `filter(name="x", age="$_f0").variables(_f0=5)` used to compare `age` with
+  `"x"` (#344).
+- **`refresh_access_token()` returns the record the new token was issued
+  for.** It reads `$auth` on the temporary connection before closing it and
+  fetches that record by its decoded record ID, as `signin()`, `signup()` and
+  `authenticate_token()` have done since 0.34.17. The record ID is no longer
+  decoded locally from the JWT or bound as a string. On SurrealDB 3.3.5 the
+  old lookup already found numeric-looking keys such as `⟨000000⟩`, so this
+  aligns the four entry points on one lookup. Cost: one extra `RETURN $auth`
+  query on the temporary refresh connection (#357).
+- **`signup()` no longer reports `Signup failed: ...` once the account
+  exists.** When the account was created but its `$auth` record could not be
+  read, it raises `SurrealDbError("Signup succeeded but the session record
+  could not be read: ...")`, so a caller does not retry and create a second
+  record or hit a uniqueness error (#357).
+- **A `.cache()` read taken between a transactional write and its commit is
+  no longer served after the commit.** A write with `tx=` (`save(tx=)`,
+  `update(tx=)`, `merge(tx=)`, `delete(tx=)`, and `bulk_create(atomic=True)`,
+  which goes through `save(tx=)`) fires its signal when the write is issued,
+  and the cache dropped the table's entries only then. A read cached by
+  another task before the commit kept serving the pre-commit rows until the
+  TTL ran out. The table's entries are now dropped again once the transaction
+  commits, over HTTP and WebSocket (#360).
+- **Building a USER model's access definition warns about required fields
+  that a sign-up can never set.** `define_access()`, `makemigrations` and
+  `schema_diff` now emit one `UserWarning` naming every field with no default
+  that is not `id`, the identifier, the password, `created_at`, in
+  `signup_fields`, computed, in `server_fields`, or a `ManyToMany` /
+  `Relation` attribute. Before, such a
+  field showed up only as a server error on the first sign-up (#371).
+- **An integer outside the 64-bit range inside a `RecordId`'s id or used as a
+  dict key** (at any depth, tuple keys included) now raises `ValueError`
+  before the request, with the same message as for a plain value. It used to
+  go out as a CBOR bignum, which SurrealDB rejects: HTTP 400 over HTTP, no
+  reply over WebSocket, so the caller waited for the timeout (#612).
+- **A `date` inside a `RecordId`'s id** (at any depth, nested record ids
+  included) is sent as the UTC-midnight `datetime` (tag 12), like a plain
+  `date`. It used to go out as cbor2's native date tag (1004), which SurrealDB
+  does not read, so the request failed. Datetimes in record ids encode exactly
+  as before, and a naive one still warns once (#612).
+
+### Added
+
+- **A datetime change feed start that misses a change written after the
+  stream started watching emits one `RuntimeWarning`** pointing to versionstamp cursors, instead of waiting
+  silently. Measured on SurrealDB 3.3.5: RocksDB selects the entries written
+  from a `d'...'` start; in-memory storage and SurrealKV select nothing for any
+  instant after the epoch. The stream does not raise and keeps polling; the
+  first non-empty window ends the check (#312).
+
+### Behaviour changes
+
+- The default change feed start sends small `LIMIT 1` probes (up to 130)
+  instead of pages of 1000 full entries (#312).
+- A multi-table change feed round is a single request (#312).
+- A change feed with a datetime start whose window stays empty searches once
+  for "now" (up to 130 small probes) at the first empty poll that comes at
+  least 5 seconds after the start, then sends one extra small probe per empty
+  poll, until a window is non-empty or it has warned (#312).
+- `QuerySet.variables()` raises `ValueError("Variable names starting with '_'
+  are reserved for the ORM's own bindings: '<name>'")` for any name starting
+  with `_`, before storing anything. This includes names such as `_x_after`,
+  which `iter_jsonl()` / `export_jsonl()` used to reject later with their own
+  message. Names that do not start with `_` are unchanged (#344).
+- `signup()` raises with the message prefix `Signup succeeded but the session
+  record could not be read:` when the account was created but its `$auth`
+  record could not be read. The other `Signup failed` paths (duplicate
+  identifier, rejected signup, no token) are unchanged (#357).
+- `refresh_access_token()` raises `SurrealDbError` when `$auth` is empty
+  (instead of `could not extract record ID from JWT`), and `DoesNotExist` with
+  the record ID in the message when the record no longer exists (#357).
+- A transaction that commits drops the cache entries of each table written
+  with `tx=` a second time. A rollback or a failed commit drops nothing more.
+  Non-transactional writes are unchanged (#360).
+- A USER model whose required field is filled by the server through a `VALUE`
+  clause or an event that the model does not declare now warns when its
+  access definition is built. The `SIGNUP` clause, the DDL and the API are
+  unchanged; list that field in `server_fields` to silence the warning (#371).
+- A call that used to send a bignum in a record id or a dict key fails
+  locally with `ValueError` instead of an HTTP 400 or a WebSocket timeout.
+  Integers within `[-2**64, 2**64 - 1]` are unchanged (the signed 64-bit range
+  is #657). Dict keys are only checked, never converted, and the caller's
+  `RecordId` is never modified (#612).
+
+### Upgrading
+
+- On in-memory or SurrealKV servers, start a change feed from a versionstamp
+  (an `int`, or a saved `stream.cursor`) rather than a datetime (#312).
+- Rename any variable declared with a leading underscore:
+  `.variables(_min=18)` with `filter(age__gte="$_min")` becomes
+  `.variables(min_age=18)` with `filter(age__gte="$min_age")` (#344).
+- A record id key that held a UTC-midnight `datetime` as a workaround for a
+  `date` keeps working, and now equals the same key written with a `date`
+  (#612).
+
+### Known limitations
+
+- The datetime-start warning only covers changes written after the stream
+  started watching: the check finds "now" at the first empty poll that comes
+  at least 5 seconds after the datetime start, and only a change written after
+  that point is detected. Changes committed between the `since` instant and
+  that point are not covered by the warning; on in-memory or SurrealKV
+  storage they are never delivered (review suggestion on #650).
+- On a small feed, the probe search can take more round trips than the old
+  scan, which needed one request below 1000 entries: about 10 probes for a
+  few entries written over a second, about 40 for twenty entries over a
+  minute. Each probe is one sequential request (review suggestion on #650).
+- `refresh_access_token()`: if reading `$auth` fails after the server has
+  accepted the refresh, the error still reads `Token refresh failed: ...`,
+  although the refresh token passed in has already been rotated and the new
+  pair is dropped. Sign in again rather than retrying with the same refresh
+  token (review suggestion on #655).
+- The cache: a `.cache()` read whose query was sent before a write and whose
+  reply arrives after the entries were dropped still stores its result, which
+  is then served until the TTL runs out (transactional or not). An HTTP commit
+  cancelled after the server applied the batch skips the drop at commit
+  (review suggestion on #656).
+- The `iter_jsonl()` / `export_jsonl()` docstring still lists a
+  `.variables()` name starting with `_x_` under `ValueError`; `.variables()`
+  now refuses any name starting with `_` first (review suggestion on #653).
+- The sign-up warning suggests `signup_fields` for every field it names, but a
+  read-only field (`Field(frozen=True)` or `readonly`) cannot be a sign-up
+  field: `signup_fields` refuses it with `ValueError`. Give such a field a
+  default or list it in `server_fields` (review suggestion on #658).
+- `examples/15_surrealdb3_features.ipynb` defines a USER model with a required
+  `name` and no `signup_fields`, so its `define_access()` cell now emits the
+  warning (#660).
+- CBOR: a `date` used as a dict key keeps cbor2's native date tag (keys are
+  only checked, never converted); the `encode()` docstring does not say so
+  yet (review suggestion on #659). Encoding a `NamedTuple` value fails locally
+  with `TypeError`, as a plain value before this release and now also inside a
+  record id when something in it is converted (#661).
+- Two of the 0.38.5 known limitations are resolved: the `date` inside a
+  `RecordId` key and the 64-bit range check skipping `RecordId` keys and dict
+  keys. The third, the signed 64-bit wrap on SurrealDB 3.x, remains (#657).
+
+### Internal
+
+- `BaseTransaction` has a private post-commit hook (`_call_on_commit`). The
+  callbacks run once per key, in registration order, only after a successful
+  commit; a callback that raises is logged as a warning by
+  `surreal_sdk.transaction` and never fails the commit. No public API change
+  (#360).
+
+### Tests
+
+- Special-character record IDs through `save(tx=)`, `merge(tx=)` (plain and
+  `SurrealFunc`) and `delete(tx=)` followed by a whole-database snapshot
+  check, and `RelationQuerySet` traversal queries for an ID with a backtick,
+  one ending in a backslash, and both (#312).
+- A change behind more than 1000 entries of another table is delivered once
+  (#312).
+- Reserved `_` variable names (including inside a `Subquery` and a
+  `Prefetch`), declared variables on a `Prefetch` queryset, and an
+  integration test that the edge filter is bound (#344).
+- `signup()` after a failed `$auth` read, `refresh_access_token()` resolving
+  the session record (empty `$auth`, missing record), and integration tests
+  of `authenticate_token()` and `refresh_access_token()` for a `⟨000000⟩`
+  user (#357).
+- A read cached between the write and the commit is not served afterwards,
+  for `save`, `update`, `merge` and `delete` over HTTP and WebSocket and for
+  `bulk_create(atomic=True)`; rollback, failed commit, rejected batch,
+  raising callback and deduplication of the commit hook (#360).
+- The sign-up warning (which fields it names, which it skips, one warning
+  per build), and an integration test of `schema_diff()` replacing a
+  pre-0.35.0 `DEFINE ACCESS` and converging on the second diff (#371).
+- Integers out of range and `date` values inside record ids and dict keys,
+  unit and integration over HTTP and WebSocket (#612).
+
+### Documentation
+
+- `docs/sdk.md`, the `QuerySet.changes()` docstring and
+  `examples/12_realtime.ipynb` (markdown only) describe the probe search, the
+  per-engine datetime behaviour and the single read per multi-table poll
+  (#312).
+- `docs/orm.md` and the `Prefetch` / `QuerySet.variables()` docstrings state
+  the declared-variables rule and the reserved `_` names (#344); the cache
+  section of `docs/orm.md` states the two drops of a transactional write
+  (#360).
+- The `QueryCache.set(connection=)` docstring now says that the connection
+  identity only scopes reads, and that a write through any connection drops
+  every entry of the table (#360).
+- `docs/auth.md` describes the sign-up warning and the three ways to silence
+  it (`signup_fields`, a default, `server_fields`). The
+  `ModelIntrospector._generate_access_state()` docstring no longer claims the
+  full `define_access()` definition: `AccessState` does not track
+  `WITH REFRESH`, so `makemigrations` / `schema_diff` never emit it (#371).
+- Release-note correction: the `[0.34.17]` entry now says "Applications whose
+  identifier values are unique get the same user record back as before."
+  instead of "Nothing changes for applications whose identifier values are
+  unique." (#357).
+
+---
+
+## [0.39.2] - 2026-11-08
+
+**Patch release — live queries across a WebSocket reconnect (#279 via
+#648).** SDK only (`surreal_sdk`): live queries on a WebSocket connection now
+stay alive and reachable across a reconnect, whichever API created them, and
+a naive `datetime` inside a record id gets the same warning as anywhere else.
+The `LIVE SELECT` text is unchanged and no DDL is emitted. This resolves the
+three live-query items listed under the `[0.34.8]` *Known limitations*. The
+SurrealDB pin is unchanged (tested against 3.3.5, supported range 3.2.x –
+3.3.x).
+
+### Fixed
+
+- **`LiveSelectManager.stop()` works with the new live id after a reconnect**
+  (the id passed to `on_reconnect`), as well as with the id `watch()`
+  returned; before, `stop(new_id)` found nothing and the stream and its live
+  query kept running. `active_streams` lists current ids.
+  `LiveQueryManager.unwatch()` / `active_queries` behave the same way (#279).
+- **`WebSocketConnection.live(table, callback)` and `LiveQuery.subscribe()`
+  subscriptions are re-created after a reconnect**; before, their callback
+  silently stopped receiving events. `kill()` accepts the id `live()`
+  returned or the current one; `kill()` and `unsubscribe()` unregister the
+  subscription before their request, so a killed query is never re-created
+  (#279).
+- **A live subscription whose `LIVE SELECT` fails during the resubscribe**
+  (server error, timeout, socket lost again) stays registered and is retried
+  on the next reconnect instead of being dropped for good (#279).
+- **A naive `datetime` inside a `RecordId` id** (array, object, nested) now
+  emits the same `RuntimeWarning` as anywhere else, so the documented
+  `warnings.filterwarnings("error", message="A naive datetime was sent to SurrealDB", category=RuntimeWarning)`
+  recipe also catches it. The encoded bytes are unchanged, and a cyclic id
+  still raises cbor2's `CBOREncodeValueError` (#279).
+- **A live notification that arrives in the same WebSocket read as its
+  `LIVE SELECT` reply** (first `start()` / `subscribe()` / `live()`, or a
+  resubscribe) is delivered instead of dropped. Notifications for unknown ids
+  are held in a bounded buffer (128, oldest dropped) only while a
+  `LIVE SELECT` is in flight (#279).
+
+### Behaviour changes
+
+- Callback-API live queries (`conn.live()`, `LiveQuery`, `LiveQueryManager`)
+  now survive a reconnect, and their callback keeps being invoked under a new
+  live id (`conn.live_queries` / `LiveQuery.live_id` report it). Code that
+  relied on a `conn.live()` subscription going quiet after a reconnect should
+  call `conn.kill(live_id)` explicitly.
+- `LiveSelectManager.active_streams` and `LiveQueryManager.active_queries`
+  return each query's current live id rather than the first one.
+- `kill_all_live_queries()` also ends subscriptions waiting to be re-created.
+
+### Upgrading
+
+- Code under a warnings-as-errors filter that encodes naive datetimes inside
+  record ids now raises, as it already did for naive datetimes elsewhere:
+  attach a `tzinfo`.
+
+### Known limitations
+
+- A subscription whose `LIVE SELECT` fails on a live session stays
+  registered under its previous id until the next socket drop, which may
+  never come. Nothing reports it meanwhile: `conn.live_queries` does not list
+  it, `stream.live_id` keeps the previous id and `on_reconnect` is not called.
+- `WebSocketConnection.kill()` removes the callback only after the `kill`
+  request returns. If that request fails or times out while the server-side
+  query survives, the callback keeps receiving notifications and
+  `conn.live_queries` keeps listing the id (this predates 0.39.2).
+- `close()` keeps the registered live subscriptions. Reusing the same
+  connection object after `close()` and `connect()` re-creates the
+  pre-close queries on the next reconnect.
+
+### Documentation
+
+- `docs/sdk.md`: *Callback-Based Live Queries*, *Live Select Manager* and
+  *Auto-Resubscribe* describe the behaviour after a reconnect (#279).
+
+---
+
 ## [0.39.1] - 2026-11-08
 
 **Patch release — dependency floor.** The declared `aiohttp` floor moves to
@@ -1637,7 +2033,8 @@ range 3.2.x – 3.3.x).
   credentials; the `DEFINE ACCESS` definition validates them.
 - `change_password()` raises `SurrealDbError` when the update does not affect
   exactly the signed-in record, instead of returning `True`.
-- Nothing changes for applications whose identifier values are unique.
+- Applications whose identifier values are unique get the same user record
+  back as before.
 
 ## [0.34.16] - 2026-10-28
 

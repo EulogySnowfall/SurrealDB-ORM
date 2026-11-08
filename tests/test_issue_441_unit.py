@@ -13,6 +13,7 @@
    left in ``_pending``.
 """
 
+import contextlib
 from typing import Any
 
 import pytest
@@ -42,6 +43,12 @@ class _RecordingConnection:
 
     def _register_live_subscription(self, live_id: str, params: Any) -> None:
         self._live_subscriptions[live_id] = params
+
+    def _hold_live_notifications(self) -> contextlib.AbstractContextManager[None]:
+        return contextlib.nullcontext()
+
+    def _register_live_callback(self, live_id: str, callback: Any) -> None:
+        self._live_callbacks[live_id] = callback
 
     def _unregister_live_subscription(self, live_id: str) -> None:
         self._live_subscriptions.pop(live_id, None)

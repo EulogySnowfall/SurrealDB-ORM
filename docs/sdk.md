@@ -758,6 +758,13 @@ async with WebSocketConnection("ws://localhost:8000", "ns", "db") as conn:
     await conn.kill(live_id)
 ```
 
+The subscription survives a reconnect: once the session is restored, the
+connection re-creates the live query and `handle_change` keeps receiving its
+notifications, now under a new id (`conn.live_queries` lists the current ids).
+`conn.kill()` accepts the id `live()` returned or the current one, and a killed
+query is never re-created. `LiveQuery.subscribe()` behaves the same way; its
+`live_id` follows the re-created query, and `unsubscribe()` ends it.
+
 ### Live Select Stream (v0.5.0)
 
 The async iterator pattern provides a more Pythonic way to consume live changes:
@@ -839,6 +846,11 @@ await manager.stop(live_id)
 await manager.stop_all()
 ```
 
+After a reconnect each stream follows its re-created live query:
+`active_streams` lists the current ids, and `stop()` accepts either the id
+`watch()` returned or the current one (the `new_id` passed to `on_reconnect`).
+`LiveQueryManager.unwatch()` and `active_queries` work the same way.
+
 ### Auto-Resubscribe
 
 Automatically resubscribe to Live Queries after WebSocket reconnection (network issues, K8s pod restarts):
@@ -863,10 +875,19 @@ async with db.live_select(
 **How it works:**
 
 1. When `auto_resubscribe=True`, the connection stores subscription parameters
+   (`conn.live()` and `LiveQuery.subscribe()` always do)
 2. On WebSocket disconnect, the connection attempts to reconnect
 3. After reconnect, all stored subscriptions are recreated
 4. `on_reconnect` callback is invoked with old and new subscription IDs
 5. The async iterator continues seamlessly
+
+A subscription whose `LIVE SELECT` fails during the resubscribe (an error from
+the server, a timeout, the socket lost again) stays registered under its
+previous id and is retried by the next reconnect; until then it receives
+nothing. Stopping it (`stop()`, `kill()`, `unsubscribe()`) unregisters it, so
+it is never re-created after that. A notification that arrives in the same read
+as the `LIVE SELECT` reply, before the subscription knows its id, is held
+briefly and delivered once the id is registered.
 
 ---
 
@@ -972,15 +993,19 @@ the change feed records a **create as an update**. On a table defined with
 
 | `since` | Meaning |
 | --- | --- |
-| `None` (default) | after the last entry already in the feed: only new changes |
+| `None` (default) | after the last entry already in the feed: only new changes (found with at most 130 `SHOW CHANGES … LIMIT 1` probes, whatever the size of the retained feed) |
 | `int` or decimal string (`"117515092609728513"`) | a versionstamp, inclusive; `stream.cursor` is one |
 | `datetime` | that instant; a naive one is read as UTC (with a `RuntimeWarning`) |
 | ISO 8601 string (`"2026-01-01"`, `"2026-10-27T12:00:00Z"`) | that instant, UTC when it has no offset |
 
 Anything else raises `ValueError` before a query is sent. A failed request or a
 statement the server rejects raises `ChangeFeedError` from the iteration; it is not
-retried. On SurrealDB 3.3 with in-memory storage a datetime start selects nothing,
-so prefer a versionstamp (`since=0` reads the whole retained feed).
+retried. Whether a datetime start selects anything depends on the storage engine
+(measured on SurrealDB 3.3.5): RocksDB selects the entries written from that instant,
+in-memory storage and SurrealKV select nothing for any instant after the epoch. A
+stream started from a datetime there emits one `RuntimeWarning` when it misses a
+change written after its start, and keeps polling. Prefer a versionstamp
+(`since=0` reads the whole retained feed).
 
 An entry holds every change one transaction made to the table. `QuerySet.changes()`
 yields one event per change, so its `cursor` stays on the entry until the entry's
@@ -997,7 +1022,9 @@ async for table, change in feed.stream():  # one entry at a time
     print(f"Table {table}: {change['changes']}")
 ```
 
-Each table keeps its own cursor; `since` applies to every table.
+Each table keeps its own cursor; `since` applies to every table. Each poll is one
+request that reads the database feed once, from the smallest cursor, and advances
+every table's cursor from that window.
 
 ---
 

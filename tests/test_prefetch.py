@@ -1,6 +1,8 @@
 """Tests for Prefetch class — v0.11.0."""
 
 from collections.abc import AsyncGenerator
+from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -99,6 +101,70 @@ class TestPrefetchRelatedMethod:
         assert isinstance(qs._prefetch_related[1], Prefetch)
 
 
+def _prefetch_client() -> Any:
+    from surreal_sdk.types import QueryResponse, QueryResult, ResponseStatus
+
+    client = AsyncMock()
+    client.query = AsyncMock(return_value=QueryResponse(results=[QueryResult(status=ResponseStatus.OK, result=[])]))
+    return client
+
+
+async def _run_prefetch(custom_qs: Any) -> tuple[str, dict[str, Any]]:
+    """Run ``_execute_prefetch()`` for one parent and return the (sql, variables) it sent."""
+    qs = PrefetchUser.objects().prefetch_related(Prefetch("wrote", queryset=custom_qs, to_attr="tagged"))
+    client = _prefetch_client()
+    with patch(
+        "src.surreal_orm.query_set.SurrealDBConnectionManager.get_client",
+        new_callable=AsyncMock,
+        return_value=client,
+    ):
+        await qs._execute_prefetch([PrefetchUser(id="alice", name="Alice")])
+    client.query.assert_awaited_once()
+    sql, variables = client.query.await_args.args
+    return sql, variables
+
+
+class TestPrefetchDeclaredVariables:
+    """#344: the variables declared on a Prefetch queryset are sent with the prefetch query."""
+
+    async def test_declared_variable_is_sent(self) -> None:
+        sql, variables = await _run_prefetch(PrefetchPost.objects().filter(tag="$t").variables(t="x"))
+        assert sql == "SELECT in, out.* FROM wrote WHERE in IN [prefetch_users:alice] AND tag = $t;"
+        assert variables == {"t": "x"}
+
+    async def test_declared_and_compiled_variables_are_both_sent(self) -> None:
+        custom = PrefetchPost.objects().filter(published=True, tag="$t").variables(t="x")
+        sql, variables = await _run_prefetch(custom)
+        assert sql.endswith("AND published = $_f0 AND tag = $t;")
+        assert variables == {"_f0": True, "t": "x"}
+
+    async def test_declared_variable_not_referenced_is_still_sent(self) -> None:
+        # Same rule as Subquery: every declared name goes out with the query.
+        _, variables = await _run_prefetch(PrefetchPost.objects().filter(published=True).variables(t="x"))
+        assert variables == {"_f0": True, "t": "x"}
+
+    async def test_no_declared_variables_sends_the_same_bindings(self) -> None:
+        sql, variables = await _run_prefetch(PrefetchPost.objects().filter(published=True))
+        assert sql == "SELECT in, out.* FROM wrote WHERE in IN [prefetch_users:alice] AND published = $_f0;"
+        assert variables == {"_f0": True}
+
+    async def test_stale_bindings_of_an_earlier_compile_are_not_sent(self) -> None:
+        custom = PrefetchPost.objects().filter(published=True).nearby("location", (1.0, 2.0), max_distance=5).variables(t="x")
+        custom._compile_query()
+        assert "_geo_max" in custom._variables
+        _, variables = await _run_prefetch(custom)
+        assert variables == {"_f0": True, "t": "x"}
+
+    async def test_compiled_binding_wins_on_a_name_clash(self) -> None:
+        # .variables() refuses names starting with "_", so this state can only be
+        # built by hand; the ORM's own binding must still never be replaced.
+        custom = PrefetchPost.objects().filter(published=True)
+        custom._variables = {"_f0": "declared"}
+        custom._declared_variables = frozenset({"_f0"})
+        _, variables = await _run_prefetch(custom)
+        assert variables == {"_f0": True}
+
+
 class TestPrefetchExport:
     """Test that Prefetch is properly exported."""
 
@@ -159,9 +225,9 @@ class TestPrefetchIntegration:
         await client.query("CREATE prefetch_posts:p3 SET title = 'Post 3', published = true;")
 
         # Create graph relations: user -wrote-> post
-        await client.query("RELATE prefetch_users:alice->wrote->prefetch_posts:p1;")
-        await client.query("RELATE prefetch_users:alice->wrote->prefetch_posts:p2;")
-        await client.query("RELATE prefetch_users:bob->wrote->prefetch_posts:p3;")
+        await client.query("RELATE prefetch_users:alice->wrote->prefetch_posts:p1 SET tag = 'x';")
+        await client.query("RELATE prefetch_users:alice->wrote->prefetch_posts:p2 SET tag = 'y';")
+        await client.query("RELATE prefetch_users:bob->wrote->prefetch_posts:p3 SET tag = 'y';")
 
     async def test_prefetch_graph_relation(self) -> None:
         """Prefetch graph relation results as batch."""
@@ -209,3 +275,21 @@ class TestPrefetchIntegration:
 
         for user in users:
             assert hasattr(user, "published_posts")
+
+    async def test_prefetch_queryset_declared_variables_are_bound(self) -> None:
+        """#344: a declared variable in a Prefetch queryset filter is sent and filters the edges."""
+        users = (
+            await PrefetchUser.objects()
+            .prefetch_related(
+                Prefetch(
+                    "wrote",
+                    queryset=PrefetchPost.objects().filter(tag="$t").variables(t="x"),
+                    to_attr="tagged",
+                ),
+            )
+            .exec()
+        )
+
+        by_name = {u.name: u for u in users}
+        assert [str(edge["out"]["id"]) for edge in by_name["Alice"].tagged] == ["prefetch_posts:p1"]
+        assert by_name["Bob"].tagged == []

@@ -492,8 +492,11 @@ class AuthenticatedUserMixin:
 
         Raises:
             SurrealDbError: If a keyword is outside the sign-up set (raised
-                before any request), if signup fails (e.g., duplicate
-                identifier), or the session record cannot be read after signup
+                before any request), if signup fails (``Signup failed: ...``,
+                e.g., duplicate identifier), or the session record cannot be
+                read after a successful signup (``Signup succeeded but the
+                session record could not be read: ...``; the record exists, so
+                do not retry the signup)
             DoesNotExist: If the session record no longer exists
 
         Example:
@@ -549,25 +552,33 @@ class AuthenticatedUserMixin:
         # Use an ephemeral connection — never the root singleton
         client = await cls._create_auth_client()
         try:
-            response = await client.signup(
-                namespace=namespace,
-                database=database,
-                access=access_name,
-                **credentials,
-            )
+            try:
+                response = await client.signup(
+                    namespace=namespace,
+                    database=database,
+                    access=access_name,
+                    **credentials,
+                )
 
-            if not response.success:
-                raise SurrealDbError(f"Signup failed: {response.raw}")
+                if not response.success:
+                    raise SurrealDbError(f"Signup failed: {response.raw}")
 
-            token = response.token
-            if not token:
-                raise SurrealDbError("Signup succeeded but no JWT token was returned by the server.")
+                token = response.token
+                if not token:
+                    raise SurrealDbError("Signup succeeded but no JWT token was returned by the server.")
 
-            refresh_token = response.refresh_token
-            # Read $auth while the ephemeral session is still open.
-            session_record = await cls._read_session_record(client)
-        except (SurrealDBError, AuthenticationError, QueryError) as e:
-            raise SurrealDbError(f"Signup failed: {e}") from e
+                refresh_token = response.refresh_token
+            except (SurrealDBError, AuthenticationError, QueryError) as e:
+                raise SurrealDbError(f"Signup failed: {e}") from e
+
+            # The record exists from here on: a failure to read $auth must not
+            # be reported as a failed signup, or a retry would create a second
+            # record (or hit a uniqueness error).
+            try:
+                # Read $auth while the ephemeral session is still open.
+                session_record = await cls._read_session_record(client)
+            except (SurrealDBError, AuthenticationError, QueryError) as e:
+                raise SurrealDbError(f"Signup succeeded but the session record could not be read: {e}") from e
         finally:
             await client.close()
 
@@ -894,10 +905,13 @@ class AuthenticatedUserMixin:
 
         Returns:
             :class:`AuthResult` with the user instance, new access token,
-            and rotated refresh token.
+            and rotated refresh token.  The ``user`` is the record the new
+            token was issued for (``$auth``), fetched by its record ID.
 
         Raises:
-            SurrealDbError: If the refresh token is invalid or expired.
+            SurrealDbError: If the refresh token is invalid or expired, or
+                the session record cannot be read after the refresh.
+            DoesNotExist: If the session record no longer exists.
 
         Example:
             result = await User.refresh_access_token(stored_refresh_token)
@@ -941,29 +955,22 @@ class AuthenticatedUserMixin:
 
             new_token = response.token
             new_refresh = response.refresh_token
+            # Read $auth while the ephemeral session is still open.
+            session_record = await cls._read_session_record(client)
         except (SurrealDBError, AuthenticationError, QueryError) as e:
             raise SurrealDbError(f"Token refresh failed: {e}") from e
         finally:
             await client.close()
 
-        # Authenticate on the ephemeral connection to get $auth record ID,
-        # then fetch the full user record via root singleton.
-        # Instead, we decode the JWT locally to extract the record ID —
-        # the token was just issued by the server so it's trustworthy.
-        record_id = cls.validate_token_local(new_token)
-        if not record_id:
-            raise SurrealDbError("Token refresh succeeded but could not extract record ID from JWT.")
+        if session_record is None:
+            raise SurrealDbError("Token refresh succeeded but the session record could not be read ($auth is empty).")
 
-        root_client = await SurrealDBConnectionManager.get_client(conn_name)
-        result = await root_client.query(
-            f"SELECT * FROM {table_name} WHERE id = type::record($record_id)",
-            {"record_id": record_id},
-        )
+        # Fetch the record the new token was issued for, via the root
+        # singleton, bound as the decoded record ID (see _read_session_record).
+        user = await cls._fetch_record_by_id(session_record)
+        if user is None:
+            raise cls.DoesNotExist(f"User {session_record} not found after token refresh")  # type: ignore[attr-defined]
 
-        if result.is_empty:
-            raise cls.DoesNotExist("User not found after token refresh")  # type: ignore[attr-defined]
-
-        user = cls.from_db(result.first)  # type: ignore[attr-defined]
         return AuthResult(user=user, token=new_token, refresh_token=new_refresh)
 
     @classmethod

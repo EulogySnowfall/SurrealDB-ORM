@@ -228,26 +228,28 @@ def _preprocess_for_cbor(data: Any) -> Any:
     A naive ``datetime`` (subclasses included) is left as it is but warned
     about with a ``RuntimeWarning`` (see :func:`_warn_naive_datetime`):
     :func:`encode` reads it as UTC, because SurrealDB only stores UTC instants.
-    A naive ``datetime`` inside a ``RecordId``'s id is converted the same way
-    but not warned about, since this walk does not enter record ids.
+
+    A ``RecordId``'s id goes through its own walk (:func:`_convert_record_id`),
+    which checks integers, turns a ``date`` into the UTC-midnight datetime and
+    warns once about a naive ``datetime``, at any depth (lists, tuples, sets,
+    dict values, nested record ids; dict keys are checked). Nothing else
+    inside a record id is converted (``None`` and ``Decimal`` keep cbor2's
+    encoding there), and the caller's ``RecordId`` is never modified: a
+    converted copy is returned only when something changed.
 
     An integer outside the 64-bit range CBOR carries natively (below
-    ``-2**64`` or above ``2**64 - 1``) raises ``ValueError``: cbor2 would send
-    it as a bignum tag, which SurrealDB rejects as a parse error (HTTP 400, no
-    reply over WebSocket). An integer inside that range but outside the
-    signed 64-bit range is sent unchanged, as before: SurrealDB 3.3 accepts it
-    and wraps it into a signed 64-bit integer, 4.0 refuses it. Integers
-    inside a ``RecordId``'s id are not checked, since this walk does not
-    enter record ids.
+    ``-2**64`` or above ``2**64 - 1``) raises ``ValueError``, wherever it is
+    met: a value, a dict key (tuple keys included) or inside a record id.
+    cbor2 would send it as a bignum tag, which SurrealDB rejects as a parse
+    error (HTTP 400, no reply over WebSocket). An integer inside that range
+    but outside the signed 64-bit range is sent unchanged, as before:
+    SurrealDB 3.3 accepts it and wraps it into a signed 64-bit integer, 4.0
+    refuses it. Dict keys are only checked, never converted.
     """
     if data is None:
         return CBORTag(TAG_NONE, None)
     if isinstance(data, int) and not isinstance(data, bool):
-        if not _CBOR_INT_MIN <= data <= _CBOR_INT_MAX:
-            raise ValueError(
-                f"Integer {data} is outside the 64-bit range: CBOR would send it as a bignum, which SurrealDB rejects"
-            )
-        return data
+        return _check_cbor_int(data)
     if isinstance(data, Decimal) and data.is_finite():
         return CBORTag(TAG_STRING_DECIMAL, str(data))
     if isinstance(data, datetime):
@@ -256,12 +258,114 @@ def _preprocess_for_cbor(data: Any) -> Any:
         return data
     if isinstance(data, date):
         return datetime(data.year, data.month, data.day, tzinfo=UTC)
+    if isinstance(data, RecordId):
+        return _convert_record_id(data)
     if isinstance(data, dict):
-        return {k: _preprocess_for_cbor(v) for k, v in data.items()}
+        return {_check_key(k): _preprocess_for_cbor(v) for k, v in data.items()}
     if isinstance(data, (list, tuple, set, frozenset)):
         converted = [_preprocess_for_cbor(item) for item in data]
         return type(data)(converted)
     return data
+
+
+def _check_cbor_int(value: int) -> int:
+    """Return ``value`` if CBOR carries it without a bignum tag, else raise ``ValueError``."""
+    if not _CBOR_INT_MIN <= value <= _CBOR_INT_MAX:
+        raise ValueError(
+            f"Integer {value} is outside the 64-bit range: CBOR would send it as a bignum, which SurrealDB rejects"
+        )
+    return value
+
+
+def _check_key(key: Any) -> Any:
+    """Range-check the integers of a dict key and return the key unchanged.
+
+    A key is hashable, so the only containers it can hold are tuples and
+    frozensets, which cannot hold themselves: no cycle guard is needed.
+    """
+    if isinstance(key, int) and not isinstance(key, bool):
+        _check_cbor_int(key)
+    elif isinstance(key, (tuple, frozenset)):
+        for item in key:
+            _check_key(item)
+    return key
+
+
+class _RecordIdWalk:
+    """One pass over a record id's value, for :func:`_convert_record_id`.
+
+    ``done`` maps each container already converted (by ``id()``) to its
+    result, so a container met twice is converted the same way both times.
+    ``active`` holds the containers being walked: meeting one again is a
+    cycle, and the original is returned so cbor2 still refuses it with
+    ``CBOREncodeValueError``, as it did before this walk existed. The ids
+    are those of the caller's objects, which stay alive during the walk.
+    """
+
+    def __init__(self) -> None:
+        self.done: dict[int, Any] = {}
+        self.active: set[int] = set()
+        self.warned = False
+
+    def visit(self, value: Any) -> Any:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return _check_cbor_int(value)
+        if isinstance(value, datetime):
+            if value.tzinfo is None and not self.warned:
+                self.warned = True
+                _warn_naive_datetime()
+            return value
+        if isinstance(value, date):
+            return datetime(value.year, value.month, value.day, tzinfo=UTC)
+        if not isinstance(value, (RecordId, dict, list, tuple, set, frozenset)):
+            return value
+        key = id(value)
+        if key in self.done:
+            return self.done[key]
+        if key in self.active:
+            return value
+        self.active.add(key)
+        try:
+            result = self._visit_container(value)
+        finally:
+            self.active.discard(key)
+        self.done[key] = result
+        return result
+
+    def _visit_container(
+        self, value: RecordId | dict[Any, Any] | list[Any] | tuple[Any, ...] | set[Any] | frozenset[Any]
+    ) -> Any:
+        if isinstance(value, RecordId):
+            inner = self.visit(value.id)
+            return value if inner is value.id else RecordId(table=value.table, id=inner)
+        if isinstance(value, dict):
+            items = [(_check_key(k), self.visit(v)) for k, v in value.items()]
+            if all(new is old for (_, new), old in zip(items, value.values(), strict=True)):
+                return value
+            return dict(items)
+        converted = [self.visit(item) for item in value]
+        if all(new is old for new, old in zip(converted, value, strict=True)):
+            return value
+        return type(value)(converted)
+
+
+def _convert_record_id(record_id: RecordId) -> RecordId:
+    """Check and convert a record id's value before it is encoded.
+
+    Integers outside the 64-bit range raise ``ValueError`` (the message
+    :func:`_preprocess_for_cbor` gives for a plain value), a ``date`` (not a
+    ``datetime``) becomes the UTC-midnight ``datetime`` that :func:`encode`
+    sends as tag 12, and the first naive ``datetime`` warns once (it is read
+    as UTC). The walk enters lists, tuples, sets, dict values and nested
+    ``RecordId`` ids; dict keys are range-checked (:func:`_check_key`) but not
+    converted, as anywhere else. Nothing else is converted.
+
+    The caller's ``RecordId`` and its containers are never modified: the
+    record id is returned as is when nothing changed, and otherwise a new
+    ``RecordId`` holding new containers on the changed paths.
+    """
+    result: RecordId = _RecordIdWalk().visit(record_id)
+    return result
 
 
 def _cbor_default_encoder(encoder: Any, value: Any) -> None:
@@ -428,7 +532,8 @@ def encode(data: Any) -> bytes:
 
     Raises:
         ValueError: for an invalid duration text or an integer outside the
-            64-bit range, before anything is sent.
+            64-bit range (a value, a dict key or inside a record id), before
+            anything is sent.
 
     Args:
         data: Python object to encode

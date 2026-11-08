@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from src.surreal_orm.fields.relation import RelationInfo
+from src.surreal_orm.relations import RelationQuerySet
 from src.surreal_orm.utils import escape_record_id, format_thing, parse_record_id
 from surreal_sdk.connection.http import HTTPConnection
 from surreal_sdk.connection.websocket import WebSocketConnection
@@ -119,6 +120,31 @@ class TestCallersUseTheHelper:
         info = RelationInfo(to_model="i296_nodes", relation_type="relation", edge_table="i296_links")
         query = info.get_traversal_query("i296_nodes", raw)
         assert query == f"SELECT * FROM {format_thing('i296_nodes', raw)}->i296_links->i296_nodes"
+
+
+class _I312Source:
+    """Stands in for a saved instance: the traversal builder reads only its table and ID."""
+
+    def __init__(self, raw: str) -> None:
+        self.raw = raw
+
+    def get_table_name(self) -> str:
+        return "i296_nodes"
+
+    def get_id(self) -> str:
+        return self.raw
+
+
+class TestRelationQuerySetTraversal:
+    """``RelationQuerySet._build_traversal_query()`` writes the source ID through ``format_thing()`` (#312)."""
+
+    @pytest.mark.parametrize("raw", ["a`b", "trail\\", "x\\`; --y\\"], ids=["backtick", "trailing-backslash", "combined"])
+    def test_query_starts_with_the_escaped_source(self, raw: str) -> None:
+        info = RelationInfo(to_model="i296_nodes", relation_type="relation", edge_table="i296_links")
+        queryset = RelationQuerySet(_I312Source(raw), info, [(info, {})])  # type: ignore[arg-type]
+        query, variables = queryset._build_traversal_query()
+        assert query.startswith(f"SELECT * FROM {format_thing('i296_nodes', raw)}->i296_links->i296_nodes")
+        assert variables == {}
 
 
 class TestValidateThing:

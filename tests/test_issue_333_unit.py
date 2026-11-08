@@ -6,6 +6,7 @@ now assigns only the identifier, the password, the ``signup_fields`` entries
 and ``created_at``; every other field keeps its schema or model default.
 """
 
+import copy
 import re
 from unittest.mock import AsyncMock, patch
 
@@ -260,11 +261,7 @@ class TestBuildersAgree:
 
         # The definition an existing database carries: every field a parameter.
         current = SchemaState()
-        current_table = target.tables["u333_same"].clone() if hasattr(target.tables["u333_same"], "clone") else None
-        if current_table is None:
-            import copy
-
-            current_table = copy.deepcopy(target.tables["u333_same"])
+        current_table = copy.deepcopy(target.tables["u333_same"])
         old = target.tables["u333_same"].access
         assert old is not None
         current_table.access = AccessState(
