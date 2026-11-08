@@ -10,14 +10,16 @@ actually be installed on each of those Pythons:
   tested minors;
 * ``uv.lock`` provides a wheel for every package ``uv sync --frozen`` installs.
   A package locked before its maintainers published wheels for a new CPython
-  minor is built from source there: a Rust toolchain for ``pydantic-core``, a C
-  compiler for ``cbor2`` and ``librt``. The CI job then fails, or tests a
+  minor is built from source there: a Rust toolchain for ``pydantic-core`` and
+  ``cbor2``, a C compiler for ``librt``. The CI job then fails, or tests a
   locally compiled build that no user installs. The fix is a targeted
   ``uv lock --upgrade-package``, never a blanket upgrade;
 * the lint targets (ruff ``target-version``, mypy ``python_version``) and the
   oldest tested Python follow the ``requires-python`` floor, not the newest
   release;
-* the ``make test-all-python`` helper runs every tested minor.
+* the ``make test-all-python`` helper runs every tested minor;
+* the ``**Requirements:**`` line of ``README.md`` states the same tested range
+  ("tested on 3.X \u2013 3.Y") as the matrix.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 LOCK_FILE = ROOT / "uv.lock"
 MAKEFILE = ROOT / "Makefile"
+README = ROOT / "README.md"
 PYPROJECTS = (ROOT / "pyproject.toml", ROOT / "src" / "surreal_sdk" / "pyproject.toml")
 
 # Packages allowed to build from source on a tested Python. PyYAML (dev group,
@@ -48,8 +51,10 @@ PYPROJECTS = (ROOT / "pyproject.toml", ROOT / "src" / "surreal_sdk" / "pyproject
 # libyaml extension cannot be built, so no toolchain is required.
 SOURCE_BUILD_ALLOWED = frozenset({"pyyaml"})
 
-# Linux x86_64 as on GitHub's ubuntu runners. A manylinux wheel built for glibc
-# 2.35 (Ubuntu 22.04) or older installs there; a newer one may not be picked.
+# Linux x86_64. The manylinux check is deliberately capped at glibc 2.35
+# (Ubuntu 22.04), older than the ubuntu-latest runners, so a wheel that only
+# newer distributions can install does not count: users on 22.04-era systems
+# would build that package from source. Do not raise it to match the runners.
 _GLIBC_MAX_MINOR = 35
 LINUX_PLATFORMS = [
     *(f"manylinux_2_{minor}_x86_64" for minor in range(_GLIBC_MAX_MINOR, 4, -1)),
@@ -76,6 +81,24 @@ def _minor(version: str) -> int:
 
 
 TESTED_PYTHONS = [str(v) for v in _ci_unit_matrix()]
+
+
+def _ci_tested_range() -> tuple[str, str]:
+    """Oldest and newest Python of the CI unit matrix."""
+    return min(TESTED_PYTHONS, key=_minor), max(TESTED_PYTHONS, key=_minor)
+
+
+# "tested on 3.12 \u2013 3.15", with an en dash (as written today) or a hyphen.
+_README_TESTED_RANGE = re.compile(r"\btested on (3\.\d+)\s*[\u2013-]\s*(3\.\d+)\b")
+
+
+def _readme_tested_range(text: str) -> tuple[str, str]:
+    """The tested range stated by the single ``**Requirements:**`` line of *text*."""
+    lines = [line for line in text.splitlines() if line.startswith("**Requirements:**")]
+    assert len(lines) == 1, f"expected one '**Requirements:**' line in README.md, found {len(lines)}"
+    match = _README_TESTED_RANGE.search(lines[0])
+    assert match, f"no 'tested on 3.X \u2013 3.Y' range in the README Requirements line: {lines[0]!r}"
+    return match.group(1), match.group(2)
 
 
 def _pyproject(path: Path) -> dict[str, Any]:
@@ -236,8 +259,44 @@ class TestLockInstallsFromWheels:
         )
         assert not source_builds, (
             f"uv.lock has no CPython {version} wheel for {source_builds}; refresh just these with "
-            "`uv lock --upgrade-package <name>` once upstream publishes wheels"
+            "`uv lock --upgrade-package <name>` once upstream publishes wheels. A pure-Python package "
+            "shipped only as an sdist (no wheel on any tested Python, no compiler needed) belongs in "
+            "SOURCE_BUILD_ALLOWED instead"
         )
+
+
+class TestReadme:
+    """The README Requirements line states the range CI tests."""
+
+    def test_requirements_range_matches_ci_matrix(self) -> None:
+        stated = _readme_tested_range(README.read_text(encoding="utf-8"))
+        assert stated == _ci_tested_range(), (
+            f"README.md says 'tested on {stated[0]} \u2013 {stated[1]}' but the ci.yml test-unit matrix "
+            f"runs {TESTED_PYTHONS}; update the **Requirements:** line"
+        )
+
+    @pytest.mark.parametrize("dash", ["\u2013", "-"], ids=["en-dash", "hyphen"])
+    def test_parser_accepts_en_dash_and_hyphen(self, dash: str) -> None:
+        text = f"# Title\n\n**Requirements:** Python 3.12+ (tested on 3.12 {dash} 3.15) | SurrealDB 3.3.x\n"
+        assert _readme_tested_range(text) == ("3.12", "3.15")
+
+    def test_lagging_readme_is_reported(self) -> None:
+        oldest, newest = _ci_tested_range()
+        lagging = f"**Requirements:** Python {oldest}+ (tested on {oldest} \u2013 3.{_minor(newest) - 1})\n"
+        assert _readme_tested_range(lagging) != _ci_tested_range()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Python 3.12+ (tested on 3.12 \u2013 3.15)\n",
+            "**Requirements:** Python 3.12+\n",
+            "**Requirements:** (tested on 3.12 \u2013 3.15)\n**Requirements:** (tested on 3.12 \u2013 3.15)\n",
+        ],
+        ids=["no-line", "no-range", "two-lines"],
+    )
+    def test_parser_fails_without_a_single_range(self, text: str) -> None:
+        with pytest.raises(AssertionError):
+            _readme_tested_range(text)
 
 
 class TestMakefile:

@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.2)
+> Context document for Claude AI - Last updated: November 2026 (0.39.3)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.2 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.3 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -21,6 +21,75 @@
 
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.3
+
+Six fixes: #312 via #650 (`surreal_sdk/streaming/change_feed.py`,
+`docs/sdk.md`), #344 via #653 (`query_set.py`, `prefetch.py`), #357 via #655
+(`auth/mixins.py`), #360 via #656 (`cache.py`, `surreal_sdk/transaction.py`),
+#371 via #658 (`auth/access.py`, `migrations/introspector.py`, `docs/auth.md`)
+and #612 via #659 (`surreal_sdk/protocol/cbor.py`). Pin unchanged (3.3.5).
+`v2`: not needed, the line ended at 0.39.0.
+
+- **"Now" is found with probes.** `_resolve_now()` delegates to `_find_now()`:
+  `SHOW CHANGES FOR DATABASE SINCE <n> LIMIT 1`, jumping past the
+  versionstamp each probe returns, exponential until a probe is empty, then
+  bisection. At most 130 requests (`_PROBE_BOUND`); retention gaps and an
+  empty feed need nothing special. The old scan read 1000 full entries per
+  request from versionstamp 0.
+- **One database read per multi-table round.** One transaction: one
+  `FOR TABLE` read per table and a single `FOR DATABASE` read from the
+  smallest cursor. Each table keeps entries at or after its own cursor and
+  before `_window_end()` (shared with the single-table read, so the 3.3 unit
+  counting is unchanged); a cursor never moves back.
+- **A versionstamp is the commit time in milliseconds shifted by 16 bits**
+  (3.3.5). RocksDB compares a `d'...'` start with it; in-memory storage and
+  SurrealKV select nothing for any instant after the epoch. An empty window
+  proves nothing (on RocksDB a start after the last entry is empty until a
+  write), so `_DatetimeStartCheck` finds "now" once the start is 5 s in the
+  past and a window is empty, then probes from there before each empty poll
+  and warns once when a probe finds a change the window missed.
+- **`Prefetch` sends its queryset's declared variables** (only declared names,
+  `setdefault`, so the compiled `$_fN` win; same rule as `Subquery`).
+  `.variables()` refuses every name starting with `_`: all of the ORM's own
+  bindings (`_fN`, `_sqN`, `_knn_vec`, `_g_*`, ...) start with `_`, so one rule
+  closes the collision for future names too.
+- **`refresh_access_token()` reads `$auth` on the temporary connection** and
+  fetches through `_fetch_record_by_id()`, like the other three auth entry
+  points; no local JWT decode. `signup()` reads `$auth` in its own `try`, so a
+  failure after the account exists is `Signup succeeded but the session
+  record could not be read: ...`, never `Signup failed`.
+- **The cache drops a table twice for a transactional write**: when the write
+  is issued (signal) and after the commit, through the private
+  `BaseTransaction._call_on_commit(key, callback)` hook (HTTP and WebSocket;
+  runs only once `is_committed` is set, once per key; a raising callback is
+  logged, never fails the commit). The callback holds the model class only.
+- **`build_signup_fields()` warns** (`_warn_unset_required_fields()`, one
+  `UserWarning` per build) about required fields outside the sign-up set:
+  not `id`, the identifier, the password, `signup_fields`, `created_at`, a
+  computed field, a `server_fields` entry or a `ManyToMany` / `Relation`
+  attribute. A warning, not an error: the server may fill the field through a
+  `VALUE` clause or an event the model does not declare.
+- **CBOR record ids get a converting walk** (`_convert_record_id()`, replacing
+  the read-only naive-datetime scan): integers range-checked, `date` →
+  UTC-midnight `datetime`, naive `datetime` warned once; nothing else in an id
+  is converted, the caller's `RecordId` is never modified (copy only on
+  changed paths), the cycle guard stays. Dict keys are range-checked
+  (`_check_key()`), never converted. The signed 64-bit question is #657.
+- **Open (review suggestions):** changes between the `since` instant and the
+  datetime check's marker are skipped without a warning, and a small feed
+  costs more probes than the old one-request scan (#650); a `$auth` read
+  failure after a rotated refresh still says `Token refresh failed` (#655);
+  a `.cache()` read in flight across a drop stores stale rows (a per-table
+  generation counter would close it), and an HTTP commit cancelled after the
+  server applied it skips the second drop (#656); the `iter_jsonl()`
+  docstring still lists the `_x_` variable case `.variables()` now refuses
+  first (#653); the sign-up warning's `signup_fields` hint is a dead end for
+  a read-only field (#658); the `encode()` docstring does not say a `date`
+  dict key keeps tag 1004 (#659). Filed: notebook 15's USER model now warns
+  (#660), a `NamedTuple` value fails with `TypeError` (#661).
+- Release-docs correction carried here: `[0.34.17]` "unique identifier"
+  sentence (#357 item 4).
 
 ### What's New in 0.39.2
 

@@ -22,6 +22,10 @@ Writes made through the ORM drop the written table's entries:
   instance, and ``add()``, ``remove()``, ``set()`` and ``clear()`` on a
   relation manager.
 
+A write made with ``tx=`` (and ``bulk_create(atomic=True)``) drops them when it
+is issued and again once the transaction commits, so a read cached by another
+task before the commit is not served afterwards; a rollback drops nothing more.
+
 A write the server rejects (the method raises) may leave the entries in place;
 a write that succeeds always drops them.  Anything else that writes behind the
 ORM's back — ``raw_query()``, ``call_function()``, a ``DEFINE EVENT``, another
@@ -61,6 +65,8 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any
+
+from surreal_sdk.transaction import BaseTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +108,7 @@ class QueryCache:
     _cache: dict[str, _CacheEntry] = {}
     _table_keys: dict[tuple[_Location, str], set[str]] = {}  # (location, table) → cache keys
     _signals_connected: bool = False
+    _COMMIT_KEY = "surreal_orm.cache.invalidate"  # namespaces the per-transaction commit callbacks
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -200,9 +207,11 @@ class QueryCache:
             data: The query result to cache.
             table: The table name (used for targeted invalidation).
             ttl: Time-to-live in seconds.  Defaults to ``_default_ttl``.
-            connection: Identity of the connection the result came from, so a
-                write through that database invalidates it.  Should be the
-                identity passed to ``make_key``.
+            connection: Identity of the connection the result came from.  It
+                only scopes reads (the entry is served to queries on that
+                connection); a write through *any* connection drops every entry
+                of the table, whatever identity it was stored with.  Should be
+                the identity passed to ``make_key``.
         """
         # The invalidation handlers must be in place before anything is cached,
         # whether or not configure() was ever called.
@@ -337,6 +346,22 @@ class QueryCache:
         cls._remove_key(oldest_key)
 
     @classmethod
+    def _invalidate_for_write(cls, model: Any, tx: Any) -> None:
+        """Drop *model*'s table now and, for a ``tx=`` write, again at commit.
+
+        A ``tx=`` write fires its signal before the transaction commits, while
+        other sessions still read the previous rows: a ``.cache()`` read from
+        another task in that window stores them, so the table is dropped a
+        second time once the transaction has committed. Nothing more happens on
+        a rollback or a failed commit (nothing was written). One callback per
+        table and transaction; it holds the model class only, never the
+        transaction or the instance.
+        """
+        cls.invalidate(model)
+        if isinstance(tx, BaseTransaction):
+            tx._call_on_commit((cls._COMMIT_KEY, model.get_table_name()), lambda: cls.invalidate(model))
+
+    @classmethod
     def _connect_signals(cls) -> None:
         """Connect the auto-invalidation handlers to the ORM signals, once.
 
@@ -354,13 +379,13 @@ class QueryCache:
         # whatever ``using()`` or the model's ``connection`` says).
 
         async def _invalidate_on_save(sender: type, **kwargs: Any) -> None:
-            cls.invalidate(sender)
+            cls._invalidate_for_write(sender, kwargs.get("tx"))
 
         async def _invalidate_on_delete(sender: type, **kwargs: Any) -> None:
-            cls.invalidate(sender)
+            cls._invalidate_for_write(sender, kwargs.get("tx"))
 
         async def _invalidate_on_update(sender: type, **kwargs: Any) -> None:
-            cls.invalidate(sender)
+            cls._invalidate_for_write(sender, kwargs.get("tx"))
 
         _on_save: SignalHandler = _invalidate_on_save
         _on_delete: SignalHandler = _invalidate_on_delete

@@ -297,7 +297,7 @@ class TestAccessGenerator:
             password: Encrypted
 
         class UserB(BaseSurrealModel):
-            model_config = SurrealConfigDict(table_type=TableType.USER)
+            model_config = SurrealConfigDict(table_type=TableType.USER, identifier_field="username")
             id: str | None = None
             username: str
             password: Encrypted
@@ -1361,6 +1361,164 @@ class TestIssue332SessionRecordLookup:
                 await model.change_password("x@example.com", "old", "new")
 
         mock_root.query.assert_not_awaited()
+
+
+class TestIssue357AuthFollowUps:
+    """#357 — signup() and refresh_access_token() follow-ups from the #332 reviews."""
+
+    @staticmethod
+    def _model() -> type:
+        class U357User(AuthenticatedUserMixin, BaseSurrealModel):
+            model_config = SurrealConfigDict(
+                table_type=TableType.USER,
+                table_name="U357User",
+                identifier_field="email",
+            )
+            id: str | None = None
+            email: str
+            password: Encrypted
+
+        return U357User
+
+    @staticmethod
+    def _ephemeral() -> AsyncMock:
+        mock_ephemeral = AsyncMock()
+        response = MagicMock(success=True, token="jwt_357", refresh_token="refresh_357", raw={})
+        mock_ephemeral.signin = AsyncMock(return_value=response)
+        mock_ephemeral.signup = AsyncMock(return_value=response)
+        mock_ephemeral.close = AsyncMock()
+        return mock_ephemeral
+
+    @pytest.mark.asyncio
+    async def test_signup_session_read_failure_is_not_signup_failed(self) -> None:
+        """The record exists once client.signup() succeeded: never report 'Signup failed'."""
+        # The mixin imports the SDK as ``surreal_sdk``; raise that module's class.
+        from surreal_sdk.exceptions import QueryError
+
+        model = self._model()
+        mock_ephemeral = self._ephemeral()
+        mock_ephemeral.query = AsyncMock(side_effect=QueryError(message="denied"))
+        mock_root = AsyncMock()
+
+        with (
+            patch.object(model, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)),
+            patch(
+                "src.surreal_orm.connection_manager.SurrealDBConnectionManager",
+                new=MagicMock(get_client=AsyncMock(return_value=mock_root)),
+            ),
+        ):
+            with pytest.raises(SurrealDbError) as excinfo:
+                await model.signup(email="new@example.com", password="pw")
+
+        message = str(excinfo.value)
+        assert message.startswith("Signup succeeded but the session record could not be read: ")
+        assert "denied" in message
+        assert "Signup failed" not in message
+        mock_ephemeral.signup.assert_awaited_once()
+        mock_ephemeral.close.assert_awaited_once()
+        mock_root.query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_signup_rpc_failure_still_signup_failed(self) -> None:
+        from surreal_sdk.exceptions import QueryError
+
+        model = self._model()
+        mock_ephemeral = self._ephemeral()
+        mock_ephemeral.signup = AsyncMock(side_effect=QueryError(message="duplicate"))
+
+        with (
+            patch.object(model, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)),
+            patch("src.surreal_orm.connection_manager.SurrealDBConnectionManager", new=MagicMock()),
+        ):
+            with pytest.raises(SurrealDbError, match="^Signup failed: "):
+                await model.signup(email="new@example.com", password="pw")
+
+        mock_ephemeral.query.assert_not_awaited()
+        mock_ephemeral.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_fetches_session_record_by_decoded_id(self) -> None:
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        model = self._model()
+        session_record = RecordId(table="U357User", id="000000")
+        mock_ephemeral = self._ephemeral()
+        events: list[str] = []
+
+        async def ephemeral_query(sql: str) -> MagicMock:
+            events.append(sql)
+            return MagicMock(first_result=MagicMock(result=session_record))
+
+        async def ephemeral_close() -> None:
+            events.append("close")
+
+        mock_ephemeral.query = AsyncMock(side_effect=ephemeral_query)
+        mock_ephemeral.close = AsyncMock(side_effect=ephemeral_close)
+        mock_root = AsyncMock()
+        mock_root.query = AsyncMock(
+            return_value=MagicMock(is_empty=False, first={"id": "U357User:000000", "email": "a@example.com", "password": "$h"})
+        )
+
+        with (
+            patch.object(model, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)),
+            patch.object(model, "validate_token_local", side_effect=AssertionError("JWT must not be decoded locally")),
+            patch(
+                "src.surreal_orm.connection_manager.SurrealDBConnectionManager",
+                new=MagicMock(get_client=AsyncMock(return_value=mock_root)),
+            ),
+        ):
+            result = await model.refresh_access_token("surreal-refresh-old")
+
+        # $auth is read on the ephemeral session, before it is closed.
+        assert events == ["RETURN $auth", "close"]
+        sql, variables = mock_root.query.await_args.args
+        assert sql == "SELECT * FROM U357User WHERE id = type::record($record_id)"
+        assert variables == {"record_id": session_record}
+        assert result.user.id == "000000"
+        assert result.token == "jwt_357"
+        assert result.refresh_token == "refresh_357"
+
+    @pytest.mark.asyncio
+    async def test_refresh_empty_session_record_raises(self) -> None:
+        model = self._model()
+        mock_ephemeral = self._ephemeral()
+        mock_ephemeral.query = AsyncMock(return_value=MagicMock(first_result=MagicMock(result=None)))
+        mock_root = AsyncMock()
+
+        with (
+            patch.object(model, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)),
+            patch(
+                "src.surreal_orm.connection_manager.SurrealDBConnectionManager",
+                new=MagicMock(get_client=AsyncMock(return_value=mock_root)),
+            ),
+        ):
+            with pytest.raises(SurrealDbError, match="session record"):
+                await model.refresh_access_token("surreal-refresh-old")
+
+        mock_ephemeral.close.assert_awaited_once()
+        mock_root.query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refresh_missing_record_raises_does_not_exist(self) -> None:
+        from src.surreal_sdk.protocol.cbor import RecordId
+
+        model = self._model()
+        mock_ephemeral = self._ephemeral()
+        mock_ephemeral.query = AsyncMock(
+            return_value=MagicMock(first_result=MagicMock(result=RecordId(table="U357User", id="gone")))
+        )
+        mock_root = AsyncMock()
+        mock_root.query = AsyncMock(return_value=MagicMock(is_empty=True))
+
+        with (
+            patch.object(model, "_create_auth_client", new=AsyncMock(return_value=mock_ephemeral)),
+            patch(
+                "src.surreal_orm.connection_manager.SurrealDBConnectionManager",
+                new=MagicMock(get_client=AsyncMock(return_value=mock_root)),
+            ),
+        ):
+            with pytest.raises(model.DoesNotExist):
+                await model.refresh_access_token("surreal-refresh-old")
 
 
 _I331_NS = "i331_ns"
