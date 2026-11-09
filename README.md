@@ -41,6 +41,32 @@
 
 ---
 
+## What's New in 0.39.9
+
+**Patch release — review follow-ups across the ORM and the SDK** (six fixes: #380, #402, #681, #421, #436, #409). No
+new public API, SurrealDB pin unchanged (3.3.5):
+
+- **`merge()` writes an aliased field under its alias** (`Field(alias="first-name")`), like `save()` and `update()`,
+  with or without `tx=` and on the `SurrealFunc` path; `refresh()` reads it back from the alias column
+  ([#681](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/681)). Giving a field under both its name and its alias
+  in one call raises `ValueError`, and the update signals' `update_fields` carry the alias. Records merged before may
+  hold a stray column named after the field: see the CHANGELOG for the repair `UPDATE`.
+- **Concurrent transient `401`s on one `HTTPConnection` share one re-mint** instead of each sending its own `/signin`
+  ([#409](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/409)).
+- **`HTTPTransaction.commit()` and the change-feed reader** treat "not executed due to a cancelled transaction" as part
+  of the cascade, so the failing statement is always the one reported
+  ([#402](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/402)).
+- **Migrations:** a server-reported block `DEFAULT` is written as `_surreal_func_from_server('...')` so the generated
+  file imports, and the legacy-default `DeprecationWarning` names its field. **Auth:** `validate_token()` /
+  `authenticate_token()` reject a token of another access, namespace or database without a server round trip
+  ([#421](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/421)).
+- **Graph:** a `⟨…⟩` key in an `edge_filter` on `in` / `out` raises `ValueError`, and a non-model
+  `get_shortest_path()` target raises `TypeError`, before any query
+  ([#436](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/436)). A hand-built `Q` child is reported by the field
+  or lookup the caller wrote ([#380](https://github.com/EulogySnowfall/SurrealDB-ORM/issues/380)).
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ## What's New in 0.39.8
 
 **Patch release — `validate_token_local()` applies the model-table check**
@@ -65,7 +91,7 @@ unchanged (3.3.5):
   `delete`, `relate`), and so `WebSocketTransaction`, now read a `table:id` reference as `HTTPTransaction` does: `t:1`
   and `t:-5` are integer IDs (signed 64-bit range), `t:05` is the integer 5 (leading zeros dropped, as SurrealQL does),
   and `t:⟨a b⟩` / ``t:`a b` `` are the string ID `"a b"`. A `RecordId` argument is now sent as is instead of raising
-  `TypeError`.
+  `TypeError`. `HTTPTransaction` now reads `t:05` / `t:-05` as the integers 5 / -5 too, under both protocols.
 - **Behaviour change (CBOR, the default):** `conn.select("t:1")` targets the integer ID 1, where it used to target the
   string ID `"1"`; a malformed reference raises `ValueError` before any request; `t:rand()` / `t:ulid()` / `t:uuid()`
   given to a connection method raises `ValueError` instead of storing the literal text as the ID. To address a
@@ -82,8 +108,9 @@ SurrealDB pin unchanged (3.3.5):
 
 - `relate()`, `remove_relation()`, `remove_all_relations()` and a relation manager's `add()`, `remove()`, `set()` and
   `clear()` now drop the `QuerySet.cache()` entries of the edge or through table they write, so a model mapped to that
-  table is read again instead of serving the rows from before the write until the TTL. With `tx=`, the entries are
-  dropped when the write is queued and again once the transaction commits.
+  table is read again instead of serving the rows from before the write until the TTL. With `tx=` (`relate()`,
+  `remove_relation()`, `remove_all_relations()`), the entries are dropped when the write is queued and again once the
+  transaction commits.
 - **Behaviour change:** a relation write that raises after a statement was sent still drops the tables it targets (more
   cache misses, never stale rows). A manual `QueryCache.invalidate(EdgeModel)` after relation writes is no longer
   needed.
