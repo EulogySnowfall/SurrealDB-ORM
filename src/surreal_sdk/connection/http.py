@@ -166,6 +166,10 @@ class HTTPConnection(BaseSurrealConnection):
         # successful ``signin()``: after ``authenticate()``, ``signup()``,
         # ``invalidate()``, ``close()`` or a failed ``signin()``.
         self._signin_args: dict[str, Any] | None = None
+        # Held by the transient-401 re-mint in ``_post_rpc`` around its
+        # ``signin()``: requests rejected on the same token wait for it and
+        # reuse its result instead of each signing in again.
+        self._remint_lock = asyncio.Lock()
         # What still uses this connection, so that ``_drain_and_close`` does
         # not close a client being retired under it: RPC requests in flight
         # through ``_send_rpc``, and open ``HTTPTransaction``s (which send their
@@ -458,7 +462,11 @@ class HTTPConnection(BaseSurrealConnection):
         # ``signin()``, ``authenticate()``, ``signup()``, ``invalidate()`` or
         # ``close()``), the request is never replayed: the 401 is raised. A
         # re-mint started here installs its token only if the auth state is
-        # still the one the request was sent with (see ``signin()``).
+        # still the one the request was sent with (see ``signin()``). Requests
+        # rejected on the same token share one re-mint: the first one signs in
+        # under ``_remint_lock``, the others wait for it and then apply the
+        # same rules (retry with the renewed token, or raise if the identity
+        # changed) without signing in again.
         last_status_error: httpx.HTTPStatusError | None = None
         for attempt in range(len(_AUTH_RETRY_BACKOFFS_S) + 1):
             # Read together with the headers below, with no await in between.
@@ -502,25 +510,40 @@ class HTTPConnection(BaseSurrealConnection):
                         # Another task renewed the token of the same signin()
                         # since this request was sent: retry with it.
                         continue
-                    signin_args = self._signin_args
-                    if signin_args is not None:
+                    if self._signin_args is not None:
                         await asyncio.sleep(_AUTH_RETRY_BACKOFFS_S[attempt])
-                        remint = _REMINT_FOR_GENERATION.set(sent_generation)
-                        try:
-                            # Re-mint a token aligned with the current server clock.
-                            await self.signin(**signin_args)
-                        except Exception:
-                            # Best-effort: if re-auth fails, retry with the existing
-                            # token anyway (the skew window may simply have passed).
-                            # The failed signin dropped the retained arguments, so
-                            # that retry is the last one.
-                            pass
-                        finally:
-                            _REMINT_FOR_GENERATION.reset(remint)
-                        if self._auth_identity == sent_identity:
-                            continue
-                        # Another task changed the identity during the re-mint
-                        # (whose token was then discarded): do not replay.
+                        # One re-mint at a time: requests rejected on the same
+                        # token wait here for the one in flight, then read the
+                        # auth state again. The lock is released however the
+                        # re-mint ends, cancellation included.
+                        async with self._remint_lock:
+                            if self._auth_identity == sent_identity and (
+                                self._auth_generation != sent_generation or self._token != sent_token
+                            ):
+                                # Another task's re-mint ended while this request
+                                # waited. Renewed token: retry with it. Failed
+                                # re-mint (arguments dropped): this retry with the
+                                # current token is the last one.
+                                continue
+                            signin_args = self._signin_args
+                            if self._auth_identity == sent_identity and signin_args is not None:
+                                remint = _REMINT_FOR_GENERATION.set(sent_generation)
+                                try:
+                                    # Re-mint a token aligned with the current server clock.
+                                    await self.signin(**signin_args)
+                                except Exception:
+                                    # Best-effort: if re-auth fails, retry with the existing
+                                    # token anyway (the skew window may simply have passed).
+                                    # The failed signin dropped the retained arguments, so
+                                    # that retry is the last one.
+                                    pass
+                                finally:
+                                    _REMINT_FOR_GENERATION.reset(remint)
+                                if self._auth_identity == sent_identity:
+                                    continue
+                        # Another task changed the identity before or during
+                        # the re-mint (whose token was then discarded), or no
+                        # signin() arguments are left: do not replay.
                 if e.response.status_code == 413:
                     raise PayloadTooLargeError(
                         "Request rejected by the server: body over its size limit "
