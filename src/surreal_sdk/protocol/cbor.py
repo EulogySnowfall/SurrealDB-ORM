@@ -264,6 +264,8 @@ def _preprocess_for_cbor(data: Any) -> Any:
         return {_check_key(k): _preprocess_for_cbor(v) for k, v in data.items()}
     if isinstance(data, (list, tuple, set, frozenset)):
         converted = [_preprocess_for_cbor(item) for item in data]
+        if isinstance(data, tuple) and hasattr(type(data), "_fields"):
+            return tuple(converted)
         return type(data)(converted)
     return data
 
@@ -346,6 +348,8 @@ class _RecordIdWalk:
         converted = [self.visit(item) for item in value]
         if all(new is old for new, old in zip(converted, value, strict=True)):
             return value
+        if isinstance(value, tuple) and hasattr(type(value), "_fields"):
+            return tuple(converted)
         return type(value)(converted)
 
 
