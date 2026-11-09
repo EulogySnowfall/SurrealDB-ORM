@@ -236,7 +236,51 @@ class AuthenticatedUserMixin:
             "NS": getattr(client, "namespace", None),
             "DB": getattr(client, "database", None),
         }
+        return cls._claims_match(claims, expected)
+
+    @staticmethod
+    def _claims_match(claims: dict[str, Any], expected: dict[str, Any]) -> bool:
+        """
+        Tell whether every *expected* claim is a string equal to the token's.
+
+        The one comparison rule of :meth:`_is_own_token` and
+        :meth:`_is_foreign_token`: a claim that is missing, not a string, or
+        spelled differently (case included) does not match.
+        """
         return all(isinstance(value, str) and claims.get(claim) == value for claim, value in expected.items())
+
+    @classmethod
+    def _is_foreign_token(cls, token: str) -> bool:
+        """
+        Tell, before any request, whether *token* cannot be this model's.
+
+        A reject-only fast path for :meth:`validate_token` and
+        :meth:`authenticate_token`, so a token of another access, namespace
+        or database does not cost an ephemeral connection and two requests.
+        It compares the decoded ``AC`` claim with :meth:`get_access_name`
+        and the ``NS`` / ``DB`` claims with the namespace and database of
+        the model's connection config, the one :meth:`_create_auth_client`
+        builds its client from, under the same rule as :meth:`_is_own_token`.
+
+        It never accepts a token: one that passes still goes through the
+        server and :meth:`_is_own_token`. It judges nothing (``False``) when
+        the claims cannot be decoded or the connection is not configured;
+        such a token takes the server path as before, where a missing
+        configuration raises.
+        """
+        claims = cls._decode_jwt_claims(token)
+        if claims is None:
+            return False
+
+        from ..connection_manager import SurrealDBConnectionManager
+
+        config = SurrealDBConnectionManager.get_config(cls.get_connection_name())
+        if config is None:
+            return False
+        expected = {"AC": cls.get_access_name(), "NS": config.namespace, "DB": config.database}
+        # Only a known value can prove a mismatch.
+        known = {claim: value for claim, value in expected.items() if isinstance(value, str)}
+        return not cls._claims_match(claims, known)
 
     @classmethod
     def validate_token_local(cls, token: str) -> str | None:
@@ -731,7 +775,9 @@ class AuthenticatedUserMixin:
         and fetches the full user record.  As in :meth:`validate_token`, the
         record must be in this model's table and the token's ``AC``, ``NS``
         and ``DB`` claims must name this model's access definition and the
-        namespace and database of its connection; otherwise ``None``.
+        namespace and database of its connection; otherwise ``None``.  A
+        token whose decoded claims already show otherwise is rejected before
+        any request.
 
         An ephemeral connection is used so the root singleton is not affected.
 
@@ -747,6 +793,10 @@ class AuthenticatedUserMixin:
                 user, record_id = result
                 print(f"Authenticated as {user.email} ({record_id})")
         """
+
+        if cls._is_foreign_token(token):
+            # Issued by another access, namespace or database: no request.
+            return None
 
         client = await cls._create_auth_client()
         try:
@@ -809,7 +859,10 @@ class AuthenticatedUserMixin:
         ``None`` (validate it through the model it was issued for), and so
         does a token whose ``AC`` claim is not this model's
         :meth:`get_access_name` or whose ``NS`` / ``DB`` claims are not the
-        namespace and database of the model's connection.
+        namespace and database of the model's connection.  When the decoded
+        claims already show that, ``None`` is returned before any request;
+        a token that passes this local check is still validated by the
+        server and checked again afterwards.
 
         An ephemeral connection is used on cache miss so the root singleton
         is not affected.
@@ -841,6 +894,10 @@ class AuthenticatedUserMixin:
                     return record_id
                 # Expired — remove stale entry
                 cls._token_cache.pop(cache_key, None)
+
+        # --- Cache miss — a token issued elsewhere is rejected locally ---
+        if cls._is_foreign_token(token):
+            return None
 
         # --- Cache miss — ephemeral connection ---
         client = await cls._create_auth_client()
