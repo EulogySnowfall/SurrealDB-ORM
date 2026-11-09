@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime, timezone
 from decimal import Decimal
+from typing import NamedTuple
 from uuid import UUID
 
 import pytest
@@ -486,3 +487,65 @@ class TestDataUrlStringsNotRecordLinks:
             decoded = decode(encoded)
             assert decoded == s
             assert isinstance(decoded, str)
+
+
+class TestCBORNamedTuple:
+    """Test NamedTuple encoding (#661).
+
+    A NamedTuple is encoded like a tuple (a CBOR array of its converted items),
+    plain tuples remain unchanged, and it can be used at top level or nested
+    in a dict or list.
+    """
+
+    class Coord(NamedTuple):
+        lat: float
+        lon: float
+
+    class User(NamedTuple):
+        name: str
+        age: int | None
+
+    def test_encode_namedtuple_top_level(self) -> None:
+        """NamedTuple at the top level encodes as a CBOR array matching a plain tuple."""
+        point = self.Coord(lat=51.5, lon=-0.1)
+        encoded = encode(point)
+        plain_encoded = encode((51.5, -0.1))
+        assert encoded == plain_encoded
+        decoded = decode(encoded)
+        assert decoded == [51.5, -0.1]
+
+    def test_encode_namedtuple_nested_in_dict(self) -> None:
+        """NamedTuple nested in a dict encodes its items correctly."""
+        point = self.Coord(lat=51.5, lon=-0.1)
+        data = {"location": point, "active": True}
+        encoded = encode(data)
+        plain_encoded = encode({"location": (51.5, -0.1), "active": True})
+        assert encoded == plain_encoded
+        decoded = decode(encoded)
+        assert decoded == {"location": [51.5, -0.1], "active": True}
+
+    def test_encode_namedtuple_nested_in_list(self) -> None:
+        """NamedTuple nested in a list encodes as a CBOR array."""
+        point = self.Coord(lat=51.5, lon=-0.1)
+        data = [point, 123]
+        encoded = encode(data)
+        plain_encoded = encode([(51.5, -0.1), 123])
+        assert encoded == plain_encoded
+        decoded = decode(encoded)
+        assert decoded == [[51.5, -0.1], 123]
+
+    def test_encode_namedtuple_with_none_conversion(self) -> None:
+        """NamedTuple containing None converts None to TAG_NONE."""
+        user = self.User(name="Alice", age=None)
+        encoded = encode(user)
+        plain_encoded = encode(("Alice", None))
+        assert encoded == plain_encoded
+        decoded = decode(encoded)
+        assert decoded == ["Alice", None]
+
+    def test_plain_tuple_unchanged(self) -> None:
+        """Plain tuples retain their exact encoding and behavior."""
+        plain = (1, "test", True)
+        encoded = encode(plain)
+        decoded = decode(encoded)
+        assert decoded == [1, "test", True]
