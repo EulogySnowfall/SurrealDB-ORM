@@ -11,8 +11,13 @@ queues bound data:
 
 - ``save(tx=)`` of a new record with an id (``tx.upsert``), of a new record
   without an id (``tx.create``) and of a persisted record (``tx.merge``);
-- ``update(tx=)`` and ``merge(tx=, ...)`` (``tx.merge``);
+- ``update(tx=)`` (``tx.merge``);
 - ``relate(..., tx=)`` with edge data (``tx.relate``).
+
+``merge(tx=, ...)`` is the exception since #681: it writes an aliased field to
+its alias column, so a non-identifier column is sent as one bound object
+(``UPDATE ... MERGE $_mq``) and never reaches the statement text. Its
+identifier case still queues ``tx.merge``'s object literal.
 
 Values are scalars only: a ``SurrealFunc`` or a nested dict/list sends
 ``save()`` / ``merge()`` through ``tx.query()`` with a ``SET`` clause, which has
@@ -83,21 +88,25 @@ Write = Callable[[type[BaseSurrealModel], str, HTTPTransaction], Awaitable[Any]]
 
 #: One ORM write per transaction method that receives the model's column keys.
 #: Each takes the model class and the column's wire name (its alias).
-WRITES: dict[str, Write] = {
+REJECTED_WRITES: dict[str, Write] = {
     "save_new_with_id_upsert": lambda m, key, tx: m(id="ada", **{key: "Ada"}).save(tx=tx),
     "save_new_without_id_create": lambda m, key, tx: m(**{key: "Ada"}).save(tx=tx),
     "save_persisted_merge": lambda m, key, tx: _persisted(m, **{key: "Ada"}).save(tx=tx),
     "update_merge": lambda m, key, tx: _persisted(m, **{key: "Ada"}).update(tx=tx),
+}
+
+WRITES: dict[str, Write] = {
+    **REJECTED_WRITES,
     "merge": lambda m, key, tx: m(id="ada").merge(tx=tx, **{key: "Ada"}),
 }
 
 
 class TestNonIdentifierAliasIsRejected:
-    @pytest.mark.parametrize("write", WRITES)
+    @pytest.mark.parametrize("write", REJECTED_WRITES)
     async def test_raises_naming_the_alias_and_queues_nothing(self, connection: MagicMock, write: str) -> None:
         tx = await _open(connection)
         with pytest.raises(ValueError, match=_key_error("first-name")):
-            await WRITES[write](I387Person, "first-name", tx)
+            await REJECTED_WRITES[write](I387Person, "first-name", tx)
         assert tx._statements == []
 
     async def test_relate_edge_data_key_raises_and_queues_nothing(self, connection: MagicMock) -> None:
@@ -106,17 +115,31 @@ class TestNonIdentifierAliasIsRejected:
             await I387Person(id="ada").relate("i387_knows", I387Person(id="bob"), tx=tx, **{"since-year": 2020})
         assert tx._statements == []
 
-    @pytest.mark.parametrize("write", WRITES)
+    @pytest.mark.parametrize("write", REJECTED_WRITES)
     async def test_earlier_statement_is_kept_and_only_it_commits(self, connection: MagicMock, write: str) -> None:
         tx = await _open(connection)
         await I387Contact(id="before", **{"firstName": "Bea"}).save(tx=tx)
         with pytest.raises(ValueError, match=_key_error("first-name")):
-            await WRITES[write](I387Person, "first-name", tx)
+            await REJECTED_WRITES[write](I387Person, "first-name", tx)
         assert len(tx._statements) == 1
         await tx.commit()
         sql = connection.query.await_args.args[0]
         assert "first-name" not in sql
         assert "i387_people" not in sql
+
+
+class TestMergeBindsANonIdentifierAlias:
+    """``merge(tx=, ...)`` sends a non-identifier alias column as one bound object (#681)."""
+
+    async def test_queues_a_bound_merge_object(self, connection: MagicMock) -> None:
+        tx = await _open(connection)
+        await WRITES["merge"](I387Person, "first-name", tx)
+        assert [(s.sql, s.vars) for s in tx._statements] == [
+            ("UPDATE i387_people:ada MERGE $_mq;", {"_mq": {"first-name": "Ada"}}),
+        ]
+        await tx.commit()
+        sql = connection.query.await_args.args[0]
+        assert "first-name" not in sql
 
 
 class TestIdentifierAliasQueues:
