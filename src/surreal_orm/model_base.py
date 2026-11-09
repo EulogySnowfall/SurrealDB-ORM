@@ -3075,8 +3075,12 @@ class BaseSurrealModel(BaseModel):
         ``include_source=False``: this record cannot be returned as a record
         of that table.
 
+        The path is read as records of the target's model, so *target* must
+        be a model instance; for a ``RecordId`` or a ``"table:id"`` string,
+        call ``Model.objects().shortest_path(self, target, edge)``.
+
         Args:
-            target: The saved record the path ends at.
+            target: The saved model instance the path ends at.
             edge: The edge table, or a model class whose table is the edge.
             max_depth: Highest number of hops (1-256), or ``None`` for the
                 server's limit.
@@ -3090,12 +3094,22 @@ class BaseSurrealModel(BaseModel):
             ``[self, …, target]`` (``[…, target]`` without the source), or
             ``None`` for no path.
 
+        Raises:
+            TypeError: *target* is not a model instance (checked before any
+                query); the other errors are those of ``shortest_path()``.
+
         Example:
             path = await alice.get_shortest_path(dave, "knows")
 
         SurrealQL equivalent:
             $src.{..+shortest=$dst+inclusive}(->knows->person)
         """
+        if not isinstance(target, BaseSurrealModel):
+            got = f"the class {target.__name__}" if isinstance(target, type) else type(target).__name__
+            raise TypeError(
+                "get_shortest_path() target must be a model instance (its class is the model the path is read as), "
+                f"got {got}; for a RecordId or a 'table:id' string use Model.objects().shortest_path(source, target, edge)"
+            )
         return (
             await type(target)
             .objects()

@@ -97,6 +97,30 @@ def _check_record_id(rid: RecordId, value: object, arg: str) -> RecordId:
     return rid
 
 
+def _refuse_angle_bracket_key(value: str, arg: str) -> None:
+    """
+    Refuse a ``"table:id"`` string (or bare id) whose key is spelled ``⟨…⟩``.
+
+    :func:`~surreal_orm.utils.parse_record_id` keeps such a key as written, so
+    ``"t:⟨7x⟩"`` would become the literal key ``⟨7x⟩`` and match nothing, with
+    no error. A key that only opens or only closes the brackets is refused too.
+
+    Args:
+        value: The string as supplied.
+        arg: What *value* is, for the message (``"source"``,
+            ``"edge_filter value on 'out'"``).
+
+    Raises:
+        ValueError: The key starts with ``⟨`` or ends with ``⟩``.
+    """
+    raw_key = value.split(":", 1)[1] if ":" in value else value
+    if raw_key.startswith("⟨") or raw_key.endswith("⟩"):
+        raise ValueError(
+            f"Invalid {arg}: {value!r}. The ⟨…⟩ record-id spelling is not supported; "
+            "escape the key with backticks or pass RecordId(table, key)"
+        )
+
+
 def to_graph_record(value: object, default_table: str, *, arg: str) -> RecordId:
     """
     Resolve a traversal source or target to a ``RecordId``.
@@ -134,12 +158,7 @@ def to_graph_record(value: object, default_table: str, *, arg: str) -> RecordId:
         return _check_record_id(value, value, arg)
 
     if isinstance(value, str):
-        raw_key = value.split(":", 1)[1] if ":" in value else value
-        if raw_key.startswith("⟨") or raw_key.endswith("⟩"):
-            raise ValueError(
-                f"Invalid {arg}: {value!r}. The ⟨…⟩ record-id spelling is not supported; "
-                "escape the key with backticks or pass RecordId(table, key)"
-            )
+        _refuse_angle_bracket_key(value, arg)
         table, key = parse_record_id(value)
         return _check_record_id(RecordId(table=default_table if table is None else table, id=key), value, arg)
 
@@ -237,7 +256,8 @@ def coerce_edge_value(field: str, lookup: str, value: Any, declared: Collection[
 
     Raises:
         ValueError: A value that is not a record after conversion (a bare id,
-            a number, ...), or an unsaved model instance.
+            a number, ...), a string whose key is written ``⟨…⟩`` (which
+            would be read as that literal key), or an unsaved model instance.
     """
     if field not in ("in", "out") or lookup not in _RECORD_LOOKUPS:
         return value
@@ -253,6 +273,8 @@ def _coerce_edge_element(field: str, value: Any, declared: Collection[str]) -> A
 
     if is_declared_variable_reference(value, declared):
         return value
+    if isinstance(value, str):
+        _refuse_angle_bracket_key(value, f"edge_filter value on {field!r}")
     result = _to_record_link(value, None)
     if not isinstance(result, RecordId):
         raise ValueError(
