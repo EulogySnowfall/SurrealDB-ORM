@@ -53,7 +53,6 @@ jobs:
       current-version: ${{ steps.check.outputs.current-version }}
       has-update: ${{ steps.check.outputs.has-update }}
       is-security-patch: ${{ steps.check.outputs.is-security-patch }}
-      release-notes: ${{ steps.check.outputs.release-notes }}
       docker-tag: ${{ steps.check.outputs.docker-tag }}
 
     steps:
@@ -196,12 +195,6 @@ jobs:
           echo "has-update=$HAS_UPDATE" >> $GITHUB_OUTPUT
           echo "is-security-patch=$IS_SECURITY_PATCH" >> $GITHUB_OUTPUT
           echo "docker-tag=$DOCKER_TAG" >> $GITHUB_OUTPUT
-
-          {
-            echo 'release-notes<<EOF'
-            echo "$RELEASE_NOTES"
-            echo 'EOF'
-          } >> $GITHUB_OUTPUT
 
   # =============================================================================
   # Step 2: Run tests against the new SurrealDB version

@@ -731,8 +731,6 @@ class TestSecurityDetectionFollowsTheChosenRelease:
         assert run.returncode == 0, run.log
         assert run.latest == tag.removeprefix("v"), run.log
         assert run.outputs["is-security-patch"] == "true", f"{workflow}: security release not detected\n{run.log}"
-        if not title:
-            assert notes in run.outputs["release-notes"], run.log
 
     @pytest.mark.parametrize(("workflow", "version", "pin"), [(V3, "3.3.5", "3.3.4"), (V2, "2.7.1", "2.7.0")])
     def test_a_dispatched_version_without_a_release_entry(self, tmp_path: Path, workflow: str, version: str, pin: str) -> None:
@@ -742,8 +740,6 @@ class TestSecurityDetectionFollowsTheChosenRelease:
         assert run.latest == version, run.log
         assert run.outputs["has-update"] == "true", run.log
         assert run.outputs["is-security-patch"] == "false", run.log
-        # gh prints the 404 body on stdout: it must not be taken for the notes.
-        assert run.outputs["release-notes"] == "", run.log
 
 
 def test_v3_dispatched_version_of_another_major_is_refused(tmp_path: Path) -> None:
