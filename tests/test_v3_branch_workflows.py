@@ -53,11 +53,95 @@ class TestTagRelease:
         assert release["with"]["make_latest"] is False
 
 
+def _run_tag_step(
+    tmp_path: Path, step_id: str, env: dict[str, str], *, cwd: Path | None = None
+) -> tuple[int, dict[str, str], str]:
+    """Run one ``tag-release.yml`` step's ``run:`` block as GitHub does (``bash -e``)."""
+    step = next(s for s in _load("tag-release.yml")["jobs"]["tag-release"]["steps"] if s.get("id") == step_id)
+    assert "${{" not in step["run"], "expressions reach the script through env: only"
+    script = tmp_path / f"{step_id}.sh"
+    script.write_text(step["run"], encoding="utf-8")
+    outputs = tmp_path / f"{step_id}.out"
+    outputs.write_text("")
+    result = subprocess.run(
+        ["bash", "-e", str(script)],
+        cwd=cwd or tmp_path,
+        env={**os.environ, **env, "GITHUB_OUTPUT": str(outputs)},
+        capture_output=True,
+        text=True,
+    )
+    values = dict(line.split("=", 1) for line in outputs.read_text().splitlines() if "=" in line)
+    return result.returncode, values, result.stdout + result.stderr
+
+
+class TestTagReleaseVersion:
+    """``v3`` tags the 0.39.Z series only, the rule ``check-v3`` in ``publish.yml`` applies."""
+
+    @pytest.mark.parametrize("version", ["0.39.10", "0.39.0", "0.39.123"])
+    def test_a_0_39_version_is_tagged(self, tmp_path: Path, version: str) -> None:
+        msg = f"chore(release): bump version to {version} (#700)"
+        code, outputs, log = _run_tag_step(tmp_path, "version", {"COMMIT_MSG": msg, "REF_NAME": "v3"})
+        assert code == 0, log
+        assert outputs == {"version": version, "tag": f"v{version}", "branch": "v3"}, log
+
+    @pytest.mark.parametrize("version", ["0.40.0", "1.0.0", "0.21.63", "0.39", "0.391.0", "0.39.10.1", "0.3.9"])
+    def test_any_other_version_fails_before_any_output(self, tmp_path: Path, version: str) -> None:
+        msg = f"chore(release): bump version to {version}"
+        code, outputs, log = _run_tag_step(tmp_path, "version", {"COMMIT_MSG": msg, "REF_NAME": "v3"})
+        assert code != 0, log
+        assert "::error::v3 releases 0.39.Z only" in log
+        assert outputs == {}, log
+
+
+class TestTagReleaseExistingTag:
+    """An existing tag fails the job: the merged bump would otherwise end green with nothing released."""
+
+    def _repo(self, tmp_path: Path, tags: list[str]) -> Path:
+        repo = tmp_path / "repo"
+        subprocess.run(["git", "init", "-q", "-b", "v3", str(repo)], check=True)
+        (repo / "README").write_text("v3\n")
+        _git(repo, "add", "README")
+        _git(repo, "commit", "-q", "-m", "v3")
+        for tag in tags:
+            _git(repo, "tag", "-a", tag, "-m", tag)
+        return repo
+
+    def test_a_new_tag_goes_ahead(self, tmp_path: Path) -> None:
+        repo = self._repo(tmp_path, ["v0.39.9"])
+        code, outputs, log = _run_tag_step(tmp_path, "check-tag", {"TAG": "v0.39.10"}, cwd=repo)
+        assert code == 0, log
+        assert outputs == {"exists": "false"}, log
+
+    def test_an_existing_tag_fails_the_job(self, tmp_path: Path) -> None:
+        repo = self._repo(tmp_path, ["v0.39.9", "v0.39.10"])
+        code, _, log = _run_tag_step(tmp_path, "check-tag", {"TAG": "v0.39.10"}, cwd=repo)
+        assert code != 0, log
+        assert "::error::Tag v0.39.10 already exists" in log
+
+    def test_a_branch_of_the_same_name_is_not_a_tag(self, tmp_path: Path) -> None:
+        repo = self._repo(tmp_path, ["v0.39.9"])
+        _git(repo, "branch", "v0.39.10")
+        code, outputs, log = _run_tag_step(tmp_path, "check-tag", {"TAG": "v0.39.10"}, cwd=repo)
+        assert code == 0, log
+        assert outputs == {"exists": "false"}, log
+
+    def test_later_steps_need_a_new_tag(self) -> None:
+        steps = _load("tag-release.yml")["jobs"]["tag-release"]["steps"]
+        later = [s for s in steps if s.get("name") in ("Create and push tag", "Create GitHub Release")]
+        assert len(later) == 2
+        assert all(s["if"] == "steps.check-tag.outputs.exists == 'false'" for s in later)
+
+
 class TestCi:
     def test_runs_on_pushes_to_v3(self) -> None:
         on = _triggers(_load("ci.yml"))
         assert on["push"]["branches"] == ["v3"]
         assert on["pull_request"]["branches"] == ["*"]
+
+    def test_the_branch_guard_reads_the_refs_through_env(self) -> None:
+        guard = _load("ci.yml")["jobs"]["branch-guard"]["steps"][0]
+        assert "${{" not in guard["run"]
+        assert guard["env"] == {"HEAD_REF": "${{ github.head_ref }}", "BASE_REF": "${{ github.base_ref }}"}
 
     def test_ci_success_still_gates_every_job(self) -> None:
         jobs = _load("ci.yml")["jobs"]
@@ -160,3 +244,16 @@ def test_monitor_copies_have_no_release_notes_output(name: str) -> None:
     assert "release-notes" not in text
     outputs = _load(name)["jobs"]["check-release"]["outputs"]
     assert "release-notes" not in outputs
+
+
+@pytest.mark.parametrize("name", ["surrealdb-security.yml", "surrealdb-v2-security.yml"])
+def test_monitor_copies_do_nothing_off_main(name: str) -> None:
+    """Dispatched on the ``v3`` ref, ``v3``'s copies of main's monitors would read
+    ``v3``'s files and still open PRs against ``main`` or ``v2``: ``check-release``
+    runs on ``main`` only, and every later job needs its ``has-update``."""
+    jobs = _load(name)["jobs"]
+    assert jobs["check-release"]["if"] == "github.ref == 'refs/heads/main'"
+    for job_id, job in jobs.items():
+        if job_id != "check-release":
+            assert "check-release" in job["needs"], job_id
+            assert "needs.check-release.outputs.has-update == 'true'" in " ".join(str(job["if"]).split()), job_id

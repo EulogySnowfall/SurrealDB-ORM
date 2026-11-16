@@ -56,6 +56,15 @@ jobs:
             exit 1
           fi
 
+          # v3 releases the 0.39.Z series only: the same rule as check-v3 in
+          # this branch's publish.yml, which ignores any other tag. Tagging
+          # another number here would create a tag and a GitHub release that
+          # nothing publishes, and take that number from main (#579).
+          if [[ ! "$VERSION" =~ ^0\.39\.[0-9]+$ ]]; then
+            echo "::error::v3 releases 0.39.Z only; the commit subject names another version"
+            exit 1
+          fi
+
           TAG="v${VERSION}"
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -68,9 +77,14 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
+          # main and v3 share the 0.39.x numbers: on this branch an existing
+          # tag means the number was already released (by main or by an
+          # earlier v3 bump), so the bump just merged releases nothing. Fail
+          # instead of ending green with bumped version files and no release.
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag $TAG already exists — skipping"
+            echo "::error::Tag $TAG already exists — this version was already released"
+            exit 1
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi

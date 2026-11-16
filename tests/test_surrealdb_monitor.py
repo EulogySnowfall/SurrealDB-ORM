@@ -30,6 +30,8 @@ from typing import Any
 
 import pytest
 
+from tests._release_series import bump_repo, remote_refs
+
 yaml = pytest.importorskip("yaml", reason="pyyaml required for workflow lint tests")
 
 WORKFLOW_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
@@ -37,14 +39,16 @@ WORKFLOW_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 MONITORS = ["surrealdb-security.yml", "surrealdb-v2-security.yml"]
 
 _BLOCK_START = "# --- Compare:"
-_BLOCK_END = "# Force update overrides the check"
+# The v3 branch monitor has no `force_update` input, so its block ends at the
+# security lookup instead.
+_BLOCK_ENDS = ("# Force update overrides the check", "# --- Check if security patch")
 
 
 def _compare_block(workflow: str) -> str:
     """Extract the version-comparison shell block from a monitor workflow."""
     text = (WORKFLOW_DIR / workflow).read_text(encoding="utf-8")
     start = text.index(_BLOCK_START)
-    end = text.index(_BLOCK_END, start)
+    end = min(text.find(marker, start) for marker in _BLOCK_ENDS if text.find(marker, start) != -1)
     return textwrap.dedent(text[start:end])
 
 
@@ -485,12 +489,17 @@ RELEASES = "repos/surrealdb/surrealdb/releases"
 _EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 
 
-def _expand(text: str, inputs: dict[str, str]) -> str:
+_CHECK_OUTPUTS = "needs.check-release.outputs."
+
+
+def _expand(text: str, inputs: dict[str, str], needs: dict[str, str] | None = None) -> str:
     """Expand the `${{ }}` expressions GitHub substitutes before bash runs.
 
     A dispatch input that was not given (or a scheduled run, which has none)
-    expands to an empty string. Anything other than an input or a secret is
-    refused, so the tests never run a script that differs from the real one.
+    expands to an empty string, and so does a `check-release` output missing
+    from `needs`. Anything other than an input, a secret or a `check-release`
+    output is refused, so the tests never run a script that differs from the
+    real one.
     """
 
     def sub(match: re.Match[str]) -> str:
@@ -499,6 +508,8 @@ def _expand(text: str, inputs: dict[str, str]) -> str:
             return inputs.get(expr.removeprefix("inputs."), "")
         if expr.startswith("secrets."):
             return "stub-token"
+        if expr.startswith(_CHECK_OUTPUTS):
+            return (needs or {}).get(expr.removeprefix(_CHECK_OUTPUTS), "")
         raise AssertionError(f"unexpected expression in a monitored step: ${{{{ {expr} }}}}")
 
     return _EXPR.sub(sub, text)
@@ -546,6 +557,7 @@ def _run_step(
     inputs: dict[str, str] | None = None,
     page_size: int = 30,
     fail: bool = False,
+    needs: dict[str, str] | None = None,
 ) -> StepRun:
     """Run one workflow step's `run:` block against the fake `gh`."""
     data = yaml.safe_load((WORKFLOW_DIR / workflow).read_text(encoding="utf-8"))
@@ -574,9 +586,9 @@ def _run_step(
         "GH_STUB_FAIL": "1" if fail else "0",
         "GH_STUB_LOG": str(gh_log),
     }
-    env.update({key: _expand(str(value), inputs) for key, value in (step.get("env") or {}).items()})
+    env.update({key: _expand(str(value), inputs, needs) for key, value in (step.get("env") or {}).items()})
     script = tmp_path / "step.sh"
-    script.write_text(_expand(step["run"], inputs), encoding="utf-8")
+    script.write_text(_expand(step["run"], inputs, needs), encoding="utf-8")
     # GitHub runs a `run:` block with no `shell:` as `bash -e {0}`.
     result = subprocess.run(["bash", "-e", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True)
     return StepRun(
@@ -692,14 +704,14 @@ class TestNewestReleaseIsSelected:
     @pytest.mark.parametrize("workflow", [V3, V2])
     def test_an_unreachable_api_fails_the_run(self, tmp_path: Path, workflow: str) -> None:
         """An outage must not read as "nothing to do": the run goes red."""
-        run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin="3.3.0" if workflow == V3 else "2.6.5", fail=True)
+        run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin="2.6.5" if workflow == V2 else "3.3.0", fail=True)
         assert run.returncode != 0, f"{workflow}: an API failure ended green\n{run.log}"
         assert run.outputs.get("has-update") != "true", run.log
 
     @pytest.mark.parametrize("workflow", [V3, V2])
     def test_the_list_is_read_100_releases_per_page(self, tmp_path: Path, workflow: str) -> None:
         """The API's default page is 30 releases: six requests per run in 2026, and growing."""
-        run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin="3.3.4" if workflow == V3 else "2.7.0")
+        run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin="2.7.0" if workflow == V2 else "3.3.4")
         assert run.returncode == 0, run.log
         list_calls = [call for call in run.calls if any(arg.partition("?")[0] == RELEASES for arg in call)]
         assert list_calls, run.calls
@@ -846,3 +858,233 @@ class TestCanaryPicksTheNewestPrerelease:
         assert run.returncode == 0, run.log
         assert run.calls, run.log
         assert all(f"{RELEASES}?per_page=100" in call for call in run.calls), run.calls
+
+
+# ---------------------------------------------------------------------------
+#
+# What `check-release` hands on. Its outputs are single-line `key=value`
+# values; nothing read from a release entry is copied into them (the notes and
+# title only decide `is-security-patch`). Every job that acts on the selected
+# version checks its shape again first, and reads the outputs from `env:`,
+# never from a `${{ }}` expanded into its script.
+
+_VALIDATE = "Validate the version output"
+_CHECK_RELEASE_OUTPUTS = {"latest-version", "current-version", "has-update", "is-security-patch", "docker-tag"}
+
+# (workflow, a version its consumers accept, versions they refuse)
+_VERSION_SHAPES = [
+    pytest.param(V3, "3.4.0", ["4.0.0", "2.7.1", "3.3.6-rc.1", "3.3", "v3.3.6", "3.x.0"], id="main-3.x"),
+    pytest.param(V2, "2.8.0", ["3.3.6", "4.0.0", "2.7.1-beta.1", "2.7", "v2.7.1"], id="v2-2.x"),
+]
+_CONSUMERS = ("test-new-version", "auto-update", "create-failure-issue")
+
+
+def _validate(tmp_path: Path, workflow: str, job: str, latest: str, docker_tag: str | None = None) -> StepRun:
+    return _run_step(
+        tmp_path,
+        workflow,
+        job,
+        _VALIDATE,
+        releases=[],
+        pin="0.0.0",
+        needs={"latest-version": latest, "docker-tag": f"v{latest}" if docker_tag is None else docker_tag},
+    )
+
+
+def _monitor_workflow(workflow: str) -> dict[str, Any]:
+    data: dict[str, Any] = yaml.safe_load((WORKFLOW_DIR / workflow).read_text(encoding="utf-8"))
+    return data
+
+
+@pytest.mark.parametrize("workflow", MONITORS)
+class TestCheckReleaseOutputs:
+    def test_only_the_decision_values_are_outputs(self, workflow: str) -> None:
+        outputs = _monitor_workflow(workflow)["jobs"]["check-release"]["outputs"]
+        assert set(outputs) == _CHECK_RELEASE_OUTPUTS, (
+            f"{workflow}: check-release declares {sorted(set(outputs) - _CHECK_RELEASE_OUTPUTS)} that no job reads"
+        )
+
+    def test_release_entry_text_is_not_copied_into_the_outputs(self, tmp_path: Path, workflow: str) -> None:
+        pin, tag = {V3: ("3.3.0", "v3.3.4"), V2: ("2.6.5", "v2.7.0")}[workflow]
+        notes = "Fixes CVE-2026-40002.\n\nSecond paragraph marker-7f3a.\nlast line marker-7f3a"
+        releases = [_rel(tag, body=notes), *REAL_API_ORDER]
+        run = _monitor(tmp_path, workflow, releases=releases, pin=pin)
+        assert run.returncode == 0, run.log
+        assert run.latest == tag.removeprefix("v"), run.log
+        assert run.outputs["is-security-patch"] == "true", run.log
+        assert set(run.outputs) == _CHECK_RELEASE_OUTPUTS, run.outputs
+        written = (tmp_path / "github_output").read_text(encoding="utf-8")
+        assert "marker-7f3a" not in written, written
+
+    def test_job_outputs_reach_the_scripts_through_env_only(self, workflow: str) -> None:
+        for job_name, job in _monitor_workflow(workflow)["jobs"].items():
+            for step in job.get("steps", []):
+                script = step.get("run") or ""
+                assert "${{" not in script, (
+                    f"{workflow}: job {job_name!r}, step {step.get('name')!r} expands an expression into its script"
+                )
+
+    def test_every_job_acting_on_the_version_checks_it_first(self, workflow: str) -> None:
+        jobs = _monitor_workflow(workflow)["jobs"]
+        consumers = {
+            job_name
+            for job_name, job in jobs.items()
+            if job_name != "check-release"
+            and re.search(r"needs\.check-release\.outputs\.(latest-version|docker-tag)", yaml.safe_dump(job))
+        }
+        assert consumers == set(_CONSUMERS), consumers
+        for job_name in consumers:
+            first = jobs[job_name]["steps"][0]
+            assert first.get("name") == _VALIDATE, f"{workflow}: {job_name!r} does not start with {_VALIDATE!r}"
+            assert "if" not in first, f"{workflow}: {job_name!r}: the check must never be skipped"
+            assert set(first["env"]) == {"LATEST_VERSION", "DOCKER_TAG"}, first["env"]
+
+
+@pytest.mark.parametrize(("workflow", "good", "bad"), _VERSION_SHAPES)
+@pytest.mark.parametrize("job", _CONSUMERS)
+class TestVersionOutputIsValidated:
+    def test_a_stable_version_of_the_line_passes(
+        self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str
+    ) -> None:
+        run = _validate(tmp_path, workflow, job, good)
+        assert run.returncode == 0, run.log
+        assert run.outputs == {}, run.outputs
+
+    def test_any_other_version_stops_the_job(self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str) -> None:
+        for index, value in enumerate(bad):
+            run_dir = tmp_path / str(index)
+            run_dir.mkdir()
+            run = _validate(run_dir, workflow, job, value)
+            assert run.returncode != 0, f"{workflow}: {job}: {value!r} was accepted\n{run.log}"
+
+    @pytest.mark.parametrize(
+        "suffix",
+        ["\nextra", " ", "\n", ";true", "$(true)"],
+    )
+    def test_trailing_text_stops_the_job(
+        self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str, suffix: str
+    ) -> None:
+        run = _validate(tmp_path, workflow, job, good + suffix)
+        assert run.returncode != 0, f"{workflow}: {job}: {good + suffix!r} was accepted\n{run.log}"
+
+    def test_an_empty_version_stops_the_job(self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str) -> None:
+        run = _validate(tmp_path, workflow, job, "", docker_tag="v")
+        assert run.returncode != 0, run.log
+
+    def test_the_image_tag_must_be_the_version(
+        self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str
+    ) -> None:
+        for index, tag in enumerate([good, f"v{good}-rc.1", "latest", f"v{good}\nlatest", ""]):
+            run_dir = tmp_path / str(index)
+            run_dir.mkdir()
+            run = _validate(run_dir, workflow, job, good, docker_tag=tag)
+            assert run.returncode != 0, f"{workflow}: {job}: image tag {tag!r} accepted for {good}\n{run.log}"
+
+    def test_the_refused_value_is_not_printed(self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str) -> None:
+        run = _validate(tmp_path, workflow, job, f"{good}\n::notice::marker-91c2")
+        assert run.returncode != 0, run.log
+        assert "marker-91c2" not in run.log, run.log
+
+
+# ---------------------------------------------------------------------------
+# #579: a version bump never reuses a released version
+# ---------------------------------------------------------------------------
+#
+# main and v3 can both sit on 0.39.x, and each bump computes the next number
+# from its own pyproject.toml. The 3.x monitor's bump step asks origin whether
+# the computed tag exists and stops before any branch or PR if it does, or if
+# the remote cannot be listed. The v3 branch monitor and its owner check live
+# on main only (#694); this branch carries main's copy of the 3.x monitor.
+
+
+FAKE_BUMP_GH = """#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["FAKE_GH_LOG"], "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+if sys.argv[1:3] == ["pr", "create"]:
+    print("https://github.com/owner/repo/pull/1")
+"""
+
+# (workflow, job, branch the bump starts from, extra env, bump branch for 0.39.10)
+_BUMP_SITES = [
+    pytest.param(V3, "auto-update", "main", {"NEW_VERSION": "3.3.6"}, "chore/release-v0.39.10", id="main-3.x-monitor"),
+]
+
+
+def _run_bump(
+    tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], *, tags: list[str], reachable: bool = True
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, list[list[str]]]:
+    repo, origin = bump_repo(tmp_path, branch=branch, version="0.39.9", tags=tags)
+    if not reachable:
+        subprocess.run(["git", "-C", str(repo), "remote", "set-url", "origin", str(tmp_path / "gone.git")], check=True)
+    data = _monitor_workflow(workflow)
+    step = next(s for s in data["jobs"][job]["steps"] if s.get("name") == "Create version bump PR")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh_log = tmp_path / "gh.log"
+    gh_log.write_text("", encoding="utf-8")
+    for name, body in {
+        "gh": FAKE_BUMP_GH,
+        "uv": "#!/usr/bin/env bash\nexit 0\n",
+    }.items():
+        exe = bin_dir / name
+        exe.write_text(body, encoding="utf-8")
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    helper = runner_temp / "merge-when-green.sh"
+    helper.write_text(f'#!/usr/bin/env bash\necho merge "$@" >> {gh_log}.merge\n', encoding="utf-8")
+    helper.chmod(helper.stat().st_mode | stat.S_IEXEC)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GH_TOKEN": "stub-token",
+        "RUNNER_TEMP": str(runner_temp),
+        "FAKE_GH_LOG": str(gh_log),
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+        **extra,
+    }
+    script = tmp_path / "bump.sh"
+    script.write_text(step["run"], encoding="utf-8")
+    result = subprocess.run(["bash", "-e", str(script)], cwd=repo, env=env, capture_output=True, text=True)
+    calls = [json.loads(line) for line in gh_log.read_text(encoding="utf-8").splitlines() if line]
+    return result, repo, origin, calls
+
+
+@pytest.mark.parametrize(("workflow", "job", "branch", "extra", "bump_branch"), _BUMP_SITES)
+class TestBumpRefusesAReleasedVersion:
+    def test_a_new_version_is_bumped(
+        self, tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], bump_branch: str
+    ) -> None:
+        result, _, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, tags=["v0.39.8", "v0.39.9"])
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"refs/heads/{bump_branch}" in remote_refs(origin)
+        (create,) = [c for c in calls if c[:2] == ["pr", "create"]]
+        assert create[create.index("--base") + 1] == branch
+        assert create[create.index("--title") + 1] == "chore(release): bump version to 0.39.10"
+
+    def test_an_existing_tag_stops_before_any_branch_or_pr(
+        self, tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], bump_branch: str
+    ) -> None:
+        # main already released 0.39.10 while this branch still reads 0.39.9.
+        result, repo, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, tags=["v0.39.9", "v0.39.10"])
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "::error::v0.39.10 already exists" in result.stdout
+        assert remote_refs(origin) == sorted([f"refs/heads/{branch}", "refs/tags/v0.39.10", "refs/tags/v0.39.9"])
+        assert calls == []
+        assert not (tmp_path / "gh.log.merge").exists()
+        head = subprocess.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True)
+        assert head.stdout.strip() == branch
+        assert 'version = "0.39.9"' in (repo / "pyproject.toml").read_text()
+
+    def test_an_unreadable_remote_stops_the_bump(
+        self, tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], bump_branch: str
+    ) -> None:
+        result, _, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, tags=["v0.39.9"], reachable=False)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "::error::Cannot list the remote tags" in result.stdout
+        assert calls == []
+        assert f"refs/heads/{bump_branch}" not in remote_refs(origin)

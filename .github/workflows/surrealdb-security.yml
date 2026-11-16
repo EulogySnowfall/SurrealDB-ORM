@@ -48,6 +48,11 @@ jobs:
   check-release:
     name: Check SurrealDB Release
     runs-on: ubuntu-latest
+    # v3 branch copy: this monitor runs from main (schedules only run on the
+    # default branch) and works on main. Dispatched on the v3 ref it would
+    # read v3's files and still act on main, so on any ref but main it does
+    # nothing: every later job needs has-update == 'true' (#579).
+    if: github.ref == 'refs/heads/main'
     outputs:
       latest-version: ${{ steps.check.outputs.latest-version }}
       current-version: ${{ steps.check.outputs.current-version }}
@@ -208,6 +213,23 @@ jobs:
       tests-passed: ${{ steps.test-result.outputs.passed }}
 
     steps:
+      # The version from check-release names the image, the branch, the pin and
+      # the PR: check its shape again before any step uses it. Job outputs reach
+      # the scripts through `env:` only (tests/test_surrealdb_monitor.py).
+      - name: Validate the version output
+        env:
+          LATEST_VERSION: ${{ needs.check-release.outputs.latest-version }}
+          DOCKER_TAG: ${{ needs.check-release.outputs.docker-tag }}
+        run: |
+          if [[ ! "$LATEST_VERSION" =~ ^3\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the version output is not a stable 3.Y.Z version"
+            exit 1
+          fi
+          if [[ "$DOCKER_TAG" != "v${LATEST_VERSION}" ]]; then
+            echo "::error::the image tag output does not match the version output"
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v7
 
@@ -292,6 +314,23 @@ jobs:
       pull-requests: write
 
     steps:
+      # The version from check-release names the image, the branch, the pin and
+      # the PR: check its shape again before any step uses it. Job outputs reach
+      # the scripts through `env:` only (tests/test_surrealdb_monitor.py).
+      - name: Validate the version output
+        env:
+          LATEST_VERSION: ${{ needs.check-release.outputs.latest-version }}
+          DOCKER_TAG: ${{ needs.check-release.outputs.docker-tag }}
+        run: |
+          if [[ ! "$LATEST_VERSION" =~ ^3\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the version output is not a stable 3.Y.Z version"
+            exit 1
+          fi
+          if [[ "$DOCKER_TAG" != "v${LATEST_VERSION}" ]]; then
+            echo "::error::the image tag output does not match the version output"
+            exit 1
+          fi
+
       - name: Checkout main
         uses: actions/checkout@v7
         with:
@@ -309,6 +348,7 @@ jobs:
         env:
           NEW_VERSION: ${{ needs.check-release.outputs.latest-version }}
           DOCKER_TAG: ${{ needs.check-release.outputs.docker-tag }}
+          PREVIOUS_VERSION: ${{ needs.check-release.outputs.current-version }}
         run: |
           BRANCH="chore/surrealdb-${NEW_VERSION}"
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
@@ -331,12 +371,14 @@ jobs:
           git commit -m "chore(deps): update SurrealDB to v${NEW_VERSION}
 
           Tests passed against SurrealDB v${NEW_VERSION}.
-          Previous version: v${{ needs.check-release.outputs.current-version }}"
+          Previous version: v${PREVIOUS_VERSION}"
 
       - name: Push branch and create update PR
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           IS_SECURITY: ${{ needs.check-release.outputs.is-security-patch }}
+          PREVIOUS_VERSION: ${{ needs.check-release.outputs.current-version }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           git push -u origin "$BRANCH"
 
@@ -349,11 +391,11 @@ jobs:
             --title "$TITLE" \
             --body "## SurrealDB Version Update
 
-          - **Previous:** v${{ needs.check-release.outputs.current-version }}
+          - **Previous:** v${PREVIOUS_VERSION}
           - **New:** v${NEW_VERSION}
           - **Security patch:** ${IS_SECURITY}
 
-          Tests already passed against this version in the [monitor workflow](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+          Tests already passed against this version in the [monitor workflow](${RUN_URL}).
 
           ---
           *Automatically created by the SurrealDB version monitor.*" \
@@ -418,6 +460,19 @@ jobs:
 
           echo "Version bump: $CURRENT_VERSION → $NEW_ORM_VERSION"
 
+          # A computed version that is already tagged was released by another
+          # branch (#579: main and v3 can both sit on 0.39.x). Stop before any
+          # branch or PR exists; an unreadable remote stops the job too.
+          TAG_STATUS=0
+          git ls-remote --exit-code --tags origin "refs/tags/$NEW_TAG" > /dev/null || TAG_STATUS=$?
+          if [[ "$TAG_STATUS" == "0" ]]; then
+            echo "::error::$NEW_TAG already exists — refusing to bump to a released version"
+            exit 1
+          elif [[ "$TAG_STATUS" != "2" ]]; then
+            echo "::error::Cannot list the remote tags (git ls-remote exited $TAG_STATUS) — not bumping"
+            exit 1
+          fi
+
           git checkout -b "$BUMP_BRANCH"
 
           # Update version files
@@ -462,11 +517,32 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # The version from check-release names the image, the branch, the pin and
+      # the PR: check its shape again before any step uses it. Job outputs reach
+      # the scripts through `env:` only (tests/test_surrealdb_monitor.py).
+      - name: Validate the version output
+        env:
+          LATEST_VERSION: ${{ needs.check-release.outputs.latest-version }}
+          DOCKER_TAG: ${{ needs.check-release.outputs.docker-tag }}
+        run: |
+          if [[ ! "$LATEST_VERSION" =~ ^3\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::the version output is not a stable 3.Y.Z version"
+            exit 1
+          fi
+          if [[ "$DOCKER_TAG" != "v${LATEST_VERSION}" ]]; then
+            echo "::error::the image tag output does not match the version output"
+            exit 1
+          fi
+
       - name: Create issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LATEST_VERSION: ${{ needs.check-release.outputs.latest-version }}
+          CURRENT_VERSION: ${{ needs.check-release.outputs.current-version }}
+          IS_SECURITY: ${{ needs.check-release.outputs.is-security-patch }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          ISSUE_TITLE="SurrealDB v${{ needs.check-release.outputs.latest-version }} — integration tests failed"
+          ISSUE_TITLE="SurrealDB v${LATEST_VERSION} — integration tests failed"
 
           # Skip if an open issue already exists
           EXISTING=$(gh issue list --state open --search "$ISSUE_TITLE" --json number -q '.[0].number')
@@ -481,16 +557,16 @@ jobs:
             --body "$(cat <<EOF
           ## SurrealDB Compatibility Issue
 
-          Integration tests failed with SurrealDB v${{ needs.check-release.outputs.latest-version }}.
+          Integration tests failed with SurrealDB v${LATEST_VERSION}.
 
           | Field | Value |
           |---|---|
-          | Current version | v${{ needs.check-release.outputs.current-version }} |
-          | New version | v${{ needs.check-release.outputs.latest-version }} |
-          | Security patch | ${{ needs.check-release.outputs.is-security-patch }} |
+          | Current version | v${CURRENT_VERSION} |
+          | New version | v${LATEST_VERSION} |
+          | Security patch | ${IS_SECURITY} |
 
           ### Workflow Run
-          [View logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          [View logs](${RUN_URL})
 
           ---
           *Automatically created by the SurrealDB version monitor.*
