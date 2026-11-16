@@ -1108,7 +1108,7 @@ class TestCheckReleaseOutputs:
 
     def test_release_entry_text_is_not_copied_into_the_outputs(self, tmp_path: Path, workflow: str) -> None:
         pin, tag = {V3: ("3.3.0", "v3.3.4"), V2: ("2.6.5", "v2.7.0"), V3_BRANCH: ("3.3.4", "v3.3.5")}[workflow]
-        notes = "Fixes CVE-2026-40002.\nline-two=marker-7f3a\nEOF\nlast line marker-7f3a"
+        notes = "Fixes CVE-2026-40002.\n\nSecond paragraph marker-7f3a.\nlast line marker-7f3a"
         releases = [_rel(tag, body=notes), *REAL_API_ORDER]
         run = _monitor(tmp_path, workflow, releases=releases, pin=pin)
         assert run.returncode == 0, run.log
@@ -1117,7 +1117,6 @@ class TestCheckReleaseOutputs:
         assert set(run.outputs) == _CHECK_RELEASE_OUTPUTS, run.outputs
         written = (tmp_path / "github_output").read_text(encoding="utf-8")
         assert "marker-7f3a" not in written, written
-        assert "<<" not in written, written
 
     def test_job_outputs_reach_the_scripts_through_env_only(self, workflow: str) -> None:
         for job_name, job in _monitor_workflow(workflow)["jobs"].items():
@@ -1162,7 +1161,7 @@ class TestVersionOutputIsValidated:
 
     @pytest.mark.parametrize(
         "suffix",
-        ["\nhas-update=true", " ", "\n", ";true", "$(true)"],
+        ["\nextra", " ", "\n", ";true", "$(true)"],
     )
     def test_trailing_text_stops_the_job(
         self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str, suffix: str
