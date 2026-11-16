@@ -34,17 +34,19 @@ yaml = pytest.importorskip("yaml", reason="pyyaml required for workflow lint tes
 
 WORKFLOW_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 
-MONITORS = ["surrealdb-security.yml", "surrealdb-v2-security.yml"]
+MONITORS = ["surrealdb-security.yml", "surrealdb-v2-security.yml", "surrealdb-v3-security.yml"]
 
 _BLOCK_START = "# --- Compare:"
-_BLOCK_END = "# Force update overrides the check"
+# The v3 branch monitor has no `force_update` input, so its block ends at the
+# security lookup instead.
+_BLOCK_ENDS = ("# Force update overrides the check", "# --- Check if security patch")
 
 
 def _compare_block(workflow: str) -> str:
     """Extract the version-comparison shell block from a monitor workflow."""
     text = (WORKFLOW_DIR / workflow).read_text(encoding="utf-8")
     start = text.index(_BLOCK_START)
-    end = text.index(_BLOCK_END, start)
+    end = min(text.find(marker, start) for marker in _BLOCK_ENDS if text.find(marker, start) != -1)
     return textwrap.dedent(text[start:end])
 
 
@@ -480,6 +482,7 @@ REAL_API_ORDER: list[dict[str, object]] = [
 
 V3 = "surrealdb-security.yml"
 V2 = "surrealdb-v2-security.yml"
+V3_BRANCH = "surrealdb-v3-security.yml"
 RELEASES = "repos/surrealdb/surrealdb/releases"
 
 _EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
@@ -689,17 +692,17 @@ class TestNewestReleaseIsSelected:
         assert run.latest in (None, ""), run.log
         assert not any(arg.partition("?")[0].endswith("/releases/latest") for call in run.calls for arg in call), run.calls
 
-    @pytest.mark.parametrize("workflow", [V3, V2])
+    @pytest.mark.parametrize("workflow", [V3, V2, V3_BRANCH])
     def test_an_unreachable_api_fails_the_run(self, tmp_path: Path, workflow: str) -> None:
         """An outage must not read as "nothing to do": the run goes red."""
-        run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin="3.3.0" if workflow == V3 else "2.6.5", fail=True)
+        run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin="2.6.5" if workflow == V2 else "3.3.0", fail=True)
         assert run.returncode != 0, f"{workflow}: an API failure ended green\n{run.log}"
         assert run.outputs.get("has-update") != "true", run.log
 
-    @pytest.mark.parametrize("workflow", [V3, V2])
+    @pytest.mark.parametrize("workflow", [V3, V2, V3_BRANCH])
     def test_the_list_is_read_100_releases_per_page(self, tmp_path: Path, workflow: str) -> None:
         """The API's default page is 30 releases: six requests per run in 2026, and growing."""
-        run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin="3.3.4" if workflow == V3 else "2.7.0")
+        run = _monitor(tmp_path, workflow, releases=REAL_API_ORDER, pin="2.7.0" if workflow == V2 else "3.3.4")
         assert run.returncode == 0, run.log
         list_calls = [call for call in run.calls if any(arg.partition("?")[0] == RELEASES for arg in call)]
         assert list_calls, run.calls
@@ -850,3 +853,193 @@ class TestCanaryPicksTheNewestPrerelease:
         assert run.returncode == 0, run.log
         assert run.calls, run.log
         assert all(f"{RELEASES}?per_page=100" in call for call in run.calls), run.calls
+
+
+# ---------------------------------------------------------------------------
+# #579: the monitor of the permanent `v3` branch
+# ---------------------------------------------------------------------------
+#
+# `v3` carries the 3.x line once `main` moves to SurrealDB 4.x. It takes bug and
+# security fixes only, so its monitor is stricter than the others: it proposes
+# a pin PR for a newer stable release of the pinned 3.3 line *and only when that
+# release is a security release*. Never another minor, never 4.x, never a
+# downgrade, never a routine release. Like the v2 monitor it lives on `main`
+# (schedules only run from the default branch) and works on `v3`.
+
+_CVE = "Fixes CVE-2026-40001 in the HTTP layer."
+
+
+def _v3_branch(tmp_path: Path, **kwargs: Any) -> StepRun:
+    return _monitor(tmp_path, V3_BRANCH, **kwargs)
+
+
+def _v3_branch_workflow() -> dict[str, Any]:
+    data: dict[str, Any] = yaml.safe_load((WORKFLOW_DIR / V3_BRANCH).read_text(encoding="utf-8"))
+    return data
+
+
+class TestV3BranchMonitorSelection:
+    def test_a_newer_3_3_security_release_is_proposed(self, tmp_path: Path) -> None:
+        releases = [_rel("v3.3.6", body=_CVE), *REAL_API_ORDER]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5")
+        assert run.returncode == 0, run.log
+        assert run.latest == "3.3.6", run.log
+        assert run.outputs["is-security-patch"] == "true", run.log
+        assert run.outputs["has-update"] == "true", run.log
+
+    def test_a_security_title_is_enough(self, tmp_path: Path) -> None:
+        releases = [_rel("v3.3.6", name="Security hotfix 3.3.6", body="Bug fixes."), *REAL_API_ORDER]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5")
+        assert run.returncode == 0, run.log
+        assert run.outputs["has-update"] == "true", run.log
+
+    def test_a_newer_routine_release_is_not_proposed(self, tmp_path: Path) -> None:
+        """The v3 branch takes security releases only: a bug-fix release leaves the pin alone."""
+        releases = [_rel("v3.3.6", body="Bug fixes and performance improvements."), *REAL_API_ORDER]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5")
+        assert run.returncode == 0, run.log
+        assert run.outputs["is-security-patch"] == "false", run.log
+        assert run.outputs["has-update"] == "false", f"a routine release was proposed for v3\n{run.log}"
+
+    @pytest.mark.parametrize("tag", ["v3.4.0", "v3.10.0", "v4.0.0", "v4.0.1"])
+    def test_never_another_minor_or_major_even_a_security_one(self, tmp_path: Path, tag: str) -> None:
+        releases = [_rel(tag, body=_CVE), *REAL_API_ORDER]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5")
+        assert run.returncode == 0, run.log
+        assert run.outputs.get("has-update") == "false", f"{tag} was proposed for the 3.3 line\n{run.log}"
+        assert run.latest != tag.removeprefix("v"), run.log
+
+    def test_the_newest_3_3_release_wins_over_a_newer_line(self, tmp_path: Path) -> None:
+        releases = [_rel("v3.4.1", body=_CVE), _rel("v4.0.0", body=_CVE), _rel("v3.3.7", body=_CVE), *REAL_API_ORDER]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5")
+        assert run.returncode == 0, run.log
+        assert run.latest == "3.3.7", run.log
+        assert run.outputs["has-update"] == "true", run.log
+
+    def test_never_a_downgrade_even_for_a_security_release(self, tmp_path: Path) -> None:
+        releases = [{**r, "body": _CVE} if r["tag_name"] == "v3.3.4" else r for r in REAL_API_ORDER]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5")
+        assert run.returncode == 0, run.log
+        assert run.outputs["has-update"] == "false", run.log
+
+    def test_on_the_newest_release_is_up_to_date(self, tmp_path: Path) -> None:
+        releases = [_rel("v3.3.5", body=_CVE), *REAL_API_ORDER]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5")
+        assert run.returncode == 0, run.log
+        assert run.outputs["has-update"] == "false", run.log
+
+    def test_no_3_3_release_at_all_is_a_no_op(self, tmp_path: Path) -> None:
+        releases = [_rel("v4.0.0", body=_CVE), _rel("v3.4.0", body=_CVE), _rel("v2.7.0")]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5")
+        assert run.returncode == 0, run.log
+        assert run.outputs.get("has-update") == "false", run.log
+        assert not any(arg.partition("?")[0].endswith("/releases/latest") for call in run.calls for arg in call), run.calls
+
+    def test_every_page_is_read(self, tmp_path: Path) -> None:
+        releases = [_rel("v3.2.7"), _rel("v3.2.6"), _rel("v2.7.1"), _rel("v2.7.0"), _rel("v3.3.6", body=_CVE)]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5", page_size=2)
+        assert run.returncode == 0, run.log
+        assert run.latest == "3.3.6", run.log
+        assert run.outputs["has-update"] == "true", run.log
+
+    def test_a_mislabelled_prerelease_or_a_draft_is_never_proposed(self, tmp_path: Path) -> None:
+        releases = [
+            _rel("v3.3.7", draft=True, body=_CVE),
+            _rel("v3.3.7-rc.1", body=_CVE),
+            _rel("v3.3.7-beta.1", prerelease=True, body=_CVE),
+            *REAL_API_ORDER,
+        ]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5")
+        assert run.returncode == 0, run.log
+        assert run.outputs["has-update"] == "false", run.log
+
+    def test_release_query_excludes_prereleases_and_drafts(self) -> None:
+        text = (WORKFLOW_DIR / V3_BRANCH).read_text(encoding="utf-8")
+        query = next(line for line in text.splitlines() if 'startswith("v3.")' in line)
+        assert "select(.prerelease == false)" in query
+        assert "select(.draft == false)" in query
+
+
+class TestV3BranchMonitorDispatch:
+    def test_a_dispatched_security_release_is_proposed(self, tmp_path: Path) -> None:
+        releases = [_rel("v3.3.6", body=_CVE), *REAL_API_ORDER]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5", inputs={"surrealdb_version": "3.3.6"})
+        assert run.returncode == 0, run.log
+        assert run.outputs["has-update"] == "true", run.log
+
+    def test_a_dispatched_version_without_a_release_entry_is_not_proposed(self, tmp_path: Path) -> None:
+        """No release entry means no notes, so nothing shows it is a security release."""
+        run = _v3_branch(tmp_path, releases=REAL_API_ORDER, pin="3.3.5", inputs={"surrealdb_version": "3.3.6"})
+        assert run.returncode == 0, run.log
+        assert run.outputs["has-update"] == "false", run.log
+        assert run.outputs["release-notes"] == "", run.log
+
+    @pytest.mark.parametrize("version", ["3.4.0", "4.0.0", "2.7.0", "3.3", "3.3.6 ", "3.3.x", "3.3.6\n3.3.7"])
+    def test_a_dispatched_version_outside_the_3_3_line_is_refused(self, tmp_path: Path, version: str) -> None:
+        releases = [_rel(f"v{version.strip()}", body=_CVE), *REAL_API_ORDER]
+        run = _v3_branch(tmp_path, releases=releases, pin="3.3.5", inputs={"surrealdb_version": version})
+        assert run.returncode != 0, f"dispatched {version!r} was accepted\n{run.log}"
+        assert "has-update" not in run.outputs, run.log
+
+    def test_there_is_no_force_input(self) -> None:
+        """A forced run would re-open a PR for the pinned version or bypass the security rule."""
+        dispatch = _v3_branch_workflow()[True]["workflow_dispatch"]
+        assert set((dispatch.get("inputs") or {}).keys()) == {"surrealdb_version"}
+
+
+class TestV3BranchMonitorTargetsV3:
+    """It reads, tests and writes the `v3` branch, never `main` or `v2`."""
+
+    def test_every_checkout_is_of_v3(self) -> None:
+        checkouts = [
+            (job_id, step)
+            for job_id, job in _v3_branch_workflow()["jobs"].items()
+            for step in job.get("steps", [])
+            if str(step.get("uses", "")).startswith("actions/checkout@")
+        ]
+        assert checkouts
+        for job_id, step in checkouts:
+            assert (step.get("with") or {}).get("ref") == "v3", f"{job_id}: {step.get('name')!r} does not check out v3"
+
+    def test_every_pr_and_fetch_targets_v3(self) -> None:
+        text = (WORKFLOW_DIR / V3_BRANCH).read_text(encoding="utf-8")
+        bases = re.findall(r"--base\s+(\S+)", text)
+        assert bases and set(bases) == {"v3"}, bases
+        for other in ("origin main", "origin v2", "checkout main", "checkout v2", "ref: main", "ref: v2"):
+            assert other not in text, f"{V3_BRANCH} mentions {other!r}"
+
+    def test_the_pin_pr_branch_is_refused_by_the_main_branch_guard(self) -> None:
+        text = (WORKFLOW_DIR / V3_BRANCH).read_text(encoding="utf-8")
+        assert 'BRANCH="chore/surrealdb-v3-${NEW_VERSION}"' in text
+        assert 'BUMP_BRANCH="chore/release-v3-${NEW_TAG}"' in text
+
+    def test_the_version_bump_is_its_own_release_pr_on_v3(self) -> None:
+        """The squash subject must start with the release gate's phrase, or v3 never tags.
+
+        The v2 monitor commits the bump inside the pin PR, whose squash subject is
+        the PR title, so `tag-release.yml` never matches it. The v3 monitor opens
+        the bump as its own PR after the pin PR merges, as the 3.x monitor does.
+        """
+        job = _v3_branch_workflow()["jobs"]["auto-update"]
+        step = next(s for s in job["steps"] if s.get("name") == "Create version bump PR")
+        assert "steps.wait-merge.outputs.merged == 'true'" in step["if"]
+        assert '--title "chore(release): bump version to $NEW_ORM_VERSION"' in step["run"]
+        assert "--base v3" in step["run"]
+        # The version comes from v3's own pyproject.toml, checked out after the merge.
+        names = [s.get("name") for s in job["steps"]]
+        assert names.index("Checkout v3 after merge") < names.index("Create version bump PR")
+
+    def test_the_tests_run_with_the_file_storage_flag(self) -> None:
+        """v3 carries the 0.39.0 file storage tests, which fail without the flag."""
+        job = _v3_branch_workflow()["jobs"]["test-new-version"]
+        start = next(s for s in job["steps"] if str(s.get("name", "")).startswith("Start SurrealDB"))
+        assert "--allow-experimental=files" in start["run"]
+        integ = next(s for s in job["steps"] if s.get("name") == "Run integration tests")
+        assert integ["env"]["SORM_REQUIRE_FILES"] == "1"
+
+    def test_it_runs_at_its_own_time(self) -> None:
+        crons = {
+            name: yaml.safe_load((WORKFLOW_DIR / name).read_text(encoding="utf-8"))[True]["schedule"][0]["cron"]
+            for name in MONITORS
+        }
+        assert len(set(crons.values())) == len(crons), crons
