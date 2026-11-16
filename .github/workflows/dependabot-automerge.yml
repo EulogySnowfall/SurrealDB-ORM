@@ -101,7 +101,7 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          # The sync-v2 job below writes the package list into the PR body as a
+          # The sync-lts job below writes the package list into the PR body as a
           # structured marker. The title is free text and is deliberately not
           # parsed: a greedy `bump (.*) from` read once ran to the "from" in
           # "(security sync from main)".
@@ -281,6 +281,19 @@ jobs:
 
           echo "Base branch: $BASE_BRANCH, Current: $CURRENT_VERSION, New: $NEW_VERSION"
 
+          # A computed version that is already tagged was released by another
+          # branch (#579: main and v3 can both sit on 0.39.x). Stop before any
+          # branch or PR exists; an unreadable remote stops the job too.
+          TAG_STATUS=0
+          git ls-remote --exit-code --tags origin "refs/tags/$NEW_TAG" > /dev/null || TAG_STATUS=$?
+          if [[ "$TAG_STATUS" == "0" ]]; then
+            echo "::error::$NEW_TAG already exists — refusing to bump $BASE_BRANCH to a released version"
+            exit 1
+          elif [[ "$TAG_STATUS" != "2" ]]; then
+            echo "::error::Cannot list the remote tags (git ls-remote exited $TAG_STATUS) — not bumping"
+            exit 1
+          fi
+
           git checkout -b "$BRANCH"
 
           # Update version files
@@ -314,22 +327,31 @@ jobs:
           "$RUNNER_TEMP/merge-when-green.sh" "$BRANCH"
 
   # =============================================================================
-  # Sync dependency update to V2 branch (if the same dep exists there)
+  # Sync dependency update to the v2 and v3 branches (if the same dep exists there)
   # =============================================================================
-  sync-v2:
-    name: Sync to V2
+  # One run per target branch (#579 added v3, the permanent SurrealDB 3.x
+  # branch). Every step reads the branch from $TARGET; the matrix value is never
+  # expanded into a script.
+  sync-lts:
+    name: Sync to ${{ matrix.target }}
     needs: [automerge]
-    # Only sync to v2 when the PR targets main (not when it already targets v2)
+    # Only sync when the PR targets main (not when it already targets v2 or v3)
     if: |
       needs.automerge.outputs.merged == 'true' &&
       github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
+    strategy:
+      # A failed sync to one branch must not cancel the other.
+      fail-fast: false
+      matrix:
+        target: [v2, v3]
 
     steps:
       - name: Decide whether this update is synced
         id: gate
         env:
           ECOSYSTEM: ${{ needs.automerge.outputs.package-ecosystem }}
+          TARGET: ${{ matrix.target }}
         run: |
           # Only `uv` updates are synced. main configures no `uv` *version*
           # updates (dependabot.yml has `pip` only), so a `uv` PR on main is a
@@ -338,40 +360,82 @@ jobs:
           # `target-branch: v2` entry; syncing them too would race it on the same
           # uv.lock lines and ship a v2 release for a ruff bump. GitHub Actions
           # bumps have nothing to sync into v2's uv.lock.
+          # The same holds for v3, which has no Dependabot entry of its own.
           # Guarded by tests/test_sync_v2_grouped.py::TestUvMeansSecurity.
           if [[ -z "$ECOSYSTEM" ]]; then
-            echo "::error::No package ecosystem in the Dependabot metadata — cannot tell whether this update belongs on v2"
+            echo "::error::No package ecosystem in the Dependabot metadata — cannot tell whether this update belongs on $TARGET"
             exit 1
           fi
           if [[ "$ECOSYSTEM" == "uv" ]]; then
             echo "sync=true" >> "$GITHUB_OUTPUT"
           else
             echo "sync=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Not syncing a '$ECOSYSTEM' update to v2 — only uv security updates are synced"
+            echo "::notice::Not syncing a '$ECOSYSTEM' update to $TARGET — only uv security updates are synced"
           fi
 
-      - name: Checkout v2 branch
+      - name: Checkout target branch
         if: steps.gate.outputs.sync == 'true'
         uses: actions/checkout@v7
         with:
-          ref: v2
+          ref: ${{ matrix.target }}
           token: ${{ secrets.PAT_TOKEN }}
 
-      - name: Set up Python
+      # One patch series has one owner (#579). While main's pyproject.toml has
+      # the same X.Y as v3's, main owns that series: a v3 bump would compute a
+      # number main also computes, or ship v3 without main's fixes of the
+      # series. So v3 takes no sync until main leaves it. v2 (0.21.x) is not
+      # concerned. Fail closed: a version that cannot be read stops the job.
+      - name: Defer to main while it owns the patch series
         if: steps.gate.outputs.sync == 'true'
+        id: owner
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$TARGET" != "v3" ]]; then
+            echo "sync=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          VERSION_RE='^0\.[0-9]+\.[0-9]+$'
+          read_version() { sed -nE 's/^version = "([^"]*)"$/\1/p' | head -n1; }
+
+          TARGET_VERSION=$(read_version < pyproject.toml) || TARGET_VERSION=""
+          if [[ ! "$TARGET_VERSION" =~ $VERSION_RE ]]; then
+            echo "::error::Cannot read $TARGET's version from its pyproject.toml — not syncing"
+            exit 1
+          fi
+          if ! git fetch -q --depth=1 origin main; then
+            echo "::error::Cannot fetch main to read its version — not syncing to $TARGET"
+            exit 1
+          fi
+          MAIN_VERSION=$(git show FETCH_HEAD:pyproject.toml | read_version) || MAIN_VERSION=""
+          if [[ ! "$MAIN_VERSION" =~ $VERSION_RE ]]; then
+            echo "::error::Cannot read main's version from its pyproject.toml — not syncing to $TARGET"
+            exit 1
+          fi
+
+          if [[ "${MAIN_VERSION%.*}" == "${TARGET_VERSION%.*}" ]]; then
+            echo "sync=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TARGET follows main until main leaves ${MAIN_VERSION%.*}.x; no sync"
+          else
+            echo "sync=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true'
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
       - name: Install uv
-        if: steps.gate.outputs.sync == 'true'
+        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true'
         uses: astral-sh/setup-uv@v7
 
-      - name: Check which dependencies exist in v2
-        if: steps.gate.outputs.sync == 'true'
+      - name: Check which dependencies exist in the target branch
+        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true'
         id: check
         env:
           DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
+          TARGET: ${{ matrix.target }}
         run: |
           # A grouped Dependabot PR reports its dependencies as ONE comma-separated
           # string ("tornado, urllib3"). Looking that string up as a single package
@@ -398,28 +462,29 @@ jobs:
             PKG=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[._-]+/-/g')
             if grep -qx "name = \"$PKG\"" uv.lock 2>/dev/null; then
               PACKAGES+=("$PKG")
-              echo "Found '$PKG' in v2"
+              echo "Found '$PKG' in $TARGET"
             else
-              echo "'$PKG' is not in v2's uv.lock — not synced"
+              echo "'$PKG' is not in $TARGET's uv.lock — not synced"
             fi
           done
 
           if [[ ${#PACKAGES[@]} -eq 0 ]]; then
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "None of '$DEP_NAME' is used on v2 — nothing to sync"
+            echo "None of '$DEP_NAME' is used on $TARGET — nothing to sync"
           else
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "packages=${PACKAGES[*]}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Update dependencies and create PR
-        if: steps.gate.outputs.sync == 'true' && steps.check.outputs.exists == 'true'
+        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true' && steps.check.outputs.exists == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           # Bind every ${{ }} expression to env, never expand it into the script.
           PACKAGES: ${{ steps.check.outputs.packages }}
           UPDATE_TYPE: ${{ needs.automerge.outputs.update-type }}
           SOURCE_PR: ${{ github.event.pull_request.number }}
+          TARGET: ${{ matrix.target }}
         run: |
           read -r -a PKGS <<< "$PACKAGES"
 
@@ -428,12 +493,12 @@ jobs:
 
           BEFORE=$(mktemp)
           git show HEAD:uv.lock > "$BEFORE"
-          # main's lock is the reference for "did the fix reach v2?".
+          # main's lock is the reference for "did the fix reach the target?".
           MAIN_LOCK=$(mktemp)
           git fetch -q --depth=1 origin main
           git show FETCH_HEAD:uv.lock > "$MAIN_LOCK"
 
-          # One resolution for the whole group, within v2's own constraints
+          # One resolution for the whole group, within the target's own constraints
           # (pyproject pins such as cbor2 <6 still hold).
           UPGRADE_ARGS=()
           for P in "${PKGS[@]}"; do UPGRADE_ARGS+=(--upgrade-package "$P"); done
@@ -466,14 +531,14 @@ jobs:
             if [[ -n "$MAIN_TOP" && "$V2_TOP" != "$MAIN_TOP" && "$(printf '%s\n%s\n' "$V2_TOP" "$MAIN_TOP" | sort -V | tail -n1)" == "$MAIN_TOP" ]]; then
               HELD+=("| \`$P\` | $V2_TOP | $MAIN_TOP |")
               # A fix that cannot reach v2 must not look like "already up to date".
-              echo "::warning::$P stays at $V2_TOP on v2 while main has $MAIN_TOP — v2's constraints hold it back; check whether the advisory affects v2"
+              echo "::warning::$P stays at $V2_TOP on $TARGET while main has $MAIN_TOP — $TARGET's constraints hold it back; check whether the advisory affects $TARGET"
             fi
           done
 
           if [[ ${#HELD[@]} -gt 0 && -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
             {
-              echo "### Held back on v2"
-              echo "| Package | v2 | main |"
+              echo "### Held back on $TARGET"
+              echo "| Package | $TARGET | main |"
               echo "|---|---|---|"
               printf '%s\n' "${HELD[@]}"
             } >> "$GITHUB_STEP_SUMMARY"
@@ -481,7 +546,7 @@ jobs:
 
           if [[ ${#CHANGED[@]} -eq 0 ]]; then
             if git diff --quiet uv.lock; then
-              echo "No named package moved — v2 already has ${PKGS[*]} at the resolvable version"
+              echo "No named package moved — $TARGET already has ${PKGS[*]} at the resolvable version"
             else
               echo "::warning::uv.lock changed but none of ${PKGS[*]} moved — not syncing transitive-only changes"
             fi
@@ -499,12 +564,12 @@ jobs:
 
           # Branch: deterministic for the same update, bounded in length.
           KEY=$(for P in "${CHANGED[@]}"; do echo "$P=$(versions_in uv.lock "$P")"; done | sort)
-          BRANCH="chore/sync-v2-$(printf '%s' "$KEY" | sha256sum | cut -c1-10)"
+          BRANCH="chore/sync-$TARGET-$(printf '%s' "$KEY" | sha256sum | cut -c1-10)"
 
           # Dedupe on an OPEN PR, not on the branch: a branch left behind by a
           # failed `gh pr create`, or by a closed PR, must not turn re-runs green.
           OWNER="${GITHUB_REPOSITORY%%/*}"
-          OPEN=$(gh api "repos/$GITHUB_REPOSITORY/pulls?head=$OWNER:$BRANCH&base=v2&state=open" --jq length)
+          OPEN=$(gh api "repos/$GITHUB_REPOSITORY/pulls?head=$OWNER:$BRANCH&base=$TARGET&state=open" --jq length)
           if [[ "$OPEN" != "0" ]]; then
             echo "::notice::An open sync PR already carries this update ($BRANCH) — nothing to do"
             exit 0
@@ -518,8 +583,8 @@ jobs:
           HELD_SECTION=""
           if [[ ${#HELD[@]} -gt 0 ]]; then
             HELD_SECTION="
-          ### Held back by v2's constraints
-          | Package | v2 | main |
+          ### Held back by $TARGET's constraints
+          | Package | $TARGET | main |
           |---|---|---|
           $(printf '%s\n' "${HELD[@]}")
           "
@@ -527,9 +592,9 @@ jobs:
 
           PR_BODY="## Security sync from \`main\`
 
-          Dependabot security update #$SOURCE_PR, already merged on \`main\`, applied to v2's own lock (v2's constraints still apply).
+          Dependabot security update #$SOURCE_PR, already merged on \`main\`, applied to $TARGET's own lock ($TARGET's constraints still apply).
 
-          | Package | v2 |
+          | Package | $TARGET |
           |---|---|
           $(printf '%s\n' "${ROWS[@]}")
           $HELD_SECTION
@@ -543,6 +608,6 @@ jobs:
           gh pr create \
             --title "$TITLE" \
             --body "$PR_BODY" \
-            --base v2 \
+            --base "$TARGET" \
             --head "$BRANCH" \
             --label "security-sync,dependencies"

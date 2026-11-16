@@ -91,7 +91,7 @@ class TestFailureConditionsHaveStatusFunction:
 
     @pytest.mark.parametrize(
         "workflow",
-        ["surrealdb-security.yml", "surrealdb-v2-security.yml"],
+        ["surrealdb-security.yml", "surrealdb-v2-security.yml", "surrealdb-v3-security.yml"],
     )
     def test_monitor_failure_issue_job_can_run(self, workflow: str) -> None:
         """The SurrealDB monitors' `create-failure-issue` job must be reachable."""
@@ -120,3 +120,18 @@ class TestFailureConditionsHaveStatusFunction:
             assert _NON_SUCCESS_REF.search(cond), cond
         for cond in ("needs.a.result == 'success'", "needs.a.outputs.x == 'true'"):
             assert not _NON_SUCCESS_REF.search(cond), cond
+
+
+def test_v3_branch_monitor_only_updates_for_a_security_release() -> None:
+    """#579: the `v3` branch takes security releases only, checked twice.
+
+    The selection step already turns a routine release into `has-update=false`;
+    the job condition says it again, so an edit to that step cannot open a pin
+    PR (and a PyPI release) for a routine SurrealDB release on its own.
+    """
+    data: dict[str, Any] = yaml.safe_load((WORKFLOW_DIR / "surrealdb-v3-security.yml").read_text(encoding="utf-8"))
+    for job_id in ("test-new-version", "auto-update"):
+        cond = " ".join(str(data["jobs"][job_id]["if"]).split())
+        assert "needs.check-release.outputs.has-update == 'true'" in cond, job_id
+        assert "needs.check-release.outputs.is-security-patch == 'true'" in cond, job_id
+        assert not _STATUS_FN.search(cond), f"{job_id}: must keep the implicit success() of its dependencies"

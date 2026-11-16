@@ -1,13 +1,15 @@
 # Create a git tag and GitHub Release when a version bump PR is merged.
 # Triggered by push events matching "chore(release): bump version to X.Y.Z".
-# Works for both main and v2 branches.
 # PyPI publishing is handled by publish.yml (main tags only).
+#
+# main only: GitHub runs a push workflow from the pushed commit's own copy, so
+# the v2 and v3 branches each tag through their own tag-release.yml (#579).
 
 name: Tag & Release
 
 on:
   push:
-    branches: [main, v2]
+    branches: [main]
 
 permissions:
   contents: write
