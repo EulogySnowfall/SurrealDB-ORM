@@ -1239,6 +1239,45 @@ async def test_export_database_to_a_binary_stream_leaves_it_open(
     assert len(thread_spy) == len(DUMP_CHUNKS)
 
 
+async def test_export_database_to_a_click_keep_open_file_writes_every_byte_and_leaves_it_open(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    """The CLI ``dump`` hands ``click.open_file("-", "wb")``: a ``KeepOpenFile``, which is not an ``io.IOBase`` (#462)."""
+    click_utils = pytest.importorskip("click.utils")
+    conn = http_conn(dump_handler([]))
+    inner = io.BytesIO()
+    sink = click_utils.KeepOpenFile(inner)
+    assert not isinstance(sink, io.IOBase)
+
+    written = await conn.export_database(sink)
+
+    assert inner.getvalue() == b"".join(DUMP_CHUNKS)
+    assert written == len(b"".join(DUMP_CHUNKS))
+    assert not inner.closed
+    assert not sink.closed
+
+
+async def test_export_database_to_click_open_file_on_stdout_under_cli_runner_writes_every_byte(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    """``click.open_file("-", "wb")`` as ``dump`` opens it, on the stdout ``CliRunner`` swaps in (#462)."""
+    click = pytest.importorskip("click")
+    testing = pytest.importorskip("click.testing")
+    conn = http_conn(dump_handler([]))
+
+    with testing.CliRunner().isolation():
+        stdout = sys.stdout.buffer
+        with click.open_file("-", "wb") as sink:
+            assert not isinstance(sink, io.IOBase)
+            written = await conn.export_database(sink)
+            assert not sink.closed
+        assert not stdout.closed
+        received = stdout.getvalue()
+
+    assert received == b"".join(DUMP_CHUNKS)
+    assert written == len(received)
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
 @pytest.mark.usefixtures("umask_022")
 async def test_export_database_creates_a_new_file_owner_only(
@@ -1444,6 +1483,46 @@ async def test_import_from_a_binary_stream_reads_64_kib_chunks_and_leaves_it_ope
     assert set(stream.sizes) == {64 * 1024}
     assert len(thread_spy) == len(stream.sizes)
     assert not stream.closed
+
+
+async def test_import_from_a_click_keep_open_file_sends_every_byte_and_leaves_it_open(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    """The CLI ``restore -`` hands ``click.open_file("-", "rb")``: a ``KeepOpenFile``, not an ``io.IOBase`` (#462)."""
+    click_utils = pytest.importorskip("click.utils")
+    requests: list[httpx.Request] = []
+    conn = http_conn(import_handler(requests))
+    inner = Counting(DUMP)
+    source = click_utils.KeepOpenFile(inner)
+    assert not isinstance(source, io.IOBase)
+
+    await conn.import_database(source)
+
+    (request,) = requests
+    assert request.content == DUMP
+    assert set(inner.sizes) == {64 * 1024}
+    assert not inner.closed
+    assert not source.closed
+
+
+async def test_import_from_click_open_file_on_stdin_under_cli_runner_sends_every_byte(
+    http_conn: Callable[[Handler], HTTPConnection],
+) -> None:
+    """``click.open_file("-", "rb")`` as ``restore -`` opens it, on the stdin ``CliRunner`` swaps in (#462)."""
+    click = pytest.importorskip("click")
+    testing = pytest.importorskip("click.testing")
+    requests: list[httpx.Request] = []
+    conn = http_conn(import_handler(requests))
+
+    with testing.CliRunner().isolation(input=DUMP):
+        stdin = sys.stdin.buffer
+        with click.open_file("-", "rb") as source:
+            assert not isinstance(source, io.IOBase)
+            await conn.import_database(source)
+            assert not source.closed
+        assert not stdin.closed
+
+    assert requests[0].content == DUMP
 
 
 async def test_import_from_an_async_iterable_streams_its_chunks(http_conn: Callable[[Handler], HTTPConnection]) -> None:

@@ -6,6 +6,187 @@ and adheres to [SemVer](https://semver.org/) versioning.
 
 ---
 
+## [0.39.9] - 2026-11-08
+
+**Patch release — review follow-ups across the ORM and the SDK.** Six fixes:
+#380 via #675 (`surreal_orm/query_set.py`, `utils.py`), #402 via #682
+(`surreal_sdk/transaction.py`), #681 via #684 (`surreal_orm/model_base.py`),
+#421 via #685 (`surreal_orm/auth/mixins.py`, `surreal_function.py`,
+`migrations/`), #436 via #686 (`surreal_orm/graph.py`, `model_base.py`) and
+#409 via #687 (`surreal_sdk/connection/http.py`); three test-only PRs (#679,
+#683, #688). No public API is added and no DDL changes. The SurrealDB pin is
+unchanged (tested against 3.3.5, supported range 3.2.x – 3.3.x).
+
+### Fixed
+
+- **`merge()` on a field declared with `Field(alias=...)` writes the alias
+  column, like `save()` and `update()`.** Both `merge(first_name=...)` and
+  `merge(**{"first-name": ...})` write `first-name`, on the plain merge, on
+  the `UPDATE ... SET` path used for `SurrealFunc` values, and with `tx=`.
+  Before, the Python field name was written as a separate column. Keywords
+  that are not model fields are still written as given (#681).
+- **`refresh()` (and so `merge()` / `save()` with refresh) reads an aliased
+  field from its alias column.** Before, a value stored under the alias was
+  never read back into the field. When a record holds both the alias column
+  and a column named after the field, the alias column wins (#681).
+- **The `UPDATE ... SET` path used for `SurrealFunc` values in `merge()`
+  accepts an alias that is not an identifier** (`first-name`). It is written
+  backtick-escaped and its value bound as `$_svq_<n>`. Other non-identifier
+  keys are still rejected with `ValueError` (#681).
+- **A `Q` child built by hand with an invalid field or lookup is reported by
+  the field or lookup the caller wrote.** Before, `('a__b', 'exact', 1)` was
+  reported as the unknown lookup `'b__exact'` under the rebuilt key
+  `'a__b__exact'` (#380).
+- **`HTTPTransaction.commit()` and the change-feed reader recognise "The
+  query was not executed due to a cancelled transaction" as part of a failed
+  transaction's cascade,** so the statement that actually failed is always
+  the one reported, whatever order the server lists the errors in. The
+  wording is the same on SurrealDB 3.2.6 and 3.3.5 (#402).
+- **Requests on one `HTTPConnection` that get a transient `401` on the same
+  token at the same time share one re-mint.** Before, each of them sent its
+  own `/signin`; the result was correct, but one re-mint cost N round trips.
+  The requests that waited check the auth state again once it ends: if only
+  the token was renewed, they retry with it; if the identity changed, they
+  raise the `401` as `QueryError` and are never replayed. After a failed or
+  cancelled re-mint, each makes one last retry with the current token
+  (#409).
+- **`makemigrations` and `inspectdb` write a server-reported `DEFAULT` that
+  `SurrealFunc()` refuses** (a block such as `{ DELETE ...; RETURN 1; }`)
+  into a file that imports. Such a value is written as
+  `_surreal_func_from_server('...')`, imported from
+  `surreal_orm.surreal_function`. Before, it was written as
+  `SurrealFunc('...')`, which raised `ValueError` on import. All other
+  defaults are written as before (#421).
+- **The `DeprecationWarning` for a legacy `str` expression default names its
+  field:** `<Model>.<field>: ...` from the model introspector,
+  `<table>.<field>: ...` from `AddField` / `AlterField` (#421).
+- **`validate_token()` and `authenticate_token()` return `None` without
+  opening an ephemeral connection** when the token's decoded `AC` / `NS` /
+  `DB` claims do not match the model's access name and connection config. A
+  token that passes this local check is still validated by the server and
+  checked again, as before (#421).
+- **An `edge_filter` on `in` / `out` whose string key is written `⟨…⟩`**
+  (`Q(out="users:⟨7x⟩")`, elements of `out__in` / `out__not_in` included)
+  raises `ValueError` when `reachable_from()`, `paths_from()` or
+  `shortest_path()` is called, before any query. It used to be read as the
+  literal key `⟨7x⟩` and matched nothing, with no error. Sources and targets
+  already refused this spelling (#436).
+- **`instance.get_shortest_path(target, ...)` with a `RecordId` or a
+  `"table:id"` string as target raises `TypeError`** before any query
+  instead of an `AttributeError`. The path is read as records of the
+  target's model, so the target must be a model instance; use
+  `Model.objects().shortest_path(source, target, edge)` for the other forms
+  (#436).
+
+### Behaviour changes
+
+- `merge()`: giving a field under both its name and its alias in one call
+  raises `ValueError` before any request. The `update_fields` passed to
+  `pre_update` / `around_update` / `post_update` by `merge()` carry the
+  column names sent (the alias), not the keywords as typed (#681).
+- `merge(tx=...)` on a field whose alias is not an identifier (`first-name`)
+  writes the alias column on both HTTP and WebSocket transactions: the
+  columns are queued as one bound object (`UPDATE <thing> MERGE $_mq;`), so
+  `HTTPTransaction` never sees the key in the statement text. Before, the
+  Python field name was written as a separate column, and
+  `merge(tx=, **{"first-name": ...})` raised `ValueError` on an HTTP
+  transaction. `save(tx=)` and `update(tx=)` on such an alias still raise
+  `ValueError` on an HTTP transaction (unchanged). A `merge(tx=)` whose
+  columns are all identifiers queues the same statement as before, and a
+  non-identifier key that is not a declared alias (`x-y`, `a.b`) is still
+  rejected by an HTTP transaction. With `tx=`, the local field is updated
+  whichever spelling is used (#681).
+- Hand-built `Q` children only: a field that is not a string (e.g. `None`)
+  is refused; it used to be rendered as a condition on a field named `None`.
+  A valid field ending in an underscore (`('a_', 'gt', 1)`) is accepted; it
+  used to be refused. A lookup that is not a string but whose `str()` is a
+  lookup name is refused; it used to pass and render as an equality (`=`)
+  whatever lookup its text named. Other non-string lookups were already
+  refused; only their message changes. The messages for these children read
+  `Invalid filter field ...` / `Invalid lookup ... on filter field ...`.
+  Keys passed through `filter()` and `Q(**kwargs)` keep their
+  `Invalid filter key ...` messages, and valid conditions render the same
+  SurrealQL (#380).
+- A token issued for another access, namespace or database no longer costs
+  a server round trip in `validate_token()` / `authenticate_token()`; the
+  result (`None`) is unchanged. A warnings filter written against the start
+  of the legacy-default message (`ignore:Passing a server-side expression`)
+  must now allow the field prefix (`ignore:.*Passing a server-side
+  expression`) (#421).
+- With concurrent transient `401`s on one `HTTPConnection` there are fewer
+  `/signin` requests. A request whose identity changes during the backoff
+  raises at once, without running a signin whose token would be thrown away.
+  Nothing changes for a single request (#409).
+- `HTTPTransaction.commit()`: none on the supported servers, which list the
+  failing statement before the statements it cancels. Only a response that
+  listed a cancelled statement first is affected: it is now reported by its
+  real cause instead of the cancellation message (#402).
+- Graph inputs that were already invalid now fail loudly (`ValueError` for a
+  `⟨…⟩` key in an `edge_filter` on `in` / `out`, `TypeError` for a non-model
+  `get_shortest_path()` target). Valid inputs render the same SurrealQL and
+  bindings (#436).
+
+### Upgrading
+
+- Records merged before this release may hold a stray column named after the
+  Python field next to the alias column. If the stray column holds the
+  latest value, copy it over and drop it (checked on 3.3.5):
+
+  ```sql
+  UPDATE <table> SET `<alias>` = <field_name>, <field_name> = NONE WHERE <field_name> != NONE;
+  -- for example
+  UPDATE people SET `first-name` = first_name, first_name = NONE WHERE first_name != NONE;
+  ```
+
+  If a later `save()` / `update()` already wrote the alias column, only drop
+  the stray column:
+  `UPDATE <table> SET <field_name> = NONE WHERE <field_name> != NONE;`. On a
+  `SCHEMAFULL` table the stray column cannot exist, so there is nothing to
+  repair (#681).
+- A migration file generated before this release with a block `DEFAULT`
+  still contains `SurrealFunc('...')` and still fails to import. Regenerate
+  it, or replace that call by hand with `_surreal_func_from_server('...')`
+  imported from `surreal_orm.surreal_function` (#421).
+
+### Documentation
+
+- `docs/orm.md` describes the `⟨…⟩` refusal for edge endpoints and the
+  model-instance target of `get_shortest_path()` (#436).
+- README "What's New in 0.39.6": the `tx=` sentence names the three methods
+  that take it (`relate()`, `remove_relation()`, `remove_all_relations()`),
+  as the `[0.39.6]` entry does. README "What's New in 0.39.7": adds that
+  `HTTPTransaction` now reads `t:05` / `t:-05` as the integers 5 / -5 too,
+  under both protocols, as the `[0.39.7]` entry says (#673, #677).
+
+### Tests
+
+- The ORM write paths inside an HTTP transaction (`save(tx=)`, `update(tx=)`,
+  `merge(tx=)`, `relate(tx=)`) have unit tests pinning the 0.35.3 key check:
+  a field alias or edge-data key that is not a plain identifier raises
+  `ValueError` and queues nothing (#387). `merge(tx=)` on a declared
+  non-identifier alias is now the bound-object case above (#681).
+- The `click.open_file("-")` stream that `dump` (no `-o`) and `restore -` use
+  (a `KeepOpenFile`, not an `io.IOBase`) is handed to the real SDK
+  `export_database()` / `import_database()` in unit tests, directly and
+  under `CliRunner`'s swapped stdout/stdin: every byte is written or sent and
+  the stream is left open (#462).
+- The #330 HTTP auth integration tests remove the `i330_http_auth` database
+  they create in the shared test namespace instead of leaving it on the
+  server after every run (#352).
+
+### Known limitations
+
+- `merge()` reads `Field(alias=...)` only: a field declared with
+  `serialization_alias` alone is written to the alias by `save()` and to the
+  field name by `merge()` (review suggestion on #684).
+- Hand-built `Q` children: an unhashable field (`['a']`) with an `exact` /
+  `in` / `not_in` lookup raises `TypeError` rather than the new
+  `ValueError`. Through `filter()` / `Q(**kwargs)`, a field ending in `_`
+  still takes only `exact` (`a___gt` is split as field `a`, lookup `_gt`)
+  (review suggestions on #675).
+
+---
+
 ## [0.39.8] - 2026-11-08
 
 **Patch release — `validate_token_local()` applies the model-table check.**

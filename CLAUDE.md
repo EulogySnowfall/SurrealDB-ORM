@@ -1,6 +1,6 @@
 # SurrealDB-ORM - Development Context
 
-> Context document for Claude AI - Last updated: November 2026 (0.39.8)
+> Context document for Claude AI - Last updated: November 2026 (0.39.9)
 
 ## Project Vision
 
@@ -10,7 +10,7 @@
 
 ---
 
-## Current Version: 0.39.8 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
+## Current Version: 0.39.9 (Beta) — SurrealDB 3.2.x – 3.3.x (tested 3.3.5)
 
 ### Branch Strategy
 
@@ -21,6 +21,56 @@
 
 SurrealDB 2.x users go to SurrealDB-ORM-lite. A permanent `v3` branch (3.x,
 bug and security fixes only) is cut from `main` right after 0.39.0.
+
+### What's New in 0.39.9
+
+Six fixes from earlier review follow-ups: #380 via #675 (`query_set.py`,
+`utils.py`), #402 via #682 (`surreal_sdk/transaction.py`), #681 via #684
+(`model_base.py`), #421 via #685 (`auth/mixins.py`, `surreal_function.py`,
+`migrations/`), #436 via #686 (`graph.py`, `model_base.py`, `docs/orm.md`),
+#409 via #687 (`surreal_sdk/connection/http.py`); tests only: #387 via #679,
+#352 via #683, #462 via #688. Pin unchanged (3.3.5). `v2`: not backported
+(the line ended at 0.21.62).
+
+- **`merge()` keys its data by column first** (`_columns_by_alias()`): a
+  model field with an alias becomes the alias, an alias key or a non-field
+  keyword stays as given. `_build_set_clause(escaped_columns=...)` writes a
+  non-identifier alias backtick-escaped and binds it as `$_svq_<n>`;
+  `_update_from_db()` reads the alias column (it wins over a stray
+  field-name column). With `tx=`, a declared non-identifier alias goes
+  through `UPDATE <thing> MERGE $_mq;` (one bound object), because
+  `HTTPTransaction.merge()` writes keys into the text and rejects them; the
+  round-1 version broke on a real `HTTPTransaction` while the mocks passed.
+  Drive a real transaction object in tests of a `tx=` path.
+- **One re-mint per `401` burst.** `_post_rpc()` takes a per-connection
+  `_remint_lock` after the backoff and reads the auth state again under it:
+  generation or token moved with the same identity → retry, no signin;
+  identity changed → raise the `401` as `QueryError`; otherwise re-mint.
+  The #390 install guard is unchanged.
+- **`"not executed due to a cancelled transaction"` joins
+  `_CANCELLED_STATEMENT_ERRORS`** (exact phrase; same wording on 3.2.6 and
+  3.3.5), shared by `HTTPTransaction.commit()` and the change-feed reader.
+- **`validate_filter_condition(field, lookup)`** (`utils.py`, not exported)
+  checks a hand-built `Q` child's two parts apart instead of re-joining them
+  into a key; `parse_filter_key()` is unchanged.
+- **Server-reported refused `DEFAULT`s** are built by
+  `_surreal_func_from_server()`, whose `repr()` is a call to it, so generated
+  migrations and `inspectdb` modules import; plain `SurrealFunc` `repr` /
+  equality / hashing unchanged. The legacy-default warning is prefixed with
+  `<Model>.<field>: ` / `<table>.<field>: `. `_is_foreign_token()` is a
+  reject-only claim pre-check before the ephemeral connection; the
+  post-check after `RETURN $auth` stays.
+- **Graph:** `_refuse_angle_bracket_key()` (`graph.py`) is shared by
+  `to_graph_record()` and the `edge_filter` endpoint coercion;
+  `get_shortest_path()` refuses a non-model target with `TypeError`.
+- Release-doc corrections: README 0.39.6 `tx=` sentence (#673), README
+  0.39.7 `HTTPTransaction` `t:05` clause (#677), the 0.37.2 "Open" bullet
+  below (#673); the "Open" bullets of 0.35.2, 0.35.3, 0.35.4, 0.36.1 and
+  0.37.1 marked resolved.
+- **Open (review suggestions on #675 / #684):** `merge()` reads only
+  `alias`, not `serialization_alias`; a hand-built `Q` child with an
+  unhashable field and `exact` / `in` / `not_in` raises `TypeError`, and
+  `filter(a___gt=1)` is still split at the first `__`.
 
 ### What's New in 0.39.8
 
@@ -576,8 +626,8 @@ unchanged (3.3.5). `v2`: same defect, backport tracked in #463.
   `QueryCache.invalidate()` once its statement is accepted (after
   `_raise_on_statement_error()`, after the commit for `atomic=True`); a write
   that raises leaves the cache as it was.
-- **Open (review suggestions on #460; the relation half resolved in 0.39.6,
-  #465):** relation writes (`relate()`,
+- **Open (review suggestions on #460; resolved: the `tx=` half in 0.39.3,
+  #360; the relation half in 0.39.6, #465):** relation writes (`relate()`,
   `remove_relation()`, `remove_all_relations()`, relation managers) never
   invalidate the edge table; `save(tx=)` / `bulk_create(atomic=True)`
   invalidate when queued, not at the HTTP commit.
@@ -595,7 +645,7 @@ One fix, #456 via #458 (`cli/commands.py` only). Pin unchanged (3.3.5).
   CI was green while a fresh install (Click 8.5) failed the two CLI tests
   that turn `DeprecationWarning` into an error. `TestI456BinaryStdStreams`
   makes `get_binary_stream` warn whatever Click is installed.
-- **Open (review suggestion on #458):** every CLI test mocks
+- **Open (review suggestion on #458; resolved in 0.39.9, #462):** every CLI test mocks
   `dump_database` / `restore_database`, so no test hands the `KeepOpenFile`
   wrapper to the real SDK `import_database` / `export_database`.
 - README "What's New in 0.37.0" wording: a string `Duration` can *now* be
@@ -664,7 +714,8 @@ Three fixes: #391 via #418 (`surreal_sdk/connection/pool.py`), #417 via #422
   `Cannot COMMIT: Transaction conflict: …` is the cause and raises
   `TransactionConflictError`. This resolves the first 0.35.4 open item: the
   cancellation-only fallback no longer matches `retry_on_conflict`.
-- **Open (review suggestions):** `"not executed due to a cancelled
+- **Open (review suggestions; resolved: the cancelled-transaction marker in
+  0.39.9, #402; the other items in 0.38.1, #448):** `"not executed due to a cancelled
   transaction"` is still not in `_CANCELLED_STATEMENT_ERRORS` (ordering covers
   it), `streaming/change_feed.py` still treats any `"Cannot COMMIT"` as
   cascade, and the match is not anchored to the end of the message (#443);
@@ -769,7 +820,7 @@ Three fixes, pin unchanged (3.3.4). `v2` backports: #284 (PR #395), #397, #399.
   trap as the 0.32.6 migration executor). The first non-cancellation error
   is the cause; "failed transaction" / "cancelled transaction" / "Cannot
   COMMIT" are the cascade.
-- **Open (review suggestions on #396):** the cancellation-only fallback
+- **Open (review suggestions on #396; resolved in 0.36.1 and 0.39.9, #402):** the cancellation-only fallback
   message still matches `retry_on_conflict`'s text check, and the "cancelled
   transaction" wording is not in the marker tuple (ordering covers it today).
 
@@ -784,8 +835,8 @@ One fix, #334 via #374 (`src/surreal_sdk/transaction.py` only). Pin unchanged
 - **A dotted key was the silent case**: `SET a.b = $a.b` reads field `b` of
   an unbound `$a`, so the commit succeeded and stored nothing for it. Other
   bad keys failed at `commit()` with `TransactionError`.
-- **Open:** no test drives an ORM `save(tx=)` with a non-identifier alias
-  through `HTTPTransaction` (review suggestion on #374).
+- **Open (resolved in 0.39.9, #387):** no test drove an ORM `save(tx=)` with
+  a non-identifier alias through `HTTPTransaction` (review suggestion on #374).
 
 ### What's New in 0.35.2
 
@@ -802,7 +853,7 @@ One fix, #328 via #367 (`utils.py`, `query_set.py`, `q.py`, `relations.py`,
   `needs_id_escaping()` / `format_thing()` / `to_record_id()` for such IDs.
 - **Unknown lookups raise** instead of falling back to `=`, in `QuerySet` and
   in relation filters (which render only ten lookups).
-- **Open:** a hand-built `Q` child such as `("a__b", "exact")` is rejected
+- **Open (resolved in 0.39.9, #380):** a hand-built `Q` child such as `("a__b", "exact")` is rejected
   with a message naming `b__exact` rather than the caller's field (review
   suggestion on #367).
 

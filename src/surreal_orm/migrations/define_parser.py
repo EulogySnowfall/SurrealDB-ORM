@@ -14,7 +14,7 @@ from typing import Any
 
 from surreal_sdk.utils import unescape_record_id
 
-from ..surreal_function import SurrealFunc
+from ..surreal_function import SurrealFunc, _surreal_func_from_server
 from ..utils import parse_surql_string
 from .state import ApiState, BucketState, EventState, FieldState, GraphQLConfigState, IndexState
 
@@ -517,7 +517,8 @@ def _default_expression(raw: str) -> SurrealFunc:
 
     ``SurrealFunc`` refuses a few keyword-and-semicolon shapes meant for
     hand-written values. This text is the server's own definition, already
-    accepted by it, so it is carried as-is when that check would refuse it.
+    accepted by it, so it is carried as-is when that check would refuse it,
+    through :func:`~surreal_orm.surreal_function._surreal_func_from_server`.
 
     Args:
         raw: The expression, as the server echoes it
@@ -528,9 +529,9 @@ def _default_expression(raw: str) -> SurrealFunc:
     try:
         return SurrealFunc(raw)
     except ValueError:
-        expression = SurrealFunc.__new__(SurrealFunc)
-        expression.expression = raw
-        return expression
+        # Written back as ``_surreal_func_from_server(...)``, so a migration
+        # file generated from it does not run the refused check on import.
+        return _surreal_func_from_server(raw)
 
 
 def parse_define_table(statement: str) -> dict[str, Any]:

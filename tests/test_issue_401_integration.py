@@ -172,7 +172,7 @@ class I401Note(BaseSurrealModel):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-@pytest.mark.filterwarnings("ignore:Passing a server-side expression:DeprecationWarning")
+@pytest.mark.filterwarnings("ignore:.*Passing a server-side expression:DeprecationWarning")
 async def test_model_defaults_migrate_and_converge(migrations_dir: Path) -> None:
     operations = _operations_for(await schema_diff(models=[I401Note]), NOTES)
     assert operations, "precondition: the table does not exist yet"

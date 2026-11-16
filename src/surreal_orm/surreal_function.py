@@ -39,8 +39,14 @@ class SurrealFunc:
                     "Only use SurrealFunc with developer-controlled expressions."
                 )
         self.expression = expression
+        self._from_server = False
 
     def __repr__(self) -> str:
+        # A server-reported expression may be one the constructor refuses, so
+        # it is written back (e.g. into a generated migration file) as a call
+        # to the helper that built it, which re-imports without the check.
+        if getattr(self, "_from_server", False):
+            return f"_surreal_func_from_server({self.expression!r})"
         return f"SurrealFunc({self.expression!r})"
 
     def __eq__(self, other: Any) -> bool:
@@ -50,6 +56,44 @@ class SurrealFunc:
 
     def __hash__(self) -> int:
         return hash(self.expression)
+
+
+def _surreal_func_from_server(expression: str) -> SurrealFunc:
+    """Wrap an expression the server reported, without the constructor's check.
+
+    ``SurrealFunc`` refuses a few keyword-and-semicolon shapes meant for
+    hand-written values. A ``DEFAULT`` read back from ``INFO FOR TABLE`` is the
+    server's own definition, already accepted by it, and can be such a shape
+    (a block ``{ DELETE ...; RETURN ...; }``). The result compares and hashes
+    like ``SurrealFunc(expression)``; its ``repr()`` is a call to this helper,
+    so a migration file generated from it imports again.
+
+    Not for application code: use ``SurrealFunc`` for hand-written values.
+
+    Stability: generated migration files and ``inspectdb`` models files import
+    this helper as ``surreal_orm.surreal_function._surreal_func_from_server``
+    and call it with one positional string. Those files outlive the release
+    that wrote them, so its module path, name and signature must stay stable
+    despite the leading underscore.
+
+    Args:
+        expression: The expression, as the server echoes it
+
+    Returns:
+        The expression, marked as such
+    """
+    func = SurrealFunc.__new__(SurrealFunc)
+    func.expression = expression
+    func._from_server = True
+    return func
+
+
+def _is_from_server(value: SurrealFunc) -> bool:
+    """Tell whether *value* was built by ``_surreal_func_from_server()``.
+
+    Code generators use it to import the name its ``repr()`` calls.
+    """
+    return bool(getattr(value, "_from_server", False))
 
 
 class SurrealFunction(StrEnum): ...

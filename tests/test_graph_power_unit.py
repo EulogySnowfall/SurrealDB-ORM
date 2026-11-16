@@ -1858,3 +1858,164 @@ class TestDocs:
         assert "record-id spelling is not supported" in section
         assert "compares records" in section
         assert "Exceeded the idiom recursion limit of 256" in section
+
+
+# ---------------------------------------------------------------------------
+# #436 — ⟨…⟩ keys in edge_filter, non-model targets in get_shortest_path()
+# ---------------------------------------------------------------------------
+
+
+def _e436(field: str, value: str) -> str:
+    return (
+        f"Invalid edge_filter value on {field!r}: {value!r}. The ⟨…⟩ record-id spelling is not supported; "
+        "escape the key with backticks or pass RecordId(table, key)"
+    )
+
+
+class TestI436EdgeFilterAngleKey:
+    """An ``in`` / ``out`` value spelled ``⟨…⟩`` fails like a source or target does."""
+
+    @pytest.mark.parametrize("value", ["gpu_person:⟨7x⟩", "gpu_person:⟨⟩", "gpu_person:⟨7x", "gpu_person:7x⟩"])
+    @pytest.mark.parametrize("field", ["in", "out"])
+    def test_exact_refused(self, field: str, value: str) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            graph.coerce_edge_value(field, "exact", value, frozenset())
+        assert str(excinfo.value) == _e436(field, value)
+
+    @pytest.mark.parametrize("lookup", ["in", "not_in"])
+    @pytest.mark.parametrize("container", [list, tuple])
+    def test_list_element_refused(self, lookup: str, container: type) -> None:
+        value = container(["gpu_person:a", "gpu_person:⟨7x⟩"])
+        with pytest.raises(ValueError) as excinfo:
+            graph.coerce_edge_value("out", lookup, value, frozenset())
+        assert str(excinfo.value) == _e436("out", "gpu_person:⟨7x⟩")
+
+    def test_reachable_from_refused_at_call(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            _walk(edge_filter=Q(out="gpu_person:⟨7x⟩"))
+        assert str(excinfo.value) == _e436("out", "gpu_person:⟨7x⟩")
+
+    def test_reachable_from_nested_q_refused_at_call(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            _walk(edge_filter=Q(w__lt=5) & ~Q(**{"in__in": ["gpu_person:a", "gpu_person:⟨7x⟩"]}))
+        assert str(excinfo.value) == _e436("in", "gpu_person:⟨7x⟩")
+
+    async def test_paths_from_refused_before_any_query(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+            pytest.raises(ValueError) as excinfo,
+        ):
+            await _paths(edge_filter=Q(out__in=["gpu_person:⟨7x⟩"]))
+        assert str(excinfo.value) == _e436("out", "gpu_person:⟨7x⟩")
+        get_client.assert_not_awaited()
+
+    async def test_shortest_path_refused_before_any_query(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+            pytest.raises(ValueError) as excinfo,
+        ):
+            await _shortest(edge_filter=Q(**{"in": "gpu_person:⟨7x⟩"}))
+        assert str(excinfo.value) == _e436("in", "gpu_person:⟨7x⟩")
+        get_client.assert_not_awaited()
+
+    def test_source_message_unchanged(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            graph.to_graph_record("gpu_person:⟨7x⟩", "gpu_person", arg="source")
+        assert str(excinfo.value) == (
+            "Invalid source: 'gpu_person:⟨7x⟩'. The ⟨…⟩ record-id spelling is not supported; "
+            "escape the key with backticks or pass RecordId(table, key)"
+        )
+
+
+class TestI436ValidEdgeValuesUnchanged:
+    """Accepted ``in`` / ``out`` values render the same text and bindings."""
+
+    STEP = "SELECT * FROM $_g_src.{1..3+collect}(->gpu_knows[WHERE out = $_g0]->gpu_person) WHERE id != $_g_src;"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (GPUPerson(id="7x"), r("7x")),
+            (RecordId("gpu_person", "7x"), r("7x")),
+            (RecordId("gpu_person", "⟨7x⟩"), r("⟨7x⟩")),
+            ("gpu_person:b", r("b")),
+            ("gpu_person:`7x`", r("7x")),
+        ],
+    )
+    def test_exact(self, value: object, expected: RecordId) -> None:
+        qs = _walk(edge_filter=Q(out=value))
+        assert qs._compile_query() == self.STEP
+        assert qs._variables == {"_g_src": r("a"), "_g0": expected}
+        assert isinstance(qs._variables["_g0"], RecordId)
+
+    def test_in_list(self) -> None:
+        qs = _walk(edge_filter=Q(out__in=["gpu_person:`7x`", RecordId("gpu_person", 1), GPUPerson(id="e")]))
+        assert qs._compile_query() == (
+            "SELECT * FROM $_g_src.{1..3+collect}(->gpu_knows[WHERE out IN $_g0]->gpu_person) WHERE id != $_g_src;"
+        )
+        assert qs._variables == {"_g_src": r("a"), "_g0": [r("7x"), RecordId("gpu_person", 1), r("e")]}
+
+    def test_declared_variable(self) -> None:
+        qs = GPUPerson.objects().variables(who=r("b"))
+        qs.reachable_from(GPUPerson(id="a"), "gpu_knows", max_depth=3, edge_filter=Q(out="$who"))
+        assert qs._compile_query() == (
+            "SELECT * FROM $_g_src.{1..3+collect}(->gpu_knows[WHERE out = $who]->gpu_person) WHERE id != $_g_src;"
+        )
+        assert qs._variables == {"who": r("b"), "_g_src": r("a")}
+
+    def test_other_field_not_checked(self) -> None:
+        qs = _walk(edge_filter=Q(label="⟨7x⟩"))
+        qs._compile_query()
+        assert qs._variables["_g0"] == "⟨7x⟩"
+
+    def test_foreign_key_filter_path_unchanged(self) -> None:
+        # The check belongs to graph filters: the ForeignKey coercion outside them is not touched.
+        from src.surreal_orm.model_base import _to_record_link
+
+        assert _to_record_link("gpu_person:`7x`", "gpu_person") == r("7x")
+        assert _to_record_link("gpu_person:⟨7x⟩", "gpu_person") == r("⟨7x⟩")
+        v: dict[str, Any] = {}
+        assert GPUWithFK.objects()._render_q(Q(owner="gpu_person:⟨7x⟩"), v, [0]) == "owner = $_f0"
+        assert v == {"_f0": r("⟨7x⟩")}
+
+
+class TestI436ShortestPathTarget:
+    """get_shortest_path() reads the QuerySet from the target's class, so the target must be an instance."""
+
+    @staticmethod
+    def _message(got: str) -> str:
+        return (
+            "get_shortest_path() target must be a model instance (its class is the model the path is read as), "
+            f"got {got}; for a RecordId or a 'table:id' string use "
+            "Model.objects().shortest_path(source, target, edge)"
+        )
+
+    @pytest.mark.parametrize("target", ["gpu_person:d", RecordId("gpu_person", "d"), "d", None, 5])
+    async def test_non_model_target_refused_before_any_query(self, target: object) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        with (
+            patch("src.surreal_orm.query_set.SurrealDBConnectionManager.get_client", new_callable=AsyncMock) as get_client,
+            pytest.raises(TypeError) as excinfo,
+        ):
+            await GPUPerson(id="a").get_shortest_path(target, "gpu_knows")  # type: ignore[arg-type]
+        assert str(excinfo.value) == self._message(type(target).__name__)
+        get_client.assert_not_awaited()
+
+    async def test_model_class_target_refused(self) -> None:
+        with pytest.raises(TypeError) as excinfo:
+            await GPUPerson(id="a").get_shortest_path(GPUPerson, "gpu_knows")  # type: ignore[arg-type]
+        assert str(excinfo.value) == self._message("the class GPUPerson")
+
+    async def test_instance_target_still_forwarded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        spy = _Spy(None)
+        spy.install(monkeypatch)
+        alice, dave = GPUPerson(id="a"), GPUPerson(id="d")
+        assert await alice.get_shortest_path(dave, "gpu_knows") is None
+        assert [(name, model, args) for name, model, args, _ in spy.calls] == [
+            ("shortest_path", GPUPerson, (alice, dave, "gpu_knows"))
+        ]

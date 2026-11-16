@@ -33,6 +33,24 @@ def clear_registry() -> None:
     clear_model_registry()
 
 
+@pytest.fixture(autouse=True)
+def _no_connection_config() -> Iterator[None]:
+    """Run without a registered connection, as when this file runs alone.
+
+    The token tests stand a mocked ephemeral client in for the connection.
+    With a config registered by another test file, the local claim pre-check
+    (#421) would compare the tokens with that config instead; without one it
+    judges nothing and the server path and post-check under test run.
+    """
+    from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+    saved = dict(SurrealDBConnectionManager._configs)
+    SurrealDBConnectionManager._configs.clear()
+    yield
+    SurrealDBConnectionManager._configs.clear()
+    SurrealDBConnectionManager._configs.update(saved)
+
+
 class TestAccessDefinition:
     """Tests for AccessDefinition dataclass."""
 
@@ -1763,14 +1781,17 @@ class TestIssue331TokenCachePerConnection:
 
         mgr = SurrealDBConnectionManager
         saved_configs = dict(mgr._configs)
-        for name, db in (("i331_a", "i331_db_a"), ("i331_b", "i331_db_b")):
+        # Two servers holding a database of the same name: the tokens' NS / DB
+        # claims match both configs, so only the connection tells them apart
+        # (a config naming another database rejects them before any request).
+        for name, url in (("i331_a", "http://i331-a:8000"), ("i331_b", "http://i331-b:8000")):
             mgr.add_connection(
                 name,
-                url="http://localhost:8000",
+                url=url,
                 user="root",
                 password="root",
-                namespace="i331_ns",
-                database=db,
+                namespace=_I331_NS,
+                database=_I331_DB,
             )
         AuthenticatedUserMixin._token_cache.clear()
         AuthenticatedUserMixin._token_cache_ttl = 300
@@ -1850,7 +1871,7 @@ class TestIssue331TokenCachePerConnection:
             password: Encrypted
 
         assert I331RoutedUser.get_connection_name() == "i331_b"
-        assert I331RoutedUser._token_cache_key("t")[0] == ("i331_b", "http://localhost:8000", "i331_ns", "i331_db_b")
+        assert I331RoutedUser._token_cache_key("t")[0] == ("i331_b", "http://i331-b:8000", "i331_ns", "i331_db")
         assert self._model().get_connection_name() == "default"
 
     async def test_using_overrides_the_auth_connection(self) -> None:
@@ -1860,4 +1881,4 @@ class TestIssue331TokenCachePerConnection:
         model = self._model()
         async with SurrealDBConnectionManager.using("i331_a"):
             assert model.get_connection_name() == "i331_a"
-            assert model._token_cache_key("t")[0][3] == "i331_db_a"
+            assert model._token_cache_key("t")[0][1] == "http://i331-a:8000"

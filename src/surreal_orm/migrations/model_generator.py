@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from ..surreal_function import SurrealFunc
+from ..surreal_function import SurrealFunc, _is_from_server
 from ..utils import SAFE_IDENTIFIER_RE
 from .state import FieldState, SchemaState, TableState
 
@@ -294,7 +294,15 @@ class ModelCodeGenerator:
 
         if field.default is not None:
             if isinstance(field.default, SurrealFunc):
-                extra_imports.add("from surreal_orm import SurrealFunc")
+                # A server-reported expression the constructor refuses repr()s
+                # as a call to the helper that built it, so the generated
+                # module imports that helper instead. The written import path
+                # is a stability contract: see the helper's docstring in
+                # surreal_orm/surreal_function.py.
+                if _is_from_server(field.default):
+                    extra_imports.add("from surreal_orm.surreal_function import _surreal_func_from_server")
+                else:
+                    extra_imports.add("from surreal_orm import SurrealFunc")
             default_repr = self._format_default(field.default)
             field_kwargs.append(f"default={default_repr}")
 
@@ -407,7 +415,8 @@ class ModelCodeGenerator:
 
         A ``str`` is a text and goes through ``repr``, which escapes it; a
         server-side expression arrives as a ``SurrealFunc`` and renders as
-        ``SurrealFunc('time::now()')``.
+        ``SurrealFunc('time::now()')``, or as
+        ``_surreal_func_from_server('...')`` for one the constructor refuses.
         """
         if isinstance(default, str):
             return repr(default)

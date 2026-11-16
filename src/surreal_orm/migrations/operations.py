@@ -149,13 +149,15 @@ _LEGACY_EXPRESSION_DEFAULT = re.compile(
 )
 
 #: The warning for a ``str`` default read as an expression, shared by the
-#: renderer and the model introspector.
+#: renderer and the model introspector. Each prefixes it with the field it is
+#: about (``table.field: `` / ``Model.field: ``): the warning is raised inside
+#: the ORM, so its location alone does not tell which default to wrap.
 _LEGACY_EXPRESSION_DEFAULT_WARNING = (
     "Passing a server-side expression as a str default is deprecated; wrap it in SurrealFunc(...)"
 )
 
 
-def _render_default(default: Any) -> str:
+def _render_default(default: Any, *, table: str, name: str) -> str:
     """
     Render a DEFAULT value as SurrealQL.
 
@@ -176,6 +178,8 @@ def _render_default(default: Any) -> str:
 
     Args:
         default: The default value, as the model or the database reports it
+        table: Table the field belongs to, named in the warning
+        name: Field name, named in the warning
 
     Returns:
         The SurrealQL literal or expression
@@ -186,7 +190,7 @@ def _render_default(default: Any) -> str:
         return str(default).lower()
     if isinstance(default, str):
         if _LEGACY_EXPRESSION_DEFAULT.fullmatch(default):
-            warnings.warn(_LEGACY_EXPRESSION_DEFAULT_WARNING, DeprecationWarning, stacklevel=3)
+            warnings.warn(f"{table}.{name}: {_LEGACY_EXPRESSION_DEFAULT_WARNING}", DeprecationWarning, stacklevel=3)
             return default
         return surql_string(default)
     return str(default)
@@ -270,7 +274,7 @@ def _render_define_field(
         parts.append(f"VALUE {value}")
 
     if default is not None:
-        parts.append(f"DEFAULT {_render_default(default)}")
+        parts.append(f"DEFAULT {_render_default(default, table=table, name=name)}")
 
     if assertion:
         parts.append(f"ASSERT {assertion}")
@@ -597,7 +601,7 @@ def _render_alter_field(
 
     parts.append(f"VALUE {value}" if value else "DROP VALUE")
 
-    parts.append(f"DEFAULT {_render_default(default)}" if default is not None else "DROP DEFAULT")
+    parts.append(f"DEFAULT {_render_default(default, table=table, name=name)}" if default is not None else "DROP DEFAULT")
 
     parts.append(f"ASSERT {assertion}" if assertion else "DROP ASSERT")
 

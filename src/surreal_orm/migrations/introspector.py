@@ -267,9 +267,16 @@ class ModelIntrospector:
                 # server-side expression as a str. The database reports that
                 # default unquoted, which the parser reads as SurrealFunc, so
                 # it is read the same way here (same allow-list and warning as
-                # _render_default) or the two states never compare equal.
+                # _render_default) or the two states never compare equal. The
+                # warning names the model field: raised here, its location
+                # does not point at the model.
                 if isinstance(default, str) and _LEGACY_EXPRESSION_DEFAULT.fullmatch(default):
-                    warnings.warn(_LEGACY_EXPRESSION_DEFAULT_WARNING, DeprecationWarning, stacklevel=2)
+                    owner = model.__name__ if model is not None else "<model>"
+                    warnings.warn(
+                        f"{owner}.{name}: {_LEGACY_EXPRESSION_DEFAULT_WARNING}",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
                     default = SurrealFunc(default)
             elif field_info.default_factory is not None:
                 # Can't serialize factory, skip default

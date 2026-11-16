@@ -38,29 +38,40 @@ env:
 
 jobs:
   # =============================================================================
-  # Branch Guard: Block v2 branches from merging into main
+  # Branch Guard: Block v2 and v3 branches from merging into main
   # =============================================================================
+  # v3 carries the SurrealDB 3.x line once main moves to 4.x (#579); its
+  # monitor's pin and release branches (chore/surrealdb-v3-*, chore/release-v3-*)
+  # target v3 and are refused here like v2's.
   branch-guard:
     name: Branch Guard
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - name: Block v2 branches from merging into main
+      - name: Block v2 and v3 branches from merging into main
         if: >-
           github.base_ref == 'main' && (
             github.head_ref == 'v2' ||
             startsWith(github.head_ref, 'v2/') ||
             startsWith(github.head_ref, '0.20.') ||
-            startsWith(github.head_ref, 'chore/surrealdb-2x-')
+            startsWith(github.head_ref, 'chore/surrealdb-2x-') ||
+            github.head_ref == 'v3' ||
+            startsWith(github.head_ref, 'v3/') ||
+            startsWith(github.head_ref, 'chore/surrealdb-v3-') ||
+            startsWith(github.head_ref, 'chore/release-v3-')
           )
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          echo "::error::Cannot merge v2-related branches into main."
+          echo "::error::Cannot merge v2- or v3-related branches into main."
           echo ""
-          echo "Blocked branch: ${{ github.head_ref }}"
-          echo "Target: ${{ github.base_ref }}"
+          echo "Blocked branch: $HEAD_REF"
+          echo "Target: $BASE_REF"
           echo ""
-          echo "The v2 branch is for SurrealDB 2.X LTS maintenance only."
-          echo "V2 branches must target the 'v2' base branch, not 'main'."
+          echo "The v2 branch is for SurrealDB 2.X LTS maintenance only, and the v3"
+          echo "branch for SurrealDB 3.X bug and security fixes only."
+          echo "Their branches must target the 'v2' or 'v3' base branch, not 'main'."
           exit 1
 
   lint:
@@ -228,7 +239,7 @@ jobs:
         run: |
           # Branch guard: fail if it failed (skip check if it was skipped on push events)
           if [[ "${{ needs.branch-guard.result }}" == "failure" ]]; then
-            echo "Branch guard failed — v2 branch cannot be merged into main"
+            echo "Branch guard failed — a v2 or v3 branch cannot be merged into main"
             exit 1
           fi
           if [[ "${{ needs.lint.result }}" != "success" ]]; then

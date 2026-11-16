@@ -1194,7 +1194,8 @@ not accepted inside `node_filter` / `edge_filter`.
 **Filtering on the edge's endpoints.** On an edge table, `in` and `out` are always records, and a string never
 equals a record. `edge_filter` therefore converts the values of `in` / `out` (lookups `exact`, `in`, `not_in`) to
 records: a model instance, a `RecordId` or a `"table:id"` string. A bare id such as `"bob"` has no table to resolve
-against and raises `ValueError` (`edge_filter on 'out' compares records: ...`). `in` is a Python keyword, so write
+against and raises `ValueError` (`edge_filter on 'out' compares records: ...`); a key written `⟨…⟩` raises it too, as
+for a source or target (see "Sources and targets" below). `in` is a Python keyword, so write
 `Q(**{"in": alice})` or `Q(in__exact=alice)` — never `Q(in=…)`, which is a syntax error:
 
 ```python
@@ -1251,6 +1252,10 @@ path = await alice.get_shortest_path(dave, "follows")  # list[User] | None, same
 path = await User.objects().shortest_path(dave, alice, "follows")  # None: no edge leaves dave
 path = await User.objects().shortest_path(alice, dave, "follows", include_source=False)  # [erin, dave]
 ```
+
+`get_shortest_path()` reads the path as records of the target's model, so its `target` must be a model instance; a
+`RecordId` or a `"table:id"` string raises `TypeError` before any query (use `User.objects().shortest_path(alice,
+target, "follows")` for those).
 
 A path whose records the session cannot read (for example a node hidden by table permissions) also gives `None`,
 and logs a warning so it can be told apart from "no path"; `paths_from()` drops such a path and logs a warning too.

@@ -11,6 +11,7 @@ Tests for:
 import base64
 import json
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,6 +41,24 @@ from src.surreal_sdk.types import AuthResponse
 def clear_registry() -> None:
     """Clear model registry before each test."""
     clear_model_registry()
+
+
+@pytest.fixture(autouse=True)
+def _no_connection_config() -> Iterator[None]:
+    """Run without a registered connection, as when this file runs alone.
+
+    The token tests stand a mocked ephemeral client in for the connection.
+    With a config registered by another test file, the local claim pre-check
+    (#421) would compare the tokens with that config instead; without one it
+    judges nothing and the server path and post-check under test run.
+    """
+    from src.surreal_orm.connection_manager import SurrealDBConnectionManager
+
+    saved = dict(SurrealDBConnectionManager._configs)
+    SurrealDBConnectionManager._configs.clear()
+    yield
+    SurrealDBConnectionManager._configs.clear()
+    SurrealDBConnectionManager._configs.update(saved)
 
 
 # =============================================================================
