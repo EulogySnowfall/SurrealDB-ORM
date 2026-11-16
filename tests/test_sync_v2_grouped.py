@@ -35,6 +35,8 @@ from typing import Any
 
 import pytest
 
+from tests._release_series import owner_repo, pyproject
+
 yaml = pytest.importorskip("yaml", reason="pyyaml required for workflow lint tests")
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -118,6 +120,17 @@ class TestGate:
         for step in steps[gate + 1 :]:
             assert "steps.gate.outputs.sync == 'true'" in step.get("if", ""), step.get("name")
 
+    def test_every_step_after_the_owner_check_is_behind_it(self) -> None:
+        # #579: nothing is installed, resolved, pushed or opened for a target
+        # whose patch series main owns.
+        steps = _workflow()["jobs"][JOB]["steps"]
+        names = [s.get("name", "") for s in steps]
+        owner = names.index("Defer to main while it owns the patch series")
+        assert names.index("Checkout target branch") < owner < names.index("Update dependencies and create PR")
+        assert steps[owner]["id"] == "owner"
+        for step in steps[owner + 1 :]:
+            assert "steps.owner.outputs.sync == 'true'" in step.get("if", ""), step.get("name")
+
 
 class TestUvMeansSecurity:
     """The gate reads `uv` as "security update". This keeps that true."""
@@ -182,6 +195,102 @@ class TestMatrix:
             code = [line for line in str(step.get("run", "")).splitlines() if not line.lstrip().startswith("#")]
             offenders = [line for line in code if re.search(r"\bv2\b", line)]
             assert not offenders, (step.get("name"), offenders)
+
+
+# ---------------------------------------------------------------------------
+# #579: one patch series has one owner
+# ---------------------------------------------------------------------------
+#
+# While main's pyproject.toml has the same X.Y as v3's, main owns that series
+# (it releases 0.39.10, 0.39.11, ... until the 4.x pin). A sync PR on v3 would
+# end in a v3 bump computing one of main's numbers, so v3 takes none until
+# main leaves the series. v2 (0.21.x) is not concerned.
+
+
+def _run_owner(
+    tmp_path: Path, *, main: str | None, target_version: str, target: str = "v3"
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+    repo = owner_repo(tmp_path, main=main, target_version=target_version, target=target)
+    out = tmp_path / "owner"
+    out.write_text("")
+    env = {**os.environ, "TARGET": target, "GITHUB_OUTPUT": str(out)}
+    result = _bash(_step(JOB, "Defer to main")["run"], repo, env)
+    return result, _outputs(out)
+
+
+class TestPatchSeriesOwner:
+    @pytest.mark.parametrize(("on_main", "on_v3"), [("0.39.9", "0.39.9"), ("0.39.12", "0.39.9"), ("0.39.0", "0.39.9")])
+    def test_v3_is_not_synced_while_main_shares_its_series(self, tmp_path: Path, on_main: str, on_v3: str) -> None:
+        result, outputs = _run_owner(tmp_path, main=pyproject(on_main), target_version=pyproject(on_v3))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert outputs == {"sync": "false"}
+        assert "::notice::v3 follows main until main leaves 0.39.x; no sync" in result.stdout
+
+    @pytest.mark.parametrize("on_main", ["0.40.0", "0.40.3", "0.41.0"])
+    def test_v3_is_synced_once_main_leaves_the_series(self, tmp_path: Path, on_main: str) -> None:
+        result, outputs = _run_owner(tmp_path, main=pyproject(on_main), target_version=pyproject("0.39.9"))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert outputs == {"sync": "true"}
+        assert "::notice::" not in result.stdout
+
+    @pytest.mark.parametrize(
+        "main",
+        [
+            pyproject("0.39.9"),
+            pyproject("0.21.62"),
+            None,  # no main branch at all
+            "",  # no pyproject.toml on main
+            "[project]\nname = 'x'\n",  # no readable version
+        ],
+    )
+    def test_v2_is_never_affected(self, tmp_path: Path, main: str | None) -> None:
+        result, outputs = _run_owner(tmp_path, main=main, target_version=pyproject("0.21.62"), target="v2")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert outputs == {"sync": "true"}
+
+    @pytest.mark.parametrize(
+        "main",
+        [
+            None,  # main cannot be fetched
+            "[project]\nname = 'x'\n",  # no version line
+            pyproject("0.40.0rc1"),
+            pyproject("v0.40.0"),
+            pyproject("0.40"),
+            pyproject("0.40.0\nversion = 0.39.9"),
+            # An X bump is the user's decision: the rule is re-read then.
+            pyproject("1.0.0"),
+        ],
+        ids=["no-main", "no-version", "pre-release", "prefixed", "two-parts", "two-lines", "main-1.x"],
+    )
+    def test_an_unreadable_main_version_fails_closed(self, tmp_path: Path, main: str | None) -> None:
+        result, outputs = _run_owner(tmp_path, main=main, target_version=pyproject("0.39.9"))
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "::error::" in result.stdout
+        assert "sync" not in outputs
+
+    def test_a_missing_main_pyproject_fails_closed(self, tmp_path: Path) -> None:
+        result, outputs = _run_owner(tmp_path, main="", target_version=pyproject("0.39.9"))
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "::error::" in result.stdout
+        assert "sync" not in outputs
+
+    @pytest.mark.parametrize("target_version", ["", "[project]\nname = 'x'\n", pyproject("0.39")])
+    def test_an_unreadable_v3_version_fails_closed(self, tmp_path: Path, target_version: str) -> None:
+        result, outputs = _run_owner(tmp_path, main=pyproject("0.40.0"), target_version=target_version)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "::error::" in result.stdout
+        assert "sync" not in outputs
+
+    def test_main_and_v3_never_compute_the_same_number(self, tmp_path: Path) -> None:
+        # A v3 sync PR is what leads to a v3 bump (x.y.z -> x.y.z+1). Whenever
+        # the sync is open, main's next bump and v3's are in different series.
+        for index, on_main in enumerate(["0.39.9", "0.39.10", "0.39.11", "0.40.0", "0.40.1"]):
+            run_dir = tmp_path / str(index)
+            run_dir.mkdir()
+            result, outputs = _run_owner(run_dir, main=pyproject(on_main), target_version=pyproject("0.39.9"))
+            assert result.returncode == 0, result.stdout + result.stderr
+            if outputs["sync"] == "true":
+                assert on_main.rsplit(".", 1)[0] != "0.39", on_main
 
 
 # ---------------------------------------------------------------------------

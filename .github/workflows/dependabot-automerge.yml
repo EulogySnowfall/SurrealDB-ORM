@@ -281,6 +281,19 @@ jobs:
 
           echo "Base branch: $BASE_BRANCH, Current: $CURRENT_VERSION, New: $NEW_VERSION"
 
+          # A computed version that is already tagged was released by another
+          # branch (#579: main and v3 can both sit on 0.39.x). Stop before any
+          # branch or PR exists; an unreadable remote stops the job too.
+          TAG_STATUS=0
+          git ls-remote --exit-code --tags origin "refs/tags/$NEW_TAG" > /dev/null || TAG_STATUS=$?
+          if [[ "$TAG_STATUS" == "0" ]]; then
+            echo "::error::$NEW_TAG already exists — refusing to bump $BASE_BRANCH to a released version"
+            exit 1
+          elif [[ "$TAG_STATUS" != "2" ]]; then
+            echo "::error::Cannot list the remote tags (git ls-remote exited $TAG_STATUS) — not bumping"
+            exit 1
+          fi
+
           git checkout -b "$BRANCH"
 
           # Update version files
@@ -367,18 +380,58 @@ jobs:
           ref: ${{ matrix.target }}
           token: ${{ secrets.PAT_TOKEN }}
 
-      - name: Set up Python
+      # One patch series has one owner (#579). While main's pyproject.toml has
+      # the same X.Y as v3's, main owns that series: a v3 bump would compute a
+      # number main also computes, or ship v3 without main's fixes of the
+      # series. So v3 takes no sync until main leaves it. v2 (0.21.x) is not
+      # concerned. Fail closed: a version that cannot be read stops the job.
+      - name: Defer to main while it owns the patch series
         if: steps.gate.outputs.sync == 'true'
+        id: owner
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$TARGET" != "v3" ]]; then
+            echo "sync=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          VERSION_RE='^0\.[0-9]+\.[0-9]+$'
+          read_version() { sed -nE 's/^version = "([^"]*)"$/\1/p' | head -n1; }
+
+          TARGET_VERSION=$(read_version < pyproject.toml) || TARGET_VERSION=""
+          if [[ ! "$TARGET_VERSION" =~ $VERSION_RE ]]; then
+            echo "::error::Cannot read $TARGET's version from its pyproject.toml — not syncing"
+            exit 1
+          fi
+          if ! git fetch -q --depth=1 origin main; then
+            echo "::error::Cannot fetch main to read its version — not syncing to $TARGET"
+            exit 1
+          fi
+          MAIN_VERSION=$(git show FETCH_HEAD:pyproject.toml | read_version) || MAIN_VERSION=""
+          if [[ ! "$MAIN_VERSION" =~ $VERSION_RE ]]; then
+            echo "::error::Cannot read main's version from its pyproject.toml — not syncing to $TARGET"
+            exit 1
+          fi
+
+          if [[ "${MAIN_VERSION%.*}" == "${TARGET_VERSION%.*}" ]]; then
+            echo "sync=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TARGET follows main until main leaves ${MAIN_VERSION%.*}.x; no sync"
+          else
+            echo "sync=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true'
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
       - name: Install uv
-        if: steps.gate.outputs.sync == 'true'
+        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true'
         uses: astral-sh/setup-uv@v7
 
       - name: Check which dependencies exist in the target branch
-        if: steps.gate.outputs.sync == 'true'
+        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true'
         id: check
         env:
           DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
@@ -424,7 +477,7 @@ jobs:
           fi
 
       - name: Update dependencies and create PR
-        if: steps.gate.outputs.sync == 'true' && steps.check.outputs.exists == 'true'
+        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true' && steps.check.outputs.exists == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           # Bind every ${{ }} expression to env, never expand it into the script.

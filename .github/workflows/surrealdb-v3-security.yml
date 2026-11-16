@@ -58,7 +58,8 @@ jobs:
     outputs:
       latest-version: ${{ steps.check.outputs.latest-version }}
       current-version: ${{ steps.check.outputs.current-version }}
-      has-update: ${{ steps.check.outputs.has-update }}
+      # `false` while main owns the patch series and the selection is skipped.
+      has-update: ${{ steps.check.outputs.has-update || 'false' }}
       is-security-patch: ${{ steps.check.outputs.is-security-patch }}
       docker-tag: ${{ steps.check.outputs.docker-tag }}
 
@@ -68,8 +69,43 @@ jobs:
         with:
           ref: v3
 
+      # One patch series has one owner (#579). While main's pyproject.toml has
+      # the same X.Y as v3's, main owns that series and main's 3.x monitor
+      # covers the 3.3 line: a v3 pin PR would end in a v3 bump computing a
+      # number main also computes. So the selection is skipped, has-update is
+      # false and no later job runs (no tests, no PR, no bump, no issue).
+      # Fail closed: a version that cannot be read fails the run.
+      - name: Defer to main while it owns the patch series
+        id: owner
+        run: |
+          VERSION_RE='^0\.[0-9]+\.[0-9]+$'
+          read_version() { sed -nE 's/^version = "([^"]*)"$/\1/p' | head -n1; }
+
+          V3_VERSION=$(read_version < pyproject.toml) || V3_VERSION=""
+          if [[ ! "$V3_VERSION" =~ $VERSION_RE ]]; then
+            echo "::error::Cannot read v3's version from its pyproject.toml"
+            exit 1
+          fi
+          if ! git fetch -q --depth=1 origin main; then
+            echo "::error::Cannot fetch main to read its version"
+            exit 1
+          fi
+          MAIN_VERSION=$(git show FETCH_HEAD:pyproject.toml | read_version) || MAIN_VERSION=""
+          if [[ ! "$MAIN_VERSION" =~ $VERSION_RE ]]; then
+            echo "::error::Cannot read main's version from its pyproject.toml"
+            exit 1
+          fi
+
+          if [[ "${MAIN_VERSION%.*}" == "${V3_VERSION%.*}" ]]; then
+            echo "follows-main=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::v3 follows main until main leaves ${MAIN_VERSION%.*}.x; no pin update for v3"
+          else
+            echo "follows-main=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Compare versions
         id: check
+        if: steps.owner.outputs.follows-main == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Inputs reach the script as data, as in the pre-release canary.
@@ -504,6 +540,19 @@ jobs:
           BUMP_BRANCH="chore/release-v3-${NEW_TAG}"
 
           echo "Version bump: $CURRENT_VERSION -> $NEW_ORM_VERSION"
+
+          # A computed version that is already tagged was released by another
+          # branch (#579: main and v3 can both sit on 0.39.x). Stop before any
+          # branch or PR exists; an unreadable remote stops the job too.
+          TAG_STATUS=0
+          git ls-remote --exit-code --tags origin "refs/tags/$NEW_TAG" > /dev/null || TAG_STATUS=$?
+          if [[ "$TAG_STATUS" == "0" ]]; then
+            echo "::error::$NEW_TAG already exists — refusing to bump to a released version"
+            exit 1
+          elif [[ "$TAG_STATUS" != "2" ]]; then
+            echo "::error::Cannot list the remote tags (git ls-remote exited $TAG_STATUS) — not bumping"
+            exit 1
+          fi
 
           git checkout -b "$BUMP_BRANCH"
 

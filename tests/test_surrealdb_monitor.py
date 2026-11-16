@@ -30,6 +30,8 @@ from typing import Any
 
 import pytest
 
+from tests._release_series import bump_repo, owner_repo, pyproject, remote_refs
+
 yaml = pytest.importorskip("yaml", reason="pyyaml required for workflow lint tests")
 
 WORKFLOW_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
@@ -1009,8 +1011,18 @@ class TestV3BranchMonitorTargetsV3:
         text = (WORKFLOW_DIR / V3_BRANCH).read_text(encoding="utf-8")
         bases = re.findall(r"--base\s+(\S+)", text)
         assert bases and set(bases) == {"v3"}, bases
+        # The one exception: the owner check reads main's version (#579).
+        owner = next(
+            s["run"]
+            for s in _v3_branch_workflow()["jobs"]["check-release"]["steps"]
+            if s.get("name") == "Defer to main while it owns the patch series"
+        )
+        assert "git fetch -q --depth=1 origin main" in owner
+        assert not re.search(r"\bgit (push|checkout|commit)\b|gh pr", owner), owner
+        rest = text.replace(textwrap.indent(owner, " " * 10), "")
+        assert rest != text, "the owner check was not found in the workflow text"
         for other in ("origin main", "origin v2", "checkout main", "checkout v2", "ref: main", "ref: v2"):
-            assert other not in text, f"{V3_BRANCH} mentions {other!r}"
+            assert other not in rest, f"{V3_BRANCH} mentions {other!r}"
 
     def test_the_pin_pr_branch_is_refused_by_the_main_branch_guard(self) -> None:
         text = (WORKFLOW_DIR / V3_BRANCH).read_text(encoding="utf-8")
@@ -1175,3 +1187,207 @@ class TestVersionOutputIsValidated:
         run = _validate(tmp_path, workflow, job, f"{good}\n::notice::marker-91c2")
         assert run.returncode != 0, run.log
         assert "marker-91c2" not in run.log, run.log
+
+
+# ---------------------------------------------------------------------------
+# #579: one patch series has one owner
+# ---------------------------------------------------------------------------
+#
+# While main's pyproject.toml has the same X.Y as v3's (both on 0.39.x until
+# main's 4.x pin), main owns that series and main's 3.x monitor covers the 3.3
+# line. The v3 monitor then selects nothing: has-update is false and no later
+# job runs, so no v3 pin PR, no v3 bump and no v3 failure issue. Separately,
+# every version bump step refuses a computed version that is already tagged, so
+# a v3 left behind main's last 0.39.x fails loudly instead of re-releasing.
+
+_OWNER = "Defer to main while it owns the patch series"
+
+
+def _v3_owner(tmp_path: Path, *, main: str | None, v3: str) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+    repo = owner_repo(tmp_path, main=main, target_version=v3, target="v3")
+    step = next(s for s in _v3_branch_workflow()["jobs"]["check-release"]["steps"] if s.get("name") == _OWNER)
+    output = tmp_path / "github_output"
+    output.write_text("", encoding="utf-8")
+    script = tmp_path / "owner.sh"
+    script.write_text(step["run"], encoding="utf-8")
+    env = {**os.environ, "GITHUB_OUTPUT": str(output)}
+    result = subprocess.run(["bash", "-e", str(script)], cwd=repo, env=env, capture_output=True, text=True)
+    return result, _parse_outputs(output.read_text(encoding="utf-8"))
+
+
+class TestV3BranchMonitorFollowsMain:
+    @pytest.mark.parametrize("on_main", ["0.39.9", "0.39.10", "0.39.0"])
+    def test_nothing_is_selected_while_main_shares_the_series(self, tmp_path: Path, on_main: str) -> None:
+        result, outputs = _v3_owner(tmp_path, main=pyproject(on_main), v3=pyproject("0.39.9"))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert outputs == {"follows-main": "true"}
+        assert "::notice::v3 follows main until main leaves 0.39.x" in result.stdout
+
+    @pytest.mark.parametrize("on_main", ["0.40.0", "0.41.2"])
+    def test_the_selection_runs_once_main_leaves_the_series(self, tmp_path: Path, on_main: str) -> None:
+        result, outputs = _v3_owner(tmp_path, main=pyproject(on_main), v3=pyproject("0.39.9"))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert outputs == {"follows-main": "false"}
+
+    @pytest.mark.parametrize(
+        ("main", "v3"),
+        [
+            (None, pyproject("0.39.9")),
+            ("", pyproject("0.39.9")),
+            (pyproject("0.40.0rc1"), pyproject("0.39.9")),
+            (pyproject("0.40"), pyproject("0.39.9")),
+            ("[project]\nname = 'x'\n", pyproject("0.39.9")),
+            (pyproject("0.40.0"), ""),
+            (pyproject("0.40.0"), pyproject("v0.39.9")),
+            # An X bump is the user's decision: the rule is re-read then.
+            (pyproject("1.0.0"), pyproject("0.39.9")),
+        ],
+        ids=[
+            "no-main",
+            "no-main-pyproject",
+            "main-pre-release",
+            "main-two-parts",
+            "main-no-version",
+            "no-v3-pyproject",
+            "v3-prefixed",
+            "main-1.x",
+        ],
+    )
+    def test_an_unreadable_version_fails_the_run(self, tmp_path: Path, main: str | None, v3: str) -> None:
+        result, outputs = _v3_owner(tmp_path, main=main, v3=v3)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "::error::" in result.stdout
+        assert outputs == {}
+
+    def test_the_owner_check_runs_first_and_gates_the_selection(self) -> None:
+        job = _v3_branch_workflow()["jobs"]["check-release"]
+        names = [s.get("name") for s in job["steps"]]
+        assert names.index(_OWNER) < names.index("Compare versions")
+        owner = job["steps"][names.index(_OWNER)]
+        assert owner["id"] == "owner"
+        assert "if" not in owner, "the owner check must never be skipped"
+        compare = job["steps"][names.index("Compare versions")]
+        assert compare["if"] == "steps.owner.outputs.follows-main == 'false'"
+
+    def test_a_skipped_selection_reads_as_no_update(self) -> None:
+        outputs = _v3_branch_workflow()["jobs"]["check-release"]["outputs"]
+        assert outputs["has-update"] == "${{ steps.check.outputs.has-update || 'false' }}"
+        # Every later job needs has-update == 'true', so none of them runs.
+        for job_id, job in _v3_branch_workflow()["jobs"].items():
+            if job_id != "check-release":
+                assert "needs.check-release.outputs.has-update == 'true'" in " ".join(str(job["if"]).split()), job_id
+
+    @pytest.mark.parametrize("workflow", [V3, V2])
+    def test_the_other_monitors_do_not_look_at_main_version(self, workflow: str) -> None:
+        names = [s.get("name") for s in _monitor_workflow(workflow)["jobs"]["check-release"]["steps"]]
+        assert _OWNER not in names
+
+
+FAKE_BUMP_GH = """#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["FAKE_GH_LOG"], "a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\\n")
+if sys.argv[1:3] == ["pr", "create"]:
+    print("https://github.com/owner/repo/pull/1")
+"""
+
+# (workflow, job, branch the bump starts from, extra env, bump branch for 0.39.10)
+_BUMP_SITES = [
+    pytest.param(V3, "auto-update", "main", {"NEW_VERSION": "3.3.6"}, "chore/release-v0.39.10", id="main-3.x-monitor"),
+    pytest.param(V3_BRANCH, "auto-update", "v3", {"NEW_VERSION": "3.3.6"}, "chore/release-v3-v0.39.10", id="v3-monitor"),
+    pytest.param(
+        "dependabot-automerge.yml",
+        "automerge",
+        "main",
+        {"BASE_BRANCH": "main", "DEP_NAMES": "tornado", "UPDATE_TYPE": "security", "PR_NUMBER": "7"},
+        "chore/version-bump-0.39.10",
+        id="dependabot-main",
+    ),
+    pytest.param(
+        "dependabot-automerge.yml",
+        "automerge",
+        "v3",
+        {"BASE_BRANCH": "v3", "DEP_NAMES": "tornado", "UPDATE_TYPE": "security", "PR_NUMBER": "7"},
+        "chore/version-bump-0.39.10",
+        id="dependabot-v3",
+    ),
+]
+
+
+def _run_bump(
+    tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], *, tags: list[str], reachable: bool = True
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, list[list[str]]]:
+    repo, origin = bump_repo(tmp_path, branch=branch, version="0.39.9", tags=tags)
+    if not reachable:
+        subprocess.run(["git", "-C", str(repo), "remote", "set-url", "origin", str(tmp_path / "gone.git")], check=True)
+    data = _monitor_workflow(workflow)
+    step = next(s for s in data["jobs"][job]["steps"] if s.get("name") == "Create version bump PR")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh_log = tmp_path / "gh.log"
+    gh_log.write_text("", encoding="utf-8")
+    for name, body in {
+        "gh": FAKE_BUMP_GH,
+        "uv": "#!/usr/bin/env bash\nexit 0\n",
+    }.items():
+        exe = bin_dir / name
+        exe.write_text(body, encoding="utf-8")
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    runner_temp = tmp_path / "runner"
+    runner_temp.mkdir()
+    helper = runner_temp / "merge-when-green.sh"
+    helper.write_text(f'#!/usr/bin/env bash\necho merge "$@" >> {gh_log}.merge\n', encoding="utf-8")
+    helper.chmod(helper.stat().st_mode | stat.S_IEXEC)
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GH_TOKEN": "stub-token",
+        "RUNNER_TEMP": str(runner_temp),
+        "FAKE_GH_LOG": str(gh_log),
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+        **extra,
+    }
+    script = tmp_path / "bump.sh"
+    script.write_text(step["run"], encoding="utf-8")
+    result = subprocess.run(["bash", "-e", str(script)], cwd=repo, env=env, capture_output=True, text=True)
+    calls = [json.loads(line) for line in gh_log.read_text(encoding="utf-8").splitlines() if line]
+    return result, repo, origin, calls
+
+
+@pytest.mark.parametrize(("workflow", "job", "branch", "extra", "bump_branch"), _BUMP_SITES)
+class TestBumpRefusesAReleasedVersion:
+    def test_a_new_version_is_bumped(
+        self, tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], bump_branch: str
+    ) -> None:
+        result, _, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, tags=["v0.39.8", "v0.39.9"])
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"refs/heads/{bump_branch}" in remote_refs(origin)
+        (create,) = [c for c in calls if c[:2] == ["pr", "create"]]
+        assert create[create.index("--base") + 1] == branch
+        assert create[create.index("--title") + 1] == "chore(release): bump version to 0.39.10"
+
+    def test_an_existing_tag_stops_before_any_branch_or_pr(
+        self, tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], bump_branch: str
+    ) -> None:
+        # main already released 0.39.10 while this branch still reads 0.39.9.
+        result, repo, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, tags=["v0.39.9", "v0.39.10"])
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "::error::v0.39.10 already exists" in result.stdout
+        assert remote_refs(origin) == sorted([f"refs/heads/{branch}", "refs/tags/v0.39.10", "refs/tags/v0.39.9"])
+        assert calls == []
+        assert not (tmp_path / "gh.log.merge").exists()
+        head = subprocess.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True)
+        assert head.stdout.strip() == branch
+        assert 'version = "0.39.9"' in (repo / "pyproject.toml").read_text()
+
+    def test_an_unreadable_remote_stops_the_bump(
+        self, tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], bump_branch: str
+    ) -> None:
+        result, _, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, tags=["v0.39.9"], reachable=False)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "::error::Cannot list the remote tags" in result.stdout
+        assert calls == []
+        assert f"refs/heads/{bump_branch}" not in remote_refs(origin)

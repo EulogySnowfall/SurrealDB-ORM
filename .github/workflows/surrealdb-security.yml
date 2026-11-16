@@ -455,6 +455,19 @@ jobs:
 
           echo "Version bump: $CURRENT_VERSION → $NEW_ORM_VERSION"
 
+          # A computed version that is already tagged was released by another
+          # branch (#579: main and v3 can both sit on 0.39.x). Stop before any
+          # branch or PR exists; an unreadable remote stops the job too.
+          TAG_STATUS=0
+          git ls-remote --exit-code --tags origin "refs/tags/$NEW_TAG" > /dev/null || TAG_STATUS=$?
+          if [[ "$TAG_STATUS" == "0" ]]; then
+            echo "::error::$NEW_TAG already exists — refusing to bump to a released version"
+            exit 1
+          elif [[ "$TAG_STATUS" != "2" ]]; then
+            echo "::error::Cannot list the remote tags (git ls-remote exited $TAG_STATUS) — not bumping"
+            exit 1
+          fi
+
           git checkout -b "$BUMP_BRANCH"
 
           # Update version files
