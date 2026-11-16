@@ -488,12 +488,17 @@ RELEASES = "repos/surrealdb/surrealdb/releases"
 _EXPR = re.compile(r"\$\{\{\s*(.*?)\s*\}\}")
 
 
-def _expand(text: str, inputs: dict[str, str]) -> str:
+_CHECK_OUTPUTS = "needs.check-release.outputs."
+
+
+def _expand(text: str, inputs: dict[str, str], needs: dict[str, str] | None = None) -> str:
     """Expand the `${{ }}` expressions GitHub substitutes before bash runs.
 
     A dispatch input that was not given (or a scheduled run, which has none)
-    expands to an empty string. Anything other than an input or a secret is
-    refused, so the tests never run a script that differs from the real one.
+    expands to an empty string, and so does a `check-release` output missing
+    from `needs`. Anything other than an input, a secret or a `check-release`
+    output is refused, so the tests never run a script that differs from the
+    real one.
     """
 
     def sub(match: re.Match[str]) -> str:
@@ -502,6 +507,8 @@ def _expand(text: str, inputs: dict[str, str]) -> str:
             return inputs.get(expr.removeprefix("inputs."), "")
         if expr.startswith("secrets."):
             return "stub-token"
+        if expr.startswith(_CHECK_OUTPUTS):
+            return (needs or {}).get(expr.removeprefix(_CHECK_OUTPUTS), "")
         raise AssertionError(f"unexpected expression in a monitored step: ${{{{ {expr} }}}}")
 
     return _EXPR.sub(sub, text)
@@ -549,6 +556,7 @@ def _run_step(
     inputs: dict[str, str] | None = None,
     page_size: int = 30,
     fail: bool = False,
+    needs: dict[str, str] | None = None,
 ) -> StepRun:
     """Run one workflow step's `run:` block against the fake `gh`."""
     data = yaml.safe_load((WORKFLOW_DIR / workflow).read_text(encoding="utf-8"))
@@ -577,9 +585,9 @@ def _run_step(
         "GH_STUB_FAIL": "1" if fail else "0",
         "GH_STUB_LOG": str(gh_log),
     }
-    env.update({key: _expand(str(value), inputs) for key, value in (step.get("env") or {}).items()})
+    env.update({key: _expand(str(value), inputs, needs) for key, value in (step.get("env") or {}).items()})
     script = tmp_path / "step.sh"
-    script.write_text(_expand(step["run"], inputs), encoding="utf-8")
+    script.write_text(_expand(step["run"], inputs, needs), encoding="utf-8")
     # GitHub runs a `run:` block with no `shell:` as `bash -e {0}`.
     result = subprocess.run(["bash", "-e", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True)
     return StepRun(
@@ -734,8 +742,6 @@ class TestSecurityDetectionFollowsTheChosenRelease:
         assert run.returncode == 0, run.log
         assert run.latest == tag.removeprefix("v"), run.log
         assert run.outputs["is-security-patch"] == "true", f"{workflow}: security release not detected\n{run.log}"
-        if not title:
-            assert notes in run.outputs["release-notes"], run.log
 
     @pytest.mark.parametrize(("workflow", "version", "pin"), [(V3, "3.3.5", "3.3.4"), (V2, "2.7.1", "2.7.0")])
     def test_a_dispatched_version_without_a_release_entry(self, tmp_path: Path, workflow: str, version: str, pin: str) -> None:
@@ -745,8 +751,6 @@ class TestSecurityDetectionFollowsTheChosenRelease:
         assert run.latest == version, run.log
         assert run.outputs["has-update"] == "true", run.log
         assert run.outputs["is-security-patch"] == "false", run.log
-        # gh prints the 404 body on stdout: it must not be taken for the notes.
-        assert run.outputs["release-notes"] == "", run.log
 
 
 def test_v3_dispatched_version_of_another_major_is_refused(tmp_path: Path) -> None:
@@ -972,7 +976,7 @@ class TestV3BranchMonitorDispatch:
         run = _v3_branch(tmp_path, releases=REAL_API_ORDER, pin="3.3.5", inputs={"surrealdb_version": "3.3.6"})
         assert run.returncode == 0, run.log
         assert run.outputs["has-update"] == "false", run.log
-        assert run.outputs["release-notes"] == "", run.log
+        assert run.outputs["is-security-patch"] == "false", run.log
 
     @pytest.mark.parametrize("version", ["3.4.0", "4.0.0", "2.7.0", "3.3", "3.3.6 ", "3.3.x", "3.3.6\n3.3.7"])
     def test_a_dispatched_version_outside_the_3_3_line_is_refused(self, tmp_path: Path, version: str) -> None:
@@ -1043,3 +1047,131 @@ class TestV3BranchMonitorTargetsV3:
             for name in MONITORS
         }
         assert len(set(crons.values())) == len(crons), crons
+
+
+# ---------------------------------------------------------------------------
+#
+# What `check-release` hands on. Its outputs are single-line `key=value`
+# values; nothing read from a release entry is copied into them (the notes and
+# title only decide `is-security-patch`). Every job that acts on the selected
+# version checks its shape again first, and reads the outputs from `env:`,
+# never from a `${{ }}` expanded into its script.
+
+_VALIDATE = "Validate the version output"
+_CHECK_RELEASE_OUTPUTS = {"latest-version", "current-version", "has-update", "is-security-patch", "docker-tag"}
+
+# (workflow, a version its consumers accept, versions they refuse)
+_VERSION_SHAPES = [
+    pytest.param(V3, "3.4.0", ["4.0.0", "2.7.1", "3.3.6-rc.1", "3.3", "v3.3.6", "3.x.0"], id="main-3.x"),
+    pytest.param(V2, "2.8.0", ["3.3.6", "4.0.0", "2.7.1-beta.1", "2.7", "v2.7.1"], id="v2-2.x"),
+    pytest.param(V3_BRANCH, "3.3.6", ["3.4.0", "4.0.0", "3.2.7", "3.3.6-rc.1", "3.3", "v3.3.6"], id="v3-3.3.x"),
+]
+_CONSUMERS = ("test-new-version", "auto-update", "create-failure-issue")
+
+
+def _validate(tmp_path: Path, workflow: str, job: str, latest: str, docker_tag: str | None = None) -> StepRun:
+    return _run_step(
+        tmp_path,
+        workflow,
+        job,
+        _VALIDATE,
+        releases=[],
+        pin="0.0.0",
+        needs={"latest-version": latest, "docker-tag": f"v{latest}" if docker_tag is None else docker_tag},
+    )
+
+
+def _monitor_workflow(workflow: str) -> dict[str, Any]:
+    data: dict[str, Any] = yaml.safe_load((WORKFLOW_DIR / workflow).read_text(encoding="utf-8"))
+    return data
+
+
+@pytest.mark.parametrize("workflow", MONITORS)
+class TestCheckReleaseOutputs:
+    def test_only_the_decision_values_are_outputs(self, workflow: str) -> None:
+        outputs = _monitor_workflow(workflow)["jobs"]["check-release"]["outputs"]
+        assert set(outputs) == _CHECK_RELEASE_OUTPUTS, (
+            f"{workflow}: check-release declares {sorted(set(outputs) - _CHECK_RELEASE_OUTPUTS)} that no job reads"
+        )
+
+    def test_release_entry_text_is_not_copied_into_the_outputs(self, tmp_path: Path, workflow: str) -> None:
+        pin, tag = {V3: ("3.3.0", "v3.3.4"), V2: ("2.6.5", "v2.7.0"), V3_BRANCH: ("3.3.4", "v3.3.5")}[workflow]
+        notes = "Fixes CVE-2026-40002.\nline-two=marker-7f3a\nEOF\nlast line marker-7f3a"
+        releases = [_rel(tag, body=notes), *REAL_API_ORDER]
+        run = _monitor(tmp_path, workflow, releases=releases, pin=pin)
+        assert run.returncode == 0, run.log
+        assert run.latest == tag.removeprefix("v"), run.log
+        assert run.outputs["is-security-patch"] == "true", run.log
+        assert set(run.outputs) == _CHECK_RELEASE_OUTPUTS, run.outputs
+        written = (tmp_path / "github_output").read_text(encoding="utf-8")
+        assert "marker-7f3a" not in written, written
+        assert "<<" not in written, written
+
+    def test_job_outputs_reach_the_scripts_through_env_only(self, workflow: str) -> None:
+        for job_name, job in _monitor_workflow(workflow)["jobs"].items():
+            for step in job.get("steps", []):
+                script = step.get("run") or ""
+                assert "${{" not in script, (
+                    f"{workflow}: job {job_name!r}, step {step.get('name')!r} expands an expression into its script"
+                )
+
+    def test_every_job_acting_on_the_version_checks_it_first(self, workflow: str) -> None:
+        jobs = _monitor_workflow(workflow)["jobs"]
+        consumers = {
+            job_name
+            for job_name, job in jobs.items()
+            if job_name != "check-release"
+            and re.search(r"needs\.check-release\.outputs\.(latest-version|docker-tag)", yaml.safe_dump(job))
+        }
+        assert consumers == set(_CONSUMERS), consumers
+        for job_name in consumers:
+            first = jobs[job_name]["steps"][0]
+            assert first.get("name") == _VALIDATE, f"{workflow}: {job_name!r} does not start with {_VALIDATE!r}"
+            assert "if" not in first, f"{workflow}: {job_name!r}: the check must never be skipped"
+            assert set(first["env"]) == {"LATEST_VERSION", "DOCKER_TAG"}, first["env"]
+
+
+@pytest.mark.parametrize(("workflow", "good", "bad"), _VERSION_SHAPES)
+@pytest.mark.parametrize("job", _CONSUMERS)
+class TestVersionOutputIsValidated:
+    def test_a_stable_version_of_the_line_passes(
+        self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str
+    ) -> None:
+        run = _validate(tmp_path, workflow, job, good)
+        assert run.returncode == 0, run.log
+        assert run.outputs == {}, run.outputs
+
+    def test_any_other_version_stops_the_job(self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str) -> None:
+        for index, value in enumerate(bad):
+            run_dir = tmp_path / str(index)
+            run_dir.mkdir()
+            run = _validate(run_dir, workflow, job, value)
+            assert run.returncode != 0, f"{workflow}: {job}: {value!r} was accepted\n{run.log}"
+
+    @pytest.mark.parametrize(
+        "suffix",
+        ["\nhas-update=true", " ", "\n", ";true", "$(true)"],
+    )
+    def test_trailing_text_stops_the_job(
+        self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str, suffix: str
+    ) -> None:
+        run = _validate(tmp_path, workflow, job, good + suffix)
+        assert run.returncode != 0, f"{workflow}: {job}: {good + suffix!r} was accepted\n{run.log}"
+
+    def test_an_empty_version_stops_the_job(self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str) -> None:
+        run = _validate(tmp_path, workflow, job, "", docker_tag="v")
+        assert run.returncode != 0, run.log
+
+    def test_the_image_tag_must_be_the_version(
+        self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str
+    ) -> None:
+        for index, tag in enumerate([good, f"v{good}-rc.1", "latest", f"v{good}\nlatest", ""]):
+            run_dir = tmp_path / str(index)
+            run_dir.mkdir()
+            run = _validate(run_dir, workflow, job, good, docker_tag=tag)
+            assert run.returncode != 0, f"{workflow}: {job}: image tag {tag!r} accepted for {good}\n{run.log}"
+
+    def test_the_refused_value_is_not_printed(self, tmp_path: Path, workflow: str, good: str, bad: list[str], job: str) -> None:
+        run = _validate(tmp_path, workflow, job, f"{good}\n::notice::marker-91c2")
+        assert run.returncode != 0, run.log
+        assert "marker-91c2" not in run.log, run.log
