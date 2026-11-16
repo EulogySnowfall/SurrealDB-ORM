@@ -1,13 +1,15 @@
 # Create a git tag and GitHub Release when a version bump PR is merged.
 # Triggered by push events matching "chore(release): bump version to X.Y.Z".
-# Works for both main and v2 branches.
-# PyPI publishing is handled by publish.yml (main tags only).
+# This is the v3 branch's copy (SurrealDB 3.x, bug and advisory fixes only):
+# GitHub runs a push workflow from the pushed commit's own copy, so a push to
+# v3 reads this file and a push to main reads main's.
+# PyPI publishing is handled by this branch's publish.yml (v0.39.* tags only).
 
 name: Tag & Release
 
 on:
   push:
-    branches: [main, v2]
+    branches: [v3]
 
 permissions:
   contents: write
@@ -103,3 +105,7 @@ jobs:
             *This release was automatically created after a version bump PR was merged.*
           prerelease: false
           generate_release_notes: true
+          # v3 is a maintenance line: never claim the repository's "Latest"
+          # release, which belongs to main. softprops defaults to
+          # make_latest=true, so a v3 release would otherwise outrank main's.
+          make_latest: false

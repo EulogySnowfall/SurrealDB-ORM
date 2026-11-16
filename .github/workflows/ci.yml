@@ -4,9 +4,11 @@ permissions:
   contents: read
 
 on:
+  # v3 branch copy: a push runs the pushed commit's own workflow file, so main
+  # and v3 each list only themselves here.
   push:
     branches:
-      - main
+      - v3
   pull_request:
     branches:
       - '*'

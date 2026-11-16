@@ -1,43 +1,55 @@
 name: Publish to PyPI
 
+# This is the v3 branch's copy (SurrealDB 3.x, bug and advisory fixes only).
+# A tag push runs the tagged commit's own workflow file, so this file only ever
+# sees tags pushed on v3 commits; main's publish.yml handles main's tags.
+
 permissions:
   contents: read
 
 on:
   push:
     tags:
-      - 'v*'  # Trigger on version tags (v0.4.0, v1.0.0, etc.)
+      - 'v0.39.*'  # v3 maintenance tags (v0.39.10, v0.39.11, ...)
 
 jobs:
-  # Verify the tag is on main before publishing to PyPI.
-  # V2 tags create GitHub Releases but must NOT publish to PyPI.
-  check-main:
-    name: Verify tag is on main
+  # Publish only a v0.39.Z tag whose commit is on v3. Any other tag, by name
+  # or by commit, is refused: the job fails and nothing is built or published.
+  check-v3:
+    name: Verify tag is on v3
     runs-on: ubuntu-latest
     outputs:
-      on-main: ${{ steps.check.outputs.on-main }}
+      on-v3: ${{ steps.check.outputs.on-v3 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - name: Check if tagged commit is on main
+      - name: Check the tag name and that the tagged commit is on v3
         id: check
+        env:
+          TAG: ${{ github.ref_name }}
+          TAGGED_SHA: ${{ github.sha }}
         run: |
-          git fetch origin main
-          if git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
-            echo "on-main=true" >> $GITHUB_OUTPUT
-            echo "Tag is on main — will publish to PyPI"
+          if [[ ! "$TAG" =~ ^v0\.39\.[0-9]+$ ]]; then
+            echo "::error::v3 publishes v0.39.Z tags only; refusing this tag"
+            exit 1
+          fi
+          git fetch origin v3
+          if git merge-base --is-ancestor "$TAGGED_SHA" origin/v3; then
+            echo "on-v3=true" >> "$GITHUB_OUTPUT"
+            echo "Tag is on v3 — will publish to PyPI"
           else
-            echo "on-main=false" >> $GITHUB_OUTPUT
-            echo "Tag is NOT on main — skipping PyPI publish"
+            echo "on-v3=false" >> "$GITHUB_OUTPUT"
+            echo "::error::the tagged commit is not on v3; refusing to publish"
+            exit 1
           fi
 
   build:
     name: Build Package
-    needs: check-main
-    if: needs.check-main.outputs.on-main == 'true'
+    needs: check-v3
+    if: needs.check-v3.outputs.on-v3 == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -88,8 +100,8 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs: [check-main, build]
-    if: needs.check-main.outputs.on-main == 'true'
+    needs: [check-v3, build]
+    if: needs.check-v3.outputs.on-v3 == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -110,3 +122,6 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          # v3 is a maintenance line: never claim the repository's "Latest"
+          # release, which belongs to main (softprops defaults to true).
+          make_latest: false
