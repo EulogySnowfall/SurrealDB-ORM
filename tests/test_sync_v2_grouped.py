@@ -1,4 +1,4 @@
-"""Tests for the automerge workflow's "Sync to V2" job.
+"""Tests for the automerge workflow's "Sync to v2 / v3" job.
 
 Regression: a *grouped* Dependabot PR (#217 bumped ``tornado`` and ``urllib3``
 together) reports its dependency names as one comma-separated string,
@@ -16,6 +16,11 @@ and the presence check directly, the update step against a temporary git
 repository (with a bare ``origin`` carrying ``main`` and ``v2``) and fake
 ``uv`` / ``gh`` binaries on ``PATH``, and the automerge job's metadata step on
 the PR body the update step produces.
+
+#579 extends the job to the permanent ``v3`` branch: one matrix job,
+``sync-lts``, runs the same steps once per target branch (``TARGET``), so a
+Dependabot ``uv`` security update merged on ``main`` reaches ``v3`` exactly as
+it reaches ``v2``.
 """
 
 from __future__ import annotations
@@ -37,6 +42,9 @@ WORKFLOW = ROOT / ".github" / "workflows" / "dependabot-automerge.yml"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 
 GITHUB_TITLE_LIMIT = 256
+
+JOB = "sync-lts"
+TARGETS = ["v2", "v3"]
 
 
 def _lock(*packages: tuple[str, str]) -> str:
@@ -73,27 +81,30 @@ def _bash(script: str, cwd: Path, env: dict[str, str]) -> subprocess.CompletedPr
 # ---------------------------------------------------------------------------
 
 
-def _run_gate(tmp_path: Path, ecosystem: str) -> subprocess.CompletedProcess[str]:
+def _run_gate(tmp_path: Path, ecosystem: str, target: str = "v2") -> subprocess.CompletedProcess[str]:
     out = tmp_path / "gate"
     out.write_text("")
-    env = {**os.environ, "ECOSYSTEM": ecosystem, "GITHUB_OUTPUT": str(out)}
-    return _bash(_step("sync-v2", "Decide whether")["run"], tmp_path, env)
+    env = {**os.environ, "ECOSYSTEM": ecosystem, "TARGET": target, "GITHUB_OUTPUT": str(out)}
+    return _bash(_step(JOB, "Decide whether")["run"], tmp_path, env)
 
 
 class TestGate:
-    def test_uv_updates_are_synced(self, tmp_path: Path) -> None:
-        result = _run_gate(tmp_path, "uv")
+    @pytest.mark.parametrize("target", TARGETS)
+    def test_uv_updates_are_synced(self, tmp_path: Path, target: str) -> None:
+        result = _run_gate(tmp_path, "uv", target)
         assert result.returncode == 0, result.stdout + result.stderr
         assert _outputs(tmp_path / "gate")["sync"] == "true"
 
+    @pytest.mark.parametrize("target", TARGETS)
     @pytest.mark.parametrize("ecosystem", ["github_actions", "pip", "docker"])
-    def test_other_ecosystems_skip_with_a_stated_reason(self, tmp_path: Path, ecosystem: str) -> None:
+    def test_other_ecosystems_skip_with_a_stated_reason(self, tmp_path: Path, ecosystem: str, target: str) -> None:
         # Regression (review of #220): the name check rejected `actions/checkout`
         # and turned every GitHub Actions bump red. Those have nothing to sync.
-        result = _run_gate(tmp_path, ecosystem)
+        result = _run_gate(tmp_path, ecosystem, target)
         assert result.returncode == 0, result.stdout + result.stderr
         assert _outputs(tmp_path / "gate")["sync"] == "false"
         assert "::notice::" in result.stdout
+        assert target in result.stdout
 
     def test_missing_ecosystem_fails_loudly(self, tmp_path: Path) -> None:
         result = _run_gate(tmp_path, "")
@@ -101,7 +112,7 @@ class TestGate:
         assert "::error::" in result.stdout
 
     def test_every_later_step_is_behind_the_gate(self) -> None:
-        steps = _workflow()["jobs"]["sync-v2"]["steps"]
+        steps = _workflow()["jobs"][JOB]["steps"]
         names = [s.get("name", "") for s in steps]
         gate = next(i for i, n in enumerate(names) if n.startswith("Decide whether"))
         for step in steps[gate + 1 :]:
@@ -126,18 +137,64 @@ class TestUvMeansSecurity:
         config: dict[str, Any] = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
         assert any(u.get("target-branch") == "v2" for u in config["updates"])
 
+    def test_no_uv_version_update_config_on_any_branch(self) -> None:
+        # #579: the same reading holds for v3. A `uv` version-update entry with
+        # `target-branch: v3` (or v2) would open routine `uv` PRs on that branch
+        # and race the security sync on the same uv.lock lines.
+        config: dict[str, Any] = yaml.safe_load(DEPENDABOT.read_text(encoding="utf-8"))
+        assert all(u["package-ecosystem"] != "uv" for u in config["updates"])
+
+    def test_only_prs_merged_on_main_are_synced(self) -> None:
+        # The sync source is always main: a security-sync PR merged on v2 or v3
+        # must not fan out again to the other branch.
+        cond = " ".join(str(_workflow()["jobs"][JOB]["if"]).split())
+        assert "github.event.pull_request.base.ref == 'main'" in cond
+        assert "needs.automerge.outputs.merged == 'true'" in cond
+
+
+class TestMatrix:
+    """#579: one job, one run per target branch."""
+
+    def test_the_job_runs_once_per_target(self) -> None:
+        job = _workflow()["jobs"][JOB]
+        assert job["strategy"]["matrix"]["target"] == TARGETS
+        # A failed sync to one branch must not cancel the other.
+        assert job["strategy"]["fail-fast"] is False
+
+    def test_the_old_v2_only_job_is_gone(self) -> None:
+        assert "sync-v2" not in _workflow()["jobs"]
+
+    def test_the_target_branch_is_checked_out(self) -> None:
+        step = _step(JOB, "Checkout target branch")
+        assert step["with"]["ref"] == "${{ matrix.target }}"
+
+    def test_every_step_script_reads_the_target_from_env(self) -> None:
+        # The branch name reaches the scripts as data, never expanded into them.
+        for step in _workflow()["jobs"][JOB]["steps"]:
+            run = str(step.get("run", ""))
+            assert "matrix." not in run, step.get("name")
+            if "TARGET" in run:
+                assert step["env"]["TARGET"] == "${{ matrix.target }}", step.get("name")
+
+    def test_no_step_command_names_v2_alone(self) -> None:
+        # Comments may explain v2's history; commands and messages use $TARGET.
+        for step in _workflow()["jobs"][JOB]["steps"]:
+            code = [line for line in str(step.get("run", "")).splitlines() if not line.lstrip().startswith("#")]
+            offenders = [line for line in code if re.search(r"\bv2\b", line)]
+            assert not offenders, (step.get("name"), offenders)
+
 
 # ---------------------------------------------------------------------------
 # Which packages exist on v2
 # ---------------------------------------------------------------------------
 
 
-def _run_check(tmp_path: Path, dep_names: str) -> subprocess.CompletedProcess[str]:
+def _run_check(tmp_path: Path, dep_names: str, target: str = "v2") -> subprocess.CompletedProcess[str]:
     (tmp_path / "uv.lock").write_text(V2_LOCK)
     out = tmp_path / "out"
     out.write_text("")
-    env = {**os.environ, "DEP_NAME": dep_names, "GITHUB_OUTPUT": str(out)}
-    return _bash(_step("sync-v2", "Check which")["run"], tmp_path, env)
+    env = {**os.environ, "DEP_NAME": dep_names, "TARGET": target, "GITHUB_OUTPUT": str(out)}
+    return _bash(_step(JOB, "Check which")["run"], tmp_path, env)
 
 
 class TestCheckStep:
@@ -153,12 +210,14 @@ class TestCheckStep:
         assert result.returncode == 0, result.stderr
         assert _outputs(tmp_path / "out")["packages"].split() == ["tornado"]
 
-    def test_only_the_names_present_in_v2_are_synced(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("target", TARGETS)
+    def test_only_the_names_present_in_the_target_are_synced(self, tmp_path: Path, target: str) -> None:
         # A main-only dependency is a legitimate skip, not an error.
-        result = _run_check(tmp_path, "tornado, some-main-only-pkg")
+        result = _run_check(tmp_path, "tornado, some-main-only-pkg", target)
         assert result.returncode == 0, result.stderr
         assert _outputs(tmp_path / "out")["packages"].split() == ["tornado"]
         assert "some-main-only-pkg" in result.stdout
+        assert f"not in {target}'s uv.lock" in result.stdout
 
     def test_no_name_in_v2_is_a_quiet_skip(self, tmp_path: Path) -> None:
         result = _run_check(tmp_path, "some-main-only-pkg")
@@ -223,11 +282,12 @@ def _write_exe(path: Path, body: str) -> None:
 
 
 class Sandbox:
-    """A v2 checkout whose `origin` also has `main`, plus fake uv/gh."""
+    """A checkout of the target branch whose `origin` also has `main`, plus fake uv/gh."""
 
-    def __init__(self, tmp_path: Path, v2_lock: str = V2_LOCK, main_lock: str | None = None) -> None:
+    def __init__(self, tmp_path: Path, v2_lock: str = V2_LOCK, main_lock: str | None = None, target: str = "v2") -> None:
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.tmp = tmp_path
+        self.target = target
         self.repo = tmp_path / "repo"
         self.origin = tmp_path / "origin.git"
         self.gh_log = tmp_path / "gh.log"
@@ -238,10 +298,10 @@ class Sandbox:
         subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
         self._commit(seed, main_lock if main_lock is not None else v2_lock, "main")
         subprocess.run(["git", "-C", str(seed), "push", "-q", str(self.origin), "main"], check=True)
-        subprocess.run(["git", "-C", str(seed), "checkout", "-q", "--orphan", "v2"], check=True)
-        self._commit(seed, v2_lock, "v2")
-        subprocess.run(["git", "-C", str(seed), "push", "-q", str(self.origin), "v2"], check=True)
-        subprocess.run(["git", "clone", "-q", "-b", "v2", str(self.origin), str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(seed), "checkout", "-q", "--orphan", target], check=True)
+        self._commit(seed, v2_lock, target)
+        subprocess.run(["git", "-C", str(seed), "push", "-q", str(self.origin), target], check=True)
+        subprocess.run(["git", "clone", "-q", "-b", target, str(self.origin), str(self.repo)], check=True)
 
         self.bin = tmp_path / "bin"
         self.bin.mkdir()
@@ -260,6 +320,7 @@ class Sandbox:
             **os.environ,
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "PACKAGES": packages,
+            "TARGET": self.target,
             "GH_TOKEN": "x",
             "GITHUB_REPOSITORY": "owner/repo",
             "UPDATE_TYPE": "version-update:semver-patch",
@@ -269,7 +330,7 @@ class Sandbox:
             "FAKE_GH_LOG": str(self.gh_log),
             "GITHUB_STEP_SUMMARY": str(self.tmp / "summary.md"),
         }
-        return _bash(_step("sync-v2", "Update dependencies")["run"], self.repo, env)
+        return _bash(_step(JOB, "Update dependencies")["run"], self.repo, env)
 
     def gh_calls(self) -> list[list[str]]:
         return [json.loads(line) for line in self.gh_log.read_text().splitlines() if line]
@@ -294,7 +355,7 @@ class Sandbox:
         return out.split()
 
     def sync_branch(self) -> str:
-        (branch,) = [b for b in self.remote_branches() if b.startswith("chore/sync-v2-")]
+        (branch,) = [b for b in self.remote_branches() if b.startswith(f"chore/sync-{self.target}-")]
         return branch
 
     def remote_lock(self, branch: str) -> str:
@@ -315,12 +376,28 @@ class TestUpdateStep:
         lock = box.remote_lock(box.sync_branch())
         assert 'version = "6.5.9"' in lock and 'version = "2.8.0"' in lock
 
-    def test_pr_is_opened_against_v2_with_the_sync_label(self, tmp_path: Path) -> None:
-        box = Sandbox(tmp_path)
+    @pytest.mark.parametrize("target", TARGETS)
+    def test_pr_is_opened_against_the_target_with_the_sync_label(self, tmp_path: Path, target: str) -> None:
+        box = Sandbox(tmp_path, target=target)
         result = box.run("tornado urllib3", GROUP)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert box.arg("--base") == "v2"
+        assert box.arg("--base") == target
         assert "security-sync" in box.arg("--label")
+        assert f"applied to {target}'s own lock" in box.arg("--body")
+        assert box.arg("--title") == "chore(deps): bump tornado, urllib3 (security sync from main)"
+
+    def test_the_open_pr_dedupe_looks_at_the_target_branch(self, tmp_path: Path) -> None:
+        box = Sandbox(tmp_path, target="v3")
+        assert box.run("tornado urllib3", GROUP).returncode == 0
+        (query,) = [c[1] for c in box.gh_calls() if c[:1] == ["api"]]
+        assert "&base=v3&" in query and ":chore/sync-v3-" in query, query
+
+    def test_the_same_update_gets_one_branch_per_target(self, tmp_path: Path) -> None:
+        on_v2 = Sandbox(tmp_path / "a", target="v2")
+        on_v3 = Sandbox(tmp_path / "b", target="v3")
+        assert on_v2.run("tornado urllib3", GROUP).returncode == 0
+        assert on_v3.run("tornado urllib3", GROUP).returncode == 0
+        assert on_v2.sync_branch().removeprefix("chore/sync-v2-") == on_v3.sync_branch().removeprefix("chore/sync-v3-")
 
     def test_body_carries_the_versions_and_a_machine_readable_package_list(self, tmp_path: Path) -> None:
         box = Sandbox(tmp_path)
@@ -366,8 +443,8 @@ class TestUpdateStep:
         box = Sandbox(tmp_path)
         assert box.run("tornado urllib3", GROUP).returncode == 0
         box.gh_log.write_text("")
-        subprocess.run(["git", "-C", str(box.repo), "checkout", "-q", "v2"], check=True)
-        subprocess.run(["git", "-C", str(box.repo), "reset", "-q", "--hard", "origin/v2"], check=True)
+        subprocess.run(["git", "-C", str(box.repo), "checkout", "-q", box.target], check=True)
+        subprocess.run(["git", "-C", str(box.repo), "reset", "-q", "--hard", f"origin/{box.target}"], check=True)
         result = box.run("tornado urllib3", GROUP, open_prs=0)
         assert result.returncode == 0, result.stdout + result.stderr
         assert box.pr_create() is not None
@@ -426,8 +503,9 @@ def _parse_sync_pr(body: str, tmp_path: Path) -> dict[str, str]:
 
 
 class TestSyncPrMetadata:
-    def test_package_list_round_trips_through_the_body_marker(self, tmp_path: Path) -> None:
-        box = Sandbox(tmp_path)
+    @pytest.mark.parametrize("target", TARGETS)
+    def test_package_list_round_trips_through_the_body_marker(self, tmp_path: Path, target: str) -> None:
+        box = Sandbox(tmp_path, target=target)
         assert box.run("tornado urllib3", GROUP).returncode == 0
         parsed = _parse_sync_pr(box.arg("--body"), tmp_path)
         assert parsed["dependency-names"] == "tornado, urllib3"
