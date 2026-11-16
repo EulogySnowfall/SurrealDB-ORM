@@ -13,6 +13,7 @@ import pytest
 from surreal_sdk.connection.base import BaseSurrealConnection
 from surreal_sdk.connection.http import HTTPConnection
 from surreal_sdk.connection.websocket import WebSocketConnection
+from tests.conftest import SURREALDB_PASS, SURREALDB_URL, SURREALDB_USER, SURREALDB_WS_URL
 
 NS = "test"
 DB = "i661_cbor_namedtuple"
@@ -29,21 +30,24 @@ async def conn(request: pytest.FixtureRequest) -> AsyncGenerator[BaseSurrealConn
     """A signed-in CBOR connection on each transport."""
     connection: BaseSurrealConnection
     if request.param == "http":
-        connection = HTTPConnection("http://localhost:8000", NS, DB)
+        connection = HTTPConnection(SURREALDB_URL, NS, DB)
     else:
-        connection = WebSocketConnection("ws://localhost:8000", NS, DB, timeout=5, auto_reconnect=False)
+        connection = WebSocketConnection(SURREALDB_WS_URL, NS, DB, timeout=5, auto_reconnect=False)
     try:
         await connection.connect()
-        await connection.signin("root", "root")
+        await connection.signin(SURREALDB_USER, SURREALDB_PASS)
         await connection.query(f"DEFINE NAMESPACE IF NOT EXISTS {NS}; DEFINE DATABASE IF NOT EXISTS {DB};")
         await connection.query(f"REMOVE TABLE IF EXISTS {TABLE};")
         yield connection
-        await connection.query(f"REMOVE TABLE IF EXISTS {TABLE};")
+        try:
+            await connection.query(f"REMOVE TABLE IF EXISTS {TABLE};")
+            await connection.query(f"REMOVE DATABASE IF EXISTS {DB};")
+        except Exception:
+            pass
     finally:
         await connection.close()
 
 
-@pytest.mark.asyncio
 @pytest.mark.integration
 async def test_namedtuple_round_trips(conn: BaseSurrealConnection) -> None:
     point = Point(x=10, y=20)

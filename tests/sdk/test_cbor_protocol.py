@@ -543,9 +543,28 @@ class TestCBORNamedTuple:
         decoded = decode(encoded)
         assert decoded == ["Alice", None]
 
+    def test_encode_namedtuple_record_id(self) -> None:
+        """NamedTuple values inside RecordId are encoded as CBOR arrays."""
+        class Key(NamedTuple):
+            day: date
+            n: int = 0
+
+        rid = RecordId("t", Key(date(2026, 1, 2), 2))
+        assert encode(rid) == encode(RecordId("t", (date(2026, 1, 2), 2)))
+        assert encode(RecordId("t", [Key(date(2026, 1, 2))])) == encode(RecordId("t", [(date(2026, 1, 2), 0)]))
+
     def test_plain_tuple_unchanged(self) -> None:
-        """Plain tuples retain their exact encoding and behavior."""
+        """Plain tuples retain their exact encoding and custom tuple subclasses keep their type."""
         plain = (1, "test", True)
         encoded = encode(plain)
+        assert encoded == bytes.fromhex("83016474657374f5")
         decoded = decode(encoded)
         assert decoded == [1, "test", True]
+
+        class CustomTuple(tuple):
+            pass
+
+        custom = CustomTuple([1, 2])
+        preprocessed = cbor_module._preprocess_for_cbor(custom)
+        assert type(preprocessed) is CustomTuple
+        assert preprocessed == custom
