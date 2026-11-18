@@ -56,6 +56,13 @@ jobs:
             exit 1
           fi
 
+          # The 0.39.x series is released from v3 (#698), whose own
+          # tag-release.yml runs for a push to v3: main tags 0.40.0 and later.
+          if [[ "$VERSION" == 0.39 || "$VERSION" == 0.39.* ]]; then
+            echo "::error::0.39.Z releases come from the v3 branch, not from main; no tag is created"
+            exit 1
+          fi
+
           TAG="v${VERSION}"
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"

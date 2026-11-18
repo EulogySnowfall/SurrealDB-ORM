@@ -5,6 +5,11 @@ means: the branch guard refuses `v3` heads as it refuses `v2` ones, and
 `tag-release.yml` on `main` names `main` only (`v3` has its own copy, which is
 the one GitHub runs for a push to `v3`).
 
+#698: `v3` owns the 0.39.x patch series, so `main` publishes nothing in it.
+`publish.yml` refuses a `v0.39.*` tag and `tag-release.yml` a `0.39.*` release
+subject; their shell steps run here in a git sandbox whose `origin` is a local
+bare repository.
+
 The guard's condition is a GitHub expression. It is evaluated here by a small
 translator for the subset it uses (`==`, `&&`, `||`, `startsWith()`, string
 literals, `github.base_ref` / `github.head_ref`), which refuses anything else,
@@ -13,7 +18,9 @@ so an edit into another shape fails these tests instead of being misread.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -119,3 +126,121 @@ class TestTagReleaseOnMain:
     def test_main_tags_from_main_only(self) -> None:
         """`v3` and `v2` each run their own `tag-release.yml`; main's names main alone."""
         assert _triggers(_load("tag-release.yml"))["push"]["branches"] == ["main"]
+
+
+# ---------------------------------------------------------------------------
+# #698: main publishes nothing in the 0.39.x series
+# ---------------------------------------------------------------------------
+
+_IDENTITY = ["-c", "user.name=t", "-c", "user.email=t@t"]
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *_IDENTITY, *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _sandbox(tmp_path: Path) -> tuple[Path, str, str]:
+    """A clone whose ``origin`` has ``main`` and a side branch off it.
+
+    Returns ``(clone, sha on main, sha only on the side branch)``.
+    """
+    origin = tmp_path / "origin.git"
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
+    (seed / "README").write_text("main\n")
+    _git(seed, "add", "README")
+    _git(seed, "commit", "-q", "-m", "main")
+    on_main = _git(seed, "rev-parse", "HEAD")
+    _git(seed, "checkout", "-q", "-b", "side")
+    (seed / "README").write_text("side\n")
+    _git(seed, "commit", "-q", "-am", "side")
+    off_main = _git(seed, "rev-parse", "HEAD")
+    _git(seed, "push", "-q", str(origin), "main", "side")
+    clone = tmp_path / "repo"
+    subprocess.run(["git", "clone", "-q", "-b", "side", str(origin), str(clone)], check=True, capture_output=True)
+    return clone, on_main, off_main
+
+
+def _check_step() -> dict[str, Any]:
+    step: dict[str, Any] = next(s for s in _load("publish.yml")["jobs"]["check-main"]["steps"] if s.get("id") == "check")
+    return step
+
+
+def _run_publish_check(tmp_path: Path, *, tag: str, sha: str, repo: Path) -> tuple[int, dict[str, str], str]:
+    step = _check_step()
+    script = tmp_path / "check.sh"
+    script.write_text(step["run"], encoding="utf-8")
+    outputs = tmp_path / "outputs"
+    outputs.write_text("")
+    env = {**os.environ, "TAG": tag, "TAGGED_SHA": sha, "GITHUB_OUTPUT": str(outputs)}
+    # GitHub runs a `run:` block with no `shell:` as `bash -e {0}`.
+    result = subprocess.run(["bash", "-e", str(script)], cwd=repo, env=env, capture_output=True, text=True)
+    values = dict(line.split("=", 1) for line in outputs.read_text().splitlines() if "=" in line)
+    return result.returncode, values, result.stdout + result.stderr
+
+
+class TestPublishRefusesThe039Series:
+    def test_tag_and_sha_reach_the_script_through_env(self) -> None:
+        step = _check_step()
+        assert step["env"] == {"TAG": "${{ github.ref_name }}", "TAGGED_SHA": "${{ github.sha }}"}
+        assert "${{" not in step["run"]
+
+    @pytest.mark.parametrize("tag", ["v0.39.0", "v0.39.9", "v0.39.10", "v0.39.123", "v0.39"])
+    def test_a_v0_39_tag_on_main_is_refused(self, tmp_path: Path, tag: str) -> None:
+        repo, on_main, _ = _sandbox(tmp_path)
+        code, outputs, log = _run_publish_check(tmp_path, tag=tag, sha=on_main, repo=repo)
+        assert code != 0, log
+        assert "::error::" in log
+        assert outputs == {}, log
+
+    @pytest.mark.parametrize("tag", ["v0.40.0", "v0.40.12", "v0.41.0"])
+    def test_a_later_tag_on_main_publishes(self, tmp_path: Path, tag: str) -> None:
+        repo, on_main, _ = _sandbox(tmp_path)
+        code, outputs, log = _run_publish_check(tmp_path, tag=tag, sha=on_main, repo=repo)
+        assert code == 0, log
+        assert outputs == {"on-main": "true"}, log
+
+    def test_a_tag_off_main_is_still_not_published(self, tmp_path: Path) -> None:
+        repo, _, off_main = _sandbox(tmp_path)
+        code, outputs, log = _run_publish_check(tmp_path, tag="v0.40.0", sha=off_main, repo=repo)
+        assert code == 0, log
+        assert outputs == {"on-main": "false"}, log
+
+    def test_nothing_is_built_published_or_released_without_the_check(self) -> None:
+        jobs = _load("publish.yml")["jobs"]
+        assert jobs["build"]["needs"] == "check-main"
+        assert jobs["build"]["if"] == "needs.check-main.outputs.on-main == 'true'"
+        assert jobs["publish-pypi"]["needs"] == "build"
+        assert jobs["github-release"]["needs"] == ["check-main", "build"]
+        assert jobs["github-release"]["if"] == "needs.check-main.outputs.on-main == 'true'"
+
+
+def _run_tag_version(tmp_path: Path, message: str) -> tuple[int, dict[str, str], str]:
+    step = next(s for s in _load("tag-release.yml")["jobs"]["tag-release"]["steps"] if s.get("id") == "version")
+    assert "${{" not in step["run"]
+    script = tmp_path / "version.sh"
+    script.write_text(step["run"], encoding="utf-8")
+    outputs = tmp_path / "outputs"
+    outputs.write_text("")
+    env = {**os.environ, "COMMIT_MSG": message, "REF_NAME": "main", "GITHUB_OUTPUT": str(outputs)}
+    result = subprocess.run(["bash", "-e", str(script)], cwd=tmp_path, env=env, capture_output=True, text=True)
+    values = dict(line.split("=", 1) for line in outputs.read_text().splitlines() if "=" in line)
+    return result.returncode, values, result.stdout + result.stderr
+
+
+class TestTagReleaseRefusesThe039Series:
+    @pytest.mark.parametrize("version", ["0.39.0", "0.39.9", "0.39.10", "0.39"])
+    def test_a_0_39_release_subject_is_refused(self, tmp_path: Path, version: str) -> None:
+        code, outputs, log = _run_tag_version(tmp_path, f"chore(release): bump version to {version} (#1)")
+        assert code != 0, log
+        assert "::error::" in log
+        assert outputs == {}, log
+
+    @pytest.mark.parametrize("version", ["0.40.0", "0.40.1", "1.0.0"])
+    def test_a_later_release_subject_is_tagged(self, tmp_path: Path, version: str) -> None:
+        code, outputs, log = _run_tag_version(tmp_path, f"chore(release): bump version to {version} (#1)")
+        assert code == 0, log
+        assert outputs["tag"] == f"v{version}", log

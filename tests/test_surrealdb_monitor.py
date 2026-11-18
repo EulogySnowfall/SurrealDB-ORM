@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest
 
-from tests._release_series import bump_repo, owner_repo, pyproject, remote_refs
+from tests._release_series import JobRun, bump_repo, owner_repo, pyproject, remote_refs, run_job
 
 yaml = pytest.importorskip("yaml", reason="pyyaml required for workflow lint tests")
 
@@ -1011,18 +1011,9 @@ class TestV3BranchMonitorTargetsV3:
         text = (WORKFLOW_DIR / V3_BRANCH).read_text(encoding="utf-8")
         bases = re.findall(r"--base\s+(\S+)", text)
         assert bases and set(bases) == {"v3"}, bases
-        # The one exception: the owner check reads main's version (#579).
-        owner = next(
-            s["run"]
-            for s in _v3_branch_workflow()["jobs"]["check-release"]["steps"]
-            if s.get("name") == "Defer to main while it owns the patch series"
-        )
-        assert "git fetch -q --depth=1 origin main" in owner
-        assert not re.search(r"\bgit (push|checkout|commit)\b|gh pr", owner), owner
-        rest = text.replace(textwrap.indent(owner, " " * 10), "")
-        assert rest != text, "the owner check was not found in the workflow text"
+        # No exception since #698: v3 owns its patch series and never reads main.
         for other in ("origin main", "origin v2", "checkout main", "checkout v2", "ref: main", "ref: v2"):
-            assert other not in rest, f"{V3_BRANCH} mentions {other!r}"
+            assert other not in text, f"{V3_BRANCH} mentions {other!r}"
 
     def test_the_pin_pr_branch_is_refused_by_the_main_branch_guard(self) -> None:
         text = (WORKFLOW_DIR / V3_BRANCH).read_text(encoding="utf-8")
@@ -1189,97 +1180,107 @@ class TestVersionOutputIsValidated:
 
 
 # ---------------------------------------------------------------------------
-# #579: one patch series has one owner
+# #698: v3 owns the 0.39.x patch series
 # ---------------------------------------------------------------------------
 #
-# While main's pyproject.toml has the same X.Y as v3's (both on 0.39.x until
-# main's 4.x pin), main owns that series and main's 3.x monitor covers the 3.3
-# line. The v3 monitor then selects nothing: has-update is false and no later
-# job runs, so no v3 pin PR, no v3 bump and no v3 failure issue. Separately,
-# every version bump step refuses a computed version that is already tagged, so
-# a v3 left behind main's last 0.39.x fails loudly instead of re-releasing.
-
-_OWNER = "Defer to main while it owns the patch series"
-
-
-def _v3_owner(tmp_path: Path, *, main: str | None, v3: str) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
-    repo = owner_repo(tmp_path, main=main, target_version=v3, target="v3")
-    step = next(s for s in _v3_branch_workflow()["jobs"]["check-release"]["steps"] if s.get("name") == _OWNER)
-    output = tmp_path / "github_output"
-    output.write_text("", encoding="utf-8")
-    script = tmp_path / "owner.sh"
-    script.write_text(step["run"], encoding="utf-8")
-    env = {**os.environ, "GITHUB_OUTPUT": str(output)}
-    result = subprocess.run(["bash", "-e", str(script)], cwd=repo, env=env, capture_output=True, text=True)
-    return result, _parse_outputs(output.read_text(encoding="utf-8"))
+# The v3 branch was cut from v0.39.9 and every later 0.39.x release comes from
+# it; main releases 0.40.0 next (SurrealDB 4.x). So the v3 monitor selects,
+# tests, pins and bumps v3 whatever main's version is: nothing in it reads
+# main. On main, the 3.x monitor still opens the pin PR while main is on
+# 0.39.x (option (a) of #698: main's CI follows the newest 3.x until the 4.x
+# pin, #582) but opens no version-bump PR, so it never releases. Every bump
+# step still refuses a computed version that is already tagged.
 
 
-class TestV3BranchMonitorFollowsMain:
-    @pytest.mark.parametrize("on_main", ["0.39.9", "0.39.10", "0.39.0"])
-    def test_nothing_is_selected_while_main_shares_the_series(self, tmp_path: Path, on_main: str) -> None:
-        result, outputs = _v3_owner(tmp_path, main=pyproject(on_main), v3=pyproject("0.39.9"))
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert outputs == {"follows-main": "true"}
-        assert "::notice::v3 follows main until main leaves 0.39.x" in result.stdout
+def _v3_check_release(tmp_path: Path, *, main: str | None, releases: list[dict[str, object]], pin: str) -> JobRun:
+    """Run the v3 monitor's whole `check-release` job in a clone of v3 whose origin also has `main`."""
+    repo = owner_repo(tmp_path / "git", main=main, target_version=pyproject("0.39.9"), target="v3")
+    (repo / ".surrealdb-version").write_text(pin + "\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(FAKE_RELEASES_GH, encoding="utf-8")
+    gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+    fixture = tmp_path / "releases.json"
+    fixture.write_text(json.dumps(releases), encoding="utf-8")
+    gh_log = tmp_path / "gh.log"
+    gh_log.write_text("", encoding="utf-8")
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "GH_STUB_RELEASES": str(fixture),
+        "GH_STUB_PAGE_SIZE": "30",
+        "GH_STUB_FAIL": "0",
+        "GH_STUB_LOG": str(gh_log),
+    }
+    context = {"secrets.GITHUB_TOKEN": "stub-token", "inputs.surrealdb_version": ""}
+    steps = _v3_branch_workflow()["jobs"]["check-release"]["steps"]
+    return run_job(steps, cwd=repo, scratch=tmp_path / "steps", env=env, context=context)
 
-    @pytest.mark.parametrize("on_main", ["0.40.0", "0.41.2"])
-    def test_the_selection_runs_once_main_leaves_the_series(self, tmp_path: Path, on_main: str) -> None:
-        result, outputs = _v3_owner(tmp_path, main=pyproject(on_main), v3=pyproject("0.39.9"))
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert outputs == {"follows-main": "false"}
 
-    @pytest.mark.parametrize(
-        ("main", "v3"),
-        [
-            (None, pyproject("0.39.9")),
-            ("", pyproject("0.39.9")),
-            (pyproject("0.40.0rc1"), pyproject("0.39.9")),
-            (pyproject("0.40"), pyproject("0.39.9")),
-            ("[project]\nname = 'x'\n", pyproject("0.39.9")),
-            (pyproject("0.40.0"), ""),
-            (pyproject("0.40.0"), pyproject("v0.39.9")),
-            # An X bump is the user's decision: the rule is re-read then.
-            (pyproject("1.0.0"), pyproject("0.39.9")),
-        ],
-        ids=[
-            "no-main",
-            "no-main-pyproject",
-            "main-pre-release",
-            "main-two-parts",
-            "main-no-version",
-            "no-v3-pyproject",
-            "v3-prefixed",
-            "main-1.x",
-        ],
-    )
-    def test_an_unreadable_version_fails_the_run(self, tmp_path: Path, main: str | None, v3: str) -> None:
-        result, outputs = _v3_owner(tmp_path, main=main, v3=v3)
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "::error::" in result.stdout
-        assert outputs == {}
+class TestV3BranchMonitorOwnsTheSeries:
+    @pytest.mark.parametrize("on_main", ["0.39.9", "0.39.10", "0.39.0", "0.40.0", None, ""])
+    def test_a_security_release_is_selected_whatever_main_is_on(self, tmp_path: Path, on_main: str | None) -> None:
+        """Before #698 nothing was selected while main was on 0.39.x, and the run failed without main."""
+        main = None if on_main is None else (pyproject(on_main) if on_main else "")
+        run = _v3_check_release(tmp_path, main=main, releases=[_rel("v3.3.6", body=_CVE), *REAL_API_ORDER], pin="3.3.5")
+        assert run.returncode == 0, run.log
+        check = run.outputs.get("check", {})
+        assert check.get("has-update") == "true", run.log
+        assert check.get("latest-version") == "3.3.6", run.log
+        assert check.get("is-security-patch") == "true", run.log
+        assert "Compare versions" in run.ran, run.ran
 
-    def test_the_owner_check_runs_first_and_gates_the_selection(self) -> None:
+    def test_main_on_0_39_does_not_turn_a_routine_release_into_an_update(self, tmp_path: Path) -> None:
+        run = _v3_check_release(tmp_path, main=pyproject("0.39.9"), releases=[_rel("v3.3.6"), *REAL_API_ORDER], pin="3.3.5")
+        assert run.returncode == 0, run.log
+        assert run.outputs.get("check", {}).get("has-update") == "false", run.log
+
+    def test_check_release_has_only_the_checkout_and_the_selection(self) -> None:
         job = _v3_branch_workflow()["jobs"]["check-release"]
         names = [s.get("name") for s in job["steps"]]
-        assert names.index(_OWNER) < names.index("Compare versions")
-        owner = job["steps"][names.index(_OWNER)]
-        assert owner["id"] == "owner"
-        assert "if" not in owner, "the owner check must never be skipped"
-        compare = job["steps"][names.index("Compare versions")]
-        assert compare["if"] == "steps.owner.outputs.follows-main == 'false'"
+        assert names == ["Checkout v3 branch", "Compare versions"], names
+        assert all("if" not in s for s in job["steps"]), "no step of check-release may be skipped"
 
-    def test_a_skipped_selection_reads_as_no_update(self) -> None:
+    def test_has_update_is_the_selection_output(self) -> None:
         outputs = _v3_branch_workflow()["jobs"]["check-release"]["outputs"]
-        assert outputs["has-update"] == "${{ steps.check.outputs.has-update || 'false' }}"
-        # Every later job needs has-update == 'true', so none of them runs.
-        for job_id, job in _v3_branch_workflow()["jobs"].items():
-            if job_id != "check-release":
-                assert "needs.check-release.outputs.has-update == 'true'" in " ".join(str(job["if"]).split()), job_id
+        assert outputs["has-update"] == "${{ steps.check.outputs.has-update }}"
 
-    @pytest.mark.parametrize("workflow", [V3, V2])
-    def test_the_other_monitors_do_not_look_at_main_version(self, workflow: str) -> None:
-        names = [s.get("name") for s in _monitor_workflow(workflow)["jobs"]["check-release"]["steps"]]
-        assert _OWNER not in names
+    @pytest.mark.parametrize("workflow", MONITORS)
+    def test_no_monitor_defers_to_main_version(self, workflow: str) -> None:
+        text = (WORKFLOW_DIR / workflow).read_text(encoding="utf-8")
+        assert "follows-main" not in text
+        assert "Defer to main" not in text
+
+
+@pytest.mark.parametrize("workflow", MONITORS)
+class TestCheckReleaseRunsOnMainOnly:
+    """#698 item 5, as on v3's copies since #695: a dispatch on another ref does nothing.
+
+    Dispatched on the v3 ref, a monitor would run v3's copy of its own file
+    but check out and act on its target branch with that copy's steps.
+    """
+
+    def test_check_release_is_gated_on_the_main_ref(self, workflow: str) -> None:
+        jobs = _monitor_workflow(workflow)["jobs"]
+        assert jobs["check-release"]["if"] == "github.ref == 'refs/heads/main'"
+
+    def test_every_later_job_needs_an_update_from_check_release(self, workflow: str) -> None:
+        for job_id, job in _monitor_workflow(workflow)["jobs"].items():
+            if job_id == "check-release":
+                continue
+            needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
+            assert "check-release" in needs, job_id
+            assert "needs.check-release.outputs.has-update == 'true'" in " ".join(str(job["if"]).split()), job_id
+
+
+def test_the_3x_monitor_header_records_the_pin_decision() -> None:
+    """#698 item 2: main keeps its pin PRs (option a) but no bump while on 0.39.x."""
+    text = (WORKFLOW_DIR / V3).read_text(encoding="utf-8")
+    header = text[: text.index("\nname:")]
+    assert "#698" in header
+    assert "0.39.x" in header and "v3" in header
+    assert "#582" in header
 
 
 FAKE_BUMP_GH = """#!/usr/bin/env python3
@@ -1290,33 +1291,71 @@ if sys.argv[1:3] == ["pr", "create"]:
     print("https://github.com/owner/repo/pull/1")
 """
 
-# (workflow, job, branch the bump starts from, extra env, bump branch for 0.39.10)
+_DEPENDABOT = "dependabot-automerge.yml"
+_DEP_ENV = {"DEP_NAMES": "tornado", "UPDATE_TYPE": "security", "PR_NUMBER": "7"}
+
+# (workflow, job, branch the bump starts from, extra env, current version, next
+# version, bump branch). main's sites start from 0.40.0: since #698 main
+# releases nothing in the 0.39 series, which v3 owns.
 _BUMP_SITES = [
-    pytest.param(V3, "auto-update", "main", {"NEW_VERSION": "3.3.6"}, "chore/release-v0.39.10", id="main-3.x-monitor"),
-    pytest.param(V3_BRANCH, "auto-update", "v3", {"NEW_VERSION": "3.3.6"}, "chore/release-v3-v0.39.10", id="v3-monitor"),
     pytest.param(
-        "dependabot-automerge.yml",
+        V3, "auto-update", "main", {"NEW_VERSION": "3.3.6"}, "0.40.0", "0.40.1", "chore/release-v0.40.1", id="main-3.x-monitor"
+    ),
+    pytest.param(
+        V3_BRANCH,
+        "auto-update",
+        "v3",
+        {"NEW_VERSION": "3.3.6"},
+        "0.39.9",
+        "0.39.10",
+        "chore/release-v3-v0.39.10",
+        id="v3-monitor",
+    ),
+    pytest.param(
+        _DEPENDABOT,
         "automerge",
         "main",
-        {"BASE_BRANCH": "main", "DEP_NAMES": "tornado", "UPDATE_TYPE": "security", "PR_NUMBER": "7"},
-        "chore/version-bump-0.39.10",
+        {"BASE_BRANCH": "main", **_DEP_ENV},
+        "0.40.0",
+        "0.40.1",
+        "chore/version-bump-0.40.1",
         id="dependabot-main",
     ),
     pytest.param(
-        "dependabot-automerge.yml",
+        _DEPENDABOT,
         "automerge",
         "v3",
-        {"BASE_BRANCH": "v3", "DEP_NAMES": "tornado", "UPDATE_TYPE": "security", "PR_NUMBER": "7"},
+        {"BASE_BRANCH": "v3", **_DEP_ENV},
+        "0.39.9",
+        "0.39.10",
         "chore/version-bump-0.39.10",
         id="dependabot-v3",
     ),
 ]
 
+# The bump sites on main, which stop on 0.39.x.
+_MAIN_BUMP_SITES = [
+    pytest.param(V3, "auto-update", {"NEW_VERSION": "3.3.6"}, "chore/release-v", id="main-3.x-monitor"),
+    pytest.param(_DEPENDABOT, "automerge", {"BASE_BRANCH": "main", **_DEP_ENV}, "chore/version-bump-", id="dependabot-main"),
+]
+
 
 def _run_bump(
-    tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], *, tags: list[str], reachable: bool = True
+    tmp_path: Path,
+    workflow: str,
+    job: str,
+    branch: str,
+    extra: dict[str, str],
+    *,
+    version: str,
+    tags: list[str],
+    reachable: bool = True,
+    pyproject_text: str | None = None,
+    main_version: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, list[list[str]]]:
-    repo, origin = bump_repo(tmp_path, branch=branch, version="0.39.9", tags=tags)
+    repo, origin = bump_repo(
+        tmp_path, branch=branch, version=version, tags=tags, pyproject_text=pyproject_text, main_version=main_version
+    )
     if not reachable:
         subprocess.run(["git", "-C", str(repo), "remote", "set-url", "origin", str(tmp_path / "gone.git")], check=True)
     data = _monitor_workflow(workflow)
@@ -1356,37 +1395,144 @@ def _run_bump(
     return result, repo, origin, calls
 
 
-@pytest.mark.parametrize(("workflow", "job", "branch", "extra", "bump_branch"), _BUMP_SITES)
+@pytest.mark.parametrize(("workflow", "job", "branch", "extra", "version", "next_version", "bump_branch"), _BUMP_SITES)
 class TestBumpRefusesAReleasedVersion:
     def test_a_new_version_is_bumped(
-        self, tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], bump_branch: str
+        self,
+        tmp_path: Path,
+        workflow: str,
+        job: str,
+        branch: str,
+        extra: dict[str, str],
+        version: str,
+        next_version: str,
+        bump_branch: str,
     ) -> None:
-        result, _, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, tags=["v0.39.8", "v0.39.9"])
+        result, _, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, version=version, tags=[f"v{version}"])
         assert result.returncode == 0, result.stdout + result.stderr
         assert f"refs/heads/{bump_branch}" in remote_refs(origin)
         (create,) = [c for c in calls if c[:2] == ["pr", "create"]]
         assert create[create.index("--base") + 1] == branch
-        assert create[create.index("--title") + 1] == "chore(release): bump version to 0.39.10"
+        assert create[create.index("--title") + 1] == f"chore(release): bump version to {next_version}"
 
     def test_an_existing_tag_stops_before_any_branch_or_pr(
-        self, tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], bump_branch: str
+        self,
+        tmp_path: Path,
+        workflow: str,
+        job: str,
+        branch: str,
+        extra: dict[str, str],
+        version: str,
+        next_version: str,
+        bump_branch: str,
     ) -> None:
-        # main already released 0.39.10 while this branch still reads 0.39.9.
-        result, repo, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, tags=["v0.39.9", "v0.39.10"])
+        # Another branch already released the next number.
+        tags = [f"v{version}", f"v{next_version}"]
+        result, repo, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, version=version, tags=tags)
         assert result.returncode != 0, result.stdout + result.stderr
-        assert "::error::v0.39.10 already exists" in result.stdout
-        assert remote_refs(origin) == sorted([f"refs/heads/{branch}", "refs/tags/v0.39.10", "refs/tags/v0.39.9"])
+        assert f"::error::v{next_version} already exists" in result.stdout
+        assert remote_refs(origin) == sorted([f"refs/heads/{branch}", *(f"refs/tags/{tag}" for tag in tags)])
         assert calls == []
         assert not (tmp_path / "gh.log.merge").exists()
         head = subprocess.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True)
         assert head.stdout.strip() == branch
-        assert 'version = "0.39.9"' in (repo / "pyproject.toml").read_text()
+        assert f'version = "{version}"' in (repo / "pyproject.toml").read_text()
 
     def test_an_unreadable_remote_stops_the_bump(
-        self, tmp_path: Path, workflow: str, job: str, branch: str, extra: dict[str, str], bump_branch: str
+        self,
+        tmp_path: Path,
+        workflow: str,
+        job: str,
+        branch: str,
+        extra: dict[str, str],
+        version: str,
+        next_version: str,
+        bump_branch: str,
     ) -> None:
-        result, _, origin, calls = _run_bump(tmp_path, workflow, job, branch, extra, tags=["v0.39.9"], reachable=False)
+        result, _, origin, calls = _run_bump(
+            tmp_path, workflow, job, branch, extra, version=version, tags=[f"v{version}"], reachable=False
+        )
         assert result.returncode != 0, result.stdout + result.stderr
         assert "::error::Cannot list the remote tags" in result.stdout
         assert calls == []
         assert f"refs/heads/{bump_branch}" not in remote_refs(origin)
+
+
+@pytest.mark.parametrize(("workflow", "job", "extra", "branch_prefix"), _MAIN_BUMP_SITES)
+class TestMainReleasesNothingInThe039Series:
+    """#698 items 2 and 3: on main, a 0.39.x version stops the bump before any branch or PR."""
+
+    @pytest.mark.parametrize("version", ["0.39.9", "0.39.0", "0.39.10", "0.39.123"])
+    def test_a_0_39_version_is_not_bumped(
+        self, tmp_path: Path, workflow: str, job: str, extra: dict[str, str], branch_prefix: str, version: str
+    ) -> None:
+        result, repo, origin, calls = _run_bump(tmp_path, workflow, job, "main", extra, version=version, tags=[f"v{version}"])
+        assert result.returncode == 0, result.stdout + result.stderr
+        notices = [line for line in result.stdout.splitlines() if line.startswith("::notice::")]
+        assert len(notices) == 1 and "v3" in notices[0], result.stdout
+        assert remote_refs(origin) == sorted(["refs/heads/main", f"refs/tags/v{version}"])
+        assert calls == []
+        assert not (tmp_path / "gh.log.merge").exists()
+        head = subprocess.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True)
+        assert head.stdout.strip() == "main"
+        assert f'version = "{version}"' in (repo / "pyproject.toml").read_text()
+
+    @pytest.mark.parametrize(("version", "next_version"), [("0.40.0", "0.40.1"), ("0.40.9", "0.40.10"), ("0.41.2", "0.41.3")])
+    def test_a_later_series_is_bumped(
+        self,
+        tmp_path: Path,
+        workflow: str,
+        job: str,
+        extra: dict[str, str],
+        branch_prefix: str,
+        version: str,
+        next_version: str,
+    ) -> None:
+        result, _, origin, calls = _run_bump(tmp_path, workflow, job, "main", extra, version=version, tags=[f"v{version}"])
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert any(ref.startswith(f"refs/heads/{branch_prefix}") and ref.endswith(next_version) for ref in remote_refs(origin))
+        (create,) = [c for c in calls if c[:2] == ["pr", "create"]]
+        assert create[create.index("--title") + 1] == f"chore(release): bump version to {next_version}"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "",
+            "[project]\nname = 'x'\n",
+            pyproject("0.40"),
+            pyproject("v0.40.0"),
+            pyproject("0.40.0rc1"),
+            pyproject("0.40.x"),
+        ],
+        ids=["empty", "no-version", "two-parts", "prefixed", "pre-release", "not-a-number"],
+    )
+    def test_an_unreadable_version_fails_closed(
+        self, tmp_path: Path, workflow: str, job: str, extra: dict[str, str], branch_prefix: str, text: str
+    ) -> None:
+        result, _, origin, calls = _run_bump(
+            tmp_path, workflow, job, "main", extra, version="0.40.0", tags=[], pyproject_text=text
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert "::error::" in result.stdout
+        assert remote_refs(origin) == ["refs/heads/main"]
+        assert calls == []
+
+
+@pytest.mark.parametrize("on_main", ["0.39.9", "0.39.12", "0.40.0"])
+@pytest.mark.parametrize(
+    ("workflow", "job", "extra"),
+    [
+        pytest.param(V3_BRANCH, "auto-update", {"NEW_VERSION": "3.3.6"}, id="v3-monitor"),
+        pytest.param(_DEPENDABOT, "automerge", {"BASE_BRANCH": "v3", **_DEP_ENV}, id="dependabot-v3"),
+    ],
+)
+def test_v3_is_bumped_whatever_main_is_on(tmp_path: Path, workflow: str, job: str, extra: dict[str, str], on_main: str) -> None:
+    """#698 item 1: the v3 bumps never look at main's version."""
+    result, _, origin, calls = _run_bump(
+        tmp_path, workflow, job, "v3", extra, version="0.39.9", tags=["v0.39.9"], main_version=on_main
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(ref.startswith("refs/heads/chore/") and ref.endswith("0.39.10") for ref in remote_refs(origin))
+    (create,) = [c for c in calls if c[:2] == ["pr", "create"]]
+    assert create[create.index("--base") + 1] == "v3"
+    assert create[create.index("--title") + 1] == "chore(release): bump version to 0.39.10"

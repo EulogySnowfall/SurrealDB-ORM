@@ -53,6 +53,10 @@ jobs:
   check-release:
     name: Check SurrealDB 2.X Release
     runs-on: ubuntu-latest
+    # Schedules run from main. A dispatch on another ref would run that ref's
+    # copy of this file against v2, so on any ref but main it does nothing:
+    # every later job needs has-update == 'true' (#698, as on v3's copies).
+    if: github.ref == 'refs/heads/main'
     outputs:
       latest-version: ${{ steps.check.outputs.latest-version }}
       current-version: ${{ steps.check.outputs.current-version }}

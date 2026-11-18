@@ -8,8 +8,16 @@
 #   3. If new version → run unit + integration tests against it
 #   4. If tests pass → create PR with .surrealdb-version + docker-compose.yml update
 #   5. PR triggers normal CI pipeline → auto-merged via gh pr merge --auto
-#   6. If security patch → also bump ORM version in the same PR
+#   6. After it merges → a version bump PR on main, whose squash subject fires
+#      tag-release.yml and then publish.yml (not while main is on 0.39.x, below)
 #   7. If tests fail → create GitHub issue for investigation
+#
+# The 0.39.x patch series belongs to the v3 branch (#698): v3 was cut from
+# v0.39.9, surrealdb-v3-security.yml covers its 3.3 pin and releases, and main
+# releases 0.40.0 next. Decision (option (a) of #698): while main's
+# pyproject.toml is 0.39.x this monitor still opens and merges the pin PR, so
+# main's CI follows the newest 3.x until main moves to the 4.x pin (#582), but
+# it opens no version bump PR, so nothing is tagged or published from main.
 
 name: SurrealDB Version Monitor
 
@@ -48,6 +56,10 @@ jobs:
   check-release:
     name: Check SurrealDB Release
     runs-on: ubuntu-latest
+    # Schedules run from main. A dispatch on another ref would run that ref's
+    # copy of this file against main, so on any ref but main it does nothing:
+    # every later job needs has-update == 'true' (#698, as on v3's copies).
+    if: github.ref == 'refs/heads/main'
     outputs:
       latest-version: ${{ steps.check.outputs.latest-version }}
       current-version: ${{ steps.check.outputs.current-version }}
@@ -444,8 +456,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # Calculate version from main's pyproject.toml
-          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          # Calculate version from main's pyproject.toml. Fail closed: a
+          # version that is not X.Y.Z stops the job before any branch exists.
+          CURRENT_VERSION=$(sed -nE 's/^version = "([^"]*)"$/\1/p' pyproject.toml | head -n1) || CURRENT_VERSION=""
+          if [[ ! "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Cannot read main's version from its pyproject.toml — not bumping"
+            exit 1
+          fi
+          # The 0.39.x series is released from v3 (#698): main bumps nothing in
+          # it, and its next release (0.40.0) is opened by hand.
+          if [[ "${CURRENT_VERSION%.*}" == "0.39" ]]; then
+            echo "::notice::main is on $CURRENT_VERSION: the 0.39.x series is released from v3, so main gets no version bump (its next release is 0.40.0)"
+            exit 0
+          fi
           MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
           MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
           PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
