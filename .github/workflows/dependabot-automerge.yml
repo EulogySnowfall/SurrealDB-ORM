@@ -1,6 +1,7 @@
 # Auto-merge Dependabot PRs after successful tests
 # Bumps the patch (3rd) digit for security updates: x.y.z → x.y.(z+1)
 # Versioning: X=LTS/breaking, Y=features, Z=security patches
+# On main, nothing in the 0.39.x series is bumped: v3 releases it (#698).
 
 name: Dependabot Auto-merge
 
@@ -270,8 +271,21 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # Calculate version from the BASE BRANCH's pyproject.toml (not main's)
-          # This ensures v2 (0.20.x) and main (0.31.x) bump independently
-          CURRENT_VERSION=$(grep -E '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          # This ensures v2 (0.21.x), v3 (0.39.x) and main bump independently.
+          # Fail closed: a version that is not X.Y.Z stops the job before any
+          # branch exists.
+          CURRENT_VERSION=$(sed -nE 's/^version = "([^"]*)"$/\1/p' pyproject.toml | head -n1) || CURRENT_VERSION=""
+          if [[ ! "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Cannot read $BASE_BRANCH's version from its pyproject.toml — not bumping"
+            exit 1
+          fi
+          # The 0.39.x series is released from v3 (#698): main bumps nothing in
+          # it, and its next release (0.40.0) is opened by hand. A PR merged on
+          # v3 (a security sync) still gets its bump there.
+          if [[ "$BASE_BRANCH" == "main" && "${CURRENT_VERSION%.*}" == "0.39" ]]; then
+            echo "::notice::main is on $CURRENT_VERSION: the 0.39.x series is released from v3, so main gets no version bump (its next release is 0.40.0)"
+            exit 0
+          fi
           MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
           MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
           PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
@@ -380,58 +394,18 @@ jobs:
           ref: ${{ matrix.target }}
           token: ${{ secrets.PAT_TOKEN }}
 
-      # One patch series has one owner (#579). While main's pyproject.toml has
-      # the same X.Y as v3's, main owns that series: a v3 bump would compute a
-      # number main also computes, or ship v3 without main's fixes of the
-      # series. So v3 takes no sync until main leaves it. v2 (0.21.x) is not
-      # concerned. Fail closed: a version that cannot be read stops the job.
-      - name: Defer to main while it owns the patch series
-        if: steps.gate.outputs.sync == 'true'
-        id: owner
-        env:
-          TARGET: ${{ matrix.target }}
-        run: |
-          if [[ "$TARGET" != "v3" ]]; then
-            echo "sync=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          VERSION_RE='^0\.[0-9]+\.[0-9]+$'
-          read_version() { sed -nE 's/^version = "([^"]*)"$/\1/p' | head -n1; }
-
-          TARGET_VERSION=$(read_version < pyproject.toml) || TARGET_VERSION=""
-          if [[ ! "$TARGET_VERSION" =~ $VERSION_RE ]]; then
-            echo "::error::Cannot read $TARGET's version from its pyproject.toml — not syncing"
-            exit 1
-          fi
-          if ! git fetch -q --depth=1 origin main; then
-            echo "::error::Cannot fetch main to read its version — not syncing to $TARGET"
-            exit 1
-          fi
-          MAIN_VERSION=$(git show FETCH_HEAD:pyproject.toml | read_version) || MAIN_VERSION=""
-          if [[ ! "$MAIN_VERSION" =~ $VERSION_RE ]]; then
-            echo "::error::Cannot read main's version from its pyproject.toml — not syncing to $TARGET"
-            exit 1
-          fi
-
-          if [[ "${MAIN_VERSION%.*}" == "${TARGET_VERSION%.*}" ]]; then
-            echo "sync=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::$TARGET follows main until main leaves ${MAIN_VERSION%.*}.x; no sync"
-          else
-            echo "sync=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Set up Python
-        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true'
+        if: steps.gate.outputs.sync == 'true'
         uses: actions/setup-python@v7
         with:
           python-version: "3.13"
 
       - name: Install uv
-        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true'
+        if: steps.gate.outputs.sync == 'true'
         uses: astral-sh/setup-uv@v7
 
       - name: Check which dependencies exist in the target branch
-        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true'
+        if: steps.gate.outputs.sync == 'true'
         id: check
         env:
           DEP_NAME: ${{ needs.automerge.outputs.dependency-names }}
@@ -477,7 +451,7 @@ jobs:
           fi
 
       - name: Update dependencies and create PR
-        if: steps.gate.outputs.sync == 'true' && steps.owner.outputs.sync == 'true' && steps.check.outputs.exists == 'true'
+        if: steps.gate.outputs.sync == 'true' && steps.check.outputs.exists == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           # Bind every ${{ }} expression to env, never expand it into the script.

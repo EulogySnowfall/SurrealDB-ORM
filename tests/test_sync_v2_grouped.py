@@ -21,6 +21,10 @@ the PR body the update step produces.
 ``sync-lts``, runs the same steps once per target branch (``TARGET``), so a
 Dependabot ``uv`` security update merged on ``main`` reaches ``v3`` exactly as
 it reaches ``v2``.
+
+#698 gives ``v3`` the 0.39.x patch series, so the ``v3`` sync no longer waits
+for ``main`` to leave 0.39.x: the whole job runs here step by step with
+``main`` on 0.39.x and opens the ``v3`` sync PR.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ from typing import Any
 
 import pytest
 
-from tests._release_series import owner_repo, pyproject
+from tests._release_series import JobRun, pyproject, run_job
 
 yaml = pytest.importorskip("yaml", reason="pyyaml required for workflow lint tests")
 
@@ -120,16 +124,17 @@ class TestGate:
         for step in steps[gate + 1 :]:
             assert "steps.gate.outputs.sync == 'true'" in step.get("if", ""), step.get("name")
 
-    def test_every_step_after_the_owner_check_is_behind_it(self) -> None:
-        # #579: nothing is installed, resolved, pushed or opened for a target
-        # whose patch series main owns.
+    def test_no_step_waits_on_main_version(self) -> None:
+        # #698: v3 owns the 0.39.x patch series, so the sync to v3 no longer
+        # defers to main while both share X.Y. Only the gate and the package
+        # check decide; nothing reads main's pyproject.toml.
         steps = _workflow()["jobs"][JOB]["steps"]
         names = [s.get("name", "") for s in steps]
-        owner = names.index("Defer to main while it owns the patch series")
-        assert names.index("Checkout target branch") < owner < names.index("Update dependencies and create PR")
-        assert steps[owner]["id"] == "owner"
-        for step in steps[owner + 1 :]:
-            assert "steps.owner.outputs.sync == 'true'" in step.get("if", ""), step.get("name")
+        assert not any(n.startswith("Defer to main") for n in names), names
+        assert all(s.get("id") != "owner" for s in steps)
+        for step in steps:
+            assert "steps.owner." not in str(step.get("if", "")), step.get("name")
+            assert "pyproject.toml" not in str(step.get("run", "")), step.get("name")
 
 
 class TestUvMeansSecurity:
@@ -198,99 +203,88 @@ class TestMatrix:
 
 
 # ---------------------------------------------------------------------------
-# #579: one patch series has one owner
+# #698: v3 owns the 0.39.x patch series
 # ---------------------------------------------------------------------------
 #
-# While main's pyproject.toml has the same X.Y as v3's, main owns that series
-# (it releases 0.39.10, 0.39.11, ... until the 4.x pin). A sync PR on v3 would
-# end in a v3 bump computing one of main's numbers, so v3 takes none until
-# main leaves the series. v2 (0.21.x) is not concerned.
+# v3 was cut from v0.39.9 and releases every later 0.39.x; main releases
+# 0.40.0 next. A uv security update merged on main is therefore synced to v3
+# whatever main's version is, and v3's own bump releases it. The whole job runs
+# here, step by step, in a clone of the target whose origin also has main.
+
+_SYNC_CONTEXT = {
+    "needs.automerge.outputs.package-ecosystem": "uv",
+    "needs.automerge.outputs.dependency-names": "tornado, urllib3",
+    "needs.automerge.outputs.update-type": "version-update:semver-patch",
+    "github.event.pull_request.number": "217",
+    "secrets.PAT_TOKEN": "x",
+}
 
 
-def _run_owner(
-    tmp_path: Path, *, main: str | None, target_version: str, target: str = "v3"
-) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
-    repo = owner_repo(tmp_path, main=main, target_version=target_version, target=target)
-    out = tmp_path / "owner"
-    out.write_text("")
-    env = {**os.environ, "TARGET": target, "GITHUB_OUTPUT": str(out)}
-    result = _bash(_step(JOB, "Defer to main")["run"], repo, env)
-    return result, _outputs(out)
+def _run_sync_job(box: Sandbox, upgrades: dict[str, Any]) -> JobRun:
+    env = {
+        **os.environ,
+        "PATH": f"{box.bin}:{os.environ['PATH']}",
+        "GITHUB_REPOSITORY": "owner/repo",
+        "FAKE_UV_UPGRADES": json.dumps(upgrades),
+        "FAKE_GH_OPEN_PRS": "0",
+        "FAKE_GH_LOG": str(box.gh_log),
+        "GITHUB_STEP_SUMMARY": str(box.tmp / "summary.md"),
+    }
+    context = {**_SYNC_CONTEXT, "matrix.target": box.target}
+    return run_job(_workflow()["jobs"][JOB]["steps"], cwd=box.repo, scratch=box.tmp / "steps", env=env, context=context)
 
 
-class TestPatchSeriesOwner:
-    @pytest.mark.parametrize(("on_main", "on_v3"), [("0.39.9", "0.39.9"), ("0.39.12", "0.39.9"), ("0.39.0", "0.39.9")])
-    def test_v3_is_not_synced_while_main_shares_its_series(self, tmp_path: Path, on_main: str, on_v3: str) -> None:
-        result, outputs = _run_owner(tmp_path, main=pyproject(on_main), target_version=pyproject(on_v3))
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert outputs == {"sync": "false"}
-        assert "::notice::v3 follows main until main leaves 0.39.x; no sync" in result.stdout
+class TestV3OwnsItsSeries:
+    @pytest.mark.parametrize("on_main", ["0.39.9", "0.39.12", "0.39.0", "0.40.0"])
+    def test_v3_is_synced_whatever_main_is_on(self, tmp_path: Path, on_main: str) -> None:
+        """Before #698 no v3 sync PR was opened while main was on 0.39.x."""
+        box = Sandbox(tmp_path, target="v3", main_version=on_main, target_version="0.39.9")
+        run = _run_sync_job(box, GROUP)
+        assert run.returncode == 0, run.log
+        assert run.ran[-1] == "Update dependencies and create PR", run.ran
+        assert box.arg("--base") == "v3"
+        assert "<!-- security-sync-packages: tornado urllib3 -->" in box.arg("--body")
+        lock = box.remote_lock(box.sync_branch())
+        assert 'version = "6.5.9"' in lock and 'version = "2.8.0"' in lock
 
-    @pytest.mark.parametrize("on_main", ["0.40.0", "0.40.3", "0.41.0"])
-    def test_v3_is_synced_once_main_leaves_the_series(self, tmp_path: Path, on_main: str) -> None:
-        result, outputs = _run_owner(tmp_path, main=pyproject(on_main), target_version=pyproject("0.39.9"))
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert outputs == {"sync": "true"}
-        assert "::notice::" not in result.stdout
+    def test_v3_is_synced_without_a_readable_main_version(self, tmp_path: Path) -> None:
+        """Nothing in the job reads main's version, so a main without one does not stop the sync."""
+        box = Sandbox(tmp_path, target="v3", main_version=None, target_version="0.39.9")
+        run = _run_sync_job(box, GROUP)
+        assert run.returncode == 0, run.log
+        assert box.arg("--base") == "v3"
 
-    @pytest.mark.parametrize(
-        "main",
-        [
-            pyproject("0.39.9"),
-            pyproject("0.21.62"),
-            None,  # no main branch at all
-            "",  # no pyproject.toml on main
-            "[project]\nname = 'x'\n",  # no readable version
-        ],
-    )
-    def test_v2_is_never_affected(self, tmp_path: Path, main: str | None) -> None:
-        result, outputs = _run_owner(tmp_path, main=main, target_version=pyproject("0.21.62"), target="v2")
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert outputs == {"sync": "true"}
+    def test_v2_is_synced_as_before(self, tmp_path: Path) -> None:
+        box = Sandbox(tmp_path, target="v2", main_version="0.39.9", target_version="0.21.62")
+        run = _run_sync_job(box, GROUP)
+        assert run.returncode == 0, run.log
+        assert box.arg("--base") == "v2"
 
-    @pytest.mark.parametrize(
-        "main",
-        [
-            None,  # main cannot be fetched
-            "[project]\nname = 'x'\n",  # no version line
-            pyproject("0.40.0rc1"),
-            pyproject("v0.40.0"),
-            pyproject("0.40"),
-            pyproject("0.40.0\nversion = 0.39.9"),
-            # An X bump is the user's decision: the rule is re-read then.
-            pyproject("1.0.0"),
-        ],
-        ids=["no-main", "no-version", "pre-release", "prefixed", "two-parts", "two-lines", "main-1.x"],
-    )
-    def test_an_unreadable_main_version_fails_closed(self, tmp_path: Path, main: str | None) -> None:
-        result, outputs = _run_owner(tmp_path, main=main, target_version=pyproject("0.39.9"))
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "::error::" in result.stdout
-        assert "sync" not in outputs
+    def test_the_gate_still_stops_a_non_uv_update(self, tmp_path: Path) -> None:
+        box = Sandbox(tmp_path, target="v3", main_version="0.39.9", target_version="0.39.9")
+        context = {**_SYNC_CONTEXT, "matrix.target": "v3", "needs.automerge.outputs.package-ecosystem": "pip"}
+        run = run_job(
+            _workflow()["jobs"][JOB]["steps"],
+            cwd=box.repo,
+            scratch=box.tmp / "steps",
+            env={**os.environ, "PATH": f"{box.bin}:{os.environ['PATH']}", "FAKE_GH_LOG": str(box.gh_log)},
+            context=context,
+        )
+        assert run.returncode == 0, run.log
+        assert run.ran == ["Decide whether this update is synced"], run.ran
+        assert box.gh_calls() == []
 
-    def test_a_missing_main_pyproject_fails_closed(self, tmp_path: Path) -> None:
-        result, outputs = _run_owner(tmp_path, main="", target_version=pyproject("0.39.9"))
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "::error::" in result.stdout
-        assert "sync" not in outputs
-
-    @pytest.mark.parametrize("target_version", ["", "[project]\nname = 'x'\n", pyproject("0.39")])
-    def test_an_unreadable_v3_version_fails_closed(self, tmp_path: Path, target_version: str) -> None:
-        result, outputs = _run_owner(tmp_path, main=pyproject("0.40.0"), target_version=target_version)
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert "::error::" in result.stdout
-        assert "sync" not in outputs
-
-    def test_main_and_v3_never_compute_the_same_number(self, tmp_path: Path) -> None:
-        # A v3 sync PR is what leads to a v3 bump (x.y.z -> x.y.z+1). Whenever
-        # the sync is open, main's next bump and v3's are in different series.
-        for index, on_main in enumerate(["0.39.9", "0.39.10", "0.39.11", "0.40.0", "0.40.1"]):
-            run_dir = tmp_path / str(index)
-            run_dir.mkdir()
-            result, outputs = _run_owner(run_dir, main=pyproject(on_main), target_version=pyproject("0.39.9"))
-            assert result.returncode == 0, result.stdout + result.stderr
-            if outputs["sync"] == "true":
-                assert on_main.rsplit(".", 1)[0] != "0.39", on_main
+    def test_a_held_back_package_is_still_reported_on_v3(self, tmp_path: Path) -> None:
+        box = Sandbox(
+            tmp_path,
+            target="v3",
+            main_lock=_lock(("tornado", "6.5.9"), ("urllib3", "2.8.0")),
+            main_version="0.39.9",
+            target_version="0.39.9",
+        )
+        run = _run_sync_job(box, {"tornado": "6.5.9"})
+        assert run.returncode == 0, run.log
+        assert "::warning::urllib3 stays at 2.7.0 on v3 while main has 2.8.0" in run.log
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +387,16 @@ def _write_exe(path: Path, body: str) -> None:
 class Sandbox:
     """A checkout of the target branch whose `origin` also has `main`, plus fake uv/gh."""
 
-    def __init__(self, tmp_path: Path, v2_lock: str = V2_LOCK, main_lock: str | None = None, target: str = "v2") -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        v2_lock: str = V2_LOCK,
+        main_lock: str | None = None,
+        target: str = "v2",
+        *,
+        main_version: str | None = None,
+        target_version: str | None = None,
+    ) -> None:
         tmp_path.mkdir(parents=True, exist_ok=True)
         self.tmp = tmp_path
         self.target = target
@@ -405,10 +408,12 @@ class Sandbox:
 
         seed = tmp_path / "seed"
         subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
-        self._commit(seed, main_lock if main_lock is not None else v2_lock, "main")
+        self._commit(seed, main_lock if main_lock is not None else v2_lock, "main", main_version)
         subprocess.run(["git", "-C", str(seed), "push", "-q", str(self.origin), "main"], check=True)
         subprocess.run(["git", "-C", str(seed), "checkout", "-q", "--orphan", target], check=True)
-        self._commit(seed, v2_lock, target)
+        subprocess.run(["git", "-C", str(seed), "rm", "-q", "--cached", "--ignore-unmatch", "pyproject.toml"], check=True)
+        (seed / "pyproject.toml").unlink(missing_ok=True)
+        self._commit(seed, v2_lock, target, target_version)
         subprocess.run(["git", "-C", str(seed), "push", "-q", str(self.origin), target], check=True)
         subprocess.run(["git", "clone", "-q", "-b", target, str(self.origin), str(self.repo)], check=True)
 
@@ -418,10 +423,13 @@ class Sandbox:
         _write_exe(self.bin / "gh", FAKE_GH)
 
     @staticmethod
-    def _commit(repo: Path, lock: str, msg: str) -> None:
+    def _commit(repo: Path, lock: str, msg: str, version: str | None = None) -> None:
         (repo / "uv.lock").write_text(lock)
         git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
         subprocess.run([*git, "add", "uv.lock"], check=True)
+        if version is not None:
+            (repo / "pyproject.toml").write_text(pyproject(version))
+            subprocess.run([*git, "add", "pyproject.toml"], check=True)
         subprocess.run([*git, "commit", "-q", "-m", msg], check=True)
 
     def run(self, packages: str, upgrades: dict[str, Any], open_prs: int = 0) -> subprocess.CompletedProcess[str]:

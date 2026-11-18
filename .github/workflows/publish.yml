@@ -11,6 +11,10 @@ on:
 jobs:
   # Verify the tag is on main before publishing to PyPI.
   # V2 tags create GitHub Releases but must NOT publish to PyPI.
+  # A v0.39.Z tag is refused outright (#698): the 0.39.x series is published
+  # from v3, whose own publish.yml runs for a tag on a v3 commit. v3 was cut
+  # from main, so without this a v0.39.Z tag on a main commit would publish.
+  # The job then fails and nothing is built, published or released.
   check-main:
     name: Verify tag is on main
     runs-on: ubuntu-latest
@@ -22,15 +26,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check if tagged commit is on main
+      - name: Check the tag name and that the tagged commit is on main
         id: check
+        env:
+          TAG: ${{ github.ref_name }}
+          TAGGED_SHA: ${{ github.sha }}
         run: |
+          if [[ "$TAG" == v0.39 || "$TAG" == v0.39.* ]]; then
+            echo "::error::v0.39.Z tags are published from the v3 branch, not from main; refusing this tag"
+            exit 1
+          fi
           git fetch origin main
-          if git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
-            echo "on-main=true" >> $GITHUB_OUTPUT
+          if git merge-base --is-ancestor "$TAGGED_SHA" origin/main; then
+            echo "on-main=true" >> "$GITHUB_OUTPUT"
             echo "Tag is on main — will publish to PyPI"
           else
-            echo "on-main=false" >> $GITHUB_OUTPUT
+            echo "on-main=false" >> "$GITHUB_OUTPUT"
             echo "Tag is NOT on main — skipping PyPI publish"
           fi
 
