@@ -271,7 +271,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # Calculate version from the BASE BRANCH's pyproject.toml (not main's)
-          # This ensures v2 (0.21.x), v3 (0.39.x) and main bump independently.
+          # This ensures v3 (0.39.x) and main bump independently.
           # Fail closed: a version that is not X.Y.Z stops the job before any
           # branch exists.
           CURRENT_VERSION=$(sed -nE 's/^version = "([^"]*)"$/\1/p' pyproject.toml | head -n1) || CURRENT_VERSION=""
@@ -341,24 +341,26 @@ jobs:
           "$RUNNER_TEMP/merge-when-green.sh" "$BRANCH"
 
   # =============================================================================
-  # Sync dependency update to the v2 and v3 branches (if the same dep exists there)
+  # Sync dependency update to the v3 branch (if the same dep exists there)
   # =============================================================================
-  # One run per target branch (#579 added v3, the permanent SurrealDB 3.x
-  # branch). Every step reads the branch from $TARGET; the matrix value is never
-  # expanded into a script.
+  # A matrix over target branches, with v3 (the permanent SurrealDB 3.x branch,
+  # #579) as its only entry: the v2 line ended at 0.21.62 and is no longer
+  # synced (#703). Every step reads the branch from $TARGET; the matrix value is
+  # never expanded into a script.
   sync-lts:
     name: Sync to ${{ matrix.target }}
     needs: [automerge]
-    # Only sync when the PR targets main (not when it already targets v2 or v3)
+    # Only sync when the PR targets main (not when it already targets v3)
     if: |
       needs.automerge.outputs.merged == 'true' &&
       github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
     strategy:
-      # A failed sync to one branch must not cancel the other.
+      # A failed sync to one branch must not cancel another, should a target
+      # be added again.
       fail-fast: false
       matrix:
-        target: [v2, v3]
+        target: [v3]
 
     steps:
       - name: Decide whether this update is synced
@@ -370,11 +372,10 @@ jobs:
           # Only `uv` updates are synced. main configures no `uv` *version*
           # updates (dependabot.yml has `pip` only), so a `uv` PR on main is a
           # Dependabot *security* update, which Dependabot opens on the default
-          # branch only. Routine version updates reach v2 through its own
-          # `target-branch: v2` entry; syncing them too would race it on the same
-          # uv.lock lines and ship a v2 release for a ruff bump. GitHub Actions
-          # bumps have nothing to sync into v2's uv.lock.
-          # The same holds for v3, which has no Dependabot entry of its own.
+          # branch only. Routine version updates are not synced: neither main
+          # nor v3 has a `uv` version-update entry, and syncing them would ship
+          # a v3 release for a ruff bump. GitHub Actions bumps have nothing to
+          # sync into the target's uv.lock.
           # Guarded by tests/test_sync_v2_grouped.py::TestUvMeansSecurity.
           if [[ -z "$ECOSYSTEM" ]]; then
             echo "::error::No package ecosystem in the Dependabot metadata — cannot tell whether this update belongs on $TARGET"
@@ -504,7 +505,7 @@ jobs:
             MAIN_TOP=$(newest "$ON_MAIN")
             if [[ -n "$MAIN_TOP" && "$V2_TOP" != "$MAIN_TOP" && "$(printf '%s\n%s\n' "$V2_TOP" "$MAIN_TOP" | sort -V | tail -n1)" == "$MAIN_TOP" ]]; then
               HELD+=("| \`$P\` | $V2_TOP | $MAIN_TOP |")
-              # A fix that cannot reach v2 must not look like "already up to date".
+              # A fix that cannot reach the target must not look like "already up to date".
               echo "::warning::$P stays at $V2_TOP on $TARGET while main has $MAIN_TOP — $TARGET's constraints hold it back; check whether the advisory affects $TARGET"
             fi
           done
