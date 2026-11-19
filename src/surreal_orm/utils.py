@@ -349,6 +349,10 @@ def _extract_datetime_values(
     A naive ``datetime`` is read as UTC, with the same ``RuntimeWarning`` the
     CBOR encoder emits, so both paths store the same instant: SurrealDB
     refuses a ``d"..."`` literal with no offset.
+
+    A ``NamedTuple`` is converted to a plain ``tuple`` (which JSON encodes as
+    an array) rather than re-instantiated with its items as a single iterable
+    (which fails on ``NamedTuple.__new__`` or produces wrong defaults).
     """
     from datetime import UTC, datetime
 
@@ -364,6 +368,8 @@ def _extract_datetime_values(
         return {k: _extract_datetime_values(v, markers, counter) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         converted = [_extract_datetime_values(item, markers, counter) for item in value]
+        if isinstance(value, tuple) and hasattr(type(value), "_fields"):
+            return tuple(converted)
         return type(value)(converted)
     return value
 
