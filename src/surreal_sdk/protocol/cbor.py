@@ -229,13 +229,18 @@ def _preprocess_for_cbor(data: Any) -> Any:
     about with a ``RuntimeWarning`` (see :func:`_warn_naive_datetime`):
     :func:`encode` reads it as UTC, because SurrealDB only stores UTC instants.
 
+    A ``NamedTuple`` is converted to a plain ``tuple`` (which CBOR encodes as
+    an array) rather than re-instantiated with its items as a single iterable
+    (which fails on ``NamedTuple.__new__``).
+
     A ``RecordId``'s id goes through its own walk (:func:`_convert_record_id`),
-    which checks integers, turns a ``date`` into the UTC-midnight datetime and
-    warns once about a naive ``datetime``, at any depth (lists, tuples, sets,
-    dict values, nested record ids; dict keys are checked). Nothing else
-    inside a record id is converted (``None`` and ``Decimal`` keep cbor2's
-    encoding there), and the caller's ``RecordId`` is never modified: a
-    converted copy is returned only when something changed.
+    which checks integers, turns a ``date`` into the UTC-midnight datetime,
+    converts any ``NamedTuple`` to a plain ``tuple``, and warns once about a naive
+    ``datetime``, at any depth (lists, tuples, sets, dict values, nested record
+    ids; dict keys are checked). Nothing else inside a record id is converted
+    (``None`` and ``Decimal`` keep cbor2's encoding there), and the caller's
+    ``RecordId`` is never modified: a converted copy is returned only when
+    something changed.
 
     An integer outside the 64-bit range CBOR carries natively (below
     ``-2**64`` or above ``2**64 - 1``) raises ``ValueError``, wherever it is
@@ -264,6 +269,8 @@ def _preprocess_for_cbor(data: Any) -> Any:
         return {_check_key(k): _preprocess_for_cbor(v) for k, v in data.items()}
     if isinstance(data, (list, tuple, set, frozenset)):
         converted = [_preprocess_for_cbor(item) for item in data]
+        if isinstance(data, tuple) and hasattr(type(data), "_fields"):
+            return tuple(converted)
         return type(data)(converted)
     return data
 
@@ -344,6 +351,8 @@ class _RecordIdWalk:
                 return value
             return dict(items)
         converted = [self.visit(item) for item in value]
+        if isinstance(value, tuple) and hasattr(type(value), "_fields"):
+            return tuple(converted)
         if all(new is old for new, old in zip(converted, value, strict=True)):
             return value
         return type(value)(converted)
@@ -355,10 +364,11 @@ def _convert_record_id(record_id: RecordId) -> RecordId:
     Integers outside the 64-bit range raise ``ValueError`` (the message
     :func:`_preprocess_for_cbor` gives for a plain value), a ``date`` (not a
     ``datetime``) becomes the UTC-midnight ``datetime`` that :func:`encode`
-    sends as tag 12, and the first naive ``datetime`` warns once (it is read
-    as UTC). The walk enters lists, tuples, sets, dict values and nested
-    ``RecordId`` ids; dict keys are range-checked (:func:`_check_key`) but not
-    converted, as anywhere else. Nothing else is converted.
+    sends as tag 12, any ``NamedTuple`` becomes a plain ``tuple``, and the
+    first naive ``datetime`` warns once (it is read as UTC). The walk enters
+    lists, tuples, sets, dict values and nested ``RecordId`` ids; dict keys
+    are range-checked (:func:`_check_key`) but not converted, as anywhere else.
+    Nothing else is converted.
 
     The caller's ``RecordId`` and its containers are never modified: the
     record id is returned as is when nothing changed, and otherwise a new
